@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: simpleorm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      ORM_TEST_CONNECTION: Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=simpleorm_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      # Builds every TFM, including the netstandard2.0 legs of the core and dialect.
+      - name: Build
+        run: dotnet build dotnet/SimpleOrm.sln --configuration Release
+
+      - name: Test
+        run: dotnet test dotnet/SimpleOrm.sln --configuration Release --no-build --logger "console;verbosity=normal"

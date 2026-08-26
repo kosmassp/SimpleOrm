@@ -1,0 +1,18 @@
+## .NET
+bin/
+obj/
+*.user
+*.binlog
+artifacts/
+TestResults/
+BenchmarkDotNet.Artifacts/
+
+## IDE
+.vs/
+.vscode/
+.idea/
+*.DotSettings.user
+
+## OS
+Thumbs.db
+.DS_Store

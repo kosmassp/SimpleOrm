@@ -6,9 +6,12 @@ public sealed class User : BaseModel
 {
     [Key]
     [Generated]
+    [Column]
     public long Id { get; set; }
 
+    [Column]
     public required string Name { get; set; }
 
+    [Column]
     public required string Email { get; set; }
 }

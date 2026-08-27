@@ -142,7 +142,7 @@ The registry is what the validator enumerates. A Level 4 source generator will p
 ### Mapping
 
 5. SQL lives in `.sql` files as embedded resources under `Sql/`, referenced by relative path. `Query.Inline(...)` is the explicit escape hatch; the validator checks it too.
-6. Column → property by name via the naming convention; `[Column]` overrides; SQL aliasing preferred over attributes.
+6. Attribute mapping is **opt-in** (ADR-0004): a property is mapped iff it carries `[Column]`. Bare `[Column]` derives the column name from the property name via the naming convention; `[Column("name")]` binds explicitly; a public settable property with neither `[Column]` nor `[Ignore]` is a loader error. Types with no mapping attributes go through the convention loader, which maps every public property by convention. SQL aliasing preferred over attributes for per-query mismatches.
 7. Strict: a result column with no property, or a required property with no column, throws (`MAP-001`, `MAP-002`). Never a silent null or default.
 8. Construction: constructor with matching parameter names first (records), then settable properties. Ambiguity is an error (`MAP-003`).
 9. Type conversion is a fixed table plus a registry:

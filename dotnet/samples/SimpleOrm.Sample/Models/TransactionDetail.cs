@@ -10,13 +10,18 @@ public sealed class TransactionDetail : BaseModel
 {
     [Key]
     [Generated]
+    [Column]
     public long Id { get; set; }
 
+    [Column]
     public long TransactionId { get; set; }
 
+    [Column]
     public required string Description { get; set; }
 
+    [Column]
     public int Quantity { get; set; }
 
+    [Column]
     public decimal UnitPrice { get; set; }
 }

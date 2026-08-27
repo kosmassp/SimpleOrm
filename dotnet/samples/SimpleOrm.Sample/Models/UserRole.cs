@@ -11,8 +11,10 @@ namespace SimpleOrm.Sample.Models;
 public sealed class UserRole : BaseModel
 {
     [Key]
+    [Column]
     public long UserId { get; set; }
 
     [Key]
+    [Column]
     public long RoleId { get; set; }
 }

@@ -6,7 +6,9 @@ public sealed class Role : BaseModel
 {
     [Key]
     [Generated]
+    [Column]
     public long Id { get; set; }
 
+    [Column]
     public required string Name { get; set; }
 }

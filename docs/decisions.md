@@ -84,3 +84,32 @@ recover most of it. If a stronger reference is wanted later, Postgres returns as
 Level 4 dialect through the same seam. Supersedes ADR-0002.
 
 **Status.** Accepted.
+
+## ADR-0004 — Attribute mapping is opt-in via [Column] (2026-08-27)
+
+**Context.** Two possible attribute-mapping models: opt-out (every public property is
+mapped by convention; `[Ignore]` excludes) or opt-in (only annotated properties are
+mapped). The original brief implied opt-out. The owner prefers opt-in: what is mapped
+is visible in the model, property by property.
+
+**Decision.** In the attribute loader, a property is mapped **iff it carries
+`[Column]`**. The attribute takes an optional name: `[Column("created_at")]` binds
+explicitly; bare `[Column]` derives the column name from the property name through
+the active naming convention (default snake_case: `UserId` → `user_id`; SQLite
+identifiers are case-insensitive, so single-word names also match verbatim).
+
+To preserve "nothing is silent" (CLAUDE.md §2), absence is not allowed to mean
+anything: a public settable property with **neither `[Column]` nor `[Ignore]` is a
+loader error** (code registered in `spec/errors.md` when the loader lands in
+milestone 2). `[Ignore]` therefore stays: it is how a property declares "not a
+column" explicitly. The convention loader (for types with no mapping attributes at
+all) still maps every public property by convention, and the manual
+`EntityMapBuilder<T>` is unchanged — loader precedence explicit → attribute →
+convention stays as in §7.2.
+
+**Consequences.** Annotated models are more verbose (every mapped property carries
+`[Column]`) but self-documenting, and a forgotten annotation fails fast instead of
+silently dropping a column. The sample models are updated accordingly and CLAUDE.md
+§7.6 is reworded.
+
+**Status.** Accepted.

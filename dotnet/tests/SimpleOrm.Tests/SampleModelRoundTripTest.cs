@@ -28,7 +28,8 @@ public sealed class SampleModelRoundTripTest(SqliteFixture fixture)
                     id          INTEGER PRIMARY KEY,
                     name        TEXT NOT NULL,
                     email       TEXT NOT NULL,
-                    created_at  TEXT NOT NULL
+                    created_at  TEXT NOT NULL,
+                    updated_at  TEXT
                 ) STRICT
                 """;
             await create.ExecuteNonQueryAsync();
@@ -48,20 +49,30 @@ public sealed class SampleModelRoundTripTest(SqliteFixture fixture)
         }
 
         await using var select = connection.CreateCommand();
-        select.CommandText = "select id, name, email, created_at from users where id = @id";
+        select.CommandText = "select id, name, email, created_at, updated_at from users where id = @id";
         AddParameter(select, "@id", id);
         await using var reader = await select.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync());
 
-        var user = new User(
-            Id: reader.GetInt64(0),
-            Name: reader.GetString(1),
-            Email: reader.GetString(2),
-            CreatedAtUtc: DateTime.Parse(reader.GetString(3), CultureInfo.InvariantCulture,
-                DateTimeStyles.RoundtripKind));
+        var user = new User
+        {
+            Id = reader.GetInt64(0),
+            Name = reader.GetString(1),
+            Email = reader.GetString(2),
+            CreatedAtUtc = DateTime.Parse(reader.GetString(3), CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind),
+            UpdatedAtUtc = reader.IsDBNull(4)
+                ? null
+                : DateTime.Parse(reader.GetString(4), CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind),
+        };
 
-        Assert.Equal(new User(id, "Ada", "ada@example.com", createdAt), user);
+        Assert.Equal(id, user.Id);
+        Assert.Equal("Ada", user.Name);
+        Assert.Equal("ada@example.com", user.Email);
+        Assert.Equal(createdAt, user.CreatedAtUtc);
         Assert.Equal(DateTimeKind.Utc, user.CreatedAtUtc.Kind);
+        Assert.Null(user.UpdatedAtUtc);
     }
 
     private static void AddParameter(System.Data.Common.DbCommand command, string name, object value)

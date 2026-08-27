@@ -5,9 +5,18 @@ namespace SimpleOrm.Sample.Models;
 /// <c>transaction_id</c> references <c>transactions</c>. The child side of the
 /// json_group_array nesting pattern documented at milestone 4 (CLAUDE.md §7.10).
 /// </summary>
-public sealed record TransactionDetail(
-    long Id,
-    long TransactionId,
-    string Description,
-    int Quantity,
-    decimal UnitPrice);
+[Table("transaction_details")]
+public sealed class TransactionDetail : BaseModel
+{
+    [Key]
+    [Generated]
+    public long Id { get; set; }
+
+    public long TransactionId { get; set; }
+
+    public required string Description { get; set; }
+
+    public int Quantity { get; set; }
+
+    public decimal UnitPrice { get; set; }
+}

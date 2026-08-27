@@ -9,24 +9,6 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: simpleorm_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
-    env:
-      ORM_TEST_CONNECTION: Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=simpleorm_test
-
     steps:
       - uses: actions/checkout@v4
 
@@ -38,5 +20,6 @@ jobs:
       - name: Build
         run: dotnet build dotnet/SimpleOrm.sln --configuration Release
 
+      # Tests run against real temp-file SQLite databases; no services needed (ADR-0003).
       - name: Test
         run: dotnet test dotnet/SimpleOrm.sln --configuration Release --no-build --logger "console;verbosity=normal"

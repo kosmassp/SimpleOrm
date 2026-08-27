@@ -8,7 +8,7 @@ Layout (populated milestone by milestone):
 
 | Directory | Content | Milestone |
 |---|---|---|
-| `schema/postgres/` | migrations for the fixture database | 3+ |
+| `schema/sqlite/` | migrations for the fixture database | 3+ |
 | `fixtures/` | seed data | 3+ |
 | `entities/` | expected `EntityMap` JSON for the fixture entities | 2 |
 | `cases/` | query/command/error cases: `{ "name", "query", "params", "expect": { "rows" } \| { "error": "MAP-001" } }` | 4 |

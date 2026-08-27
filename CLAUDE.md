@@ -1,6 +1,6 @@
-# ORM Project Brief — .NET reference implementation, PostgreSQL first
+# ORM Project Brief — .NET reference implementation, SQLite first
 
-> **Project name: SimpleOrm.** SDK: .NET 10 (10.0.400). Claude Code reads this file at the start of every session, so these rules stay in force without re-pasting.
+> **Project name: SimpleOrm.** SDK: .NET 10 (10.0.400). Reference database: **SQLite** (ADR-0003; PostgreSQL was the original reference and returns as a Level 4 dialect). Claude Code reads this file at the start of every session, so these rules stay in force without re-pasting.
 
 ---
 
@@ -8,7 +8,7 @@
 
 A SQL-first ORM that grows in levels: a mapper (Level 0), a micro-ORM with migrations and schema rules (Level 1), relationships and a query model (Level 2), full session semantics comparable to Hibernate but smaller (Level 3), and enterprise hardening (Level 4).
 
-C# on PostgreSQL is the **reference implementation**. The long-term plan is a language-neutral **spec** plus a **conformance suite**, with ports to other languages (Go, Java, PHP) and dialects (MySQL, SQL Server, SQLite, Oracle) that pass the same conformance files. Early decisions are made so that later levels and ports don't require rewrites.
+C# on SQLite is the **reference implementation**. The long-term plan is a language-neutral **spec** plus a **conformance suite**, with ports to other languages (Go, Java, PHP) and dialects (PostgreSQL, MySQL, SQL Server, Oracle) that pass the same conformance files. Early decisions are made so that later levels and ports don't require rewrites.
 
 **Current target: Level 1.** Do not build Level 2+ features unprompted. If I casually ask for something listed under "Deferred," tell me which level it belongs to and why it's deferred before doing anything.
 
@@ -19,7 +19,7 @@ C# on PostgreSQL is the **reference implementation**. The long-term plan is a la
 - **No hidden queries.** Every database round trip is visible in user code. No lazy proxies (Level 2 decides whether an explicit, opt-in form ever exists).
 - **No SQL built from user data by string concatenation.** Ever. Any such code path is a bug.
 - **Errors name things.** Every exception carries a stable error code plus the query file, column, property, or parameter involved, and what was expected.
-- **Async only.** Every I/O method is async and takes a `CancellationToken`. (Npgsql itself is moving to remove sync I/O.)
+- **Async only.** Every I/O method is async and takes a `CancellationToken`. This is the spec-level contract that ports and future dialects implement, even though the SQLite provider is synchronous underneath (ADR-0003).
 - **Strict by default.** Silent nulls, silently ignored columns, and silently ignored parameters are bugs, not conveniences.
 
 ## 3. Deferred — not before the stated level (this is "not yet," not "never")
@@ -33,7 +33,7 @@ C# on PostgreSQL is the **reference implementation**. The long-term plan is a la
 | Identity map, change tracking, unit of work, cascades, merge/detach | 3 |
 | Inheritance mapping, event hooks (audit, soft delete) | 3 |
 | Draft migrations generated from the metadata diff | 3 |
-| Additional dialects (MySQL, SQL Server, SQLite, Oracle) | 4 (seam exists from Level 1) |
+| Additional dialects (PostgreSQL, MySQL, SQL Server, Oracle) | 4 (seam exists from Level 1) |
 | Caching, observability, resilience, analyzers, source generators | 4 |
 
 ## 4. Stack and targets
@@ -42,7 +42,7 @@ C# on PostgreSQL is the **reference implementation**. The long-term plan is a la
 
 - **Core library:** multi-target `netstandard2.0;net10.0`. `netstandard2.0` is the compatibility floor (it is the only .NET Standard version worth targeting: 2.1 excludes .NET Framework and .NET Standard is frozen). `net10.0` (current LTS) is where modern APIs and performance work live.
 - **Core depends only on `System.Data.Common`** (`DbConnection`, `DbCommand`, `DbDataReader`, `DbTransaction`). Zero provider packages. This is what makes the core usable anywhere and makes dialects pluggable.
-- **Dialect packages** reference the provider and multi-target too. `SimpleOrm.Postgres`: on `net10.0` reference the current Npgsql (10.x); on `netstandard2.0` reference Npgsql 8.x, the last line that supports .NET Standard 2.0 (Npgsql 9 dropped it). Use conditional `PackageReference`s.
+- **Dialect packages** reference the provider and multi-target too. `SimpleOrm.Sqlite` references `Microsoft.Data.Sqlite`; it still ships a `netstandard2.0` target, so one unconditional `PackageReference` serves both TFMs (switch to conditional references if a future major drops it). The bundled native SQLite (SQLitePCLraw `e_sqlite3`) is ≥ 3.46, so `RETURNING` (3.35+) and STRICT tables (3.37+) are available.
 - C# `LangVersion` latest on both targets. Nullable reference types enabled everywhere. `TreatWarningsAsErrors`.
 - CI must build the `netstandard2.0` target; tests run on `net10.0`. A `net48` test leg (Windows) is a later addition; until it exists, .NET Framework runtime bugs are best-effort.
 
@@ -58,7 +58,7 @@ C# on PostgreSQL is the **reference implementation**. The long-term plan is a la
 
 ### Other dependencies
 
-- Tests: xUnit against a real PostgreSQL server (see `docs/decisions.md` ADR-0002: local server via `ORM_TEST_CONNECTION`, service container in CI; Testcontainers deferred). No mocked connections anywhere.
+- Tests: xUnit against real SQLite database files — each fixture creates a temp-file database and deletes it afterwards; no server, no Docker, nothing to configure (ADR-0003). No mocked connections anywhere.
 - Level 1 milestone 8 only: BenchmarkDotNet, with Dapper as a benchmark baseline.
 - Ask before adding any dependency not listed here.
 
@@ -73,7 +73,7 @@ spec/                         language-neutral spec, written as each level stabi
   errors.md                   error code registry (MAP-, PRM-, MIG-, VAL-, CRUD-, TX-)
   query-ast.md                Level 2
 conformance/                  the executable definition of the library (see §9)
-  schema/postgres/            migrations for the fixture database
+  schema/sqlite/              migrations for the fixture database
   fixtures/                   seed data
   entities/                   expected EntityMap JSON for the fixture entities
   cases/                      query/command/error cases as JSON
@@ -81,7 +81,7 @@ conformance/                  the executable definition of the library (see §9)
 dotnet/
   SimpleOrm.sln
   src/SimpleOrm/              core: metadata, mapping, parameters, session, rules, migration runner
-  src/SimpleOrm.Postgres/     Postgres dialect (Npgsql)
+  src/SimpleOrm.Sqlite/       SQLite dialect (Microsoft.Data.Sqlite)
   src/SimpleOrm.Cli/          migrate / status / validate / baseline / export-metadata
   tests/SimpleOrm.Tests/      integration tests + the conformance runner
 docs/decisions.md             ADR-style log; append whenever a decision below changes
@@ -144,21 +144,21 @@ The registry is what the validator enumerates. A Level 4 source generator will p
 7. Strict: a result column with no property, or a required property with no column, throws (`MAP-001`, `MAP-002`). Never a silent null or default.
 8. Construction: constructor with matching parameter names first (records), then settable properties. Ambiguity is an error (`MAP-003`).
 9. Type conversion is a fixed table plus a registry:
-   - Fixed: `int`, `long`, `short`, `decimal`, `double`, `float`, `bool`, `string`, `Guid`, `byte[]`, nullable variants; enums as `text` matched by name case-insensitively (`[EnumAsInt]` opt-in); `DateOnly`/`TimeOnly` on `net10.0` only
-   - Dates: `timestamptz` ↔ `DateTime` with `Kind = Utc` only; `timestamp without time zone` in a result set is a lint error (`VAL-020`); `DateTimeOffset` allowed
-   - `json`/`jsonb` ↔ any type via System.Text.Json through the `ITypeHandler<T>` registry
+   - Fixed: `int`, `long`, `short`, `decimal`, `double`, `float`, `bool`, `string`, `Guid`, `byte[]`, nullable variants; enums as `TEXT` matched by name case-insensitively (`[EnumAsInt]` opt-in); `DateOnly`/`TimeOnly` on `net10.0` only (stored as ISO-8601 `TEXT`)
+   - Dates: SQLite has no date/time types; the convention is ISO-8601 UTC `TEXT` with a trailing `Z` ↔ `DateTime` with `Kind = Utc` only; a stored value without UTC marking is a lint error (`VAL-020`, exact rule finalized in milestone 4); `DateTimeOffset` allowed
+   - JSON columns (`TEXT` holding JSON) ↔ any type via System.Text.Json through the `ITypeHandler<T>` registry
    - Anything else: an `ITypeHandler<T>` registered on `DbOptions`. No reflection-based guessing.
-10. Nested results at Level 1 are produced by the database with `json_agg`/`jsonb_agg` in a subquery and deserialized by the JSON handler. The SQL pattern is documented in the README. (Level 2 adds graph reshaping from joined rows; the JSON path stays supported.)
+10. Nested results at Level 1 are produced by the database with `json_group_array(json_object(...))` in a subquery and deserialized by the JSON handler. The SQL pattern is documented in the README. (Level 2 adds graph reshaping from joined rows; the JSON path stays supported.)
 11. Raw SQL results and (future) generated queries both go through one row-mapping pipeline built on `DbDataReader`. Mapper delegates are built per (query, result type) with expression trees and cached; reflection only at build time.
 
 ### Parameters
 
-12. `@name` placeholders bound from the public properties of the args record. `IN` lists use arrays on Postgres: `WHERE id = ANY(@ids)`. The dialect declares whether arrays are supported (`SupportsArrayParameters`); dialects without them expand lists at Level 4.
+12. `@name` placeholders bound from the public properties of the args record. SQLite has no array parameters, so `IN` lists are expanded safely at Level 1: a collection-typed property expands `IN (@ids)` to generated placeholders (`@ids_0..@ids_N`), always parameterized, never concatenated. The dialect declares `SupportsArrayParameters`; a future Postgres dialect uses `WHERE id = ANY(@ids)` instead of expansion.
 13. A parameter in the SQL with no property (`PRM-001`), or a property never used by the SQL (`PRM-002`), is an error.
 
 ### Writes
 
-14. CRUD is generated from `EntityMap`, never from attributes directly. Explicit column lists always. Generated keys via the dialect (`RETURNING` on Postgres). Key strategies: database-generated (identity/serial), sequence, client-generated GUID, natural/composite.
+14. CRUD is generated from `EntityMap`, never from attributes directly. Explicit column lists always. Generated keys via the dialect (`RETURNING`; SQLite supports it since 3.35). Key strategies: database-generated (`INTEGER PRIMARY KEY`), client-generated GUID, natural/composite. (No sequence strategy at Level 1 — SQLite has no sequences; it returns with a dialect that has them.)
 15. `Update` writes every mapped non-key column by key. Partial updates are hand SQL at Level 1.
 16. Optimistic concurrency when a version column is mapped: `... SET version = version + 1 WHERE <key> = @key AND version = @version`; zero rows affected throws `ConcurrencyException` (`CRUD-010`). Same on `Delete`.
 
@@ -169,13 +169,13 @@ The registry is what the validator enumerates. A Level 4 source generator will p
 ### Rules (SchemaGuard)
 
 18. Runs at startup via `ValidateAsync` and in a test that calls the same code. Build-time checking is Level 4.
-19. For every registered query and command, obtain the statement description from the server **without executing it** (`CommandBehavior.SchemaOnly` + column schema; the dialect implements this) and check:
-    - SQL parses server-side (`VAL-001`)
+19. For every registered query and command, obtain the statement description **without executing it** — prepare the statement and read the column schema (`CommandBehavior.SchemaOnly` + `GetColumnSchema()`; the dialect implements this) — and check:
+    - SQL parses when prepared (`VAL-001`)
     - parameters match the args type both ways (`PRM-001`, `PRM-002`)
     - result columns match the result type exactly (`MAP-001`, `MAP-002`)
-    - a nullable column maps to a nullable property (`VAL-010`); where the server can't determine nullability (expressions), require the property to be nullable unless the SQL contains `-- notnull: <col>`
-    - column types are compatible with the fixed table or a registered handler (`VAL-011`)
-    - lint: no `SELECT *` (`VAL-021`); no `timestamp without time zone` (`VAL-020`)
+    - a nullable column maps to a nullable property (`VAL-010`); SQLite reports nullability and declared types only for table-backed columns, so expression columns require the property to be nullable unless the SQL contains `-- notnull: <col>`
+    - column declared types are compatible with the fixed table or a registered handler (`VAL-011`); because SQLite only enforces declared types on STRICT tables, **all fixture and migration tables are STRICT** (3.37+) — this is what keeps "strict by default" real on SQLite
+    - lint: no `SELECT *` (`VAL-021`); no non-UTC date storage (`VAL-020`)
     - no pending migrations (`MIG-030`)
 20. Collect every violation and throw one `SchemaValidationException` with a complete, file-by-file report. Never stop at the first error.
 21. Fail fast in all environments. No warn-only mode at Level 1.
@@ -183,23 +183,23 @@ The registry is what the validator enumerates. A Level 4 source generator will p
 ### Migrations
 
 22. Versioned SQL files: `migrations/V0001__short_description.sql`, optional `U0001__short_description.sql` for the down migration. Plain SQL, no templating. A down file is optional per version; `migrate down` refuses to pass a version that has no down file (`MIG-020`) rather than pretending.
-23. Runner: table `schema_version(version int primary key, description text, checksum text, applied_at timestamptz, execution_ms int)`. SHA-256 checksum; an applied file whose checksum changed is an error (`MIG-010`). Advisory lock around the whole run (`pg_advisory_lock` on Postgres; the dialect provides it). One transaction per migration where the dialect declares `SupportsTransactionalDdl`; otherwise the runner warns and runs unwrapped. `baseline` records an existing database at a version without running files.
+23. Runner: table `schema_version(version INTEGER PRIMARY KEY, description TEXT, checksum TEXT, applied_at TEXT, execution_ms INTEGER) STRICT` (`applied_at` is ISO-8601 UTC). SHA-256 checksum; an applied file whose checksum changed is an error (`MIG-010`). The dialect provides a **run lock** held for the whole run — on SQLite an exclusive write transaction (`BEGIN IMMEDIATE`); a future Postgres dialect uses `pg_advisory_lock`. One transaction per migration where the dialect declares `SupportsTransactionalDdl` (SQLite: yes); otherwise the runner warns and runs unwrapped. `baseline` records an existing database at a version without running files.
 24. The application never applies migrations at startup; it only checks (rule `MIG-030`). The CLI applies: `migrate`, `migrate down --to`, `status`, `validate`, `baseline`, `export-metadata`.
 
 ### Dialect seam (`IDialect`, minimal and capability-based)
 
-25. Members at Level 1, and no more: create connection; quote identifier; parameter prefix; render `RETURNING`/generated-key retrieval; render limit/offset; array parameter support flag; transactional DDL flag; advisory lock acquire/release SQL; describe-statement implementation; provider-type → CLR type compatibility table. Add members only when a second dialect needs them. Do not speculate about Oracle.
+25. Members at Level 1, and no more: create connection; quote identifier; parameter prefix; render `RETURNING`/generated-key retrieval; render limit/offset; array parameter support flag; transactional DDL flag; migration run-lock acquire/release; describe-statement implementation; declared-type → CLR type compatibility table. Add members only when a second dialect needs them. Do not speculate about Oracle.
 
 ## 8. Level 1 milestones — one at a time; stop and report; do not start the next unprompted
 
-1. **Skeleton.** Monorepo layout, multi-targeted core + Postgres dialect with conditional Npgsql references, CI build of both targets, Postgres test fixture, `docs/decisions.md`, empty `spec/` and `conformance/` with READMEs. Done when `dotnet build` succeeds for both TFMs and one trivial integration test passes.
+1. **Skeleton.** Monorepo layout, multi-targeted core + SQLite dialect, CI build of both targets, temp-file SQLite test fixture, `docs/decisions.md`, empty `spec/` and `conformance/` with READMEs. Done when `dotnet build` succeeds for both TFMs and one trivial integration test passes. *(Done — originally built against PostgreSQL, reworked to SQLite in ADR-0003.)*
 2. **Metadata model.** `EntityMap`, the three loaders, precedence rules, entity identity, JSON export, `spec/metadata-model.md`, and the first `conformance/entities/*.json`.
-3. **Session + Query/Execute + parameters.** `Db.OpenAsync`, `QueryAsync` family, `StreamAsync`, `ExecuteAsync`, parameter binding including arrays, transactions. Tests for each against real Postgres.
+3. **Session + Query/Execute + parameters.** `Db.OpenAsync`, `QueryAsync` family, `StreamAsync`, `ExecuteAsync`, parameter binding including IN-list expansion, transactions. Tests for each against real SQLite databases.
 4. **Strict mapping + types.** Constructor mapping, conversion table, handler registry, JSON nesting handler, every error case tested with its error code. `spec/mapping-rules.md`, `spec/errors.md`, first `conformance/cases/*.json`, and the conformance runner test.
 5. **Migrations + CLI.** Decisions 22–24. Tests for checksum drift, locking, baseline, down without a down file, failure mid-run. `spec/migrations.md`, `conformance/migrations-cases/`.
 6. **SchemaGuard.** Decisions 18–21. Every rule has a failing fixture and the report names the file and reason. `spec/validation-rules.md`.
 7. **CRUD + concurrency.** Decisions 14–16, key strategies, conformance cases.
-8. **Performance pass.** Compiled mappers verified, `#if NET` fast paths (e.g. `DbBatch`), BenchmarkDotNet against Dapper and raw `NpgsqlDataReader`. Target: within 10% of Dapper on `net10.0`.
+8. **Performance pass.** Compiled mappers verified, `#if NET` fast paths (e.g. `DbBatch`), BenchmarkDotNet against Dapper and raw `Microsoft.Data.Sqlite` reader code. Target: within 10% of Dapper on `net10.0`.
 
 **Level 1 exit criteria:** all eight milestones done; `spec/` covers everything Level 1 does; the conformance suite passes; a second developer could reimplement Level 1 in another language from `spec/` + `conformance/` alone.
 
@@ -250,6 +250,4 @@ The suite is the executable definition of the library. Every implementation runs
 ## 14. Local environment notes
 
 - Windows 11; SDKs 6.0/8.0/9.0/10.0 installed. Build with .NET 10.
-- No Docker. Integration tests use a real local PostgreSQL: Laragon's PostgreSQL 16.4 at `D:\Programs\laragon\bin\postgresql\postgresql-16.4-1`, data dir `D:\Programs\laragon\data\postgresql-16`, trust auth, `localhost:5432`, user `postgres`. Start it if it isn't running:
-  `pg_ctl.exe -D D:\Programs\laragon\data\postgresql-16 start`
-- Tests read `ORM_TEST_CONNECTION` (falls back to the local server) and create the `simpleorm_test` database on first run. CI provides a `postgres:16` service container and sets the same variable.
+- No Docker, no database server, nothing to start: tests create a temp-file SQLite database per fixture and delete it afterwards. The native SQLite library ships with `Microsoft.Data.Sqlite` (SQLitePCLraw `e_sqlite3` bundle). CI needs only the .NET SDK.

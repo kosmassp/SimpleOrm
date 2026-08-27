@@ -2,20 +2,19 @@
 
   <PropertyGroup>
     <TargetFrameworks>netstandard2.0;net10.0</TargetFrameworks>
-    <RootNamespace>SimpleOrm.Postgres</RootNamespace>
-    <Description>PostgreSQL dialect for SimpleOrm (Npgsql).</Description>
+    <RootNamespace>SimpleOrm.Sqlite</RootNamespace>
+    <Description>SQLite dialect for SimpleOrm (Microsoft.Data.Sqlite).</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\SimpleOrm\SimpleOrm.csproj" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+    <!-- Pins the native SQLite bundle above the vulnerable 2.1.11 that
+         Microsoft.Data.Sqlite 10.0.0 pulls transitively (GHSA-2m69-gcr7-jv3q). -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
   </ItemGroup>
 
-  <!-- Npgsql 9 dropped netstandard2.0; 8.x is the last line that supports it. -->
-  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
-    <PackageReference Include="Npgsql" Version="10.0.0" />
-  </ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
-    <PackageReference Include="Npgsql" Version="8.0.7" />
     <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" />
     <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="9.0.0" />
   </ItemGroup>

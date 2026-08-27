@@ -21,6 +21,7 @@ dotnet/        C# reference implementation
   src/SimpleOrm/           core (netstandard2.0 + net10.0, depends only on System.Data.Common)
   src/SimpleOrm.Sqlite/    SQLite dialect (Microsoft.Data.Sqlite)
   src/SimpleOrm.Cli/       CLI (stub until milestone 5)
+  samples/SimpleOrm.Sample/ sample entity models used by tests and conformance
   tests/SimpleOrm.Tests/   integration tests against real SQLite databases
 docs/decisions.md          ADR log
 ```

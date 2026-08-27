@@ -83,6 +83,8 @@ dotnet/
   src/SimpleOrm/              core: metadata, mapping, parameters, session, rules, migration runner
   src/SimpleOrm.Sqlite/       SQLite dialect (Microsoft.Data.Sqlite)
   src/SimpleOrm.Cli/          migrate / status / validate / baseline / export-metadata
+  samples/SimpleOrm.Sample/   sample entity models (User, Role, UserRole, Transaction,
+                              TransactionDetail) — the fixture entities for tests and conformance
   tests/SimpleOrm.Tests/      integration tests + the conformance runner
 docs/decisions.md             ADR-style log; append whenever a decision below changes
 ```

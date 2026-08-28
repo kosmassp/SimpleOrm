@@ -6,6 +6,7 @@ namespace SimpleOrm.Sample.Models;
 /// json_group_array nesting pattern documented at milestone 4 (CLAUDE.md §7.10).
 /// </summary>
 [Table("transaction_details")]
+[Index(nameof(TransactionId))]
 public sealed class TransactionDetail : BaseModel
 {
     [Key]

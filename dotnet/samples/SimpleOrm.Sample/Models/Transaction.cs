@@ -6,6 +6,8 @@ namespace SimpleOrm.Sample.Models;
 /// entity for optimistic concurrency (CLAUDE.md §7.16, milestone 7).
 /// </summary>
 [Table("transactions")]
+[Index(nameof(UserId))]
+[Index(nameof(Status), nameof(CreatedAtUtc), Name = "ix_transactions_status_created")]
 public sealed class Transaction : BaseModel
 {
     [Key]

@@ -137,9 +137,9 @@ The registry is what the validator enumerates. A Level 4 source generator will p
 
 ### Metadata (the load-bearing decision)
 
-1. **`EntityMap` is the single source of truth about a type**: CLR type, table (schema-qualified), key columns and key strategy, version column, and one entry per mapped property: property name, column name, CLR type, provider type name, nullability, generated flag, custom handler. Every other subsystem — mapping, CRUD generation, validation, migrations (Level 3), the query model (Level 2) — reads `EntityMap` and nothing else. No subsystem reads attributes directly.
+1. **`EntityMap` is the single source of truth about a type**: CLR type, table (schema-qualified), key columns and key strategy, version column, declared indexes (ADR-0007), and one entry per mapped property: property name, column name, CLR type, provider type name, nullability, generated flag, custom handler. Every other subsystem — mapping, CRUD generation, validation, migrations (Level 3), the query model (Level 2) — reads `EntityMap` and nothing else. No subsystem reads attributes directly.
 2. **Loaders produce `EntityMap`.** Three, with precedence explicit → attribute → convention:
-   - Attributes: `[Table]`, `[Column]`, `[Key]`, `[Generated]`, `[Version]`, `[Ignore]`, `[EnumAsInt]`; declaration-only relationship metadata `[ForeignKey]`, `[ManyToOne]` (ADR-0005)
+   - Attributes: `[Table]`, `[Column]`, `[Key]`, `[Generated]`, `[Version]`, `[Ignore]`, `[EnumAsInt]`; declaration-only relationship metadata `[ForeignKey]`, `[ManyToOne]` (ADR-0005); declaration-only DDL metadata `[Index]` (class-level, repeatable, ADR-0007 — consumed by Level 3 draft migrations)
    - Manual: a fluent `EntityMapBuilder<T>` for types you can't or won't annotate
    - Conventions: `snake_case` ↔ `PascalCase` by default; pluggable `INamingConvention`
 3. **`EntityMap` exports to JSON** (`export-metadata` CLI command and an API), in the format defined in `spec/metadata-model.md`. This export is a conformance artifact: every port must produce identical JSON from its own annotations.

@@ -238,3 +238,27 @@ compared: session-centric vs. collection-facade vs. Active Record statics.
   change. Error codes registered in `spec/errors.md` when CRUD lands.
 
 **Status.** Accepted; implemented in milestone 7.
+
+## ADR-0007 — [Index] mixes DDL declaration into mapping metadata (2026-08-28)
+
+**Context.** Indexes are DDL, and the project''s direction is schema-from-migrations,
+so the recommendation was to keep `CREATE INDEX` in migration files only. The owner
+explicitly chose otherwise: "I am going to mix both DDL and mapping in there" —
+class-level index declarations on the model, several per entity, with optional names.
+
+**Decision.** `[Index]` is a class-level, repeatable attribute placed below
+`[Table]`: `[Index(nameof(UserId))]`,
+`[Index(nameof(Status), nameof(CreatedAtUtc), Name = "...", Unique = true)]`.
+Columns are referenced by property name and resolved through the column mapping
+(unknown or unmapped property = loader error); an omitted name is derived as
+`ix_<table>_<col1>[_<colN>]`. Declared indexes are recorded in `EntityMap` (§7.1
+updated) and exported with the metadata JSON.
+
+**Scope by level.** Level 1: declaration-only — nothing generates or verifies
+indexes; real indexes still come from migration SQL. Level 3: draft migrations
+generate `CREATE INDEX` from this metadata (its consuming feature). Open option:
+SchemaGuard may later verify declared indexes exist (`PRAGMA index_list`), decided
+when milestone 6 scope is set.
+
+**Status.** Accepted (owner overrule of the schema-only-in-migrations recommendation,
+recorded per working agreement).

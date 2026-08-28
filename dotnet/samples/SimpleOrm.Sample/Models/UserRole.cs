@@ -8,6 +8,7 @@ namespace SimpleOrm.Sample.Models;
 /// assignment timestamp.
 /// </summary>
 [Table("user_roles")]
+[Index(nameof(RoleId))]
 public sealed class UserRole : BaseModel
 {
     [Key]

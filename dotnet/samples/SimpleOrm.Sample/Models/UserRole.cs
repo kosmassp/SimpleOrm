@@ -20,11 +20,11 @@ public sealed class UserRole : BaseModel
     [ForeignKey(typeof(Role))]
     public long RoleId { get; set; }
 
-    /// <summary>Transient; not populated by the library at Level 1 — assign it from an explicit query.</summary>
+    /// <summary>Populated only by the library (Level 2 loading); no public setter, so it can never disagree with <see cref="UserId"/>.</summary>
     [ManyToOne(nameof(UserId))]
-    public User? User { get; set; }
+    public User? User { get; private set; }
 
-    /// <summary>Transient; not populated by the library at Level 1 — assign it from an explicit query.</summary>
+    /// <summary>Populated only by the library (Level 2 loading); no public setter, so it can never disagree with <see cref="RoleId"/>.</summary>
     [ManyToOne(nameof(RoleId))]
-    public Role? Role { get; set; }
+    public Role? Role { get; private set; }
 }

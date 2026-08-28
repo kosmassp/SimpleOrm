@@ -17,9 +17,9 @@ public sealed class Transaction : BaseModel
     [ForeignKey(typeof(User))]
     public long UserId { get; set; }
 
-    /// <summary>Transient; not populated by the library at Level 1 — assign it from an explicit query.</summary>
+    /// <summary>Populated only by the library (Level 2 loading); no public setter, so it can never disagree with <see cref="UserId"/>.</summary>
     [ManyToOne(nameof(UserId))]
-    public User? User { get; set; }
+    public User? User { get; private set; }
 
     [Column]
     public TransactionStatus Status { get; set; }

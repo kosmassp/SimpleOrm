@@ -193,3 +193,22 @@ Level 3 change tracker''s job, as in EF; Level 4 may add an optional source-gene
 sync setter.
 
 **Status.** Accepted.
+
+### ADR-0005 addendum 2 — navigation properties have no public setter (2026-08-28)
+
+**Context.** The write-boundary mismatch check (addendum 1) still allowed user code
+to *create* an inconsistent navigation/FK pair in memory. The owner chose to close
+the front door instead: forbid public setters on navigation properties.
+
+**Decision.** A `[ManyToOne]` property must not expose a public setter — declare it
+`{ get; private set; }`. The library is its only writer (Level 2 loading populates it
+from the FK, via the non-public setter), so navigation and FK can never disagree by
+construction. The loader rejects a navigation property with a public setter (error
+code registered with the loader). The same rule will bind `[OneToMany]` when Level 2
+introduces it: collection navigations are get-only. Consequences accepted
+explicitly: at Level 1 navigation properties are pure declarations and stay null —
+there is no supported way to populate them until Level 2 loading exists. The
+addendum-1 write-time mismatch check is kept as defense-in-depth (reflection and
+deserializers can still bypass access modifiers).
+
+**Status.** Accepted.

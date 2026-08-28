@@ -7,9 +7,11 @@ namespace SimpleOrm;
 ///
 /// A navigation property is inherently transient — never a column, never written by
 /// CRUD — so it needs no <see cref="ColumnAttribute"/> or <see cref="IgnoreAttribute"/>.
-/// At Level 1 the library also never populates it (no hidden queries, CLAUDE.md §2):
-/// user code assigns it after an explicit query, which is why it should be nullable.
-/// Level 2's explicit/eager loading attaches to this same declaration (ADR-0005).
+/// It must not expose a public setter (declare it <c>{ get; private set; }</c>): the
+/// library is its only writer, so it can never disagree with the foreign-key property
+/// (ADR-0005 addendum 2); a public setter is a loader error. At Level 1 the library
+/// never populates it (no hidden queries, CLAUDE.md §2) — it stays null until
+/// Level 2's explicit/eager loading, which attaches to this same declaration.
 /// </summary>
 [AttributeUsage(AttributeTargets.Property)]
 public sealed class ManyToOneAttribute : Attribute

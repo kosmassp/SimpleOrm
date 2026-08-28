@@ -21,4 +21,16 @@ public abstract class BaseDao<TEntity>(Db db)
     public Task InsertAsync(TEntity entity, CancellationToken ct) => Db.InsertAsync(entity, ct);
 
     public Task<IReadOnlyList<TEntity>> GetAllAsync(CancellationToken ct) => Db.QueryAllAsync<TEntity>(ct);
+
+    /// <summary>Read by key (ADR-0006/0012); composite keys pass a tuple. Missing row throws <c>CRUD-001</c>.</summary>
+    public Task<TEntity> GetAsync(object key, CancellationToken ct) => Db.GetAsync<TEntity>(key, ct);
+
+    public Task<TEntity?> GetOrDefaultAsync(object key, CancellationToken ct) => Db.GetOrDefaultAsync<TEntity>(key, ct);
+
+    /// <summary>Criteria find (ADR-0012): "specific criteria, no query per table". Compose with And/Or for more.</summary>
+    public Task<IReadOnlyList<TEntity>> FindAsync(Criteria criteria, CancellationToken ct)
+        => Db.Query<TEntity>().Where(criteria).ToListAsync(ct);
+
+    /// <summary>The full chain for callers that need ordering or paging.</summary>
+    public CriteriaQuery<TEntity> Query() => Db.Query<TEntity>();
 }

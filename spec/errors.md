@@ -56,7 +56,8 @@ these codes.
 | `QRY-002` | `QuerySingleAsync` found more than one row | §6 | milestone 3 |
 | `QRY-003` | embedded SQL resource not found for a registered query | §7.5 | milestone 3 |
 | `QRY-004` | statement execution requested for a type that is not statement-backed | ADR-0010 | milestone 3 |
-| `QRY-005` | select-all requested for a source without a named relation (statement/procedure) | ADR-0011 add. | milestone 3 |
+| `QRY-005` | select-all or criteria query requested for a source without a named relation (statement/procedure) | ADR-0011 add. | milestone 3 |
+| `QRY-006` | criteria references an unknown or unmapped property | ADR-0012 | milestone 4 |
 
 ## DDL — schema generation from metadata
 
@@ -93,8 +94,8 @@ these codes.
 
 | Code | Rule | Origin |
 |---|---|---|
-| `CRUD-001` | `GetAsync` found no row for the key | ADR-0006 |
-| `CRUD-002` | key shape mismatch (arity, order, or types vs. `EntityMap` key) | ADR-0006 |
+| `CRUD-001` | `GetAsync` found no row for the key | ADR-0006 (enforced early, ADR-0012) |
+| `CRUD-002` | key shape mismatch (arity, order, or types vs. `EntityMap` key), or the entity defines no key | ADR-0006 (enforced early, ADR-0012) |
 | `CRUD-003` | write attempted on a read-only relation source | ADR-0008 |
 | `CRUD-004` | `[ManyToOne]` navigation key disagrees with FK property on write | ADR-0005 add.1 |
 | `CRUD-010` | optimistic concurrency conflict (zero rows affected with version column) | §7.16 |

@@ -14,28 +14,22 @@ it so the library can later be ported (Go, Java, PHP) and extended to other dial
 
 ## Usage
 
-Declare queries once in a registry — SQL inline, next to its args and result types
-(ADR-0009; `Query.Embedded("path.sql")` stays available for teams that prefer
-`.sql` embedded resources) — then run them on a session:
+Reads are typed — key lookups, criteria queries (the AST as data, ADR-0012), and
+`[Statement]` entities; the inline registry (`Query.Inline`/`Query.Embedded`,
+ADR-0009/0010) remains the escape hatch for what those can't express:
 
 ```csharp
-public static class Queries
-{
-    public static readonly Query<UserByEmailArgs, User> UserByEmail = Query.Inline(
-        """
-        select id, name, email, created_at, updated_at
-        from users
-        where email = @Email
-        """);
-}
-public sealed record UserByEmailArgs(string Email);
-
 await using var db = await Db.OpenAsync("Data Source=app.db",
     new DbOptions { Dialect = new SqliteDialect() }, ct);
 
-var user  = await db.QuerySingleAsync(Queries.UserByEmail, new("ada@example.com"), ct);
-var count = await db.QuerySingleAsync(Queries.CountUsers, EmptyArgs.Value, ct);
-await foreach (var row in db.StreamAsync(Queries.AllUsers, EmptyArgs.Value, ct)) { ... }
+var user  = await db.GetAsync<User>(7, ct);                        // CRUD-001 if missing
+var link  = await db.GetAsync<UserRole>((userId, roleId), ct);     // composite key tuple
+
+var users = await db.Query<User>()                                 // criteria: no SQL, no per-table query
+    .Where(Criteria.Or(Criteria.Eq("Id", 1), Criteria.In("Name", "Ada", "Grace")),
+           Criteria.Ge("CreatedAtUtc", since))                     // Where args are ANDed
+    .OrderBy("Name").Limit(20)
+    .ToListAsync(ct);
 
 await using (var tx = await db.BeginAsync(ct))
 {

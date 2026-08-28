@@ -7,8 +7,10 @@ namespace SimpleOrm.Tests;
 [Collection(SqliteCollection.Name)]
 public sealed class DbQueryTests(SqliteFixture fixture)
 {
+    private sealed record EmailArgs(string Email);
+
     // The one test of the optional embedded mechanism; everything else is inline (ADR-0009).
-    private static readonly Query<UserByEmailArgs, User> UserByEmailEmbedded =
+    private static readonly Query<EmailArgs, User> UserByEmailEmbedded =
         Query.Embedded("Users/GetUserByEmail.sql");
 
     private static readonly Query<EmptyArgs, User> AllUsersInline = Query.Inline(
@@ -53,8 +55,7 @@ public sealed class DbQueryTests(SqliteFixture fixture)
             () => db.QuerySingleAsync(AllUsersInline, EmptyArgs.Value, CancellationToken.None));
         Assert.Equal("QRY-001", none.Code);
 
-        Assert.Null(await db.QuerySingleOrDefaultAsync(
-            Queries.UserById, new UserByIdArgs(999), CancellationToken.None));
+        Assert.Null(await db.GetOrDefaultAsync<User>(999, CancellationToken.None));
 
         await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
         await TestDb.InsertUserAsync(db, "Grace", "grace@example.com");
@@ -86,7 +87,7 @@ public sealed class DbQueryTests(SqliteFixture fixture)
         await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
 
         var user = await db.QuerySingleAsync(
-            UserByEmailEmbedded, new UserByEmailArgs("ada@example.com"), CancellationToken.None);
+            UserByEmailEmbedded, new EmailArgs("ada@example.com"), CancellationToken.None);
 
         Assert.Equal("Ada", user.Name);
     }

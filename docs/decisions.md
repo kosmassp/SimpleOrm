@@ -561,3 +561,33 @@ Their sketch: `db.get<User>.where(Criteria.Or(Criteria.Eq("Id",1), …))`.
 > property names resolved through EntityMap) and naturally limit/offset. **GROUP BY
 > is deliberately excluded**: aggregations are written as raw SQL in `[Statement]`
 > entities — criteria stay a row-filter/sort language, never a full SQL replacement.
+
+## ADR-0012 — Criteria core and key reads pulled to Level 1 (2026-08-28)
+
+**Context.** After milestone 4 the sample registry held only reads whose typed
+replacements were scheduled (milestone 7 key reads, Level 2 criteria). The owner
+directed both pulls: "pull the GetAsync forward and pull criteria forward from
+Level 2."
+
+**Decision.**
+- **Key reads (ADR-0006, early):** `db.GetAsync<T>(key, ct)` (missing row
+  `CRUD-001`) / `GetOrDefaultAsync` (null); composite keys pass a ValueTuple
+  validated against the EntityMap key — arity, order, types (`CRUD-002`; safe
+  integer widening allowed so `GetAsync<Order>(7)` works on a long key); works on
+  tables and keyed views; statements/procedures throw `QRY-005`.
+- **Criteria core (the §10.4 AST):** `Criteria` factories (Eq/Ne/Gt/Ge/Lt/Le/Like/
+  In/IsNull/IsNotNull/And/Or/Not) build explicit trees;
+  `db.Query<T>().Where(…).OrderBy(prop, SortOrder).Limit/Offset` — Where args and
+  repeated calls implicitly AND. Property names resolve through EntityMap
+  (`QRY-006` unknown), values always bind as parameters (`@c0…`), selects list
+  explicit columns, empty In renders `1 = 0`, limit/offset render via the new
+  dialect member `LimitOffsetClause`. GROUP BY stays excluded (statements own
+  aggregation). **Still Level 2:** lambda/LINQ front-ends compiling to this tree,
+  and `ast/` conformance cases (added when the tree gets a JSON form).
+- `BaseDao<T>` gains `GetAsync`/`GetOrDefaultAsync`/`FindAsync(criteria)`/`Query()`.
+  The sample `Queries.cs` registry is **deleted** — every read is typed now;
+  `Commands.cs` keeps the single §7.15 partial update, the registry mechanism
+  (`Query.Inline`/`Embedded`) remains the library''s escape hatch per ADR-0010.
+
+**Status.** Accepted (owner overrule of the Level 2 timing; §10.4 honored — the
+pulled-forward form IS the AST, no strings).

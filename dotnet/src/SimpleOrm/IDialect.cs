@@ -25,6 +25,9 @@ public interface IDialect
     /// <summary>Renders <c>CREATE (MATERIALIZED) VIEW</c> from the map's defining SQL (ADR-0008 addendum 3).</summary>
     string CreateViewSql(EntityMap map);
 
+    /// <summary>Renders the limit/offset clause from pre-bound parameter names (§7.25); either may be null.</summary>
+    string LimitOffsetClause(string? limitParameter, string? offsetParameter);
+
     /// <summary>Whether the database has materialized views (SQLite: no; creating one throws <c>DDL-002</c>).</summary>
     bool SupportsMaterializedViews { get; }
 

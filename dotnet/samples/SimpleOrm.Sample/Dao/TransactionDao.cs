@@ -3,17 +3,16 @@ using SimpleOrm.Sample.Models;
 namespace SimpleOrm.Sample.Dao;
 
 /// <summary>
-/// Transaction DAO: generic base operations, entity-specific reads (registry escape
-/// hatch until Level 2 criteria), the statement entity executed by type, and the
-/// one legitimate hand-SQL write — a partial update (§7.15).
+/// Transaction DAO: criteria reads (ADR-0012), the statement entity executed by
+/// type, and the one legitimate hand-SQL write — a partial update (§7.15).
 /// </summary>
 public sealed class TransactionDao(Db db) : BaseDao<Transaction>(db)
 {
     public Task<IReadOnlyList<Transaction>> GetByUserAsync(long userId, CancellationToken ct)
-        => Db.QueryAsync(Queries.TransactionsByUser, new TransactionsByUserArgs(userId), ct);
+        => Query().Where(Criteria.Eq(nameof(Transaction.UserId), userId)).OrderBy(nameof(Transaction.Id)).ToListAsync(ct);
 
     public Task<IReadOnlyList<Transaction>> GetByStatusAsync(TransactionStatus status, CancellationToken ct)
-        => Db.QueryAsync(Queries.TransactionsByStatus, new TransactionsByStatusArgs(status), ct);
+        => Query().Where(Criteria.Eq(nameof(Transaction.Status), status)).OrderBy(nameof(Transaction.Id)).ToListAsync(ct);
 
     public Task<IReadOnlyList<DailySales>> GetDailySalesAsync(DateTime sinceUtc, CancellationToken ct)
         => Db.QueryAsync<DailySales>(new DailySalesArgs(sinceUtc), ct);

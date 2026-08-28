@@ -10,6 +10,14 @@ public sealed class SqliteDialect : IDialect
     public DbConnection CreateConnection(string connectionString)
         => new SqliteConnection(connectionString);
 
+    public string LimitOffsetClause(string? limitParameter, string? offsetParameter) => (limitParameter, offsetParameter) switch
+    {
+        (not null, not null) => $"limit {limitParameter} offset {offsetParameter}",
+        (not null, null) => $"limit {limitParameter}",
+        (null, not null) => $"limit -1 offset {offsetParameter}",   // SQLite requires LIMIT before OFFSET
+        _ => string.Empty,
+    };
+
     public bool SupportsMaterializedViews => false;
 
     public bool SupportsProcedures => false;

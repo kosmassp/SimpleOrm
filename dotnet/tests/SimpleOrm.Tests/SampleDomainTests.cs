@@ -36,10 +36,9 @@ public sealed class SampleDomainTests(SqliteFixture fixture)
 
         await db.InsertAsync(NewTransaction(ada.Id, TransactionStatus.Pending, 19.99m), CancellationToken.None);
 
-        var pending = await db.QueryAsync(
-            Queries.TransactionsByStatus,
-            new TransactionsByStatusArgs(TransactionStatus.Pending),
-            CancellationToken.None);
+        var pending = await db.Query<Transaction>()
+            .Where(Criteria.Eq(nameof(Transaction.Status), TransactionStatus.Pending))
+            .ToListAsync(CancellationToken.None);
 
         var transaction = Assert.Single(pending);
         Assert.Equal(TransactionStatus.Pending, transaction.Status);   // TEXT 'Pending' → enum
@@ -51,8 +50,9 @@ public sealed class SampleDomainTests(SqliteFixture fixture)
             new SetTransactionStatusArgs(transaction.Id, TransactionStatus.Completed, TestDb.SeedTime),
             CancellationToken.None);
 
-        var byUser = await db.QueryAsync(
-            Queries.TransactionsByUser, new TransactionsByUserArgs(ada.Id), CancellationToken.None);
+        var byUser = await db.Query<Transaction>()
+            .Where(Criteria.Eq(nameof(Transaction.UserId), ada.Id))
+            .ToListAsync(CancellationToken.None);
         Assert.Equal(TransactionStatus.Completed, Assert.Single(byUser).Status);
     }
 

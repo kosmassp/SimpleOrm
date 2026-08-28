@@ -117,6 +117,175 @@ public sealed class Db : IAsyncDisposable
         return await dbCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
+    // --- criteria queries and key reads (ADR-0006, ADR-0012) ---------------------
+
+    /// <summary>Starts a criteria query (ADR-0012) over a named readable source; statements/procedures throw <c>QRY-005</c>.</summary>
+    public CriteriaQuery<TEntity> Query<TEntity>()
+        where TEntity : class
+    {
+        var map = Maps.Load<TEntity>();
+        if (map.Kind is RelationKind.Statement or RelationKind.Procedure)
+        {
+            throw new SimpleOrmException(
+                "QRY-005", typeof(TEntity).Name,
+                $"is {map.Kind}-backed; criteria queries need a named relation (statements execute via the statement API)");
+        }
+
+        return new CriteriaQuery<TEntity>(this);
+    }
+
+    internal async Task<IReadOnlyList<TEntity>> ExecuteCriteriaAsync<TEntity>(
+        Func<DbCommand, EntityMap, TypeConverter, IDialect, string> build, CancellationToken ct)
+        where TEntity : class
+    {
+        var map = Maps.Load<TEntity>();
+        using var command = _connection.CreateCommand();
+        command.Transaction = _transaction;
+        command.CommandText = build(command, map, _converter, Options.Dialect);
+
+        var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var results = new List<TEntity>();
+            var plan = _mapper.CreatePlan<TEntity>(reader, typeof(TEntity).Name + " criteria");
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                results.Add(plan(reader));
+            }
+
+            return results;
+        }
+        finally
+        {
+            reader.Dispose();
+        }
+    }
+
+    /// <summary>Read by key (ADR-0006): a missing row throws <c>CRUD-001</c>; composite keys pass a tuple.</summary>
+    public async Task<TEntity> GetAsync<TEntity>(object key, CancellationToken ct)
+        where TEntity : class
+        => await GetOrDefaultAsync<TEntity>(key, ct).ConfigureAwait(false)
+            ?? throw new SimpleOrmException(
+                "CRUD-001", typeof(TEntity).Name, $"no row with key ({FormatKey(key)})");
+
+    /// <summary>Read by key (ADR-0006): a missing row returns null.</summary>
+    public async Task<TEntity?> GetOrDefaultAsync<TEntity>(object key, CancellationToken ct)
+        where TEntity : class
+    {
+        var map = Maps.Load<TEntity>();
+        if (map.Kind is RelationKind.Statement or RelationKind.Procedure)
+        {
+            throw new SimpleOrmException(
+                "QRY-005", typeof(TEntity).Name, $"is {map.Kind}-backed; key reads need a named relation");
+        }
+
+        var keyValues = ValidateKey(map, key);
+
+        using var command = _connection.CreateCommand();
+        command.Transaction = _transaction;
+        var predicates = new string[keyValues.Length];
+        for (var i = 0; i < keyValues.Length; i++)
+        {
+            var name = "@k" + i;
+            predicates[i] = map.KeyProperties[i].ColumnName + " = " + name;
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = name;
+            parameter.Value = _converter.ToDatabase(keyValues[i], $"{typeof(TEntity).Name} key[{i}]");
+            command.Parameters.Add(parameter);
+        }
+
+        command.CommandText = "select " + string.Join(", ", map.Properties.Select(p => p.ColumnName))
+            + " from " + map.RelationName
+            + " where " + string.Join(" and ", predicates);
+
+        var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var plan = _mapper.CreatePlan<TEntity>(reader, typeof(TEntity).Name + " get");
+            TEntity? result = null;
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                if (result is not null)
+                {
+                    throw new SimpleOrmException(
+                        "QRY-002", typeof(TEntity).Name, "the key matched more than one row");
+                }
+
+                result = plan(reader);
+            }
+
+            return result;
+        }
+        finally
+        {
+            reader.Dispose();
+        }
+    }
+
+    /// <summary>ADR-0006: the key (or tuple) must match the EntityMap key in arity, order, and types.</summary>
+    private static object[] ValidateKey(EntityMap map, object key)
+    {
+        var target = map.EntityType.Name;
+        if (map.KeyProperties.Count == 0)
+        {
+            throw new SimpleOrmException("CRUD-002", target, "the entity defines no key");
+        }
+
+        var provided = IsValueTuple(key.GetType())
+            ? key.GetType().GetFields().OrderBy(f => f.Name, StringComparer.Ordinal).Select(f => f.GetValue(key)!).ToArray()
+            : [key];
+        if (provided.Length != map.KeyProperties.Count)
+        {
+            throw new SimpleOrmException(
+                "CRUD-002", target,
+                $"the key has {map.KeyProperties.Count} part(s), {provided.Length} value(s) were provided");
+        }
+
+        var coerced = new object[provided.Length];
+        for (var i = 0; i < provided.Length; i++)
+        {
+            coerced[i] = CoerceKeyPart(provided[i], map.KeyProperties[i], target, i);
+        }
+
+        return coerced;
+    }
+
+    private static object CoerceKeyPart(object value, PropertyMap keyProperty, string target, int position)
+    {
+        var expected = Nullable.GetUnderlyingType(keyProperty.ClrType) ?? keyProperty.ClrType;
+        var actual = value.GetType();
+        if (actual == expected)
+        {
+            return value;
+        }
+
+        // Safe integer widening so GetAsync<Order>(7) works against a long key.
+        if ((expected == typeof(long) || expected == typeof(int))
+            && actual is { } t && (t == typeof(int) || t == typeof(short) || t == typeof(byte) || t == typeof(long)))
+        {
+            try
+            {
+                return Convert.ChangeType(value, expected, System.Globalization.CultureInfo.InvariantCulture);
+            }
+            catch (OverflowException)
+            {
+                // fall through to CRUD-002
+            }
+        }
+
+        throw new SimpleOrmException(
+            "CRUD-002", target,
+            $"key part {position} ({keyProperty.PropertyName}) expects {expected.Name}, got {actual.Name}");
+    }
+
+    private static bool IsValueTuple(Type type)
+        => type.IsGenericType && type.FullName!.StartsWith("System.ValueTuple`", StringComparison.Ordinal);
+
+    private static string FormatKey(object key)
+        => IsValueTuple(key.GetType())
+            ? string.Join(", ", key.GetType().GetFields().OrderBy(f => f.Name, StringComparer.Ordinal).Select(f => f.GetValue(key)))
+            : key.ToString() ?? string.Empty;
+
     // --- generated DDL and CRUD (ADR-0011) ---------------------------------------
 
     /// <summary>

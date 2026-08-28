@@ -27,8 +27,8 @@ C# on SQLite is the **reference implementation**. The long-term plan is a langua
 | Feature | Level |
 |---|---|
 | Relationships (one-to-many, many-to-one, many-to-many, owned types), graph reshaping | 2 — but declaration-only `[ForeignKey]`/`[ManyToOne]` attributes exist from Level 1 (ADR-0005); loading/reshaping stay Level 2 |
-| Query AST + query front-ends (fluent builder, LINQ provider) | 2 |
-| Dynamic SQL composition (optional filters, sorting from UI) | 2, via the AST |
+| Query AST + query front-ends (fluent builder, LINQ provider) | 2 — but the criteria core (the AST: `Criteria` factories + `db.Query<T>()` with Where/OrderBy/Limit) was pulled to Level 1 by ADR-0012; lambda/LINQ front-ends stay Level 2 |
+| Dynamic SQL composition (optional filters, sorting from UI) | covered at Level 1 by the ADR-0012 criteria core |
 | Explicit/batch/eager loading | 2 |
 | Identity map, change tracking, unit of work, cascades, merge/detach | 3 |
 | Inheritance mapping, event hooks (audit, soft delete) | 3 |
@@ -111,10 +111,17 @@ var id = await db.InsertAsync(order, ct);      // RETURNING the generated key
 await db.UpdateAsync(order, ct);               // full row by key; optimistic concurrency if a version column is mapped
 await db.DeleteAsync<Order>(id, ct);
 
-// Read by key (ADR-0006) — strict variant throws with a code; composite keys pass a tuple
+// Read by key (ADR-0006, implemented early by ADR-0012) — strict variant throws with a code; composite keys pass a tuple
 var order = await db.GetAsync<Order>(7, ct);
 var maybe = await db.GetOrDefaultAsync<Order>(7, ct);
 var link  = await db.GetAsync<UserRole>((userId, roleId), ct);
+
+// Criteria queries (ADR-0012): the AST as data; Where args are implicitly ANDed
+var recent = await db.Query<Order>()
+    .Where(Criteria.Or(Criteria.Eq("Status", "Pending"), Criteria.In("Id", ids)),
+           Criteria.Ge("CreatedAtUtc", since))
+    .OrderBy("CreatedAtUtc", SortOrder.Desc).Limit(20)
+    .ToListAsync(ct);
 
 // Rules — once at startup; throws with a complete report
 await SchemaGuard.ValidateAsync(db, typeof(Queries).Assembly, ct);

@@ -24,7 +24,8 @@ public sealed class DaoLayerTests(SqliteFixture fixture)
         var found = await users.GetByEmailAsync("ada@example.com", CancellationToken.None);
         Assert.Equal(ada.Id, found.Id);
 
-        Assert.Null(await users.FindByIdAsync(999_999, CancellationToken.None));
+        Assert.Equal("Ada", (await users.GetAsync(ada.Id, CancellationToken.None)).Name);
+        Assert.Null(await users.GetOrDefaultAsync(999_999, CancellationToken.None));
 
         await transactions.InsertAsync(
             new Transaction { UserId = ada.Id, Status = TransactionStatus.Pending, Amount = 42m, CreatedAtUtc = TestDb.SeedTime },

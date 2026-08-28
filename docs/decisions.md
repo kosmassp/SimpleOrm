@@ -522,3 +522,31 @@ generated code; per-entity methods wrap the registry escape hatch and the statem
 entity. Criteria finds ("user with specific criteria, no query per table" — owner)
 are explicitly the **Level 2 query AST** (§10.4 forbids a string-based interim);
 the base class documents that slot. Milestone 7 adds Get/Update/Delete to the base.
+
+## Design seed — Level 2 criteria API (2026-08-28)
+
+**Context.** The owner compared LINQ (best in C#, unportable), Hibernate Criteria,
+and Eloquent chaining while planning ports that now include **Rust** alongside Go
+(new — §12 currently lists Go/Java/PHP; confirm Rust''s place when Level 1 exits).
+Their sketch: `db.get<User>.where(Criteria.Or(Criteria.Eq("Id",1), …))`.
+
+**Direction (Level 2, not implemented at Level 1 — §10.4 stands).**
+- **Criteria objects are the AST and the portable spec core**: static factories
+  (`Eq`, `In`, `Ge`, `And`, `Or`, `Not`, …) composing an explicit tree — expressible
+  in every target language incl. Rust/Go (no inheritance, extensions, or LINQ
+  required). Explicit nesting also removes SQL''s and/or precedence ambiguity, which
+  the owner''s own example sketch tripped over.
+- **Session-first surface**: `db.Query<User>().Where(criteria)…` (Eloquent''s chained
+  *feel*, Hibernate''s bones, no model base class — that would only be needed for
+  Eloquent-style statics, already rejected). `BaseDao<T>.FindAsync(criteria)` is the
+  DAO integration ("no query per table").
+- Criteria reference **property names**, resolved to columns through `EntityMap`
+  (`nameof` in C#; unknown name = named error). Rendering emits explicit columns
+  (never `select *`, VAL-021) and binds every value as a parameter, reusing IN-list
+  expansion.
+- **LINQ is a Level 2+ optional C# front-end** compiling lambdas into the same
+  criteria tree; ports skip it. Conformance gains `ast/` cases: criteria tree as
+  JSON → expected SQL per dialect (§9 already reserves this).
+
+**Status.** Seed for the Level 2 design; recorded so milestone work at Level 1
+(4–8) doesn''t foreclose it.

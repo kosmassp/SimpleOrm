@@ -413,3 +413,11 @@ validates without a registry entry. The sample `DailySales` now carries its SQL 
 a `since` parameter; the sample''s `Sql/` resource folder is gone.
 
 **Status.** Accepted (owner overrule of SQL-in-files for this source).
+
+> Note (owner request, same day): sample entities for the dormant sources were added
+> after all — `MonthlySalesTotal` (`[MaterializedView]`, with the distinguishing
+> `[Index]`) and `UserActivityReport` (`[Procedure]`). Consequence for milestone 6:
+> the dialect gains capability flags (`SupportsMaterializedViews`,
+> `SupportsProcedures`) and SchemaGuard SKIPS relation sources the dialect cannot
+> host instead of failing on them — so these samples validate as dormant on SQLite
+> and light up automatically when a Level 4 dialect arrives.

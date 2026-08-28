@@ -391,3 +391,25 @@ Revisit then, or earlier if the owner decides otherwise.
 > (e.g. a named sequence declaration that a key strategy references, migrations
 > create, and the dialect renders). Deferred as agreed; when it lands (Level 4 with
 > Postgres), design it as a first-class metadata object, not an entity attribute.
+
+### ADR-0008 addendum 2 — [Statement] carries inline SQL and a declared parameter contract (2026-08-28)
+
+**Context.** The original design linked `[Statement]` to a `.sql` embedded resource
+per §7.5. The owner overruled: the SQL should be text in the attribute, and the
+parameter names AND types must be declared there too — a statement entity is fully
+self-contained.
+
+**Decision.** `StatementAttribute(string sql, params object[] parameters)`: the SQL
+is an inline constant (raw string literals keep it readable), followed by parameter
+declarations as **(name, Type) token pairs** read left to right — the same
+token-stream style as `[Index]`, since attributes allow strings and `typeof` but not
+tuples: `[Statement("... where created_at >= @since", "since", typeof(DateTime))]`.
+Loader errors: odd token count, a token that is neither string nor `Type`, duplicate
+names, or declared parameters mismatching the SQL''s `@placeholders` in either
+direction (PRM family). §7.5 gains the explicit exception; registry queries keep
+their `.sql` files. Tradeoff accepted knowingly: inline SQL loses .sql-file tooling
+(highlighting, external review) and gains a self-describing class that SchemaGuard
+validates without a registry entry. The sample `DailySales` now carries its SQL and
+a `since` parameter; the sample''s `Sql/` resource folder is gone.
+
+**Status.** Accepted (owner overrule of SQL-in-files for this source).

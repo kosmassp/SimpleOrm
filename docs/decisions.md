@@ -139,3 +139,37 @@ data-source name for routing/validation ergonomics, and how read-replica routing
 expresses read-your-writes consistency explicitly.
 
 **Status.** Deferred to Level 4 (row added to CLAUDE.md §3).
+
+## ADR-0005 — Relationship declaration attributes at Level 1 (2026-08-28)
+
+**Context.** The owner wants models to express "this FK column references that
+entity" and to hold a model-typed property (`Transaction.User`, not just `UserId`).
+Relationship *behavior* — loading, graph reshaping — is Level 2 (§3), and that was
+restated before deciding. The owner also asked what to call the not-a-column marker
+(NonReal / Transient / Volatile).
+
+**Decision.** The *declaration layer* is pulled forward to Level 1; behavior stays
+Level 2:
+
+- `[ForeignKey(typeof(User))]` on a mapped column property declares that the column
+  references another entity's primary key. Metadata only; valid without a navigation
+  property.
+- `[ManyToOne(nameof(UserId))]` declares a navigation property and names its FK
+  property explicitly (naming, not type-matching, keeps two FKs to the same entity
+  unambiguous — e.g. `SenderId`/`ReceiverId` both referencing `User`).
+- No separate `[Transient]` marker: a `[ManyToOne]` property is inherently transient
+  (never a column, never written by CRUD), so the relationship attribute carries the
+  meaning; `[Ignore]` remains for unrelated non-column properties. The ADR-0004 rule
+  extends to: a public settable property must carry `[Column]`, `[Ignore]`, or a
+  relationship attribute — anything else is a loader error.
+- **At Level 1 the library never populates a navigation property** (no hidden
+  queries, §2). User code assigns it after an explicit query; the property should be
+  nullable. Level 2 explicit/eager loading attaches to these same declarations.
+- Collection sides (`[OneToMany]`, many-to-many) are NOT pulled forward; they arrive
+  with Level 2 loading, which is what makes them meaningful.
+
+**Consequences.** Samples can model the full graph now (sample-first), the milestone 2
+loader must record relationship metadata in `EntityMap` (declaration only), and
+Level 2 starts from attributes that already exist instead of inventing them.
+
+**Status.** Accepted.

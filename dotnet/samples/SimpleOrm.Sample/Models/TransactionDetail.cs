@@ -14,7 +14,12 @@ public sealed class TransactionDetail : BaseModel
     public long Id { get; set; }
 
     [Column]
+    [ForeignKey(typeof(Transaction))]
     public long TransactionId { get; set; }
+
+    /// <summary>Transient; not populated by the library at Level 1 — assign it from an explicit query.</summary>
+    [ManyToOne(nameof(TransactionId))]
+    public Transaction? Transaction { get; set; }
 
     [Column]
     public required string Description { get; set; }

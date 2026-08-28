@@ -26,7 +26,7 @@ C# on SQLite is the **reference implementation**. The long-term plan is a langua
 
 | Feature | Level |
 |---|---|
-| Relationships (one-to-many, many-to-one, many-to-many, owned types), graph reshaping | 2 |
+| Relationships (one-to-many, many-to-one, many-to-many, owned types), graph reshaping | 2 — but declaration-only `[ForeignKey]`/`[ManyToOne]` attributes exist from Level 1 (ADR-0005); loading/reshaping stay Level 2 |
 | Query AST + query front-ends (fluent builder, LINQ provider) | 2 |
 | Dynamic SQL composition (optional filters, sorting from UI) | 2, via the AST |
 | Explicit/batch/eager loading | 2 |
@@ -134,7 +134,7 @@ The registry is what the validator enumerates. A Level 4 source generator will p
 
 1. **`EntityMap` is the single source of truth about a type**: CLR type, table (schema-qualified), key columns and key strategy, version column, and one entry per mapped property: property name, column name, CLR type, provider type name, nullability, generated flag, custom handler. Every other subsystem — mapping, CRUD generation, validation, migrations (Level 3), the query model (Level 2) — reads `EntityMap` and nothing else. No subsystem reads attributes directly.
 2. **Loaders produce `EntityMap`.** Three, with precedence explicit → attribute → convention:
-   - Attributes: `[Table]`, `[Column]`, `[Key]`, `[Generated]`, `[Version]`, `[Ignore]`, `[EnumAsInt]`
+   - Attributes: `[Table]`, `[Column]`, `[Key]`, `[Generated]`, `[Version]`, `[Ignore]`, `[EnumAsInt]`; declaration-only relationship metadata `[ForeignKey]`, `[ManyToOne]` (ADR-0005)
    - Manual: a fluent `EntityMapBuilder<T>` for types you can't or won't annotate
    - Conventions: `snake_case` ↔ `PascalCase` by default; pluggable `INamingConvention`
 3. **`EntityMap` exports to JSON** (`export-metadata` CLI command and an API), in the format defined in `spec/metadata-model.md`. This export is a conformance artifact: every port must produce identical JSON from its own annotations.
@@ -143,7 +143,7 @@ The registry is what the validator enumerates. A Level 4 source generator will p
 ### Mapping
 
 5. SQL lives in `.sql` files as embedded resources under `Sql/`, referenced by relative path. `Query.Inline(...)` is the explicit escape hatch; the validator checks it too.
-6. Attribute mapping is **opt-in** (ADR-0004): a property is mapped iff it carries `[Column]`. Bare `[Column]` derives the column name from the property name via the naming convention; `[Column("name")]` binds explicitly; a public settable property with neither `[Column]` nor `[Ignore]` is a loader error. Types with no mapping attributes go through the convention loader, which maps every public property by convention. SQL aliasing preferred over attributes for per-query mismatches.
+6. Attribute mapping is **opt-in** (ADR-0004): a property is mapped iff it carries `[Column]`. Bare `[Column]` derives the column name from the property name via the naming convention; `[Column("name")]` binds explicitly; a public settable property carrying none of `[Column]`, `[Ignore]`, or a relationship attribute is a loader error. A `[ManyToOne]` navigation property is transient — never a column, never written, and never populated by the library at Level 1 (ADR-0005). Types with no mapping attributes go through the convention loader, which maps every public property by convention. SQL aliasing preferred over attributes for per-query mismatches.
 7. Strict: a result column with no property, or a required property with no column, throws (`MAP-001`, `MAP-002`). Never a silent null or default.
 8. Construction: constructor with matching parameter names first (records), then settable properties. Ambiguity is an error (`MAP-003`).
 9. Type conversion is a fixed table plus a registry:

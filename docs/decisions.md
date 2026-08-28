@@ -173,3 +173,23 @@ loader must record relationship metadata in `EntityMap` (declaration only), and
 Level 2 starts from attributes that already exist instead of inventing them.
 
 **Status.** Accepted.
+
+### ADR-0005 addendum — navigation/FK consistency is enforced at the write boundary (2026-08-28)
+
+**Context.** With both `Transaction.UserId` and `Transaction.User` on the model, the
+two can disagree in memory. The owner wants the library — not hand-written setters —
+to prevent a row being saved with a `user_id` different from the assigned `User`.
+Setter injection into POCOs is not possible without runtime proxies (banned, §2) or
+source generators (Level 4).
+
+**Decision.** The FK property is what CRUD writes. On `Insert`/`Update`, if a
+`[ManyToOne]` navigation is non-null and the key of the assigned object disagrees
+with the FK property value, the operation **throws a consistency error** instead of
+writing (error code registered in `spec/errors.md` when CRUD lands, milestone 7).
+An inconsistent pair can exist transiently in memory but can never reach the
+database. Reads stay consistent by construction: Level 2 explicit loading populates
+the navigation from the FK. Full in-memory auto-sync (relationship fixup) is the
+Level 3 change tracker''s job, as in EF; Level 4 may add an optional source-generated
+sync setter.
+
+**Status.** Accepted.

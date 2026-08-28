@@ -42,6 +42,45 @@ public sealed class SampleDomainTests(SqliteFixture fixture)
     }
 
     [Fact]
+    public async Task Statement_entity_executes_by_type_without_a_registry_entry()
+    {
+        await using var db = await TestDb.OpenAsync(fixture);
+        await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
+        var ada = await db.QuerySingleAsync(
+            Queries.UserByEmail, new UserByEmailArgs("ada@example.com"), CancellationToken.None);
+        await db.ExecuteAsync(
+            Commands.InsertTransaction,
+            new InsertTransactionArgs(ada.Id, TransactionStatus.Completed, 10.00m, TestDb.SeedTime),
+            CancellationToken.None);
+        await db.ExecuteAsync(
+            Commands.InsertTransaction,
+            new InsertTransactionArgs(ada.Id, TransactionStatus.Completed, 5.25m, TestDb.SeedTime),
+            CancellationToken.None);
+
+        var days = await db.QueryAsync<DailySales>(
+            new DailySalesArgs(TestDb.SeedTime.AddDays(-1)), CancellationToken.None);
+
+        var day = Assert.Single(days);
+        Assert.Equal(DateOnly.FromDateTime(TestDb.SeedTime), day.SalesDate);
+        Assert.Equal(2, day.TransactionCount);
+        Assert.Equal(15.25m, day.TotalAmount);
+    }
+
+    [Fact]
+    public async Task Statement_execution_validates_args_types_and_target_kind()
+    {
+        await using var db = await TestDb.OpenAsync(fixture);
+
+        var wrongType = await Assert.ThrowsAsync<SimpleOrmException>(
+            () => db.QueryAsync<DailySales>(new { Since = "not a date" }, CancellationToken.None));
+        Assert.Equal("PRM-012", wrongType.Code);
+
+        var notStatement = await Assert.ThrowsAsync<SimpleOrmException>(
+            () => db.QueryAsync<User>(new DailySalesArgs(TestDb.SeedTime), CancellationToken.None));
+        Assert.Equal("QRY-004", notStatement.Code);
+    }
+
+    [Fact]
     public async Task View_entity_reads_aggregated_rows()
     {
         await using var db = await TestDb.OpenAsync(fixture);

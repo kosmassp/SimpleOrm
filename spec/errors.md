@@ -43,6 +43,7 @@ these codes.
 | `PRM-002` | args property never used by the SQL | §7.13 | milestone 3/6 |
 | `PRM-010` | `@placeholder` in `[Statement]` SQL not declared in the attribute | ADR-0008 add.2 | milestone 2 |
 | `PRM-011` | `[Statement]` declared parameter not used by its SQL | ADR-0008 add.2 | milestone 2 |
+| `PRM-012` | args property type differs from the statement's declared parameter type | ADR-0010 | milestone 3 |
 
 ## QRY — query execution
 
@@ -51,6 +52,7 @@ these codes.
 | `QRY-001` | `QuerySingleAsync` found no rows | §6 | milestone 3 |
 | `QRY-002` | `QuerySingleAsync` found more than one row | §6 | milestone 3 |
 | `QRY-003` | embedded SQL resource not found for a registered query | §7.5 | milestone 3 |
+| `QRY-004` | statement execution requested for a type that is not statement-backed | ADR-0010 | milestone 3 |
 
 ## TX — transactions and session
 

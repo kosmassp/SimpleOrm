@@ -42,6 +42,10 @@ await using (var tx = await db.BeginAsync(ct))
     await db.ExecuteAsync(Commands.InsertUser, new("Ada", "ada@example.com", now), ct);
     await tx.CommitAsync(ct);          // disposing without commit rolls back
 }
+
+// Preferred for custom reads (ADR-0010): a [Statement] entity IS its query —
+// no registry entry, executed by type, args checked against the declared contract.
+var days = await db.QueryAsync<DailySales>(new DailySalesArgs(since), ct);
 ```
 
 Rules that always hold: parameters bind from the args record's properties, both ways

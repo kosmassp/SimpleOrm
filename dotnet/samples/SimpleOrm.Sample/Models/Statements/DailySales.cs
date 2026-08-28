@@ -27,3 +27,6 @@ public sealed class DailySales
     [Column]
     public decimal TotalAmount { get; set; }
 }
+
+/// <summary>Args for executing <see cref="DailySales"/>: <c>db.QueryAsync&lt;DailySales&gt;(new DailySalesArgs(since), ct)</c>.</summary>
+public sealed record DailySalesArgs(DateTime Since);

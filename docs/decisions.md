@@ -441,3 +441,29 @@ will enumerate at milestone 6. SchemaGuard validates both forms identically. The
 Level 4 generate-registry-from-.sql idea narrows to embedded users only.
 
 **Status.** Accepted.
+
+## ADR-0010 — Statement entities execute by type; the registry is the escape hatch (2026-08-28)
+
+**Context.** The owner: the point of `[Statement]` is "to avoid calling the Query
+directly" — custom reads should flow through typed declarations on model classes,
+not free-floating registry entries; an open direct-query door "defeats the purpose"
+of the ORM, even while conceding generated calls alone are never enough.
+
+**Decision.** Statement-backed entities execute through the session by type:
+`db.QueryAsync<DailySales>(new DailySalesArgs(since), ct)` (plus
+`QuerySingleAsync` / `QuerySingleOrDefaultAsync` / `StreamAsync` variants) — SQL and
+parameter contract come from the entity''s `EntityMap`, no registry entry involved.
+Args bind against the declared parameters: a type mismatch is `PRM-012`; calling the
+statement API on a non-statement type is `QRY-004`; name mismatches reuse
+PRM-001/002 at bind time.
+
+**Resulting layering of read surfaces, preferred first:**
+1. Generated CRUD by key — `GetAsync`/`GetOrDefaultAsync` (milestone 7).
+2. `[Statement]` entities — custom SQL as a typed, self-contained declaration.
+3. The Level 2 query model (AST) — composable typed queries, when it arrives.
+4. The registry (`Query.Inline`, optional `Query.Embedded`) — the **explicit escape
+   hatch**, kept because typed surfaces cannot express everything (e.g. a custom
+   WHERE returning an existing table entity such as `User`); still validated by
+   SchemaGuard, never removed silently.
+
+**Status.** Accepted.

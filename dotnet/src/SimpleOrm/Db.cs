@@ -114,6 +114,109 @@ public sealed class Db : IAsyncDisposable
         return await dbCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
+    // --- statement-backed entities (ADR-0010): the type IS the query -------------
+
+    /// <summary>Runs a <c>[Statement]</c>-backed entity's own SQL (ADR-0008/0010); args bind against its declared parameters.</summary>
+    public async Task<IReadOnlyList<TResult>> QueryAsync<TResult>(object args, CancellationToken ct)
+    {
+        var results = new List<TResult>();
+        await foreach (var row in StreamAsync<TResult>(args, ct).ConfigureAwait(false))
+        {
+            results.Add(row);
+        }
+
+        return results;
+    }
+
+    /// <summary>Statement-entity variant of <see cref="QuerySingleAsync{TArgs, TResult}"/> (<c>QRY-001</c>/<c>QRY-002</c>).</summary>
+    public async Task<TResult> QuerySingleAsync<TResult>(object args, CancellationToken ct)
+    {
+        var rows = await QueryAsync<TResult>(args, ct).ConfigureAwait(false);
+        return rows.Count switch
+        {
+            1 => rows[0],
+            0 => throw new SimpleOrmException("QRY-001", StatementName<TResult>(), "expected exactly one row, found none"),
+            _ => throw new SimpleOrmException("QRY-002", StatementName<TResult>(), $"expected exactly one row, found {rows.Count}"),
+        };
+    }
+
+    /// <summary>Statement-entity variant of <see cref="QuerySingleOrDefaultAsync{TArgs, TResult}"/>.</summary>
+    public async Task<TResult?> QuerySingleOrDefaultAsync<TResult>(object args, CancellationToken ct)
+    {
+        var rows = await QueryAsync<TResult>(args, ct).ConfigureAwait(false);
+        return rows.Count switch
+        {
+            0 => default,
+            1 => rows[0],
+            _ => throw new SimpleOrmException("QRY-002", StatementName<TResult>(), $"expected at most one row, found {rows.Count}"),
+        };
+    }
+
+    /// <summary>Statement-entity variant of <see cref="StreamAsync{TArgs, TResult}"/>.</summary>
+    public async IAsyncEnumerable<TResult> StreamAsync<TResult>(
+        object args, [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var command = CreateStatementCommand<TResult>(args);
+        try
+        {
+            var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            try
+            {
+                Func<DbDataReader, TResult>? plan = null;
+                while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                {
+                    plan ??= _mapper.CreatePlan<TResult>(reader, StatementName<TResult>());
+                    yield return plan(reader);
+                }
+            }
+            finally
+            {
+                reader.Dispose();
+            }
+        }
+        finally
+        {
+            command.Dispose();
+        }
+    }
+
+    private DbCommand CreateStatementCommand<TResult>(object args)
+    {
+        var map = Maps.Load(typeof(TResult));
+        if (map.Kind != RelationKind.Statement)
+        {
+            throw new SimpleOrmException(
+                "QRY-004", typeof(TResult).Name,
+                $"is {map.Kind}-backed, not statement-backed; use the registry or generated CRUD for it");
+        }
+
+        // The loader already proved declared parameters == SQL placeholders (PRM-010/011);
+        // here the args object must match the declaration in type as well as name.
+        foreach (var parameter in map.StatementParameters)
+        {
+            var property = args.GetType().GetProperties()
+                .FirstOrDefault(p => string.Equals(p.Name, parameter.Name, StringComparison.OrdinalIgnoreCase));
+            if (property is not null)
+            {
+                var declared = Nullable.GetUnderlyingType(parameter.ClrType) ?? parameter.ClrType;
+                var actual = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
+                if (declared != actual)
+                {
+                    throw new SimpleOrmException(
+                        "PRM-012", $"{StatementName<TResult>()}.{parameter.Name}",
+                        $"declared as {declared.Name}, args supply {actual.Name}");
+                }
+            }
+        }
+
+        var command = _connection.CreateCommand();
+        command.Transaction = _transaction;
+        ParameterBinder.Bind(command, map.StatementSql!, args, StatementName<TResult>());
+        return command;
+    }
+
+    private static string StatementName<TResult>() => typeof(TResult).Name + " [Statement]";
+
     /// <summary>Begins the session's transaction scope; a second concurrent scope throws <c>TX-001</c>.</summary>
     public Task<DbTransactionScope> BeginAsync(CancellationToken ct)
     {

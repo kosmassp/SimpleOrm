@@ -11,4 +11,9 @@
     <ProjectReference Include="..\..\src\SimpleOrm\SimpleOrm.csproj" />
   </ItemGroup>
 
+  <!-- SQL lives in .sql files as embedded resources under Sql/ (CLAUDE.md §7.5). -->
+  <ItemGroup>
+    <EmbeddedResource Include="Sql\**\*.sql" />
+  </ItemGroup>
+
 </Project>

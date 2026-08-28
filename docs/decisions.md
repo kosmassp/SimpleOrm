@@ -323,3 +323,37 @@ facade idea is dropped unless the owner reopens it.
 > the owner notes it was "made with haste" and it is not a template. The shape of any
 > app-side layer above `Db` is deliberately unspecified and will be designed fresh,
 > sample-first, when needed.
+
+## ADR-0008 — Relation sources: [Table], [View], [Statement] (2026-08-28)
+
+**Context.** The owner asked for a mapping layer for custom queries ("Statement
+attribute, like Table but for custom query") plus view and materialized-view
+mapping. Precedent: EF keyless entities with `ToView`/`ToSqlQuery`, Hibernate
+`@Subselect`.
+
+**Decision.** `EntityMap` gains a **relation source**; a class carries exactly one of
+`[Table]`, `[View]`, `[Statement]` (two sources = loader error):
+
+- `[View("name")]` — read-only entity over a database view. `[Key]` allowed (enables
+  `GetAsync` at milestone 7); `[Generated]`, `[Version]`, `[Index]` are loader
+  errors. `Materialized = true` marks a materialized view: mapping-identical, refresh
+  is a dialect operation, and **SQLite has none** — the flag is dormant metadata,
+  testable only when a dialect with materialized views arrives (Level 4 Postgres).
+  Chosen over a separate `[Materialized]` attribute because the mapping layer sees no
+  difference.
+- `[Statement("Reports/DailySales.sql")]` — the class is the result shape of a
+  `.sql` embedded resource (path relative to `Sql/`, honoring §7.5: SQL in files,
+  never inline in attributes). Read-only and keyless at Level 1 (`[Key]`,
+  `[Generated]`, `[Version]`, `[Index]` are loader errors). Complements the registry:
+  the registry binds (args, result) pairs for arbitrary queries; `[Statement]` makes
+  a class self-describing so SchemaGuard validates it by preparing the statement,
+  no registry entry needed.
+- CRUD writes exist only for table-backed entities; view/statement writes refuse
+  with a named error (§7.14 updated).
+
+**Samples.** `UserTransactionTotal` (`[View]`, keyed on `user_id`) and `DailySales`
+(`[Statement]` over `Sql/Reports/DailySales.sql`, embedded via the sample csproj).
+Projections do not extend `BaseModel`. The view''s `CREATE VIEW` DDL arrives with
+migrations (milestone 5).
+
+**Status.** Accepted.

@@ -5,7 +5,8 @@ namespace SimpleOrm;
 /// of the query in the referenced <c>.sql</c> embedded resource (path relative to
 /// <c>Sql/</c>, per CLAUDE.md §7.5 — SQL lives in files, never inline in attributes).
 /// A class carries exactly one relation source — <see cref="TableAttribute"/>,
-/// <see cref="ViewAttribute"/>, or <see cref="StatementAttribute"/>.
+/// <see cref="ViewAttribute"/>, <see cref="MaterializedViewAttribute"/>,
+/// <see cref="StatementAttribute"/>, or <see cref="ProcedureAttribute"/>.
 ///
 /// Statement-backed entities are read-only and keyless at Level 1 (<c>[Key]</c>,
 /// <c>[Generated]</c>, <c>[Version]</c>, and <c>[Index]</c> are loader errors).

@@ -357,3 +357,31 @@ Projections do not extend `BaseModel`. The view''s `CREATE VIEW` DDL arrives wit
 migrations (milestone 5).
 
 **Status.** Accepted.
+
+### ADR-0008 addendum — standalone [MaterializedView], new [Procedure]; SEQUENCE deferred (2026-08-28)
+
+**MaterializedView.** The owner overruled the Materialized-flag-on-[View] design with
+a correct capability argument: a materialized view is physically stored and **can be
+indexed**, a plain view cannot. Attribute legality should follow the attribute, not a
+flag, so `[MaterializedView("name")]` is standalone: read-only, `[Key]` allowed,
+`[Index]` ALLOWED (the distinguishing capability), `[Generated]`/`[Version]` errors.
+Refresh is a dialect operation.
+
+**Procedure.** `[Procedure("name")]` maps a class to the result set of a stored
+procedure / set-returning function; parameters bind from an args record at call time;
+read-only and keyless at Level 1; invocation rendering is dialect-specific
+(`EXEC` / `SELECT * FROM fn(...)` / `CALL`).
+
+Both are **dormant on SQLite** (it has neither) — declaration-only metadata,
+testable when a Level 4 dialect arrives; deliberately no sample entities until then,
+since SchemaGuard could never validate them against the reference database. The
+exclusivity rule is now: exactly one of
+`[Table]`/`[View]`/`[MaterializedView]`/`[Statement]`/`[Procedure]`.
+
+**SEQUENCE — considered, deferred (recommendation accepted pending owner decision).**
+Unlike the relation sources above, a sequence is not a mapping concept — it is a key
+*strategy* detail (ADR-0003 dropped the sequence strategy with SQLite). An attribute
+today would be dormant metadata with no consumer at any Level 1-3 milestone. When
+Postgres returns at Level 4, the sequence key strategy returns with it, and a
+`[Sequence("name")]` (or a Key-strategy parameter) can be added against real tests.
+Revisit then, or earlier if the owner decides otherwise.

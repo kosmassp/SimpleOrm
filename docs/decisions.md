@@ -318,3 +318,8 @@ Level 2 still owes `include:` + batch `LoadAsync` per the outline; the Level 4
 facade idea is dropped unless the owner reopens it.
 
 **Status.** Accepted.
+
+> Clarification (same day): the Fidelis stack is cited as pain-point evidence only —
+> the owner notes it was "made with haste" and it is not a template. The shape of any
+> app-side layer above `Db` is deliberately unspecified and will be designed fresh,
+> sample-first, when needed.

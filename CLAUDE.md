@@ -34,6 +34,7 @@ C# on SQLite is the **reference implementation**. The long-term plan is a langua
 | Inheritance mapping, event hooks (audit, soft delete) | 3 |
 | Draft migrations generated from the metadata diff | 3 |
 | Additional dialects (PostgreSQL, MySQL, SQL Server, Oracle) | 4 (seam exists from Level 1) |
+| Read/write splitting and multi-database routing, incl. mixed engines (session-level, never per-entity — see decision log 2026-08-28) | 4 |
 | Caching, observability, resilience, analyzers, source generators | 4 |
 
 ## 4. Stack and targets

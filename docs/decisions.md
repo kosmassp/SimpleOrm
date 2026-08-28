@@ -113,3 +113,29 @@ silently dropping a column. The sample models are updated accordingly and CLAUDE
 §7.6 is reworded.
 
 **Status.** Accepted.
+
+## Design seed — read/write splitting and multi-database routing (2026-08-28)
+
+**Context.** The owner proposed a `[Connection]` attribute (per-entity connection
+string, read vs. write connections, entities split across databases, potentially
+mixed engines such as SQLite + Postgres).
+
+**Decision.** Scheduled for **Level 4**, and when it lands it will be
+**session-level, never per-entity**, because:
+
+- `EntityMap` is a conformance artifact describing data shape; a connection name is
+  deployment configuration and would make the export environment-dependent.
+- `Db` owns one connection and its transaction (§7.17); per-entity connections would
+  silently break transaction atomicity. Cross-database work stays two visible
+  sessions, two transactions.
+- Mixed engines already fall out of the dialect seam: one `Db` per
+  (dialect, connection string); which database an entity uses is which session it is
+  handed to. Wrong wiring is caught at startup by SchemaGuard, which validates each
+  registry against the real schema of the session it is given — so organize queries
+  in one registry class per database.
+
+Open question for Level 4: whether the *registry* (not the entity) gets a logical
+data-source name for routing/validation ergonomics, and how read-replica routing
+expresses read-your-writes consistency explicitly.
+
+**Status.** Deferred to Level 4 (row added to CLAUDE.md §3).

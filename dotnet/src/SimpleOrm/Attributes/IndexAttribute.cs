@@ -26,4 +26,15 @@ public sealed class IndexAttribute : Attribute
 
     /// <summary>Declares a unique index.</summary>
     public bool Unique { get; set; }
+
+    /// <summary>
+    /// Per-column sort order, parallel to <see cref="PropertyNames"/>
+    /// (e.g. <c>new[] { false, true }</c> for <c>(status ASC, created_at DESC)</c>).
+    /// Omitted means all ascending. A length mismatch with the columns, or combining
+    /// this with <see cref="AllDescending"/>, is a loader error.
+    /// </summary>
+    public bool[]? Descending { get; set; }
+
+    /// <summary>Shorthand: every column descending.</summary>
+    public bool AllDescending { get; set; }
 }

@@ -262,3 +262,13 @@ when milestone 6 scope is set.
 
 **Status.** Accepted (owner overrule of the schema-only-in-migrations recommendation,
 recorded per working agreement).
+
+### ADR-0007 addendum — per-column sort order (2026-08-28)
+
+`[Index]` gains `Descending` (bool array parallel to the columns, e.g.
+`new[] { false, true }` for `(status ASC, created_at DESC)`) and an
+`AllDescending` shorthand, mirroring EF Core''s shape — arrays of constants are the
+only per-column syntax attributes allow. Omitted means all ascending. Loader errors:
+`Descending` length differing from the column count, or combining `Descending` with
+`AllDescending`. SQLite supports `DESC` index columns, so Level 3 generation renders
+it directly.

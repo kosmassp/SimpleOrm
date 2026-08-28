@@ -285,3 +285,17 @@ keeps `nameof` refactor-safety. The attribute stores raw strings; the loader par
 them (property resolved through the column mapping, direction token
 case-insensitive), and an unknown property, bad token, or empty column list is a
 loader error.
+
+### ADR-0007 addendum 3 — SortOrder token stream replaces the string suffix (2026-08-28)
+
+The owner found the `nameof(X) + " DESC"` concatenation unintuitive and proposed
+`new[] { nameof(UserId), "DESC" }` per column — jagged arrays are not attribute-legal
+(CS0181/0182), but `params object[]` with enum constants is. Adopted, replacing
+addendum 2''s string-suffix form: the columns are a token stream read left to right —
+a string names a property, a `SortOrder` (`Asc`/`Desc`) applies to the column before
+it, no token means ascending:
+`[Index(nameof(Status), nameof(CreatedAtUtc), SortOrder.Desc)]` =
+`(status ASC, created_at DESC)`. Direction is now typed (a misspelled direction no
+longer compiles). Loader errors: leading or doubled `SortOrder`, a token that is
+neither string nor `SortOrder`, unknown/unmapped property, empty list. Pattern
+precedent: xUnit `[InlineData(params object[])]`.

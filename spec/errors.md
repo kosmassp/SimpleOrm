@@ -14,6 +14,7 @@ these codes.
 | `VAL-` | SchemaGuard validation and lint |
 | `MIG-` | migrations |
 | `CRUD-` | generated CRUD |
+| `QRY-` | query execution |
 | `TX-` | transactions and session |
 
 ## MAP — metadata loading and mapping
@@ -42,6 +43,20 @@ these codes.
 | `PRM-002` | args property never used by the SQL | §7.13 | milestone 3/6 |
 | `PRM-010` | `@placeholder` in `[Statement]` SQL not declared in the attribute | ADR-0008 add.2 | milestone 2 |
 | `PRM-011` | `[Statement]` declared parameter not used by its SQL | ADR-0008 add.2 | milestone 2 |
+
+## QRY — query execution
+
+| Code | Rule | Origin | Enforced |
+|---|---|---|---|
+| `QRY-001` | `QuerySingleAsync` found no rows | §6 | milestone 3 |
+| `QRY-002` | `QuerySingleAsync` found more than one row | §6 | milestone 3 |
+| `QRY-003` | embedded SQL resource not found for a registered query | §7.5 | milestone 3 |
+
+## TX — transactions and session
+
+| Code | Rule | Origin | Enforced |
+|---|---|---|---|
+| `TX-001` | `BeginAsync` while a transaction is already active on the session | §7.17 | milestone 3 |
 
 ## VAL — SchemaGuard (registered now, enforced milestone 6)
 

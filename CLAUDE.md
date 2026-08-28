@@ -71,7 +71,7 @@ spec/                         language-neutral spec, written as each level stabi
   mapping-rules.md            naming conventions, construction, conversions, strictness
   migrations.md               file format, version table, checksums, locking, up/down semantics
   validation-rules.md         every rule with its error code
-  errors.md                   error code registry (MAP-, PRM-, MIG-, VAL-, CRUD-, TX-)
+  errors.md                   error code registry (MAP-, PRM-, MIG-, VAL-, CRUD-, QRY-, TX-)
   query-ast.md                Level 2
 conformance/                  the executable definition of the library (see §9)
   schema/sqlite/              migrations for the fixture database

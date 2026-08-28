@@ -111,6 +111,11 @@ var id = await db.InsertAsync(order, ct);      // RETURNING the generated key
 await db.UpdateAsync(order, ct);               // full row by key; optimistic concurrency if a version column is mapped
 await db.DeleteAsync<Order>(id, ct);
 
+// Read by key (ADR-0006) — strict variant throws with a code; composite keys pass a tuple
+var order = await db.GetAsync<Order>(7, ct);
+var maybe = await db.GetOrDefaultAsync<Order>(7, ct);
+var link  = await db.GetAsync<UserRole>((userId, roleId), ct);
+
 // Rules — once at startup; throws with a complete report
 await SchemaGuard.ValidateAsync(db, typeof(Queries).Assembly, ct);
 ```
@@ -161,7 +166,7 @@ The registry is what the validator enumerates. A Level 4 source generator will p
 
 ### Writes
 
-14. CRUD is generated from `EntityMap`, never from attributes directly. Explicit column lists always. Generated keys via the dialect (`RETURNING`; SQLite supports it since 3.35). Key strategies: database-generated (`INTEGER PRIMARY KEY`), client-generated GUID, natural/composite. (No sequence strategy at Level 1 — SQLite has no sequences; it returns with a dialect that has them.) The FK property is what is written; if a `[ManyToOne]` navigation is non-null and its object's key disagrees with the FK property, `Insert`/`Update` throw a consistency error instead of writing (ADR-0005 addendum).
+14. CRUD is generated from `EntityMap`, never from attributes directly. Explicit column lists always. Generated keys via the dialect (`RETURNING`; SQLite supports it since 3.35). Key strategies: database-generated (`INTEGER PRIMARY KEY`), client-generated GUID, natural/composite. (No sequence strategy at Level 1 — SQLite has no sequences; it returns with a dialect that has them.) The FK property is what is written; if a `[ManyToOne]` navigation is non-null and its object's key disagrees with the FK property, `Insert`/`Update` throw a consistency error instead of writing (ADR-0005 addendum). Read-by-key is generated the same way: `GetAsync<T>` (missing row throws) / `GetOrDefaultAsync<T>` (null); composite keys pass a tuple validated at runtime against the `EntityMap` key — arity, order, and types, each mismatch a named error (ADR-0006).
 15. `Update` writes every mapped non-key column by key. Partial updates are hand SQL at Level 1.
 16. Optimistic concurrency when a version column is mapped: `... SET version = version + 1 WHERE <key> = @key AND version = @version`; zero rows affected throws `ConcurrencyException` (`CRUD-010`). Same on `Delete`.
 

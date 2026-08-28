@@ -212,3 +212,29 @@ addendum-1 write-time mismatch check is kept as defense-in-depth (reflection and
 deserializers can still bypass access modifiers).
 
 **Status.** Accepted.
+
+## ADR-0006 — Read-by-key API: GetAsync / GetOrDefaultAsync (2026-08-28)
+
+**Context.** §6 had CRUD by key for Insert/Update/Delete but no read-by-key; finding
+an entity by id required registering a hand-written query. Hibernate
+(`session.find`), EF (`db.Users.FindAsync`), and Eloquent (`User::find`) were
+compared: session-centric vs. collection-facade vs. Active Record statics.
+
+**Decision.** Session-centric, generated from `EntityMap` like the rest of CRUD
+(milestone 7):
+
+- `db.GetAsync<T>(key, ct)` — the default: a missing row **throws** with an error
+  code naming the entity, table, and key. Strict-by-default, mirroring the existing
+  `QuerySingleAsync` / `QuerySingleOrDefaultAsync` pair.
+- `db.GetOrDefaultAsync<T>(key, ct)` — the explicit opt-in null-returning variant.
+- Composite keys pass a **tuple** (`(userId, roleId)`) validated at runtime against
+  the `EntityMap` key definition — arity, order, and types, each mismatch a named
+  error. Stricter than EF''s `object[]`; compile-time-checked typed overloads can come
+  from the Level 4 source generator.
+- No Active Record statics: which session (and so which database and transaction) is
+  always visible at the call site (§7.17, and the multi-database design seed).
+- Level 1 always queries (one visible `SELECT` with explicit columns). The Level 3
+  identity map may later satisfy the call from the session cache without any API
+  change. Error codes registered in `spec/errors.md` when CRUD lands.
+
+**Status.** Accepted; implemented in milestone 7.

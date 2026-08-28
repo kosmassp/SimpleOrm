@@ -299,3 +299,22 @@ it, no token means ascending:
 longer compiles). Loader errors: leading or doubled `SortOrder`, a token that is
 neither string nor `SortOrder`, unknown/unmapped property, empty list. Pattern
 precedent: xUnit `[InlineData(params object[])]`.
+
+## Decision — session-first confirmed; ergonomics belong to an app-side DAO layer (2026-08-28)
+
+**Context.** After comparing Hibernate/EF/Eloquent, discussing lazy loading
+(rejected; Laravel''s own `preventLazyLoading` cited), an Active-Record facade
+(`Model<T>` statics over an ambient session), and the owner''s prior hand-rolled DAO
+stack (Fidelis: models never held connections; a singleton `DBFactory` was the
+ambient session, with a global-transaction TODO as its scar), the owner decided:
+"I will use Db like you said, it can be controlled in the DAO layer later."
+
+**Decision.** The library API stays session-first data mapper: `Db` is the only
+gateway (§6, §7.17, ADR-0006). No Active-Record facade, no `Model<T>` statics, no
+ambient session in the library at any level. Call-site convenience (per-entity DAOs,
+repositories, managers) is **application architecture layered on top of `Db`** —
+thin classes taking the session as a dependency — and stays out of the library.
+Level 2 still owes `include:` + batch `LoadAsync` per the outline; the Level 4
+facade idea is dropped unless the owner reopens it.
+
+**Status.** Accepted.

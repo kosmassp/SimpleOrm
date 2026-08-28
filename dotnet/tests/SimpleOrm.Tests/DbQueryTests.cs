@@ -11,6 +11,9 @@ public sealed class DbQueryTests(SqliteFixture fixture)
     private static readonly Query<UserByEmailArgs, User> UserByEmailEmbedded =
         Query.Embedded("Users/GetUserByEmail.sql");
 
+    private static readonly Query<EmptyArgs, User> AllUsersInline = Query.Inline(
+        "select id, name, email, created_at, updated_at from users order by id");
+
     [Fact]
     public async Task Query_maps_entities_through_their_entity_map()
     {
@@ -18,7 +21,7 @@ public sealed class DbQueryTests(SqliteFixture fixture)
         await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
         await TestDb.InsertUserAsync(db, "Grace", "grace@example.com");
 
-        var users = await db.QueryAsync(Queries.AllUsers, EmptyArgs.Value, CancellationToken.None);
+        var users = await db.QueryAllAsync<User>(CancellationToken.None);
 
         Assert.Equal(2, users.Count);
         Assert.Equal("Ada", users[0].Name);
@@ -47,7 +50,7 @@ public sealed class DbQueryTests(SqliteFixture fixture)
         await using var db = await TestDb.OpenAsync(fixture);
 
         var none = await Assert.ThrowsAsync<SimpleOrmException>(
-            () => db.QuerySingleAsync(Queries.AllUsers, EmptyArgs.Value, CancellationToken.None));
+            () => db.QuerySingleAsync(AllUsersInline, EmptyArgs.Value, CancellationToken.None));
         Assert.Equal("QRY-001", none.Code);
 
         Assert.Null(await db.QuerySingleOrDefaultAsync(
@@ -56,7 +59,7 @@ public sealed class DbQueryTests(SqliteFixture fixture)
         await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
         await TestDb.InsertUserAsync(db, "Grace", "grace@example.com");
         var many = await Assert.ThrowsAsync<SimpleOrmException>(
-            () => db.QuerySingleAsync(Queries.AllUsers, EmptyArgs.Value, CancellationToken.None));
+            () => db.QuerySingleAsync(AllUsersInline, EmptyArgs.Value, CancellationToken.None));
         Assert.Equal("QRY-002", many.Code);
     }
 
@@ -68,7 +71,7 @@ public sealed class DbQueryTests(SqliteFixture fixture)
         await TestDb.InsertUserAsync(db, "Grace", "grace@example.com");
 
         var names = new List<string>();
-        await foreach (var user in db.StreamAsync(Queries.AllUsers, EmptyArgs.Value, CancellationToken.None))
+        await foreach (var user in db.StreamAsync(AllUsersInline, EmptyArgs.Value, CancellationToken.None))
         {
             names.Add(user.Name);
         }

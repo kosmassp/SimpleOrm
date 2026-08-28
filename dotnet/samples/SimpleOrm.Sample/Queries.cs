@@ -3,18 +3,13 @@ using SimpleOrm.Sample.Models;
 namespace SimpleOrm.Sample;
 
 /// <summary>
-/// The sample query registry: SQL declared inline, next to its args and result
-/// types (ADR-0009). This registry is what SchemaGuard enumerates at milestone 6.
+/// The sample query registry — the Level 1 escape hatch (ADR-0010): only reads no
+/// typed surface can express yet. Select-alls are generated (QueryAllAsync);
+/// UserById dies at milestone 7 (GetAsync); the filtered reads die at Level 2
+/// (criteria via the query AST). SchemaGuard enumerates this registry at milestone 6.
 /// </summary>
 public static class Queries
 {
-    public static readonly Query<EmptyArgs, User> AllUsers = Query.Inline(
-        """
-        select id, name, email, created_at, updated_at
-        from users
-        order by id
-        """);
-
     public static readonly Query<UserByIdArgs, User> UserById = Query.Inline(
         """
         select id, name, email, created_at, updated_at
@@ -53,12 +48,6 @@ public static class Queries
         order by id
         """);
 
-    public static readonly Query<EmptyArgs, UserTransactionTotal> UserTransactionTotals = Query.Inline(
-        """
-        select user_id, user_name, transaction_count, total_amount
-        from user_transaction_totals
-        order by user_id
-        """);
 }
 
 public sealed record UserByIdArgs(long Id);

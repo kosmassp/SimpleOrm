@@ -35,7 +35,7 @@ public sealed class DbParameterTests(SqliteFixture fixture)
         await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
         await TestDb.InsertUserAsync(db, "Grace", "grace@example.com");
         await TestDb.InsertUserAsync(db, "Edsger", "edsger@example.com");
-        var all = await db.QueryAsync(Queries.AllUsers, EmptyArgs.Value, CancellationToken.None);
+        var all = await db.QueryAllAsync<SimpleOrm.Sample.Models.User>(CancellationToken.None);
 
         var picked = await db.QueryAsync(
             Queries.UsersByIds,

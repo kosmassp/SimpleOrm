@@ -54,6 +54,7 @@ these codes.
 | `QRY-002` | `QuerySingleAsync` found more than one row | §6 | milestone 3 |
 | `QRY-003` | embedded SQL resource not found for a registered query | §7.5 | milestone 3 |
 | `QRY-004` | statement execution requested for a type that is not statement-backed | ADR-0010 | milestone 3 |
+| `QRY-005` | select-all requested for a source without a named relation (statement/procedure) | ADR-0011 add. | milestone 3 |
 
 ## DDL — schema generation from metadata
 

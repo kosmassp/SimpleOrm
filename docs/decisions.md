@@ -506,3 +506,19 @@ PRM-010); empty SQL is MAP-019. `EntityMap.StatementSql` became `DefiningSql`; t
 JSON export includes the normalized SQL (and procedure parameters), so ports must
 reproduce it. `CreateViewAsync` generates CREATE VIEW from it; procedure creation
 has no renderer until a dialect with `SupportsProcedures` exists (Level 4).
+
+### ADR-0011 addendum — generated select-all; sample DAO layer (2026-08-28)
+
+`db.QueryAllAsync<T>` joins the generated surface: explicit column list from
+metadata, ordered by the key when one exists; works for tables, views, and
+materialized views (statement/procedure → `QRY-005`). This removed the last
+no-filter registry queries.
+
+The sample gains the reference **DAO layer** (`Dao/BaseDao<TEntity>` + `UserDao`,
+`TransactionDao`): instance-based with the session constructor-injected — not
+extension methods (owner considered them; C#-only idiom, and no inheritance means
+no base object) and never statics (ambient session). Generic operations come from
+generated code; per-entity methods wrap the registry escape hatch and the statement
+entity. Criteria finds ("user with specific criteria, no query per table" — owner)
+are explicitly the **Level 2 query AST** (§10.4 forbids a string-based interim);
+the base class documents that slot. Milestone 7 adds Get/Update/Delete to the base.

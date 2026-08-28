@@ -132,7 +132,7 @@ public sealed class SampleDomainTests(SqliteFixture fixture)
         await db.InsertAsync(NewTransaction(ada.Id, TransactionStatus.Completed, 10.50m), CancellationToken.None);
         await db.InsertAsync(NewTransaction(ada.Id, TransactionStatus.Completed, 4.50m), CancellationToken.None);
 
-        var totals = await db.QueryAsync(Queries.UserTransactionTotals, EmptyArgs.Value, CancellationToken.None);
+        var totals = await db.QueryAllAsync<UserTransactionTotal>(CancellationToken.None);
 
         Assert.Equal(2, totals.Count);
         var adaTotals = totals.Single(t => t.UserName == "Ada");

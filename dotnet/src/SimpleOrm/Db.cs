@@ -168,6 +168,52 @@ public sealed class Db : IAsyncDisposable
     }
 
     /// <summary>
+    /// Generated select-all (ADR-0011 addendum): explicit column list from the
+    /// metadata, ordered by the key when one exists — no per-table query needed.
+    /// Works for tables, views, and materialized views; statements use the typed
+    /// statement API and procedures are Level 4 (<c>QRY-005</c>).
+    /// </summary>
+    public async Task<IReadOnlyList<TEntity>> QueryAllAsync<TEntity>(CancellationToken ct)
+        where TEntity : class
+    {
+        var map = Maps.Load<TEntity>();
+        if (map.Kind is RelationKind.Statement or RelationKind.Procedure)
+        {
+            throw new SimpleOrmException(
+                "QRY-005", typeof(TEntity).Name,
+                $"is {map.Kind}-backed; select-all needs a named relation (statements execute via the statement API)");
+        }
+
+        var sql = "select " + string.Join(", ", map.Properties.Select(p => p.ColumnName))
+            + " from " + map.RelationName;
+        if (map.KeyProperties.Count > 0)
+        {
+            sql += " order by " + string.Join(", ", map.KeyProperties.Select(k => k.ColumnName));
+        }
+
+        using var command = _connection.CreateCommand();
+        command.Transaction = _transaction;
+        command.CommandText = sql;
+        var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var results = new List<TEntity>();
+            Func<DbDataReader, TEntity>? plan = null;
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                plan ??= _mapper.CreatePlan<TEntity>(reader, typeof(TEntity).Name + " select-all");
+                results.Add(plan(reader));
+            }
+
+            return results;
+        }
+        finally
+        {
+            reader.Dispose();
+        }
+    }
+
+    /// <summary>
     /// Generated insert (§7.14): explicit column list from the metadata, never from
     /// attributes. Writes every non-generated column; a database-generated key is
     /// read back via RETURNING and written onto the entity; an empty client-GUID key

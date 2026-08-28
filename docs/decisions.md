@@ -385,3 +385,9 @@ today would be dormant metadata with no consumer at any Level 1-3 milestone. Whe
 Postgres returns at Level 4, the sequence key strategy returns with it, and a
 `[Sequence("name")]` (or a Key-strategy parameter) can be added against real tests.
 Revisit then, or earlier if the owner decides otherwise.
+
+> Refinement (owner, same day): a sequence is not an attribute/class mapping at all —
+> it is a standalone schema object that needs its own place in the metadata model
+> (e.g. a named sequence declaration that a key strategy references, migrations
+> create, and the dialect renders). Deferred as agreed; when it lands (Level 4 with
+> Postgres), design it as a first-class metadata object, not an entity attribute.

@@ -1,3 +1,4 @@
+using SimpleOrm.Sample;
 using SimpleOrm.Sample.Models;
 using Xunit;
 
@@ -6,6 +7,10 @@ namespace SimpleOrm.Tests;
 [Collection(SqliteCollection.Name)]
 public sealed class DbQueryTests(SqliteFixture fixture)
 {
+    // The one test of the optional embedded mechanism; everything else is inline (ADR-0009).
+    private static readonly Query<UserByEmailArgs, User> UserByEmailEmbedded =
+        Query.Embedded("Users/GetUserByEmail.sql");
+
     [Fact]
     public async Task Query_maps_entities_through_their_entity_map()
     {
@@ -13,7 +18,7 @@ public sealed class DbQueryTests(SqliteFixture fixture)
         await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
         await TestDb.InsertUserAsync(db, "Grace", "grace@example.com");
 
-        var users = await db.QueryAsync(TestDb.Queries.AllUsers, EmptyArgs.Value, CancellationToken.None);
+        var users = await db.QueryAsync(Queries.AllUsers, EmptyArgs.Value, CancellationToken.None);
 
         Assert.Equal(2, users.Count);
         Assert.Equal("Ada", users[0].Name);
@@ -28,10 +33,11 @@ public sealed class DbQueryTests(SqliteFixture fixture)
         await using var db = await TestDb.OpenAsync(fixture);
         await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
 
-        var count = await db.QuerySingleAsync(TestDb.Queries.CountUsers, EmptyArgs.Value, CancellationToken.None);
+        var count = await db.QuerySingleAsync(TestDb.CountUsers, EmptyArgs.Value, CancellationToken.None);
         Assert.Equal(1L, count);
 
-        var rows = await db.QueryAsync(TestDb.Queries.EmailRows, EmptyArgs.Value, CancellationToken.None);
+        Query<EmptyArgs, UserEmailRow> emailRows = Query.Inline("select id, email from users order by id");
+        var rows = await db.QueryAsync(emailRows, EmptyArgs.Value, CancellationToken.None);
         Assert.Equal("ada@example.com", Assert.Single(rows).Email);
     }
 
@@ -41,16 +47,16 @@ public sealed class DbQueryTests(SqliteFixture fixture)
         await using var db = await TestDb.OpenAsync(fixture);
 
         var none = await Assert.ThrowsAsync<SimpleOrmException>(
-            () => db.QuerySingleAsync(TestDb.Queries.AllUsers, EmptyArgs.Value, CancellationToken.None));
+            () => db.QuerySingleAsync(Queries.AllUsers, EmptyArgs.Value, CancellationToken.None));
         Assert.Equal("QRY-001", none.Code);
 
         Assert.Null(await db.QuerySingleOrDefaultAsync(
-            TestDb.Queries.UserById, new UserByIdArgs(999), CancellationToken.None));
+            Queries.UserById, new UserByIdArgs(999), CancellationToken.None));
 
         await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
         await TestDb.InsertUserAsync(db, "Grace", "grace@example.com");
         var many = await Assert.ThrowsAsync<SimpleOrmException>(
-            () => db.QuerySingleAsync(TestDb.Queries.AllUsers, EmptyArgs.Value, CancellationToken.None));
+            () => db.QuerySingleAsync(Queries.AllUsers, EmptyArgs.Value, CancellationToken.None));
         Assert.Equal("QRY-002", many.Code);
     }
 
@@ -62,7 +68,7 @@ public sealed class DbQueryTests(SqliteFixture fixture)
         await TestDb.InsertUserAsync(db, "Grace", "grace@example.com");
 
         var names = new List<string>();
-        await foreach (var user in db.StreamAsync(TestDb.Queries.AllUsers, EmptyArgs.Value, CancellationToken.None))
+        await foreach (var user in db.StreamAsync(Queries.AllUsers, EmptyArgs.Value, CancellationToken.None))
         {
             names.Add(user.Name);
         }
@@ -71,13 +77,13 @@ public sealed class DbQueryTests(SqliteFixture fixture)
     }
 
     [Fact]
-    public async Task Embedded_sql_resolves_from_the_registry_assembly()
+    public async Task Embedded_sql_stays_supported_as_the_optional_form()
     {
         await using var db = await TestDb.OpenAsync(fixture);
         await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
 
         var user = await db.QuerySingleAsync(
-            TestDb.Queries.UserByEmail, new UserByEmailArgs("ada@example.com"), CancellationToken.None);
+            UserByEmailEmbedded, new UserByEmailArgs("ada@example.com"), CancellationToken.None);
 
         Assert.Equal("Ada", user.Name);
     }
@@ -95,3 +101,5 @@ public sealed class DbQueryTests(SqliteFixture fixture)
         Assert.Contains("mystery", exception.Message);
     }
 }
+
+public sealed record UserEmailRow(long Id, string Email);

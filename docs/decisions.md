@@ -421,3 +421,23 @@ a `since` parameter; the sample''s `Sql/` resource folder is gone.
 > `SupportsProcedures`) and SchemaGuard SKIPS relation sources the dialect cannot
 > host instead of failing on them — so these samples validate as dormant on SQLite
 > and light up automatically when a Level 4 dialect arrives.
+
+## ADR-0009 — Inline SQL is the primary registry form (2026-08-28)
+
+**Context.** §7.5 made `.sql` embedded resources the rule and `Query.Inline` the
+escape hatch. The owner inverted it ("I don''t want any Query.Embedded"), consistent
+with the `[Statement]` decision (ADR-0008 addendum 2): SQL lives next to the code
+that owns it.
+
+**Decision.** `Query.Inline(...)` is the primary form; raw string literals keep
+multi-line SQL readable, and the registry entry carries SQL, args type, and result
+type in one place. `Query.Embedded` **remains in the library** as the supported
+option for teams preferring `.sql` files (mechanism + `QRY-003` + one covering
+test kept) — removing it entirely is a separate decision the owner has not made.
+The samples gained a full inline registry (`Schema` DDL commands — interim until
+milestone 5 migrations — plus `Queries`/`Commands` with their args records), and
+the integration tests now consume it, which also makes it the registry SchemaGuard
+will enumerate at milestone 6. SchemaGuard validates both forms identically. The
+Level 4 generate-registry-from-.sql idea narrows to embedded users only.
+
+**Status.** Accepted.

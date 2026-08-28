@@ -1,3 +1,4 @@
+using SimpleOrm.Sample;
 using Xunit;
 
 namespace SimpleOrm.Tests;
@@ -34,10 +35,10 @@ public sealed class DbParameterTests(SqliteFixture fixture)
         await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
         await TestDb.InsertUserAsync(db, "Grace", "grace@example.com");
         await TestDb.InsertUserAsync(db, "Edsger", "edsger@example.com");
-        var all = await db.QueryAsync(TestDb.Queries.AllUsers, EmptyArgs.Value, CancellationToken.None);
+        var all = await db.QueryAsync(Queries.AllUsers, EmptyArgs.Value, CancellationToken.None);
 
         var picked = await db.QueryAsync(
-            TestDb.Queries.UsersByIds,
+            Queries.UsersByIds,
             new UsersByIdsArgs([all[0].Id, all[2].Id]),
             CancellationToken.None);
 
@@ -51,7 +52,7 @@ public sealed class DbParameterTests(SqliteFixture fixture)
         await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
 
         var picked = await db.QueryAsync(
-            TestDb.Queries.UsersByIds, new UsersByIdsArgs([]), CancellationToken.None);
+            Queries.UsersByIds, new UsersByIdsArgs([]), CancellationToken.None);
 
         Assert.Empty(picked);
     }
@@ -64,7 +65,7 @@ public sealed class DbParameterTests(SqliteFixture fixture)
         await TestDb.InsertUserAsync(db, "O'Brien; drop table users; --", "obrien@example.com");
 
         var user = await db.QuerySingleAsync(
-            TestDb.Queries.UserByEmail, new UserByEmailArgs("obrien@example.com"), CancellationToken.None);
+            Queries.UserByEmail, new UserByEmailArgs("obrien@example.com"), CancellationToken.None);
 
         Assert.Equal("O'Brien; drop table users; --", user.Name);
     }

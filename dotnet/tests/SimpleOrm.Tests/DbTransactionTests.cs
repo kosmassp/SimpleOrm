@@ -16,7 +16,7 @@ public sealed class DbTransactionTests(SqliteFixture fixture)
             await tx.CommitAsync(CancellationToken.None);
         }
 
-        var count = await db.QuerySingleAsync(TestDb.Queries.CountUsers, EmptyArgs.Value, CancellationToken.None);
+        var count = await db.QuerySingleAsync(TestDb.CountUsers, EmptyArgs.Value, CancellationToken.None);
         Assert.Equal(1L, count);
     }
 
@@ -30,7 +30,7 @@ public sealed class DbTransactionTests(SqliteFixture fixture)
             await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
         }
 
-        var count = await db.QuerySingleAsync(TestDb.Queries.CountUsers, EmptyArgs.Value, CancellationToken.None);
+        var count = await db.QuerySingleAsync(TestDb.CountUsers, EmptyArgs.Value, CancellationToken.None);
         Assert.Equal(0L, count);
     }
 

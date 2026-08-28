@@ -14,14 +14,19 @@ it so the library can later be ported (Go, Java, PHP) and extended to other dial
 
 ## Usage
 
-Declare queries once in a registry — SQL lives in `.sql` embedded resources under
-`Sql/` (`Query.Inline` is the explicit escape hatch) — then run them on a session:
+Declare queries once in a registry — SQL inline, next to its args and result types
+(ADR-0009; `Query.Embedded("path.sql")` stays available for teams that prefer
+`.sql` embedded resources) — then run them on a session:
 
 ```csharp
 public static class Queries
 {
-    public static readonly Query<UserByEmailArgs, User> UserByEmail =
-        Query.Embedded("Users/GetUserByEmail.sql");
+    public static readonly Query<UserByEmailArgs, User> UserByEmail = Query.Inline(
+        """
+        select id, name, email, created_at, updated_at
+        from users
+        where email = @Email
+        """);
 }
 public sealed record UserByEmailArgs(string Email);
 

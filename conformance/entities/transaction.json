@@ -1,0 +1,84 @@
+{
+  "entity": "Transaction",
+  "source": {
+    "kind": "table",
+    "name": "transactions"
+  },
+  "key": {
+    "strategy": "database_generated",
+    "columns": [
+      "id"
+    ]
+  },
+  "version": "version",
+  "columns": [
+    {
+      "column": "id",
+      "type": "int64",
+      "nullable": false,
+      "key": true,
+      "generated": true
+    },
+    {
+      "column": "user_id",
+      "type": "int64",
+      "nullable": false
+    },
+    {
+      "column": "status",
+      "type": "enum_text",
+      "nullable": false
+    },
+    {
+      "column": "amount",
+      "type": "decimal",
+      "nullable": false
+    },
+    {
+      "column": "version",
+      "type": "int64",
+      "nullable": false
+    },
+    {
+      "column": "created_at",
+      "type": "datetime",
+      "nullable": false
+    },
+    {
+      "column": "updated_at",
+      "type": "datetime",
+      "nullable": true
+    }
+  ],
+  "indexes": [
+    {
+      "name": "ix_transactions_user_id",
+      "columns": [
+        {
+          "column": "user_id",
+          "direction": "asc"
+        }
+      ]
+    },
+    {
+      "name": "ix_transactions_status_created",
+      "columns": [
+        {
+          "column": "status",
+          "direction": "asc"
+        },
+        {
+          "column": "created_at",
+          "direction": "desc"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "kind": "many_to_one",
+      "foreignKeyColumn": "user_id",
+      "references": "User"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "entity": "UserTransactionTotal",
+  "source": {
+    "kind": "view",
+    "name": "user_transaction_totals"
+  },
+  "key": {
+    "strategy": "natural",
+    "columns": [
+      "user_id"
+    ]
+  },
+  "columns": [
+    {
+      "column": "user_id",
+      "type": "int64",
+      "nullable": false,
+      "key": true
+    },
+    {
+      "column": "user_name",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "column": "transaction_count",
+      "type": "int32",
+      "nullable": false
+    },
+    {
+      "column": "total_amount",
+      "type": "decimal",
+      "nullable": false
+    }
+  ]
+}

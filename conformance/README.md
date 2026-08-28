@@ -10,7 +10,7 @@ Layout (populated milestone by milestone):
 |---|---|---|
 | `schema/sqlite/` | migrations for the fixture database | 3+ |
 | `fixtures/` | seed data | 3+ |
-| `entities/` | expected `EntityMap` JSON for the fixture entities | 2 |
+| `entities/` | expected `EntityMap` JSON for the fixture entities (regenerate: run tests with `SIMPLEORM_CONFORMANCE_WRITE=1`) | 2 (done) |
 | `cases/` | query/command/error cases: `{ "name", "query", "params", "expect": { "rows" } \| { "error": "MAP-001" } }` | 4 |
 | `migrations-cases/` | runner scenarios: migration files plus `{ "preState", "command", "expectStatus" \| "error" }` | 5 |
 | `ast/` | query AST with expected SQL per dialect | Level 2 |

@@ -1,0 +1,70 @@
+{
+  "entity": "TransactionDetail",
+  "source": {
+    "kind": "table",
+    "name": "transaction_details"
+  },
+  "key": {
+    "strategy": "database_generated",
+    "columns": [
+      "id"
+    ]
+  },
+  "columns": [
+    {
+      "column": "id",
+      "type": "int64",
+      "nullable": false,
+      "key": true,
+      "generated": true
+    },
+    {
+      "column": "transaction_id",
+      "type": "int64",
+      "nullable": false
+    },
+    {
+      "column": "description",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "column": "quantity",
+      "type": "int32",
+      "nullable": false
+    },
+    {
+      "column": "unit_price",
+      "type": "decimal",
+      "nullable": false
+    },
+    {
+      "column": "created_at",
+      "type": "datetime",
+      "nullable": false
+    },
+    {
+      "column": "updated_at",
+      "type": "datetime",
+      "nullable": true
+    }
+  ],
+  "indexes": [
+    {
+      "name": "ix_transaction_details_transaction_id",
+      "columns": [
+        {
+          "column": "transaction_id",
+          "direction": "asc"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "kind": "many_to_one",
+      "foreignKeyColumn": "transaction_id",
+      "references": "Transaction"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "entity": "DailySales",
+  "source": {
+    "kind": "statement",
+    "sql": "select date(created_at) as sales_date, count(id) as transaction_count, sum(amount) as total_amount from transactions where created_at \u003E= @since group by date(created_at) order by sales_date desc",
+    "parameters": [
+      {
+        "name": "since",
+        "type": "datetime"
+      }
+    ]
+  },
+  "key": {
+    "strategy": "none",
+    "columns": []
+  },
+  "columns": [
+    {
+      "column": "sales_date",
+      "type": "date",
+      "nullable": false
+    },
+    {
+      "column": "transaction_count",
+      "type": "int32",
+      "nullable": false
+    },
+    {
+      "column": "total_amount",
+      "type": "decimal",
+      "nullable": false
+    }
+  ]
+}

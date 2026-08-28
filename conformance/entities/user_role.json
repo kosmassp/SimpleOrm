@@ -1,0 +1,61 @@
+{
+  "entity": "UserRole",
+  "source": {
+    "kind": "table",
+    "name": "user_roles"
+  },
+  "key": {
+    "strategy": "natural",
+    "columns": [
+      "user_id",
+      "role_id"
+    ]
+  },
+  "columns": [
+    {
+      "column": "user_id",
+      "type": "int64",
+      "nullable": false,
+      "key": true
+    },
+    {
+      "column": "role_id",
+      "type": "int64",
+      "nullable": false,
+      "key": true
+    },
+    {
+      "column": "created_at",
+      "type": "datetime",
+      "nullable": false
+    },
+    {
+      "column": "updated_at",
+      "type": "datetime",
+      "nullable": true
+    }
+  ],
+  "indexes": [
+    {
+      "name": "ix_user_roles_role_id",
+      "columns": [
+        {
+          "column": "role_id",
+          "direction": "asc"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "kind": "many_to_one",
+      "foreignKeyColumn": "user_id",
+      "references": "User"
+    },
+    {
+      "kind": "many_to_one",
+      "foreignKeyColumn": "role_id",
+      "references": "Role"
+    }
+  ]
+}

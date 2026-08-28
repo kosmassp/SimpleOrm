@@ -1,0 +1,54 @@
+{
+  "entity": "User",
+  "source": {
+    "kind": "table",
+    "name": "users"
+  },
+  "key": {
+    "strategy": "database_generated",
+    "columns": [
+      "id"
+    ]
+  },
+  "columns": [
+    {
+      "column": "id",
+      "type": "int64",
+      "nullable": false,
+      "key": true,
+      "generated": true
+    },
+    {
+      "column": "name",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "column": "email",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "column": "created_at",
+      "type": "datetime",
+      "nullable": false
+    },
+    {
+      "column": "updated_at",
+      "type": "datetime",
+      "nullable": true
+    }
+  ],
+  "indexes": [
+    {
+      "name": "ix_users_email",
+      "columns": [
+        {
+          "column": "email",
+          "direction": "asc"
+        }
+      ],
+      "unique": true
+    }
+  ]
+}

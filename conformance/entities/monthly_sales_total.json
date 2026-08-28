@@ -1,0 +1,43 @@
+{
+  "entity": "MonthlySalesTotal",
+  "source": {
+    "kind": "materialized_view",
+    "name": "monthly_sales_totals"
+  },
+  "key": {
+    "strategy": "natural",
+    "columns": [
+      "sales_month"
+    ]
+  },
+  "columns": [
+    {
+      "column": "sales_month",
+      "type": "string",
+      "nullable": false,
+      "key": true
+    },
+    {
+      "column": "transaction_count",
+      "type": "int32",
+      "nullable": false
+    },
+    {
+      "column": "total_amount",
+      "type": "decimal",
+      "nullable": false
+    }
+  ],
+  "indexes": [
+    {
+      "name": "ix_monthly_sales_totals_sales_month",
+      "columns": [
+        {
+          "column": "sales_month",
+          "direction": "asc"
+        }
+      ],
+      "unique": true
+    }
+  ]
+}

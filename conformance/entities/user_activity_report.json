@@ -1,0 +1,38 @@
+{
+  "entity": "UserActivityReport",
+  "source": {
+    "kind": "procedure",
+    "name": "user_activity_report"
+  },
+  "key": {
+    "strategy": "none",
+    "columns": []
+  },
+  "columns": [
+    {
+      "column": "user_id",
+      "type": "int64",
+      "nullable": false
+    },
+    {
+      "column": "user_name",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "column": "transaction_count",
+      "type": "int32",
+      "nullable": false
+    },
+    {
+      "column": "total_amount",
+      "type": "decimal",
+      "nullable": false
+    },
+    {
+      "column": "last_transaction_at_utc",
+      "type": "datetime",
+      "nullable": true
+    }
+  ]
+}

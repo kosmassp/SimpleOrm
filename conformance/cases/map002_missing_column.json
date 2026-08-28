@@ -1,0 +1,6 @@
+{
+  "name": "map002_missing_column",
+  "result": "User",
+  "query": "select id, name from users",
+  "expect": { "error": "MAP-002" }
+}

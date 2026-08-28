@@ -8,4 +8,7 @@ public sealed class DbOptions
 
     /// <summary>Metadata configuration: naming convention and explicit maps.</summary>
     public MappingOptions Mapping { get; init; } = MappingOptions.Default;
+
+    /// <summary>Custom and JSON type handlers (§7.9/§7.10); the extension point beyond the fixed conversion table.</summary>
+    public TypeHandlerRegistry TypeHandlers { get; init; } = new();
 }

@@ -550,3 +550,14 @@ Their sketch: `db.get<User>.where(Criteria.Or(Criteria.Eq("Id",1), …))`.
 
 **Status.** Seed for the Level 2 design; recorded so milestone work at Level 1
 (4–8) doesn''t foreclose it.
+
+> Clarification (owner, same day): `Where(...)` accepts multiple criteria that are
+> **implicitly ANDed** — `Where(Or(Eq("Id",1), In("Name",…)), Ge("Created", now))`
+> renders `(id = 1 or name in (…)) and created_at >= @p`. Hibernate''s add()
+> accumulation / Eloquent''s chained-where semantics; each argument is its own tree.
+
+> Scope addition (owner, same day): the criteria chain includes **ORDER BY**
+> (e.g. `.OrderBy("CreatedAtUtc", SortOrder.Desc)` — reusing the SortOrder token,
+> property names resolved through EntityMap) and naturally limit/offset. **GROUP BY
+> is deliberately excluded**: aggregations are written as raw SQL in `[Statement]`
+> entities — criteria stay a row-filter/sort language, never a full SQL replacement.

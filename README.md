@@ -8,7 +8,7 @@ language-neutral [spec](spec/) and a [conformance suite](conformance/) grow alon
 it so the library can later be ported (Go, Java, PHP) and extended to other dialects
 (PostgreSQL, MySQL, SQL Server).
 
-**Status: Level 1, milestone 3 (session + queries + parameters) done.** See
+**Status: Level 1, milestone 4 (strict mapping + types) done.** See
 [CLAUDE.md](CLAUDE.md) for the full project brief and
 [docs/decisions.md](docs/decisions.md) for the decision log.
 
@@ -58,9 +58,35 @@ await db.InsertAsync(user, ct);        // user.Id is set
 Rules that always hold: parameters bind from the args record's properties, both ways
 strictly (`PRM-001`/`PRM-002`); `IN (@ids)` expands a collection property to
 generated placeholders, always parameterized (an empty list matches no rows); dates
-are ISO-8601 UTC `TEXT`; entity results map through their `EntityMap`, so
-`[Column]` overrides apply to hand-written SQL too, and an unknown result column
-throws `MAP-001` instead of being ignored.
+are ISO-8601 UTC `TEXT` — reading an unmarked datetime or writing
+`Kind == Unspecified` fails with `VAL-020`; entity results map through their
+`EntityMap`, so `[Column]` overrides apply to hand-written SQL too, and result
+shape mismatches throw `MAP-001`/`MAP-002` (checked before the first row, even for
+empty results). Conversion is the fixed table plus `ITypeHandler<T>` — nothing is
+guessed (`MAP-030`/`MAP-031`).
+
+### Nested results (JSON, §7.10)
+
+The database builds the children; a registered JSON handler deserializes them:
+
+```csharp
+options.TypeHandlers.Json<List<DetailLine>>();   // snake_case keys, numbers from strings
+```
+
+```sql
+select t.id, t.amount,
+       (select json_group_array(json_object(
+                'description', d.description,
+                'quantity',    d.quantity,
+                'unit_price',  d.unit_price))
+        from transaction_details d
+        where d.transaction_id = t.id) as details
+from transactions t
+```
+
+Zero children yield an empty list, never null. Custom types register an
+`ITypeHandler<T>` on `DbOptions.TypeHandlers` — the only path for types outside the
+fixed conversion table.
 
 ## Layout
 

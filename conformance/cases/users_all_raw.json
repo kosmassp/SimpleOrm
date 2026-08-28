@@ -1,0 +1,11 @@
+{
+  "name": "users_all_raw",
+  "result": "raw",
+  "query": "select id, name, email, created_at, updated_at from users order by id",
+  "expect": {
+    "rows": [
+      { "id": 1, "name": "Ada", "email": "ada@example.com", "created_at": "2026-08-28T09:30:00.0000000Z", "updated_at": null },
+      { "id": 2, "name": "Grace", "email": "grace@example.com", "created_at": "2026-08-28T09:30:00.0000000Z", "updated_at": null }
+    ]
+  }
+}

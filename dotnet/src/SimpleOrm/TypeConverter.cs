@@ -1,0 +1,201 @@
+using System.Globalization;
+
+namespace SimpleOrm;
+
+/// <summary>
+/// The fixed conversion table of §7.9 plus the handler registry — the only two ways
+/// a value crosses the database boundary; no reflection-based guessing. Handlers
+/// win over the fixed table. Failures carry codes: <c>MAP-030</c> (no rule),
+/// <c>MAP-031</c> (rule failed for the value), <c>VAL-020</c> (the UTC rule:
+/// stored datetimes must carry a UTC/offset marker; bound DateTimes must not be
+/// Kind.Unspecified).
+/// </summary>
+internal sealed class TypeConverter(TypeHandlerRegistry handlers)
+{
+    public bool HasHandler(Type type) => handlers.Contains(type);
+
+    public object? FromDatabase(object? value, Type targetType, string context)
+    {
+        if (value is null or DBNull)
+        {
+            if (!targetType.IsValueType || Nullable.GetUnderlyingType(targetType) is not null)
+            {
+                return null;
+            }
+
+            throw new SimpleOrmException(
+                "MAP-031", context, $"NULL cannot convert to non-nullable {targetType.Name}");
+        }
+
+        var target = Nullable.GetUnderlyingType(targetType) ?? targetType;
+        if (handlers.TryParse(target, value, out var handled))
+        {
+            return handled;
+        }
+
+        if (target.IsInstanceOfType(value))
+        {
+            return value;
+        }
+
+        try
+        {
+            if (target.IsEnum)
+            {
+                return value is string name
+                    ? Enum.Parse(target, name, ignoreCase: true)
+                    : Enum.ToObject(target, Convert.ToInt64(value, CultureInfo.InvariantCulture));
+            }
+
+            if (target == typeof(int))
+            {
+                return Convert.ToInt32(value, CultureInfo.InvariantCulture);
+            }
+
+            if (target == typeof(long))
+            {
+                return Convert.ToInt64(value, CultureInfo.InvariantCulture);
+            }
+
+            if (target == typeof(short))
+            {
+                return Convert.ToInt16(value, CultureInfo.InvariantCulture);
+            }
+
+            if (target == typeof(decimal))
+            {
+                return Convert.ToDecimal(value, CultureInfo.InvariantCulture);
+            }
+
+            if (target == typeof(double))
+            {
+                return Convert.ToDouble(value, CultureInfo.InvariantCulture);
+            }
+
+            if (target == typeof(float))
+            {
+                return Convert.ToSingle(value, CultureInfo.InvariantCulture);
+            }
+
+            if (target == typeof(bool))
+            {
+                return Convert.ToBoolean(value, CultureInfo.InvariantCulture);
+            }
+
+            if (target == typeof(string))
+            {
+                return Convert.ToString(value, CultureInfo.InvariantCulture);
+            }
+
+            if (target == typeof(DateTime) && value is string dateText)
+            {
+                return ParseUtc(dateText, context).UtcDateTime;
+            }
+
+            if (target == typeof(DateTimeOffset) && value is string offsetText)
+            {
+                return ParseUtc(offsetText, context);
+            }
+
+            if (target == typeof(Guid))
+            {
+                return value switch
+                {
+                    string guidText => Guid.Parse(guidText),
+                    byte[] bytes => new Guid(bytes),
+                    _ => throw NoRule(value, target, context),
+                };
+            }
+
+#if NET
+            if (target == typeof(DateOnly) && value is string dateOnlyText)
+            {
+                return DateOnly.Parse(dateOnlyText, CultureInfo.InvariantCulture);
+            }
+
+            if (target == typeof(TimeOnly) && value is string timeOnlyText)
+            {
+                return TimeOnly.Parse(timeOnlyText, CultureInfo.InvariantCulture);
+            }
+#endif
+        }
+        catch (Exception exception) when (exception is FormatException or OverflowException or ArgumentException)
+        {
+            throw new SimpleOrmException(
+                "MAP-031", context,
+                $"cannot convert '{value}' ({value.GetType().Name}) to {target.Name}: {exception.Message}");
+        }
+
+        throw NoRule(value, target, context);
+    }
+
+    /// <summary>
+    /// CLR value → database value (§7.9 storage conventions). Handlers win; unknown
+    /// types are <c>MAP-030</c>. <paramref name="enumAsInt"/> reflects the mapped
+    /// column's [EnumAsInt] flag (parameter binding always stores enum names).
+    /// </summary>
+    public object ToDatabase(object? value, string context, bool enumAsInt = false)
+    {
+        if (value is null)
+        {
+            return DBNull.Value;
+        }
+
+        if (handlers.TryFormat(value, out var formatted))
+        {
+            return formatted;
+        }
+
+        switch (value)
+        {
+            case Enum enumValue:
+                return enumAsInt
+                    ? Convert.ToInt64(enumValue, CultureInfo.InvariantCulture)
+                    : enumValue.ToString();
+            case DateTime dateTime:
+                return dateTime.Kind switch
+                {
+                    DateTimeKind.Utc => dateTime.ToString("o", CultureInfo.InvariantCulture),
+                    DateTimeKind.Local => dateTime.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture),
+                    _ => throw new SimpleOrmException(
+                        "VAL-020", context,
+                        "DateTime with Kind=Unspecified cannot be stored; use Kind=Utc (Local is converted)"),
+                };
+            case DateTimeOffset offset:
+                return offset.ToString("o", CultureInfo.InvariantCulture);
+#if NET
+            case DateOnly date:
+                return date.ToString("O", CultureInfo.InvariantCulture);
+            case TimeOnly time:
+                return time.ToString("O", CultureInfo.InvariantCulture);
+#endif
+            case bool or byte or short or int or long or float or double or decimal or string or byte[] or Guid or char:
+                return value;
+            default:
+                throw new SimpleOrmException(
+                    "MAP-030", context,
+                    $"no conversion or handler stores a {value.GetType().Name}; register an ITypeHandler (§7.9)");
+        }
+    }
+
+    /// <summary>The §7.9 date rule: a stored datetime must carry a UTC marker ('Z') or an explicit offset.</summary>
+    private static DateTimeOffset ParseUtc(string text, string context)
+    {
+        var trimmed = text.TrimEnd();
+        var hasMarker = trimmed.EndsWith("Z", StringComparison.OrdinalIgnoreCase)
+            || System.Text.RegularExpressions.Regex.IsMatch(trimmed, @"[+-]\d{2}:\d{2}$");
+        if (!hasMarker)
+        {
+            throw new SimpleOrmException(
+                "VAL-020", context,
+                $"stored datetime '{text}' has no UTC/offset marker; the convention is ISO-8601 UTC with a trailing Z");
+        }
+
+        return DateTimeOffset.Parse(trimmed, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind).ToUniversalTime();
+    }
+
+    private static SimpleOrmException NoRule(object value, Type target, string context)
+        => new(
+            "MAP-030", context,
+            $"no conversion or handler from {value.GetType().Name} to {target.Name}; register an ITypeHandler (§7.9)");
+}

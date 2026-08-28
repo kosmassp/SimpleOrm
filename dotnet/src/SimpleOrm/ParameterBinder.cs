@@ -16,7 +16,7 @@ namespace SimpleOrm;
 /// </summary>
 internal static class ParameterBinder
 {
-    public static void Bind(DbCommand command, string sql, object args, string queryName)
+    public static void Bind(DbCommand command, string sql, object args, string queryName, TypeConverter converter)
     {
         var properties = args.GetType()
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
@@ -46,20 +46,22 @@ internal static class ParameterBinder
             var placeholder = placeholders.First(p => string.Equals(p, property.Name, StringComparison.OrdinalIgnoreCase));
             var value = property.GetValue(args);
 
+            var context = $"{queryName} @{placeholder}";
             if (value is IEnumerable enumerable and not string and not byte[])
             {
-                text = ExpandList(command, text, placeholder, enumerable);
+                text = ExpandList(command, text, placeholder, enumerable, converter, context);
             }
             else
             {
-                AddParameter(command, "@" + placeholder, ValueConverter.ToDatabase(value));
+                AddParameter(command, "@" + placeholder, converter.ToDatabase(value, context));
             }
         }
 
         command.CommandText = text;
     }
 
-    private static string ExpandList(DbCommand command, string sql, string placeholder, IEnumerable values)
+    private static string ExpandList(
+        DbCommand command, string sql, string placeholder, IEnumerable values, TypeConverter converter, string context)
     {
         var names = new List<string>();
         var index = 0;
@@ -67,7 +69,7 @@ internal static class ParameterBinder
         {
             var name = $"@{placeholder}_{index++}";
             names.Add(name);
-            AddParameter(command, name, ValueConverter.ToDatabase(value));
+            AddParameter(command, name, converter.ToDatabase(value, context));
         }
 
         // An empty list becomes NULL: "x IN (NULL)" is valid SQL matching no rows.

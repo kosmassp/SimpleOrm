@@ -1,0 +1,9 @@
+{
+  "users": [
+    { "id": 1, "name": "Ada", "email": "ada@example.com", "created_at": "2026-08-28T09:30:00.0000000Z", "updated_at": null },
+    { "id": 2, "name": "Grace", "email": "grace@example.com", "created_at": "2026-08-28T09:30:00.0000000Z", "updated_at": null }
+  ],
+  "transactions": [
+    { "id": 1, "user_id": 1, "status": "Completed", "amount": "19.99", "version": 0, "created_at": "2026-08-28T09:30:00.0000000Z", "updated_at": null }
+  ]
+}

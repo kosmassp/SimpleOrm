@@ -12,6 +12,7 @@ public sealed class Db : IAsyncDisposable
 {
     private readonly DbConnection _connection;
     private readonly ResultMapper _mapper;
+    private readonly TypeConverter _converter;
     private DbTransaction? _transaction;
 
     private Db(DbConnection connection, DbOptions options)
@@ -19,7 +20,8 @@ public sealed class Db : IAsyncDisposable
         _connection = connection;
         Options = options;
         Maps = new EntityMapLoader(options.Mapping);
-        _mapper = new ResultMapper(Maps);
+        _converter = new TypeConverter(options.TypeHandlers);
+        _mapper = new ResultMapper(Maps, _converter);
     }
 
     public DbOptions Options { get; }
@@ -90,10 +92,11 @@ public sealed class Db : IAsyncDisposable
             var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
             try
             {
-                Func<DbDataReader, TResult>? plan = null;
+                // Built from the schema before the first row, so strictness
+                // (MAP-001/002/003) fires even for empty results.
+                var plan = _mapper.CreatePlan<TResult>(reader, query.Source.Description);
                 while (await reader.ReadAsync(ct).ConfigureAwait(false))
                 {
-                    plan ??= _mapper.CreatePlan<TResult>(reader, query.Source.Description);
                     yield return plan(reader);
                 }
             }
@@ -198,10 +201,9 @@ public sealed class Db : IAsyncDisposable
         try
         {
             var results = new List<TEntity>();
-            Func<DbDataReader, TEntity>? plan = null;
+            var plan = _mapper.CreatePlan<TEntity>(reader, typeof(TEntity).Name + " select-all");
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
             {
-                plan ??= _mapper.CreatePlan<TEntity>(reader, typeof(TEntity).Name + " select-all");
                 results.Add(plan(reader));
             }
 
@@ -249,7 +251,10 @@ public sealed class Db : IAsyncDisposable
         {
             var parameter = command.CreateParameter();
             parameter.ParameterName = "@" + property.ColumnName;
-            parameter.Value = ValueConverter.ToDatabase(property.Property.GetValue(entity));
+            parameter.Value = _converter.ToDatabase(
+                property.Property.GetValue(entity),
+                $"{typeof(TEntity).Name}.{property.PropertyName}",
+                property.EnumAsInt);
             command.Parameters.Add(parameter);
         }
 
@@ -257,7 +262,7 @@ public sealed class Db : IAsyncDisposable
         {
             var key = map.KeyProperties[0];
             var generated = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
-            key.Property.SetValue(entity, ValueConverter.FromDatabase(
+            key.Property.SetValue(entity, _converter.FromDatabase(
                 generated, key.ClrType, $"{typeof(TEntity).Name}.{key.PropertyName}"));
         }
         else
@@ -352,10 +357,9 @@ public sealed class Db : IAsyncDisposable
             var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
             try
             {
-                Func<DbDataReader, TResult>? plan = null;
+                var plan = _mapper.CreatePlan<TResult>(reader, StatementName<TResult>());
                 while (await reader.ReadAsync(ct).ConfigureAwait(false))
                 {
-                    plan ??= _mapper.CreatePlan<TResult>(reader, StatementName<TResult>());
                     yield return plan(reader);
                 }
             }
@@ -401,7 +405,7 @@ public sealed class Db : IAsyncDisposable
 
         var command = _connection.CreateCommand();
         command.Transaction = _transaction;
-        ParameterBinder.Bind(command, map.DefiningSql!, args, StatementName<TResult>());
+        ParameterBinder.Bind(command, map.DefiningSql!, args, StatementName<TResult>(), _converter);
         return command;
     }
 
@@ -442,7 +446,7 @@ public sealed class Db : IAsyncDisposable
     {
         var command = _connection.CreateCommand();
         command.Transaction = _transaction;
-        ParameterBinder.Bind(command, source.Sql, args, source.Description);
+        ParameterBinder.Bind(command, source.Sql, args, source.Description, _converter);
         return command;
     }
 

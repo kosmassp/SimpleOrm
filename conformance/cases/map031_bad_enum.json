@@ -1,0 +1,6 @@
+{
+  "name": "map031_bad_enum",
+  "result": "Transaction",
+  "query": "select 1 as id, 1 as user_id, 'Nope' as status, '1' as amount, 0 as version, '2026-01-01T00:00:00Z' as created_at, null as updated_at",
+  "expect": { "error": "MAP-031" }
+}

@@ -9,9 +9,9 @@ Layout (populated milestone by milestone):
 | Directory | Content | Milestone |
 |---|---|---|
 | `schema/sqlite/` | migrations for the fixture database | 3+ |
-| `fixtures/` | seed data | 3+ |
 | `entities/` | expected `EntityMap` JSON for the fixture entities (regenerate: run tests with `SIMPLEORM_CONFORMANCE_WRITE=1`) | 2 (done) |
-| `cases/` | query/command/error cases: `{ "name", "query", "params", "expect": { "rows" } \| { "error": "MAP-001" } }` | 4 |
+| `cases/` | query/error cases: `{ "name", "result", "query", "expect": { "rows" } \| { "error": "MAP-001" } }` — value encoding defined in spec/mapping-rules.md | 4 (live) |
+| `fixtures/` | seed data (`seed.json`) applied before each case | 4 (live) |
 | `migrations-cases/` | runner scenarios: migration files plus `{ "preState", "command", "expectStatus" \| "error" }` | 5 |
 | `ast/` | query AST with expected SQL per dialect | Level 2 |
 

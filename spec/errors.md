@@ -35,6 +35,8 @@ these codes.
 | `MAP-017` | invalid `[Statement]` parameter declaration (odd token count; token neither name string nor `Type`; duplicate name) | ADR-0008 add.2 | milestone 2 |
 | `MAP-018` | two properties map to the same column name | ADR-0004 | milestone 2 |
 | `MAP-019` | no key defined where one is required, or `[Generated]`/`[Version]` on a property without `[Column]` | §7.1 | milestone 2 |
+| `MAP-030` | no conversion or handler between the CLR type and the database value (either direction) | §7.9 | milestone 4 |
+| `MAP-031` | value conversion failed (format, overflow, unknown enum name) | §7.9 | milestone 4 |
 
 ## PRM — parameters
 
@@ -76,7 +78,7 @@ these codes.
 | `VAL-001` | SQL fails to prepare | §7.19 |
 | `VAL-010` | nullable column mapped to non-nullable property | §7.19 |
 | `VAL-011` | column declared type incompatible with property type / no handler | §7.19 |
-| `VAL-020` | non-UTC / non-ISO date storage | §7.19, ADR-0003 |
+| `VAL-020` | non-UTC / non-ISO date storage. Runtime rule (milestone 4): reading a stored datetime without a UTC/offset marker fails; binding a `DateTime` with `Kind == Unspecified` fails (`Local` is converted, `Utc` passes). Also a SchemaGuard lint (milestone 6). | §7.19, ADR-0003 |
 | `VAL-021` | `SELECT *` in registered SQL | §7.19 |
 
 ## MIG — migrations (registered now, enforced milestone 5)

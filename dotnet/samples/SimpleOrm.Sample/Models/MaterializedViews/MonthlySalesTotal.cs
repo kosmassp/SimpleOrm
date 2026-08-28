@@ -8,7 +8,13 @@ namespace SimpleOrm.Sample.Models;
 /// SchemaGuard until a dialect with them arrives (Level 4 Postgres). Not a
 /// <c>BaseModel</c>: projections carry no audit columns.
 /// </summary>
-[MaterializedView("monthly_sales_totals")]
+[MaterializedView("monthly_sales_totals", """
+    select strftime('%Y-%m', created_at) as sales_month,
+           count(id)                     as transaction_count,
+           sum(amount)                   as total_amount
+    from transactions
+    group by sales_month
+    """)]
 [Index(nameof(SalesMonth), Unique = true)]
 public sealed class MonthlySalesTotal
 {

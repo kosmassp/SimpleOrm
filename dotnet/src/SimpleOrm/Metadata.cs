@@ -149,7 +149,7 @@ public sealed class EntityMap
         RelationKind kind,
         string? relationName,
         string? schema,
-        string? statementSql,
+        string? definingSql,
         IReadOnlyList<StatementParameter> statementParameters,
         IReadOnlyList<PropertyMap> properties,
         KeyStrategy keyStrategy,
@@ -160,7 +160,7 @@ public sealed class EntityMap
         Kind = kind;
         RelationName = relationName;
         Schema = schema;
-        StatementSql = statementSql;
+        DefiningSql = definingSql;
         StatementParameters = statementParameters;
         Properties = properties;
         KeyStrategy = keyStrategy;
@@ -179,8 +179,8 @@ public sealed class EntityMap
 
     public string? Schema { get; }
 
-    /// <summary>The SQL of a statement-backed entity; null otherwise.</summary>
-    public string? StatementSql { get; }
+    /// <summary>The entity's SQL: a statement's query, or a view/materialized view's defining SELECT; null for tables and procedures.</summary>
+    public string? DefiningSql { get; }
 
     public IReadOnlyList<StatementParameter> StatementParameters { get; }
 

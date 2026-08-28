@@ -2,7 +2,8 @@
   "entity": "MonthlySalesTotal",
   "source": {
     "kind": "materialized_view",
-    "name": "monthly_sales_totals"
+    "name": "monthly_sales_totals",
+    "sql": "select strftime(\u0027%Y-%m\u0027, created_at) as sales_month, count(id) as transaction_count, sum(amount) as total_amount from transactions group by sales_month"
   },
   "key": {
     "strategy": "natural",

@@ -12,8 +12,11 @@ described here.
 Per entity:
 
 - **Relation source** (exactly one): `table`, `view`, `materialized_view`,
-  `statement`, or `procedure`. Named sources carry a name and optional schema;
-  a statement carries its SQL text and a declared parameter list.
+  `statement`, or `procedure`. Every non-table source is self-contained: views and
+  materialized views carry their defining SELECT (which takes no parameters);
+  statements carry their SQL plus a declared parameter list; procedures carry name,
+  body SQL, and a declared parameter list. Named sources also carry an optional
+  schema.
 - **Key**: ordered key columns and a strategy — `database_generated` (single key the
   database produces; read back on insert), `client_guid` (single GUID key the client
   supplies), `natural` (caller-supplied, incl. composite), `none` (keyless).
@@ -125,7 +128,10 @@ byte-equality):
 ```
 
 A statement source instead carries
-`{ "kind": "statement", "sql": "…", "parameters": [{ "name": "since", "type": "datetime" }] }`.
+`{ "kind": "statement", "sql": "…", "parameters": [{ "name": "since", "type": "datetime" }] }`;
+view and materialized-view sources add `"sql"` (the defining SELECT, whitespace-
+normalized) to their name; a procedure source carries name, `"sql"`, and
+`"parameters"`.
 
 ### Neutral type tokens
 

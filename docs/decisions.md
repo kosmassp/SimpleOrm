@@ -467,3 +467,42 @@ PRM-001/002 at bind time.
    SchemaGuard, never removed silently.
 
 **Status.** Accepted.
+
+## ADR-0011 — DDL and INSERT are generated from metadata via the dialect (2026-08-28)
+
+**Context.** The owner: the sample''s handwritten `Schema` and insert `Commands`
+"should not exist — the ORM should be able to map it directly from the attribute.
+DDL/Insert should be generated from the dialect instead."
+
+**Decision.** Pulled forward from milestone 7 (insert) and formalized now (DDL):
+
+- `IDialect` gains renderers: `CreateTableSql` (column types from metadata, NOT NULL
+  from nullability, key per strategy — `INTEGER PRIMARY KEY` for database-generated,
+  composite `primary key (…)` for natural, STRICT), `CreateIndexSql`, and
+  `InsertSql` (explicit non-generated column list, `RETURNING` for generated keys).
+- `db.CreateTableAsync<T>` / `db.CreateViewAsync<T>`: idempotent (IF NOT EXISTS)
+  **dev/test utility** — versioned migrations (milestone 5) remain the
+  schema-evolution path; whether generated DDL feeds migrations further is a
+  milestone 5 discussion. Wrong source kind → `DDL-001`; materialized view on a
+  dialect without them → `DDL-002` (`SupportsMaterializedViews`).
+- `db.InsertAsync<T>(entity, ct)`: generated from `EntityMap`; database-generated
+  keys read back via RETURNING and written onto the entity; empty client-GUID keys
+  assigned first; read-only sources throw `CRUD-003`; navigation/FK disagreement
+  throws `CRUD-004` (ADR-0005 add.1, enforced early). Returns `Task` — the §6
+  "returns id" sketch is finalized at milestone 7 with Update/Delete/Get.
+- The sample''s `Schema` class is deleted; `Commands` shrinks to the partial update
+  (§7.15 — legitimately hand SQL); `Queries` remains the ADR-0010 escape hatch.
+
+**Status.** Accepted.
+
+### ADR-0008 addendum 3 — every non-table source carries its defining SQL (2026-08-28)
+
+The owner: views, materialized views, and procedures must carry their SQL in the
+attribute like `[Statement]` does ("I missed checking this"). `[View(name, sql)]`,
+`[MaterializedView(name, sql)]`, `[Procedure(name, sql, params…)]` — procedures also
+declare (name, Type) parameter pairs, validated against the body''s placeholders
+(PRM-010/011); view/matview defining SELECTs take no parameters (a placeholder is
+PRM-010); empty SQL is MAP-019. `EntityMap.StatementSql` became `DefiningSql`; the
+JSON export includes the normalized SQL (and procedure parameters), so ports must
+reproduce it. `CreateViewAsync` generates CREATE VIEW from it; procedure creation
+has no renderer until a dialect with `SupportsProcedures` exists (Level 4).

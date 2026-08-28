@@ -114,6 +114,150 @@ public sealed class Db : IAsyncDisposable
         return await dbCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
+    // --- generated DDL and CRUD (ADR-0011) ---------------------------------------
+
+    /// <summary>
+    /// Creates the entity's table and declared indexes from its metadata
+    /// (idempotent: IF NOT EXISTS). A dev/test utility — versioned migrations
+    /// (milestone 5) remain the schema-evolution path. Non-table sources throw
+    /// <c>DDL-001</c>.
+    /// </summary>
+    public async Task CreateTableAsync<TEntity>(CancellationToken ct)
+        where TEntity : class
+    {
+        var map = Maps.Load<TEntity>();
+        if (map.Kind != RelationKind.Table)
+        {
+            throw new SimpleOrmException(
+                "DDL-001", typeof(TEntity).Name, $"is {map.Kind}-backed; only tables can be created from metadata");
+        }
+
+        await ExecuteRawAsync(Options.Dialect.CreateTableSql(map), ct).ConfigureAwait(false);
+        foreach (var indexSql in Options.Dialect.CreateIndexSql(map))
+        {
+            await ExecuteRawAsync(indexSql, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Creates a view (or materialized view, where the dialect supports them) from
+    /// the entity's defining SQL (ADR-0008 addendum 3). Other sources throw
+    /// <c>DDL-001</c>; a materialized view on a dialect without them throws <c>DDL-002</c>.
+    /// </summary>
+    public async Task CreateViewAsync<TEntity>(CancellationToken ct)
+        where TEntity : class
+    {
+        var map = Maps.Load<TEntity>();
+        if (map.Kind is not (RelationKind.View or RelationKind.MaterializedView))
+        {
+            throw new SimpleOrmException(
+                "DDL-001", typeof(TEntity).Name, $"is {map.Kind}-backed; CreateViewAsync applies to views only");
+        }
+
+        if (map.Kind == RelationKind.MaterializedView && !Options.Dialect.SupportsMaterializedViews)
+        {
+            throw new SimpleOrmException(
+                "DDL-002", typeof(TEntity).Name, "the dialect has no materialized views (SQLite; Level 4 Postgres will)");
+        }
+
+        await ExecuteRawAsync(Options.Dialect.CreateViewSql(map), ct).ConfigureAwait(false);
+        foreach (var indexSql in Options.Dialect.CreateIndexSql(map))
+        {
+            await ExecuteRawAsync(indexSql, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Generated insert (§7.14): explicit column list from the metadata, never from
+    /// attributes. Writes every non-generated column; a database-generated key is
+    /// read back via RETURNING and written onto the entity; an empty client-GUID key
+    /// is assigned first. A non-null [ManyToOne] navigation whose key disagrees with
+    /// the FK property throws <c>CRUD-004</c> instead of writing; read-only sources
+    /// throw <c>CRUD-003</c>.
+    /// </summary>
+    public async Task InsertAsync<TEntity>(TEntity entity, CancellationToken ct)
+        where TEntity : class
+    {
+        var map = Maps.Load<TEntity>();
+        if (map.Kind != RelationKind.Table)
+        {
+            throw new SimpleOrmException(
+                "CRUD-003", typeof(TEntity).Name, $"is {map.Kind}-backed and read-only; writes need a table");
+        }
+
+        CheckNavigationConsistency(map, entity);
+
+        if (map.KeyStrategy == KeyStrategy.ClientGuid)
+        {
+            var keyProperty = map.KeyProperties[0].Property;
+            if (Equals(keyProperty.GetValue(entity), Guid.Empty))
+            {
+                keyProperty.SetValue(entity, Guid.NewGuid());
+            }
+        }
+
+        using var command = _connection.CreateCommand();
+        command.Transaction = _transaction;
+        command.CommandText = Options.Dialect.InsertSql(map);
+        foreach (var property in map.Properties.Where(p => !p.IsGenerated))
+        {
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = "@" + property.ColumnName;
+            parameter.Value = ValueConverter.ToDatabase(property.Property.GetValue(entity));
+            command.Parameters.Add(parameter);
+        }
+
+        if (map.KeyStrategy == KeyStrategy.DatabaseGenerated)
+        {
+            var key = map.KeyProperties[0];
+            var generated = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+            key.Property.SetValue(entity, ValueConverter.FromDatabase(
+                generated, key.ClrType, $"{typeof(TEntity).Name}.{key.PropertyName}"));
+        }
+        else
+        {
+            await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    private void CheckNavigationConsistency(EntityMap map, object entity)
+    {
+        foreach (var relationship in map.Relationships)
+        {
+            var navigation = map.EntityType.GetProperty(relationship.PropertyName)?.GetValue(entity);
+            if (navigation is null)
+            {
+                continue;
+            }
+
+            var targetMap = Maps.Load(relationship.TargetType);
+            if (targetMap.KeyProperties.Count != 1)
+            {
+                continue;
+            }
+
+            var navigationKey = targetMap.KeyProperties[0].Property.GetValue(navigation);
+            var foreignKey = map.Properties
+                .First(p => p.PropertyName == relationship.ForeignKeyProperty)
+                .Property.GetValue(entity);
+            if (!Equals(navigationKey, foreignKey))
+            {
+                throw new SimpleOrmException(
+                    "CRUD-004",
+                    $"{map.EntityType.Name}.{relationship.PropertyName}",
+                    $"navigation key {navigationKey} disagrees with {relationship.ForeignKeyProperty} = {foreignKey}");
+            }
+        }
+    }
+
+    private async Task ExecuteRawAsync(string sql, CancellationToken ct)
+    {
+        using var command = _connection.CreateCommand();
+        command.Transaction = _transaction;
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
     // --- statement-backed entities (ADR-0010): the type IS the query -------------
 
     /// <summary>Runs a <c>[Statement]</c>-backed entity's own SQL (ADR-0008/0010); args bind against its declared parameters.</summary>
@@ -211,7 +355,7 @@ public sealed class Db : IAsyncDisposable
 
         var command = _connection.CreateCommand();
         command.Transaction = _transaction;
-        ParameterBinder.Bind(command, map.StatementSql!, args, StatementName<TResult>());
+        ParameterBinder.Bind(command, map.DefiningSql!, args, StatementName<TResult>());
         return command;
     }
 

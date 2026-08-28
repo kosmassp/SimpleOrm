@@ -74,6 +74,12 @@ public sealed class MappingErrorTests
     public void Unused_declared_parameter_is_PRM011() => AssertCode<Prm011Fixture>("PRM-011");
 
     [Fact]
+    public void View_with_empty_sql_is_MAP019() => AssertCode<Map019EmptyViewFixture>("MAP-019");
+
+    [Fact]
+    public void View_sql_with_placeholder_is_PRM010() => AssertCode<Prm010ViewFixture>("PRM-010");
+
+    [Fact]
     public void All_violations_are_collected_before_throwing()
     {
         var errors = ErrorsOf<MultiErrorFixture>();
@@ -108,7 +114,7 @@ public sealed class MappingErrorTests
     }
 
     [Table("f")]
-    [View("f")]
+    [View("f", "select 1 as id")]
     private sealed class Map012Fixture
     {
         [Key]
@@ -116,7 +122,7 @@ public sealed class MappingErrorTests
         public long Id { get; set; }
     }
 
-    [View("f")]
+    [View("f", "select 1 as version")]
     private sealed class Map013ViewFixture
     {
         [Column]
@@ -132,7 +138,7 @@ public sealed class MappingErrorTests
         public long Id { get; set; }
     }
 
-    [View("f")]
+    [View("f", "select 1 as id")]
     [Index(nameof(Id))]
     private sealed class Map014Fixture
     {
@@ -257,6 +263,20 @@ public sealed class MappingErrorTests
         [Column]
         [EnumAsInt]
         public string? NotAnEnum { get; set; }
+    }
+
+    [View("f", " ")]
+    private sealed class Map019EmptyViewFixture
+    {
+        [Column]
+        public long Id { get; set; }
+    }
+
+    [View("f", "select 1 as id where x = @oops")]
+    private sealed class Prm010ViewFixture
+    {
+        [Column]
+        public long Id { get; set; }
     }
 
     [Statement("select 1 as id where x = @mystery")]

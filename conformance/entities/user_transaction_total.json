@@ -2,7 +2,8 @@
   "entity": "UserTransactionTotal",
   "source": {
     "kind": "view",
-    "name": "user_transaction_totals"
+    "name": "user_transaction_totals",
+    "sql": "select u.id as user_id, u.name as user_name, count(t.id) as transaction_count, coalesce(sum(t.amount), 0) as total_amount from users u left join transactions t on t.user_id = u.id group by u.id, u.name"
   },
   "key": {
     "strategy": "natural",

@@ -78,7 +78,7 @@ public sealed class EntityMapLoaderTests
 
         Assert.Equal(RelationKind.Statement, map.Kind);
         Assert.Null(map.RelationName);
-        Assert.Contains("@since", map.StatementSql);
+        Assert.Contains("@since", map.DefiningSql);
         Assert.Equal(KeyStrategy.None, map.KeyStrategy);
 
         var parameter = Assert.Single(map.StatementParameters);
@@ -94,6 +94,8 @@ public sealed class EntityMapLoaderTests
         Assert.Equal(RelationKind.Procedure, map.Kind);
         Assert.Equal("user_activity_report", map.RelationName);
         Assert.Equal(KeyStrategy.None, map.KeyStrategy);
+        Assert.Contains("@since", map.DefiningSql);
+        Assert.Equal("since", Assert.Single(map.StatementParameters).Name);
         Assert.True(map.Properties.Single(p => p.ColumnName == "last_transaction_at_utc").IsNullable);
     }
 

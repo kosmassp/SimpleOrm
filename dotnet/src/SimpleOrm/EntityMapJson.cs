@@ -25,7 +25,7 @@ public static class EntityMapJson
             writer.WriteString("kind", KindToken(map.Kind));
             if (map.Kind == RelationKind.Statement)
             {
-                writer.WriteString("sql", NormalizeSql(map.StatementSql!));
+                writer.WriteString("sql", NormalizeSql(map.DefiningSql!));
                 writer.WritePropertyName("parameters");
                 writer.WriteStartArray();
                 foreach (var parameter in map.StatementParameters)
@@ -44,6 +44,26 @@ public static class EntityMapJson
                 if (map.Schema is not null)
                 {
                     writer.WriteString("schema", map.Schema);
+                }
+
+                if (map.DefiningSql is not null)
+                {
+                    writer.WriteString("sql", NormalizeSql(map.DefiningSql));
+                }
+
+                if (map.Kind == RelationKind.Procedure)
+                {
+                    writer.WritePropertyName("parameters");
+                    writer.WriteStartArray();
+                    foreach (var parameter in map.StatementParameters)
+                    {
+                        writer.WriteStartObject();
+                        writer.WriteString("name", parameter.Name);
+                        writer.WriteString("type", TypeToken(parameter.ClrType, enumAsInt: false));
+                        writer.WriteEndObject();
+                    }
+
+                    writer.WriteEndArray();
                 }
             }
 

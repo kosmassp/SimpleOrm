@@ -22,7 +22,9 @@ internal static class AttributeMapLoader
         var indexSpecs = ReadIndexes(entityType, kind, errors);
         if (statementSql is not null)
         {
-            CheckStatementPlaceholders(entityType, statementSql, statementParameters, errors);
+            // For views the declared list is empty, so any placeholder in the
+            // defining SELECT is PRM-010 — view definitions take no parameters.
+            CheckStatementPlaceholders(entityType, kind, statementSql, statementParameters, errors);
         }
 
         var map = MapAssembler.Assemble(
@@ -49,12 +51,12 @@ internal static class AttributeMapLoader
 
         if (entityType.GetCustomAttribute<ViewAttribute>() is { } view)
         {
-            sources.Add((RelationKind.View, view.Name, view.Schema, null, null));
+            sources.Add((RelationKind.View, view.Name, view.Schema, view.Sql, null));
         }
 
         if (entityType.GetCustomAttribute<MaterializedViewAttribute>() is { } materialized)
         {
-            sources.Add((RelationKind.MaterializedView, materialized.Name, materialized.Schema, null, null));
+            sources.Add((RelationKind.MaterializedView, materialized.Name, materialized.Schema, materialized.Sql, null));
         }
 
         if (entityType.GetCustomAttribute<StatementAttribute>() is { } statement)
@@ -64,7 +66,7 @@ internal static class AttributeMapLoader
 
         if (entityType.GetCustomAttribute<ProcedureAttribute>() is { } procedure)
         {
-            sources.Add((RelationKind.Procedure, procedure.Name, procedure.Schema, null, null));
+            sources.Add((RelationKind.Procedure, procedure.Name, procedure.Schema, procedure.Sql, procedure.Parameters));
         }
 
         if (sources.Count > 1)
@@ -82,13 +84,13 @@ internal static class AttributeMapLoader
         }
 
         var source = sources[0];
-        var parameters = source.Kind == RelationKind.Statement
+        var parameters = source.Kind is RelationKind.Statement or RelationKind.Procedure
             ? ParseStatementParameters(entityType, source.RawParameters!, errors)
             : [];
 
-        if (source.Kind == RelationKind.Statement && string.IsNullOrWhiteSpace(source.Sql))
+        if (source.Kind != RelationKind.Table && string.IsNullOrWhiteSpace(source.Sql))
         {
-            errors.Add(new MappingError("MAP-019", entityType.Name, "[Statement] SQL is empty"));
+            errors.Add(new MappingError("MAP-019", entityType.Name, $"the {source.Kind} defining SQL is empty"));
         }
 
         return (source.Kind, source.Name, source.Schema, source.Sql, parameters);
@@ -130,9 +132,9 @@ internal static class AttributeMapLoader
     }
 
     private static void CheckStatementPlaceholders(
-        Type entityType, string sql, IReadOnlyList<StatementParameter> declared, List<MappingError> errors)
+        Type entityType, RelationKind kind, string sql, IReadOnlyList<StatementParameter> declared, List<MappingError> errors)
     {
-        var target = $"{entityType.Name} [Statement]";
+        var target = $"{entityType.Name} [{kind}]";
         var placeholders = SqlPlaceholders.Find(sql);
         foreach (var placeholder in placeholders)
         {

@@ -1,13 +1,12 @@
-using SimpleOrm.Sample;
+using SimpleOrm.Sample.Models;
 using SimpleOrm.Sqlite;
 
 namespace SimpleOrm.Tests;
 
 /// <summary>
-/// Session setup for integration tests: opens a Db on the fixture database,
-/// creates the sample schema, and clears all rows. Domain queries and commands
-/// come from the sample registry (SimpleOrm.Sample.Queries/Commands); only
-/// test-specific plumbing lives here.
+/// Session setup for integration tests: opens a Db on the fixture database, creates
+/// the whole schema — tables, indexes, and the view — from entity metadata
+/// (ADR-0011 + ADR-0008 addendum 3), and clears all rows. No hand-written DDL.
 /// </summary>
 internal static class TestDb
 {
@@ -20,10 +19,13 @@ internal static class TestDb
     public static async Task<Db> OpenAsync(SqliteFixture fixture, CancellationToken ct = default)
     {
         var db = await Db.OpenAsync(fixture.ConnectionString, Options, ct);
-        foreach (var create in Schema.All)
-        {
-            await db.ExecuteAsync(create, EmptyArgs.Value, ct);
-        }
+
+        await db.CreateTableAsync<User>(ct);
+        await db.CreateTableAsync<Role>(ct);
+        await db.CreateTableAsync<UserRole>(ct);
+        await db.CreateTableAsync<Transaction>(ct);
+        await db.CreateTableAsync<TransactionDetail>(ct);
+        await db.CreateViewAsync<UserTransactionTotal>(ct);
 
         foreach (var table in new[] { "transaction_details", "transactions", "user_roles", "roles", "users" })
         {
@@ -34,6 +36,10 @@ internal static class TestDb
         return db;
     }
 
-    public static Task<int> InsertUserAsync(Db db, string name, string email, CancellationToken ct = default)
-        => db.ExecuteAsync(Commands.InsertUser, new InsertUserArgs(name, email, SeedTime), ct);
+    public static async Task<User> InsertUserAsync(Db db, string name, string email, CancellationToken ct = default)
+    {
+        var user = new User { Name = name, Email = email, CreatedAtUtc = SeedTime };
+        await db.InsertAsync(user, ct);
+        return user;
+    }
 }

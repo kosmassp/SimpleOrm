@@ -46,6 +46,13 @@ await using (var tx = await db.BeginAsync(ct))
 // Preferred for custom reads (ADR-0010): a [Statement] entity IS its query —
 // no registry entry, executed by type, args checked against the declared contract.
 var days = await db.QueryAsync<DailySales>(new DailySalesArgs(since), ct);
+
+// Generated from metadata (ADR-0011): schema (dev/test utility) and inserts —
+// no handwritten DDL or insert commands. RETURNING writes the key back.
+await db.CreateTableAsync<User>(ct);
+await db.CreateViewAsync<UserTransactionTotal>(ct);
+var user = new User { Name = "Ada", Email = "ada@example.com", CreatedAtUtc = now };
+await db.InsertAsync(user, ct);        // user.Id is set
 ```
 
 Rules that always hold: parameters bind from the args record's properties, both ways

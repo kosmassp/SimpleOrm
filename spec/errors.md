@@ -15,6 +15,7 @@ these codes.
 | `MIG-` | migrations |
 | `CRUD-` | generated CRUD |
 | `QRY-` | query execution |
+| `DDL-` | schema generation from metadata |
 | `TX-` | transactions and session |
 
 ## MAP — metadata loading and mapping
@@ -53,6 +54,13 @@ these codes.
 | `QRY-002` | `QuerySingleAsync` found more than one row | §6 | milestone 3 |
 | `QRY-003` | embedded SQL resource not found for a registered query | §7.5 | milestone 3 |
 | `QRY-004` | statement execution requested for a type that is not statement-backed | ADR-0010 | milestone 3 |
+
+## DDL — schema generation from metadata
+
+| Code | Rule | Origin | Enforced |
+|---|---|---|---|
+| `DDL-001` | schema creation requested for a relation source it does not apply to | ADR-0011 | milestone 3 |
+| `DDL-002` | materialized-view creation on a dialect without materialized views | ADR-0008 add.3 | milestone 3 |
 
 ## TX — transactions and session
 

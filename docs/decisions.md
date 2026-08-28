@@ -272,3 +272,16 @@ only per-column syntax attributes allow. Omitted means all ascending. Loader err
 `Descending` length differing from the column count, or combining `Descending` with
 `AllDescending`. SQLite supports `DESC` index columns, so Level 3 generation renders
 it directly.
+
+### ADR-0007 addendum 2 — inline per-column direction replaces parallel arrays (2026-08-28)
+
+The owner asked for `Index(name, [Status, DESC], [CreatedAt, ASC], [XXXX])`-style
+inline direction. C# attributes cannot express tuples or jagged arrays (CS0182), so
+the closest legal form is adopted and **replaces** addendum 1''s
+`Descending`/`AllDescending` arrays: each column is one string,
+`"PropertyName"` (ascending by default) or `"PropertyName ASC|DESC"`, e.g.
+`[Index(nameof(Status), nameof(CreatedAtUtc) + " DESC")]` — constant concatenation
+keeps `nameof` refactor-safety. The attribute stores raw strings; the loader parses
+them (property resolved through the column mapping, direction token
+case-insensitive), and an unknown property, bad token, or empty column list is a
+loader error.

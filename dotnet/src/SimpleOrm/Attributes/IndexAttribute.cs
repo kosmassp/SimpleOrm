@@ -8,33 +8,26 @@ namespace SimpleOrm;
 /// draft migrations emit <c>CREATE INDEX</c> from it. Until then the real index
 /// lives in migration SQL.
 ///
-/// Columns are referenced by property name (<c>nameof</c>-friendly); the loader
-/// resolves them through the column mapping, and an unknown or unmapped property
-/// name is a loader error. When <see cref="Name"/> is omitted the loader derives
+/// Each column is <c>"PropertyName"</c> or <c>"PropertyName DESC"</c> (direction
+/// token <c>ASC</c>/<c>DESC</c>, case-insensitive; omitted means ascending), e.g.
+/// <c>[Index(nameof(Status), nameof(CreatedAtUtc) + " DESC")]</c> — constant string
+/// concatenation keeps <c>nameof</c> refactor-safety. The attribute stores the raw
+/// strings; the loader parses them, resolves property names through the column
+/// mapping, and rejects an unknown property or direction token as a loader error.
+/// When <see cref="Name"/> is omitted the loader derives
 /// <c>ix_&lt;table&gt;_&lt;column&gt;[_&lt;column&gt;…]</c>.
 /// </summary>
 [AttributeUsage(AttributeTargets.Class, AllowMultiple = true)]
 public sealed class IndexAttribute : Attribute
 {
-    public IndexAttribute(params string[] propertyNames) => PropertyNames = propertyNames;
+    public IndexAttribute(params string[] columns) => Columns = columns;
 
-    /// <summary>Properties making up the index, in index-column order.</summary>
-    public string[] PropertyNames { get; }
+    /// <summary>Index columns in order: <c>"PropertyName"</c> (ascending) or <c>"PropertyName ASC|DESC"</c>.</summary>
+    public string[] Columns { get; }
 
     /// <summary>Explicit index name; when omitted the loader derives one from the table and columns.</summary>
     public string? Name { get; set; }
 
     /// <summary>Declares a unique index.</summary>
     public bool Unique { get; set; }
-
-    /// <summary>
-    /// Per-column sort order, parallel to <see cref="PropertyNames"/>
-    /// (e.g. <c>new[] { false, true }</c> for <c>(status ASC, created_at DESC)</c>).
-    /// Omitted means all ascending. A length mismatch with the columns, or combining
-    /// this with <see cref="AllDescending"/>, is a loader error.
-    /// </summary>
-    public bool[]? Descending { get; set; }
-
-    /// <summary>Shorthand: every column descending.</summary>
-    public bool AllDescending { get; set; }
 }

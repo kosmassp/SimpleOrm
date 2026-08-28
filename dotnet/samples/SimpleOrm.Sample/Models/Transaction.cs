@@ -7,7 +7,7 @@ namespace SimpleOrm.Sample.Models;
 /// </summary>
 [Table("transactions")]
 [Index(nameof(UserId))]
-[Index(nameof(Status), nameof(CreatedAtUtc), Name = "ix_transactions_status_created", Descending = new[] { false, true })]
+[Index(nameof(Status), nameof(CreatedAtUtc) + " DESC", Name = "ix_transactions_status_created")]
 public sealed class Transaction : BaseModel
 {
     [Key]

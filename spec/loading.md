@@ -1,9 +1,16 @@
 # Relationship loading — explicit, batched, never implicit
 
-Nothing loads implicitly (§2, ADR-0019 add.1/0021): a navigation holds its
-initialized empty/null value until a load call fills it, and **reading an
-unloaded navigation never fires SQL** — there are no proxies and no
-access-triggered queries. Loading is always an explicit act naming the entity
+Nothing loads implicitly (§2, ADR-0019 add.1/0021): **reading an unloaded
+navigation never fires SQL** — there are no proxies and no access-triggered
+queries. And unloaded is not empty (ADR-0021 add.2): an entity **read from the
+database** carries foreign keys proving related rows may exist, so its
+collection navigations throw `REL-004` on any access until loaded — loading
+(explicit, batch, or eager) replaces the guard, and a loaded-but-empty
+collection reads as empty. Entities constructed by user code keep their own
+initializers. Singular navigations stay null until loaded where the language
+cannot intercept a property read without proxies; after loading, null means a
+null foreign key or a **dead link** (the FK points at no row — "there is no
+real model to go there" — which loads as null, never as an error). Loading is always an explicit act naming the entity
 (or entities), the navigation, and a cancellation token; eager loading with the
 query itself arrives with graph reshaping (Level 2 milestone 4) and follows the
 same contract: requested, never inferred.

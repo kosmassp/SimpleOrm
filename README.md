@@ -92,7 +92,11 @@ public UserRole? Grant { get; private set; }
 ```
 
 Relationships load **explicitly** (ADR-0021) — nothing loads implicitly, and
-reading an unloaded navigation never fires SQL:
+reading an unloaded navigation never fires SQL. Unloaded is not empty: a
+database-read entity's collection navigations **throw `REL-004`** until loaded
+(the FKs prove children may exist — forgetting to load is a bug, not an empty
+list); singular navigations stay null until loaded, and a dead link (FK with no
+target row) loads as null:
 
 ```csharp
 await db.LoadAsync(tx, nameof(Transaction.User), ct);          // one entity, one query

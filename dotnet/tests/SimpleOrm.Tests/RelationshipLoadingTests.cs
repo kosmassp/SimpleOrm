@@ -203,6 +203,49 @@ public sealed class RelationshipLoadingTests(SqliteFixture fixture)
     }
 
     [Fact]
+    public async Task Unloaded_collection_access_on_a_queried_entity_throws_REL004()
+    {
+        await using var db = await TestDb.OpenAsync(fixture);
+        var (ada, _, t1, t2, _) = await SeedAsync(db);
+
+        // Read back from the database: the FKs prove children may exist, so an
+        // unloaded collection read is a bug, not an empty result (ADR-0021 add.2).
+        var queried = await db.GetAsync<User>(ada.Id, CancellationToken.None);
+        var refused = Assert.Throws<SimpleOrmException>(() => queried.Transactions.Count);
+        Assert.Equal("REL-004", refused.Code);
+        Assert.Contains(nameof(User.Transactions), refused.Message);
+
+        // Loading replaces the guard; a legitimate empty result reads as empty.
+        await db.LoadAsync(queried, nameof(User.Transactions), CancellationToken.None);
+        Assert.Equal([t1.Id, t2.Id], queried.Transactions.Select(t => t.Id));
+        await db.LoadAsync(queried, nameof(User.Roles), CancellationToken.None);
+        Assert.Empty(queried.Roles);
+
+        // An entity constructed by user code keeps its own initializer — a new
+        // entity genuinely has nothing, no guard.
+        var constructed = new User { Name = "New", Email = "new@example.com", CreatedAtUtc = TestDb.SeedTime };
+        Assert.Empty(constructed.Transactions);
+    }
+
+    [Fact]
+    public async Task Dead_link_loads_as_null_not_an_error()
+    {
+        await using var db = await TestDb.OpenAsync(fixture);
+        var (ada, _, t1, _, _) = await SeedAsync(db);
+
+        // The FK exists but its target row is gone: loading resolves to null —
+        // "there is no real model to go there" (owner, ADR-0021 add.2). The
+        // strict REL-004 guard is about *not loading*; a dead link *was* loaded.
+        await SchemaSync.ApplyAsync(
+            db, [$"delete from users where id = {ada.Id}"], CancellationToken.None);
+        var orphaned = await db.GetAsync<Transaction>(t1.Id, CancellationToken.None);
+        Assert.Equal(ada.Id, orphaned.UserId);                          // the FK is still there
+
+        await db.LoadAsync(orphaned, nameof(Transaction.User), CancellationToken.None);
+        Assert.Null(orphaned.User);
+    }
+
+    [Fact]
     public async Task Null_foreign_key_leaves_the_navigation_null()
     {
         await using var db = await TestDb.OpenAsync(fixture);

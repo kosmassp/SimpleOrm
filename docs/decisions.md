@@ -1254,3 +1254,32 @@ the change is recorded rather than silently made:
   implementation tests rather than a third case family duplicating both.
 
 **Status.** Accepted. Amends ADR-0019's M4 sketch.
+
+### ADR-0021 addendum 2 — unloaded access throws; dead links are null; lambdas are per-language sugar (2026-08-29)
+
+Owner rulings on the three open questions:
+
+- **Lambda front-end (M5)**: approved as an *addition*, explicitly per-language
+  ("exclusive for C#… Java also start implementing lambda") — the portable
+  contract stays the string/AST criteria core; each implementation may layer its
+  language's lambda idiom over it. LINQ-the-provider remains out.
+- **Unloaded access throws** — "it should throw error except it is really
+  null." Implemented where the language allows interception: an entity **read
+  from the database** gets its collection navigations set to a guard list that
+  throws `REL-004` on any access (Count, index, enumeration); loading —
+  explicit, batch, or eager — replaces the guard with the real list, and a
+  loaded-but-empty collection reads as empty. Entities constructed by user code
+  keep their own initializers (a new entity genuinely has nothing). Singular
+  navigations **cannot** throw on read without proxies (§2 forbids), wrappers
+  (`tx.User.Value` — an API-shape change the owner would need to choose), or
+  source generators (Level 4): they stay null until loaded. The guard is
+  installed by every materialization path (queries, streams, key reads,
+  criteria) via a compiled per-type marker — one delegate call per row, only
+  for types that declare collection navigations.
+- **Dead links load as null** — "the foreign key is there, but it is a dead
+  link, it will return null since there is no real Model to go there." Loading
+  a many-to-one/one-to-one whose FK points at no row resolves the navigation to
+  null, not an error; `REL-004` is strictly about *not having loaded*. Pinned
+  by a live test (FK intact, target row deleted, load → null).
+
+**Status.** Accepted.

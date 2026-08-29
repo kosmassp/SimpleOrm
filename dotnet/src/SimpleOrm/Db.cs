@@ -70,11 +70,17 @@ public sealed partial class Db : IAsyncDisposable
             try
             {
                 var plan = _mapper.CreatePlan<TResult>(reader, name);
+                // Entities read from the database flag their unloaded collection
+                // navigations (REL-004 on access, ADR-0021 add.2); loading
+                // replaces the sentinel. Null for plain result types.
+                var markUnloaded = UnloadedNavigations.MarkerFor(typeof(TResult), Maps);
                 var results = new List<TResult>();
                 var row = 0;
                 while (reader.Read())
                 {
-                    results.Add(plan(reader));
+                    var entity = plan(reader);
+                    markUnloaded?.Invoke(entity!);
+                    results.Add(entity);
                     if ((++row & 63) == 0)
                     {
                         ct.ThrowIfCancellationRequested();
@@ -128,9 +134,12 @@ public sealed partial class Db : IAsyncDisposable
                 // Built from the schema before the first row, so strictness
                 // (MAP-001/002/003) fires even for empty results.
                 var plan = _mapper.CreatePlan<TResult>(reader, query.Source.Description);
+                var markUnloaded = UnloadedNavigations.MarkerFor(typeof(TResult), Maps);
                 while (await reader.ReadAsync(ct).ConfigureAwait(false))
                 {
-                    yield return plan(reader);
+                    var entity = plan(reader);
+                    markUnloaded?.Invoke(entity!);
+                    yield return entity;
                 }
             }
             finally
@@ -230,6 +239,7 @@ public sealed partial class Db : IAsyncDisposable
         try
         {
             var plan = _mapper.CreatePlan<TEntity>(reader, typeof(TEntity).Name + " get");
+            var markUnloaded = UnloadedNavigations.MarkerFor(typeof(TEntity), Maps);
             TEntity? result = null;
             while (reader.Read())
             {
@@ -240,6 +250,7 @@ public sealed partial class Db : IAsyncDisposable
                 }
 
                 result = plan(reader);
+                markUnloaded?.Invoke(result);
             }
 
             return result;
@@ -675,9 +686,12 @@ public sealed partial class Db : IAsyncDisposable
             try
             {
                 var plan = _mapper.CreatePlan<TResult>(reader, StatementName<TResult>());
+                var markUnloaded = UnloadedNavigations.MarkerFor(typeof(TResult), Maps);
                 while (await reader.ReadAsync(ct).ConfigureAwait(false))
                 {
-                    yield return plan(reader);
+                    var entity = plan(reader);
+                    markUnloaded?.Invoke(entity!);
+                    yield return entity;
                 }
             }
             finally

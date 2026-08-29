@@ -640,3 +640,18 @@ diffed: apply time trusts only recorded history (MIG-010/011 refuse divergence)
 and milestone 6''s SchemaGuard validates the actual schema at startup (plus
 MIG-030). Generator lands after milestone 6, which builds the introspection it
 needs.
+
+### ADR-0013 addendum 2 — long-history mitigation: shadow caching and squash (2026-08-29)
+
+The owner: "when the migration has been too much, it is impossible to fight it
+against shadow db." Two planned generator-era features answer it: (1) **shadow
+caching** — the shadow SQLite file is cached keyed by the (version, checksum)
+hash-chain it embodies (sound because applied migrations are frozen); generation
+replays only migrations added since the cached prefix, making cost proportional to
+recent deltas, not total history. (2) **squash** — `squash --to N` introspects the
+shadow at N and emits one per-object literal baseline version declaring the range
+it replaces: fresh databases apply the baseline and continue from N+1; databases
+already past N recognize it and rewrite their history rows once; a database midway
+inside the squashed range is a loud error (squash deliberately, after all
+environments pass N). Pre-N files become deletable. Both land with the diff
+generator (post-milestone 6).

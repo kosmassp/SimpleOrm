@@ -626,3 +626,17 @@ generated."
   (including seed data via a `.Post` hook); the CLI loads the app assembly.
 
 **Status.** Accepted.
+
+### ADR-0013 addendum — the diff baseline is a shadow database (2026-08-29)
+
+The owner pinned the generator''s baseline: the model is the final truth
+(code-first), but "sync based on what? not all devs have a read on the database;
+production could be different." Decision: the generator diffs metadata against a
+**shadow database** — the committed migrations replayed into a throwaway SQLite
+(temp/:memory:), then introspected. SQLite being embedded makes this
+environment-free: every dev always has the baseline, deterministically ("the state
+history produces"), with no snapshot artifact to maintain. Real databases are never
+diffed: apply time trusts only recorded history (MIG-010/011 refuse divergence)
+and milestone 6''s SchemaGuard validates the actual schema at startup (plus
+MIG-030). Generator lands after milestone 6, which builds the introspection it
+needs.

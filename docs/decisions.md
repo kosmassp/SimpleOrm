@@ -884,3 +884,33 @@ urgency."
   SQL emitters' C#-string escaping fixed (`\"`, not the verbatim `""`).
 
 **Status.** Accepted.
+
+### ADR-0017 addendum 2 — indexes match structurally, never by name (2026-08-29)
+
+Owner: "checking index should be focused more on 'what the indexed column' rather
+than focus comparing the name. In reality, index mostly need to be added directly
+to the database rather than waiting for deployment. If the index already exists
+although the name is different, we can count that as implemented."
+
+An index's identity is its **signature**: the unique flag plus the ordered
+(column, direction) list. Names are labels. Both comparison sites now use it:
+
+- **`simpleorm diff`** (model vs snapshot): a model index whose signature exists
+  in the snapshot under any name is implemented — no step emitted; a snapshot
+  index with no model signature is a removal (dropped by its actual name, still
+  gated by `--allow-remove`). A pure index rename in the model is a no-op.
+- **`migrate --force` sync** (model vs live database) now checks indexes on
+  existing tables — previously only table-create brought indexes along. Live
+  indexes are introspected through the new `IDialect.IndexesInfoSql` (created
+  indexes only — key columns, direction, uniqueness; on SQLite
+  `pragma_index_list` origin `c` joined with `pragma_index_xinfo`). A model index
+  structurally missing is additive (created immediately — this is the urgency
+  case in reverse); a live index matching no model signature is a gated deletion;
+  a live index matching under a different name counts as implemented and is left
+  alone, name and all.
+
+Uniqueness is part of the structure, deliberately: a unique index found where the
+model wants a plain one (or vice versa) is a different object — the constraint
+semantics differ — so it diffs as add + gated remove, never as a silent match.
+
+**Status.** Accepted.

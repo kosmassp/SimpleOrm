@@ -30,6 +30,11 @@ public sealed class SqliteDialect : IDialect
     public string ViewDefinitionSql
         => "select sql from sqlite_master where type = 'view' and name = @relation";
 
+    public string IndexesInfoSql
+        => "select il.name, il.\"unique\", ii.seqno, ii.name, ii.\"desc\" "
+            + "from pragma_index_list(@relation) il, pragma_index_xinfo(il.name) ii "
+            + "where il.origin = 'c' and ii.key = 1 order by il.name, ii.seqno";
+
     public bool IsDeclaredTypeCompatible(string declaredType, Type clrType, bool enumAsInt)
     {
         var type = Nullable.GetUnderlyingType(clrType) ?? clrType;

@@ -114,20 +114,40 @@ public static class MigrationGenerator
             }
         }
 
-        var oldIndexes = new HashSet<string>(snapshot.Indexes.Select(i => i.Name), StringComparer.OrdinalIgnoreCase);
-        foreach (var index in map.Indexes.Where(i => !oldIndexes.Contains(i.Name)))
+        // Indexes match by structure — unique flag plus ordered (column, direction) —
+        // never by name (ADR-0017 add.2): indexes get added directly to the database
+        // in urgencies, and one that exists under another name is implemented.
+        var oldSignatures = new HashSet<string>(snapshot.Indexes.Select(IndexSignature), StringComparer.Ordinal);
+        var modelSignatures = new HashSet<string>(map.Indexes.Select(IndexSignature), StringComparer.Ordinal);
+        var createIndexSql = dialect.CreateIndexSql(map);
+        for (var i = 0; i < map.Indexes.Count; i++)
         {
-            diff.AddedIndexSql.Add(dialect.CreateIndexSql(map)
-                .First(sql => sql.Contains(" " + index.Name + " ")));
+            if (!oldSignatures.Contains(IndexSignature(map.Indexes[i])))
+            {
+                diff.AddedIndexSql.Add(createIndexSql[i]);
+            }
         }
 
-        foreach (var name in oldIndexes.Where(n => map.Indexes.All(i => !string.Equals(i.Name, n, StringComparison.OrdinalIgnoreCase))))
+        foreach (var index in snapshot.Indexes.Where(i => !modelSignatures.Contains(IndexSignature(i))))
         {
-            diff.RemovedIndexNames.Add(name);
+            diff.RemovedIndexNames.Add(index.Name);
         }
 
         return diff;
     }
+
+    /// <summary>The structural identity of a declared index: unique + ordered columns with direction.</summary>
+    internal static string IndexSignature(EntityIndex index)
+        => Signature(index.Unique, index.Columns.Select(c => (c.ColumnName, c.Descending)));
+
+    /// <summary>The structural identity of a snapshotted or introspected index.</summary>
+    internal static string IndexSignature(TableSchema.Index index)
+        => Signature(index.Unique, index.Columns.Select(c => (c.ColumnName, c.Descending)));
+
+    internal static string Signature(bool unique, IEnumerable<(string Column, bool Descending)> columns)
+        => (unique ? "unique|" : "plain|")
+            + string.Join(",", columns.Select(c =>
+                c.Column.ToLowerInvariant() + (c.Descending ? " desc" : string.Empty)));
 
     /// <summary>Emits the per-object migration step, Down included (derived from the snapshot).</summary>
     public static string EmitTableStep(

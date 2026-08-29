@@ -56,6 +56,32 @@ public sealed class SchemaSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task Index_matching_is_structural_not_by_name()
+    {
+        await using var db = await OpenAsync();
+
+        // The model (GenModels.Widget) declares ix_gen_widgets_name on (name); the
+        // DBA added the same index under another name in an urgency: implemented.
+        await SchemaSync.ApplyAsync(
+            db,
+            ["create table gen_widgets (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT",
+             "create index idx_dba_hotfix on gen_widgets (name)"],
+            CancellationToken.None);
+        Assert.True((await SchemaSync.PlanAsync(db, [typeof(Widget)], CancellationToken.None)).IsEmpty);
+
+        // A structurally different index is not: the model's gets created, the
+        // stranger is a (gated) deletion.
+        await SchemaSync.ApplyAsync(
+            db,
+            ["drop index idx_dba_hotfix", "create index idx_dba_hotfix on gen_widgets (note)"],
+            CancellationToken.None);
+        var plan = await SchemaSync.PlanAsync(db, [typeof(Widget)], CancellationToken.None);
+        Assert.Contains("ix_gen_widgets_name", Assert.Single(plan.Additive));
+        Assert.Equal("drop index idx_dba_hotfix", Assert.Single(plan.Deletions));
+        Assert.Empty(plan.Unsupported);
+    }
+
+    [Fact]
     public async Task Type_and_nullability_changes_are_never_auto_applied()
     {
         await using var db = await OpenAsync();

@@ -45,6 +45,15 @@ public interface IDialect
     /// </summary>
     string ViewDefinitionSql { get; }
 
+    /// <summary>
+    /// Introspection query for a table's explicitly created indexes (§7.25):
+    /// parameter <c>@relation</c>, one row per key column — columns
+    /// <c>index_name, unique, seqno, column, desc</c>, ordered by index then
+    /// position. Backs force sync's structural index match (ADR-0017 add.2):
+    /// indexes compare by columns/direction/uniqueness, never by name.
+    /// </summary>
+    string IndexesInfoSql { get; }
+
     /// <summary>The storage (declared) type a mapped property renders to — what CREATE TABLE emits (§7.25).</summary>
     string StorageType(PropertyMap property);
 

@@ -114,8 +114,11 @@ them.
   plus the composing root, new tables FK-ordered, view steps after table steps.
   Generated code freezes exactly like hand-written code. Tables diff by columns;
   views diff by normalized DDL, and a generated view change step is literal DDL
-  opening with the `ExpectDefinition` guard (below). Renames are **declared**
-  (`--rename table.old=new`), never inferred. Removals gate on `--allow-remove`
+  opening with the `ExpectDefinition` guard (below). Indexes match
+  **structurally** — unique flag + ordered (column, direction), never by name
+  (ADR-0017 add.2): an index that exists under another name counts as
+  implemented, because indexes get added directly to the database in urgencies.
+  Renames are **declared** (`--rename table.old=new`), never inferred. Removals gate on `--allow-remove`
   (`DDL-003`); type/nullability changes and non-nullable additions are `DDL-004` —
   hand-written, using the literal `AddColumn(name, type, nullable, defaultSql)`
   path.
@@ -125,7 +128,10 @@ them.
   baselined, and only (N, M] replays and re-snapshots.
 - **`migrate --force`** — post-migration live-schema sync to the model: additive
   fixes apply; deletions require `--allow-delete` (`DDL-003`); inexpressible
-  changes are reported as `DDL-004` and never auto-applied.
+  changes are reported as `DDL-004` and never auto-applied. Indexes on existing
+  tables are checked with the same structural match: a missing one is created, a
+  live one matching no model signature is a gated deletion, and one that matches
+  under a different name is left alone, name and all.
 
 ## The view apply guard (`MIG-012`, ADR-0017 add.1)
 

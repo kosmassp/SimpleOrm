@@ -87,7 +87,7 @@ public sealed class GeneratorTests
     }
 
     [Fact]
-    public void Index_additions_and_removals_are_diffed_by_name()
+    public void Index_additions_and_removals_are_diffed_structurally()
     {
         var noIndex = MigrationGenerator.Diff(Map, Dialect, Snapshot([Id(), NameCol(), NoteCol()], indexes: []), NoRenames);
         Assert.Contains("ix_gen_widgets_name", Assert.Single(noIndex.AddedIndexSql));
@@ -97,6 +97,26 @@ public sealed class GeneratorTests
             Snapshot([Id(), NameCol(), NoteCol()], [CurrentIndex(), new TableSchema.Index("ix_old", [new TableSchema.Index.Part("note")])]),
             NoRenames);
         Assert.Equal("ix_old", Assert.Single(staleIndex.RemovedIndexNames));
+    }
+
+    [Fact]
+    public void Index_that_exists_under_another_name_counts_as_implemented()
+    {
+        // ADR-0017 add.2 (owner): indexes get added directly to the database in
+        // urgencies — identity is the indexed columns, not the name.
+        var renamedOnly = MigrationGenerator.Diff(
+            Map, Dialect,
+            Snapshot([Id(), NameCol(), NoteCol()], [new TableSchema.Index("idx_dba_hotfix", [new TableSchema.Index.Part("name")])]),
+            NoRenames);
+        Assert.False(renamedOnly.HasChanges);
+
+        // Uniqueness is structure: a unique index is not the plain one the model wants.
+        var uniqueMismatch = MigrationGenerator.Diff(
+            Map, Dialect,
+            Snapshot([Id(), NameCol(), NoteCol()], [new TableSchema.Index("idx_dba_hotfix", [new TableSchema.Index.Part("name")], unique: true)]),
+            NoRenames);
+        Assert.Single(uniqueMismatch.AddedIndexSql);
+        Assert.Equal("idx_dba_hotfix", Assert.Single(uniqueMismatch.RemovedIndexNames));
     }
 
     [Fact]

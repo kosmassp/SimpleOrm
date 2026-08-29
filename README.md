@@ -172,7 +172,9 @@ recreates the view from the code and prints what drifted.
 `migrate --force` also syncs any remaining live-schema gap to the model after
 migrations run: additive fixes apply immediately, deletions only with
 `--allow-delete` (`DDL-003`), and anything inexpressible is reported (`DDL-004`),
-never guessed.
+never guessed. Index comparison — in both `diff` and the sync — is structural
+(unique flag + ordered columns and directions), never by name: an index the DBA
+already added under another name counts as implemented and is left alone.
 
 ### Validation (SchemaGuard)
 

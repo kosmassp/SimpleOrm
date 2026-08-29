@@ -79,9 +79,70 @@ public static class SchemaSync
             {
                 plan.Deletions.Add($"alter table {map.RelationName} drop column {extra}");
             }
+
+            // Indexes match structurally (ADR-0017 add.2): what matters is the indexed
+            // columns (order, direction, uniqueness), never the name — indexes get
+            // added directly to the database in urgencies, and one that already exists
+            // under another name counts as implemented.
+            var liveIndexes = await ReadIndexesAsync(db, map.RelationName!, ct).ConfigureAwait(false);
+            var liveSignatures = new HashSet<string>(liveIndexes.Select(i => i.Signature), StringComparer.Ordinal);
+            var modelSignatures = new HashSet<string>(
+                map.Indexes.Select(MigrationGenerator.IndexSignature), StringComparer.Ordinal);
+            var createIndexSql = dialect.CreateIndexSql(map);
+            for (var i = 0; i < map.Indexes.Count; i++)
+            {
+                if (!liveSignatures.Contains(MigrationGenerator.IndexSignature(map.Indexes[i])))
+                {
+                    plan.Additive.Add(createIndexSql[i]);
+                }
+            }
+
+            foreach (var index in liveIndexes.Where(i => !modelSignatures.Contains(i.Signature)))
+            {
+                plan.Deletions.Add("drop index " + index.Name);
+            }
         }
 
         return plan;
+    }
+
+    private sealed record LiveIndex(string Name, string Signature);
+
+    private static async Task<IReadOnlyList<LiveIndex>> ReadIndexesAsync(Db db, string relation, CancellationToken ct)
+    {
+        var parts = new Dictionary<string, (bool Unique, List<(string Column, bool Descending)> Columns)>();
+        var order = new List<string>();
+        using var command = db.Connection.CreateCommand();
+        command.CommandText = db.Options.Dialect.IndexesInfoSql;
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "@relation";
+        parameter.Value = relation;
+        command.Parameters.Add(parameter);
+
+        DbDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        try
+        {
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                var name = reader.GetString(0);
+                if (!parts.TryGetValue(name, out var index))
+                {
+                    parts[name] = index = ((long)reader.GetValue(1) != 0, []);
+                    order.Add(name);
+                }
+
+                index.Columns.Add((reader.GetString(3), (long)reader.GetValue(4) != 0));
+            }
+        }
+        finally
+        {
+            reader.Dispose();
+        }
+
+        return order
+            .Select(name => new LiveIndex(
+                name, MigrationGenerator.Signature(parts[name].Unique, parts[name].Columns)))
+            .ToArray();
     }
 
     /// <summary>Executes plan statements in order (the CLI's force-sync apply step).</summary>

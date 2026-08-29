@@ -655,3 +655,30 @@ already past N recognize it and rewrite their history rows once; a database midw
 inside the squashed range is a loud error (squash deliberately, after all
 environments pass N). Pre-N files become deletable. Both land with the diff
 generator (post-milestone 6).
+
+### ADR-0013 addendum 3 — per-table snapshots; force sync as gated repair (2026-08-29)
+
+Owner refinements to the generator/apply design:
+
+- **Generate:** each table''s migration folder carries a generated, versioned schema
+  snapshot (`Migrations/Table/<Object>/schema.json`, "as of version N") updated when
+  the generator emits a migration for that table; diffing is metadata vs snapshot —
+  no replay, no database, and per-table snapshots localize merge conflicts (unlike
+  EF''s single ModelSnapshot). Views/statements/procedures are **self-reflecting**
+  (defining SQL lives in the attribute): their diff is a stored hash of the last
+  migrated SQL → a RecreateView step when changed. The **shadow database becomes a
+  manual tool**: `shadow --from V0001|V<N>` replays history to verify or regenerate
+  snapshots.
+- **Apply:** after all migrations complete, the real database is compared against
+  the final model. Residual difference (unmanaged drift) is an **error by default**,
+  listing the differences; `--force` reconciles it automatically — sync runs only
+  AFTER migrations, never instead of them.
+- **Force sync scope:** default is purely additive (create missing
+  tables/columns/indexes/views). Destructive or reshaping changes (drops; SQLite
+  type changes = table rebuild) require `--allow-delete` (default false — "delete is
+  rather fearful"). Sync never infers renames at any setting; renames are
+  migrations-only. On validation failure the developer''s exits are: revise
+  migrations, or force sync.
+
+Error codes for sync refusal/reporting are registered when this is implemented
+(post-milestone 6, with the generator).

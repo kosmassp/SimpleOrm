@@ -174,7 +174,18 @@ public sealed class Db : IAsyncDisposable
         var map = Maps.Load<TEntity>();
         var command = _connection.CreateCommand();
         command.Transaction = _transaction;
-        command.CommandText = build(command, map, _converter, Options.Dialect);
+        try
+        {
+            command.CommandText = build(command, map, _converter, Options.Dialect);
+        }
+        catch
+        {
+            // Render refusals (QRY-006/007/008) throw after parameters may
+            // already sit on the live command — don't leak it.
+            command.Dispose();
+            throw;
+        }
+
         return MaterializeAsync<TEntity>(command, typeof(TEntity).Name + " criteria", ct);
     }
 

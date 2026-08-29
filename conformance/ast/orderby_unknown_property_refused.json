@@ -1,0 +1,9 @@
+{
+  "name": "orderby_unknown_property_refused",
+  "comment": "Property resolution applies to orderings exactly as to predicates.",
+  "entity": "User",
+  "select": {
+    "orderBy": [ { "property": "NoSuchProperty" } ]
+  },
+  "expect": { "error": "QRY-006" }
+}

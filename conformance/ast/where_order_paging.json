@@ -1,0 +1,19 @@
+{
+  "name": "where_order_paging",
+  "comment": "The kitchen sink: top-level where entries AND implicitly; parameters number @c0.. in render order — WHERE first, then limit, then offset; property names resolve to columns through the metadata.",
+  "entity": "User",
+  "select": {
+    "where": [
+      { "op": "or", "args": [
+        { "op": "eq", "property": "Id", "value": 1 },
+        { "op": "in", "property": "Name", "values": ["Ada", "Grace"] } ] },
+      { "op": "ge", "property": "CreatedAtUtc", "value": "2026-01-01T00:00:00Z" }
+    ],
+    "orderBy": [ { "property": "Name", "order": "desc" }, { "property": "Id" } ],
+    "limit": 20,
+    "offset": 5
+  },
+  "expect": { "sqlite": {
+    "sql": "select id, name, email, display_name, created_at, updated_at from users where ((id = @c0 or name in (@c1, @c2)) and created_at >= @c3) order by name desc, id limit @c4 offset @c5",
+    "parameters": [1, "Ada", "Grace", "2026-01-01T00:00:00Z", 20, 5] } }
+}

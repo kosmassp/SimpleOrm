@@ -34,7 +34,7 @@ these codes.
 | `MAP-016` | `[ManyToOne]` foreign-key properties unknown/unmapped, empty, or their count mismatches the target key's arity | ADR-0005, ADR-0019 add.1 | milestone 2 |
 | `MAP-017` | invalid `[Statement]` parameter declaration (odd token count; token neither name string nor `Type`; duplicate name) | ADR-0008 add.2 | milestone 2 |
 | `MAP-018` | two properties map to the same column name | ADR-0004 | milestone 2 |
-| `MAP-019` | no key defined where one is required, or `[Generated]`/`[Version]` on a property without `[Column]` | §7.1 | milestone 2 |
+| `MAP-019` | no key defined where one is required; `[Generated]`/`[Version]` on a property without `[Column]`; `[Generated]` on a composite key; a database-generated key that is not an integer type | §7.1, ADR-0020 add.1 | milestone 2 |
 | `MAP-020` | a navigation property has the wrong shape: `[OneToMany]`/`[ManyToMany]` need a generic collection (`IEnumerable<T>`) of an entity type; `[OneToOne]` needs a single entity reference | ADR-0019 (+add.1) | L2 milestone 1 |
 | `MAP-021` | `[OneToMany]`/`[OneToOne]` target foreign-key properties missing on the target, empty, or their count mismatches this entity's key arity | ADR-0019 (+add.1) | L2 milestone 1 |
 | `MAP-022` | `[ManyToMany]` link entity's `[ForeignKey]` references to a side are missing or their count mismatches that side's key arity | ADR-0019 (+add.1) | L2 milestone 1 |
@@ -61,6 +61,8 @@ these codes.
 | `QRY-004` | statement execution requested for a type that is not statement-backed | ADR-0010 | milestone 3 |
 | `QRY-005` | select-all or criteria query requested for a source without a named relation (statement/procedure) | ADR-0011 add. | milestone 3 |
 | `QRY-006` | criteria references an unknown or unmapped property | ADR-0012 | milestone 4 |
+| `QRY-007` | a criteria comparison with null (other than Eq/Ne, which render IS [NOT] NULL) or a null inside an IN list — meaningless three-valued SQL; use IsNull/IsNotNull | ADR-0020 | L2 milestone 2 |
+| `QRY-008` | a negative limit or offset in a criteria query — dialects disagree on its meaning (SQLite silently disables the limit); refused as an arithmetic bug | ADR-0020 add.1 | L2 milestone 2 |
 
 ## DDL — schema generation from metadata
 

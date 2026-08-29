@@ -1,0 +1,9 @@
+{
+  "name": "like_null_refused",
+  "comment": "Every comparison except eq/ne refuses null — like included.",
+  "entity": "User",
+  "select": {
+    "where": [ { "op": "like", "property": "Name", "value": null } ]
+  },
+  "expect": { "error": "QRY-007" }
+}

@@ -7,6 +7,36 @@ namespace SimpleOrm.Tests;
 [Collection(SqliteCollection.Name)]
 public sealed class CriteriaAndKeyReadTests(SqliteFixture fixture)
 {
+    /// <summary>ADR-0020 null semantics, against a real database.</summary>
+    [Fact]
+    public async Task Null_criteria_render_is_null_and_actually_match()
+    {
+        await using var db = await TestDb.OpenAsync(fixture);
+        var ada = await TestDb.InsertUserAsync(db, "AdaNull", "ada-null@example.com");
+        var grace = await TestDb.InsertUserAsync(db, "GraceNull", "grace-null@example.com");
+        grace.DisplayName = "Countess";
+        await db.UpdateAsync(grace, CancellationToken.None);
+
+        // Eq(null) renders IS NULL — it finds the row a '= NULL' comparison would silently miss.
+        var unset = await db.Query<User>()
+            .Where(Criteria.Eq(nameof(User.DisplayName), null), Criteria.Like(nameof(User.Name), "%Null"))
+            .ToListAsync(CancellationToken.None);
+        Assert.Equal(ada.Id, Assert.Single(unset).Id);
+
+        var set = await db.Query<User>()
+            .Where(Criteria.Ne(nameof(User.DisplayName), null), Criteria.Like(nameof(User.Name), "%Null"))
+            .ToListAsync(CancellationToken.None);
+        Assert.Equal(grace.Id, Assert.Single(set).Id);
+
+        // Ordered comparison with null and null-in-IN are refused, not rendered.
+        var ordered = await Assert.ThrowsAsync<SimpleOrmException>(() => db.Query<User>()
+            .Where(Criteria.Gt(nameof(User.Id), null!)).ToListAsync(CancellationToken.None));
+        Assert.Equal("QRY-007", ordered.Code);
+        var inNull = await Assert.ThrowsAsync<SimpleOrmException>(() => db.Query<User>()
+            .Where(Criteria.In(nameof(User.DisplayName), "x", null)).ToListAsync(CancellationToken.None));
+        Assert.Equal("QRY-007", inNull.Code);
+    }
+
     [Fact]
     public async Task Get_by_key_reads_and_misses_with_codes()
     {

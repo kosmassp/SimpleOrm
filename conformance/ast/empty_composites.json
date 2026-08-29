@@ -1,0 +1,15 @@
+{
+  "name": "empty_composites",
+  "comment": "ADR-0020 add.1: degenerate composites render their identity truth-values — empty AND is true (1 = 1), empty OR is false (1 = 0), and negation composes over them — never invalid SQL: dynamic composition legitimately produces empty lists.",
+  "entity": "Role",
+  "select": {
+    "where": [
+      { "op": "and", "args": [] },
+      { "op": "or", "args": [] },
+      { "op": "not", "arg": { "op": "in", "property": "Id", "values": [] } }
+    ]
+  },
+  "expect": { "sqlite": {
+    "sql": "select id, role_name, created_at, updated_at from roles where (1 = 1 and 1 = 0 and not 1 = 0)",
+    "parameters": [] } }
+}

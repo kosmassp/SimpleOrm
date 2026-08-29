@@ -1,0 +1,9 @@
+{
+  "name": "offset_only",
+  "comment": "Offset without limit: SQLite requires LIMIT before OFFSET, so the dialect renders its no-limit idiom (limit -1).",
+  "entity": "Role",
+  "select": { "offset": 4 },
+  "expect": { "sqlite": {
+    "sql": "select id, role_name, created_at, updated_at from roles limit -1 offset @c0",
+    "parameters": [4] } }
+}

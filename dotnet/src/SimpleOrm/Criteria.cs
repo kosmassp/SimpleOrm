@@ -14,9 +14,11 @@ public abstract class Criteria
     {
     }
 
-    public static Criteria Eq(string property, object value) => new Comparison(property, "=", value);
+    /// <summary>Equality; null renders <c>is null</c> (ADR-0020) — never <c>= NULL</c>, which silently matches nothing.</summary>
+    public static Criteria Eq(string property, object? value) => new Comparison(property, "=", value);
 
-    public static Criteria Ne(string property, object value) => new Comparison(property, "<>", value);
+    /// <summary>Inequality; null renders <c>is not null</c> (ADR-0020).</summary>
+    public static Criteria Ne(string property, object? value) => new Comparison(property, "<>", value);
 
     public static Criteria Gt(string property, object value) => new Comparison(property, ">", value);
 
@@ -30,9 +32,22 @@ public abstract class Criteria
     public static Criteria Like(string property, string pattern) => new Comparison(property, "like", pattern);
 
     public static Criteria In<T>(string property, IEnumerable<T> values)
-        => new InList(property, values.Cast<object?>().ToArray());
+        => new InList(property, Required(values, property).Cast<object?>().ToArray());
 
-    public static Criteria In(string property, params object[] values) => new InList(property, values);
+    public static Criteria In(string property, params object?[] values)
+        => new InList(property, Required(values, property));
+
+    /// <summary>
+    /// Overload trap guard: a lone string argument would otherwise resolve to
+    /// <c>In&lt;char&gt;</c> (string is IEnumerable&lt;char&gt;) and silently query
+    /// per-character. A single string means a one-element list.
+    /// </summary>
+    public static Criteria In(string property, string value) => new InList(property, [value]);
+
+    private static T Required<T>(T? values, string property)
+        where T : class
+        => values ?? throw new ArgumentNullException(
+            nameof(values), $"the IN list for '{property}' is null; pass values (an empty list matches no rows)");
 
     public static Criteria IsNull(string property) => new NullCheck(property, negated: false);
 
@@ -44,13 +59,13 @@ public abstract class Criteria
 
     public static Criteria Not(Criteria criteria) => new Negation(criteria);
 
-    internal sealed class Comparison(string property, string op, object value) : Criteria
+    internal sealed class Comparison(string property, string op, object? value) : Criteria
     {
         public string Property { get; } = property;
 
         public string Operator { get; } = op;
 
-        public object Value { get; } = value;
+        public object? Value { get; } = value;
     }
 
     internal sealed class InList(string property, IReadOnlyList<object?> values) : Criteria

@@ -18,6 +18,11 @@ public sealed class SqliteDialect : IDialect
         _ => string.Empty,
     };
 
+    public string SelectSql(SelectAst select, BindCriteriaParameter bindParameter)
+        => AnsiSelectRenderer.SelectSql(this, select, bindParameter);
+
+    public bool SupportsArrayParameters => false;
+
     public bool SupportsMaterializedViews => false;
 
     public bool SupportsProcedures => false;
@@ -133,8 +138,10 @@ public sealed class SqliteDialect : IDialect
 
     public string UpdateSql(EntityMap map)
     {
+        // Generated non-key columns are database-owned: never in SET (mirrors the
+        // insert exclusion and Db.UpdateAsync's binding filter).
         var assignments = map.Properties
-            .Where(p => !p.IsKey && !p.IsVersion)
+            .Where(p => !p.IsKey && !p.IsVersion && !p.IsGenerated)
             .Select(p => p.ColumnName + " = @" + p.ColumnName)
             .ToList();
         if (map.VersionProperty is { } version)

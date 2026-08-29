@@ -1,0 +1,9 @@
+{
+  "name": "ordered_null_comparison_refused",
+  "comment": "ADR-0020: an ordered comparison with null is meaningless three-valued SQL — refused, never rendered.",
+  "entity": "User",
+  "select": {
+    "where": [ { "op": "gt", "property": "Id", "value": null } ]
+  },
+  "expect": { "error": "QRY-007" }
+}

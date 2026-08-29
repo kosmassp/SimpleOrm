@@ -1,0 +1,16 @@
+{
+  "name": "null_semantics",
+  "comment": "ADR-0020: Eq(null) renders IS NULL and Ne(null) IS NOT NULL — never '= NULL', which silently matches nothing. Explicit IsNull/IsNotNull render identically.",
+  "entity": "User",
+  "select": {
+    "where": [
+      { "op": "eq", "property": "DisplayName", "value": null },
+      { "op": "ne", "property": "Email", "value": null },
+      { "op": "is_null", "property": "UpdatedAtUtc" },
+      { "op": "is_not_null", "property": "Name" }
+    ]
+  },
+  "expect": { "sqlite": {
+    "sql": "select id, name, email, display_name, created_at, updated_at from users where (display_name is null and email is not null and updated_at is null and name is not null)",
+    "parameters": [] } }
+}

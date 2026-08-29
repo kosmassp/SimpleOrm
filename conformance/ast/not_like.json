@@ -1,0 +1,11 @@
+{
+  "name": "not_like",
+  "comment": "Negation prefixes the rendered predicate; LIKE takes the caller's wildcards verbatim as a parameter.",
+  "entity": "User",
+  "select": {
+    "where": [ { "op": "not", "arg": { "op": "like", "property": "Email", "value": "%@example.com" } } ]
+  },
+  "expect": { "sqlite": {
+    "sql": "select id, name, email, display_name, created_at, updated_at from users where not email like @c0",
+    "parameters": ["%@example.com"] } }
+}

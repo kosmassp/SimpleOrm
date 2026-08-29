@@ -1,0 +1,9 @@
+{
+  "name": "in_with_null_refused",
+  "comment": "ADR-0020: SQL IN can never match NULL, so a null element is a silent bug — refused; combine Or(In(...), IsNull(...)) instead.",
+  "entity": "User",
+  "select": {
+    "where": [ { "op": "in", "property": "DisplayName", "values": ["Ada", null] } ]
+  },
+  "expect": { "error": "QRY-007" }
+}

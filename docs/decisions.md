@@ -1055,3 +1055,91 @@ special implement."
   returning empty (strictness vs. convenience) is an open M3 design question.
 
 **Status.** Accepted.
+
+## ADR-0020 — L2 M2: the query AST is rendered by the dialect; strict null semantics (2026-08-29)
+
+Level 2 milestone 2 (owner authorized autonomous continuation). The ADR-0012
+criteria core was already an AST as data; this milestone completes §10.4's
+contract and fixes its null-semantics hole.
+
+- **`SelectAst`** is the criteria query as data: source `EntityMap`, implicitly
+  ANDed predicate list, orderings, limit/offset. Every front-end — today's
+  string-based chain, M5's fluent front-end — produces this and never SQL text.
+- **The dialect renders it**: new `IDialect.SelectSql(SelectAst, bindParameter)`.
+  `AnsiSelectRenderer` (core) is the **reference rendering** — explicit column
+  list, `@c0…` parameters in render order (WHERE, then limit, then offset),
+  property→column resolution (`QRY-006`) — and a dialect normally delegates to
+  it, overriding only where its SQL disagrees (SQLite: nothing beyond the
+  existing limit/offset knob). This keeps a second dialect's cost near zero
+  while satisfying "front-ends never emit SQL text".
+- **Null semantics are explicit and strict** (the old renderer emitted
+  `col = NULL` for `Eq(p, null)` — a silent-match-nothing bug by our own §2
+  rules): `Eq(p, null)` renders `is null`, `Ne(p, null)` renders `is not null`
+  (signatures now accept null); any ordered comparison with null, or a null
+  element inside an IN list, is meaningless three-valued SQL and throws
+  **`QRY-007`** with the IsNull/IsNotNull guidance; an empty IN list keeps
+  rendering a visibly false predicate (`1 = 0`).
+- **`conformance/ast/`** is born (the §9 folder reserved for Level 2): a JSON
+  encoding of `SelectAst` (`op` vocabulary: eq/ne/gt/ge/lt/le/like/in/
+  is_null/is_not_null/and/or/not) with the exact expected SQL and ordered
+  parameter values per dialect, or an error code — rendering is pure, no
+  database. Eight cases cover the kitchen sink, both null renders, both QRY-007
+  refusals, empty IN, negation, and QRY-006.
+- **Level 1 spec debt closed**: `spec/query-ast.md`, `spec/session.md`,
+  `spec/crud.md` (authored in a parallel workflow, reviewed and edited in).
+- GROUP BY stays deliberately absent (aggregations are `[Statement]` entities);
+  joins arrive with M4's eager loading and will extend `SelectAst` rather than
+  replace it.
+
+**Status.** Accepted.
+
+### ADR-0020 addendum 1 — the adversarial review pass: hardening decisions (2026-08-29)
+
+M2 ran through a 39-agent review workflow (four lenses, every finding
+adversarially verified); 22 findings survived refutation. The decisions they
+forced:
+
+- **Degenerate composites render identity truth-values**: empty `And()` → `1 = 1`
+  (true), empty `Or()` → `1 = 0` (false) — dynamic composition legitimately
+  produces empty lists, and the previous rendering (`()`) was invalid SQL failing
+  with an unnamed provider error. Pinned by `empty_composites.json`.
+- **`QRY-008`**: negative limit/offset refuses. SQLite silently treats a negative
+  LIMIT as *no limit* — a page-arithmetic bug returning the whole table — and
+  dialects disagree on the meaning, which the AST contract cannot tolerate.
+- **The bind seam is property-aware** (`BindCriteriaParameter(value, property)`
+  replaced `Func<object?, string>`): criteria values bound property-blind, so an
+  enum against an `[EnumAsInt]` column bound as its *name* and silently matched
+  nothing. Per-column conversion now applies to criteria exactly as to writes.
+- **Property resolution refuses ambiguity**: exact-case match wins; a
+  case-insensitive match fitting more than one property is `QRY-006` naming the
+  candidates, never a silent first-wins (the MAP-003 precedent).
+- **The `In` overload trap is closed**: `In(property, "Ada")` resolved to
+  `In<char>` (string is `IEnumerable<char>`) and queried per character; a
+  dedicated `(string, string)` overload makes a lone string a one-element list.
+  Null IN lists (null array / null enumerable) now throw ArgumentNullException
+  naming the property instead of an unnamed LINQ crash at render.
+- **Code fixed to match spec, not vice versa**, in three places the reviewers
+  caught the spec describing intent the code missed: IN-list expansion now
+  rewrites only real placeholders (`SqlPlaceholders.Occurrences` over the masked
+  SQL — lookalikes inside string literals/comments were being rewritten);
+  `IDialect.SupportsArrayParameters` now exists (§7.12 promised it since ADR-0003;
+  SQLite: false); `UpdateSql` excludes generated non-key columns (the binder
+  already did — the SQL and the binding disagreed, so any entity with a
+  database-owned non-key column could never update).
+- **`MAP-019` grew a rule**: a database-generated key must be an integer type —
+  `[Key][Generated] Guid` previously loaded as DatabaseGenerated and rendered
+  `INTEGER PRIMARY KEY`, silently mismapped.
+- The criteria command is disposed when rendering refuses mid-bind (QRY-006/7/8
+  after parameters landed on the live command).
+- Spec corrections: the null-semantics guarantee scoped to null *literals in the
+  tree* (NULL column data evaluates by standard SQL); operator tokens pinned
+  (`ne` renders `<>`, never `!=`) with `comparison_operators.json`; session.md's
+  conformance section describes what exists (a params-carrying case format for
+  `PRM-001/002` is reserved, like `ast/` was); crud.md's update contract and
+  key-requirement wording aligned with the code.
+- New conformance/ast cases: comparison operators (+ explicit `and` node +
+  case-insensitive property), empty composites, limit-only, offset-only
+  (SQLite's `limit -1` idiom), negative-limit `QRY-008`, like-null `QRY-007`,
+  orderBy `QRY-006`. The ast runner is strict about order tokens.
+
+**Status.** Accepted.

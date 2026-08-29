@@ -1,0 +1,7 @@
+{
+  "name": "negative_limit_refused",
+  "comment": "ADR-0020 add.1: dialects disagree on negative paging (SQLite silently disables the limit) — refused as an arithmetic bug.",
+  "entity": "Role",
+  "select": { "limit": -5 },
+  "expect": { "error": "QRY-008" }
+}

@@ -137,6 +137,17 @@ internal static class MapAssembler
                     $"{entityType.Name}.{generatedKeys[0].PropertyName}",
                     "[Generated] is not valid on a composite key"));
             }
+            else if ((Nullable.GetUnderlyingType(keys[0].ClrType) ?? keys[0].ClrType) is var keyType
+                && keyType != typeof(int) && keyType != typeof(long) && keyType != typeof(short))
+            {
+                // The database-generated strategy is the integer rowid/identity
+                // pattern; anything else silently mismapped before (crud.md's
+                // "single generated integer key" is now enforced, ADR-0020 add.1).
+                errors.Add(new MappingError(
+                    "MAP-019",
+                    $"{entityType.Name}.{keys[0].PropertyName}",
+                    $"a database-generated key must be an integer type; '{keys[0].ClrType.Name}' is not (client-generated GUIDs drop [Generated])"));
+            }
 
             return KeyStrategy.DatabaseGenerated;
         }

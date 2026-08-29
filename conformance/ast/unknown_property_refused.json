@@ -1,0 +1,9 @@
+{
+  "name": "unknown_property_refused",
+  "comment": "Criteria name properties, not columns; an unknown property is a named error, never silently ignored.",
+  "entity": "User",
+  "select": {
+    "where": [ { "op": "eq", "property": "NoSuchProperty", "value": 1 } ]
+  },
+  "expect": { "error": "QRY-006" }
+}

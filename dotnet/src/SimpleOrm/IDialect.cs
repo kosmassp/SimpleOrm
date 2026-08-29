@@ -29,6 +29,24 @@ public interface IDialect
     string LimitOffsetClause(string? limitParameter, string? offsetParameter);
 
     /// <summary>
+    /// Renders the SELECT for a criteria query AST (§10.4, ADR-0020): front-ends
+    /// produce <see cref="SelectAst"/> and never SQL text — the dialect turns the
+    /// AST into SQL. <paramref name="bindParameter"/> binds a value (with the
+    /// mapped property it compares against, so per-column conversion like
+    /// <c>[EnumAsInt]</c> applies) and returns its placeholder; call it in render
+    /// order. Delegate to <see cref="AnsiSelectRenderer.SelectSql"/> unless this
+    /// dialect's SQL disagrees with the reference rendering.
+    /// </summary>
+    string SelectSql(SelectAst select, BindCriteriaParameter bindParameter);
+
+    /// <summary>
+    /// Whether the database has real array parameters (§7.12; SQLite: no). False
+    /// is the IN-expansion strategy (<c>@ids_0…</c>); a dialect returning true
+    /// (Level 4 Postgres: <c>= ANY(@ids)</c>) takes over list binding itself.
+    /// </summary>
+    bool SupportsArrayParameters { get; }
+
+    /// <summary>
     /// Introspection query for a relation's columns (§7.25): parameter <c>@relation</c>,
     /// result columns <c>name, type, notnull, pk</c> (empty result = relation missing).
     /// Used by SchemaGuard and the future diff generator.

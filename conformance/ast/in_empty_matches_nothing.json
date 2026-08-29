@@ -1,0 +1,11 @@
+{
+  "name": "in_empty_matches_nothing",
+  "comment": "An empty IN list matches no rows, visibly: it renders a false predicate, never invalid SQL.",
+  "entity": "Role",
+  "select": {
+    "where": [ { "op": "in", "property": "Id", "values": [] } ]
+  },
+  "expect": { "sqlite": {
+    "sql": "select id, role_name, created_at, updated_at from roles where 1 = 0",
+    "parameters": [] } }
+}

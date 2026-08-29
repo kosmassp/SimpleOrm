@@ -74,7 +74,16 @@ internal static class ParameterBinder
 
         // An empty list becomes NULL: "x IN (NULL)" is valid SQL matching no rows.
         var replacement = names.Count == 0 ? "NULL" : string.Join(", ", names);
-        return Regex.Replace(sql, $"@{Regex.Escape(placeholder)}(?![A-Za-z0-9_])", replacement);
+
+        // Rewrite only real occurrences — a lookalike inside a string literal or
+        // comment is not a placeholder for expansion any more than for detection.
+        var builder = new StringBuilder(sql);
+        foreach (var (start, length) in SqlPlaceholders.Occurrences(sql, placeholder).Reverse())
+        {
+            builder.Remove(start, length).Insert(start, replacement);
+        }
+
+        return builder.ToString();
     }
 
     private static void AddParameter(DbCommand command, string name, object value)

@@ -16,7 +16,7 @@ Layout (populated milestone by milestone):
 | `crud-cases/` | generated CRUD + concurrency scenarios: insert/get/update/delete steps with snapshots (`as`/`from`), `$last` keys, and expected values or error codes | 7 (live) |
 | `diff-cases/` | generator diff scenarios (ADR-0017): `{ "current", "snapshot" \| null, "renames", "expect": { "isNew", "added", "removed", "renamed", "addedIndexes", "removedIndexes", "unsupported" } }` — both shapes in snapshot form, pure data, no database. `addedIndexes` entries are index names that must appear in the emitted create SQL; `unsupported` entries are substrings (usually the column name): messages differ per language, what they name may not | ADR-0017 (live) |
 | `snapshot-cases/` | exact snapshot exports (ADR-0017): `{ "entity", "kind"?, "asOfVersion", "generatedAt", "expect": <the full document> }` — each implementation exports its native fixture entity at the pinned time and must produce the expected document exactly (tables by columns, views by normalized DDL) | ADR-0017 (live) |
-| `ast/` | query AST with expected SQL per dialect | Level 2 |
+| `ast/` | criteria query AST as JSON with the exact expected SQL and ordered parameter values per dialect, or an error code (`QRY-006`/`QRY-007`) — rendering is pure, no database. Ops: `eq ne gt ge lt le like in is_null is_not_null and or not`; `select` carries `where` (implicitly ANDed), `orderBy` (`property` + optional `order: "desc"`), `limit`, `offset`; parameters are `@c0…` in render order (WHERE, then limit, then offset) | L2 M2 (live) |
 
 Rules:
 

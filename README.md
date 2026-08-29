@@ -91,6 +91,12 @@ public IReadOnlyList<Role> Roles { get; private set; } = [];   // resolved via i
 public UserRole? Grant { get; private set; }
 ```
 
+Criteria queries are an **AST rendered by the dialect** (ADR-0020) — front-ends
+never emit SQL text — with strict null semantics: `Criteria.Eq(p, null)` renders
+`is null` (never `= NULL`, which silently matches nothing), `Ne(p, null)` renders
+`is not null`, and an ordered comparison with null or a null inside an IN list is
+refused (`QRY-007`) instead of silently matching nothing.
+
 Rules that always hold: parameters bind from the args record's properties, both ways
 strictly (`PRM-001`/`PRM-002`); `IN (@ids)` expands a collection property to
 generated placeholders, always parameterized (an empty list matches no rows); dates

@@ -24,6 +24,35 @@ public sealed class SqliteDialect : IDialect
 
     public bool SupportsTransactionalDdl => true;
 
+    public string ColumnsInfoSql
+        => "select name, type, \"notnull\", pk from pragma_table_info(@relation)";
+
+    public bool IsDeclaredTypeCompatible(string declaredType, Type clrType, bool enumAsInt)
+    {
+        var type = Nullable.GetUnderlyingType(clrType) ?? clrType;
+        var declared = declaredType.Trim().ToUpperInvariant();
+        if (declared is "" or "ANY")
+        {
+            return true;   // untyped: SQLite enforces nothing, nothing to contradict
+        }
+
+        if (type.IsEnum)
+        {
+            return enumAsInt ? declared is "INT" or "INTEGER" : declared == "TEXT";
+        }
+
+        return declared switch
+        {
+            "INT" or "INTEGER" => type == typeof(int) || type == typeof(long) || type == typeof(short) || type == typeof(bool),
+            "REAL" => type == typeof(double) || type == typeof(float),
+            "BLOB" => type == typeof(byte[]) || type == typeof(Guid),
+            "TEXT" => type == typeof(string) || type == typeof(decimal) || type == typeof(Guid)
+                || type == typeof(DateTime) || type == typeof(DateTimeOffset)
+                || type.FullName is "System.DateOnly" or "System.TimeOnly",
+            _ => false,
+        };
+    }
+
     public DbTransaction BeginMigrationRunLock(DbConnection connection)
         => ((SqliteConnection)connection).BeginTransaction(deferred: false);   // BEGIN IMMEDIATE
 

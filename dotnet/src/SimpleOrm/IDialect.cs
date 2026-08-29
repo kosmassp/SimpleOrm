@@ -28,6 +28,16 @@ public interface IDialect
     /// <summary>Renders the limit/offset clause from pre-bound parameter names (§7.25); either may be null.</summary>
     string LimitOffsetClause(string? limitParameter, string? offsetParameter);
 
+    /// <summary>
+    /// Introspection query for a relation's columns (§7.25): parameter <c>@relation</c>,
+    /// result columns <c>name, type, notnull, pk</c> (empty result = relation missing).
+    /// Used by SchemaGuard and the future diff generator.
+    /// </summary>
+    string ColumnsInfoSql { get; }
+
+    /// <summary>The declared-type → CLR compatibility table (§7.25), honoring [EnumAsInt].</summary>
+    bool IsDeclaredTypeCompatible(string declaredType, Type clrType, bool enumAsInt);
+
     /// <summary>Whether the database has materialized views (SQLite: no; creating one throws <c>DDL-002</c>).</summary>
     bool SupportsMaterializedViews { get; }
 

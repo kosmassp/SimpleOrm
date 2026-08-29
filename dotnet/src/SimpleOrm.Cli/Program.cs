@@ -34,9 +34,14 @@ try
         "status" => await StatusAsync(),
         "baseline" => await BaselineAsync(),
         "export-metadata" => ExportMetadata(),
-        "validate" => Fail("validate arrives with SchemaGuard (milestone 6)"),
+        "validate" => await ValidateAsync(),
         _ => Usage(),
     };
+}
+catch (SchemaValidationException exception)
+{
+    Console.Error.WriteLine(exception.Message);
+    return 1;
 }
 catch (SimpleOrmException exception)
 {
@@ -56,7 +61,7 @@ int Usage()
           status                      list (version, object) states
           baseline --version <N>      record versions <= N without running them
           export-metadata [--out dir] write each entity's EntityMap JSON
-          validate                    (SchemaGuard, milestone 6)
+          validate                    SchemaGuard: full report or exit 0
 
         options:
           --assembly <path>   the application assembly containing migrations/entities
@@ -149,6 +154,18 @@ async Task<int> BaselineAsync()
     {
         await runner.BaselineAsync(version, CancellationToken.None);
         Console.WriteLine($"baselined at V{version:0000}");
+        return 0;
+    }
+}
+
+async Task<int> ValidateAsync()
+{
+    var (db, _) = await OpenAsync();
+    await using (db)
+    {
+        options.TryGetValue("namespace", out var migrationsNamespace);
+        await SchemaGuard.ValidateAsync(db, LoadAssembly(), migrationsNamespace, CancellationToken.None);
+        Console.WriteLine("valid");
         return 0;
     }
 }

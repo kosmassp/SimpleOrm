@@ -8,7 +8,7 @@ language-neutral [spec](spec/) and a [conformance suite](conformance/) grow alon
 it so the library can later be ported (Go, Java, PHP) and extended to other dialects
 (PostgreSQL, MySQL, SQL Server).
 
-**Status: Level 1, milestone 5 (migrations + CLI) done.** See
+**Status: Level 1, milestone 6 (SchemaGuard) done.** See
 [CLAUDE.md](CLAUDE.md) for the full project brief and
 [docs/decisions.md](docs/decisions.md) for the decision log.
 
@@ -112,8 +112,24 @@ dotnet run --project dotnet/src/SimpleOrm.Cli -- migrate --assembly App.dll --db
 
 Checksums (SHA-256 of rendered SQL) catch drift (`MIG-010`); on SQLite the whole
 run is one `BEGIN IMMEDIATE` transaction — a failed run applies nothing. The app
-never migrates at startup; `status`, `migrate down --to`, `baseline`, and
-`export-metadata` round out the CLI.
+never migrates at startup; `status`, `migrate down --to`, `baseline`, `validate`,
+and `export-metadata` round out the CLI.
+
+### Validation (SchemaGuard)
+
+Once at startup, and in a test calling the same code:
+
+```csharp
+await SchemaGuard.ValidateAsync(db, typeof(Commands).Assembly, ct);
+```
+
+Every registered query/command is prepared (never executed) and checked against the
+real schema — parameters both ways, result shape exactly, declared-type and
+nullability per column (`VAL-010`/`011`), `SELECT *` and non-UTC-timestamp lints
+(`VAL-020`/`021`) — entities are checked against their relations
+(`VAL-012`/`013`), and migrations must be applied, matching, and known
+(`MIG-030`/`010`/`011`). Expression columns require nullable members unless the
+SQL carries `-- notnull: col`. One exception carries the complete report.
 
 ## Layout
 

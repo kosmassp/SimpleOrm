@@ -31,6 +31,10 @@ public sealed class Db : IAsyncDisposable
 
     internal DbConnection Connection => _connection;
 
+    internal ResultMapper Mapper => _mapper;
+
+    internal TypeConverter Converter => _converter;
+
     public static async Task<Db> OpenAsync(string connectionString, DbOptions options, CancellationToken ct)
     {
         var connection = options.Dialect.CreateConnection(connectionString);

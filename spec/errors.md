@@ -72,13 +72,15 @@ these codes.
 |---|---|---|---|
 | `TX-001` | `BeginAsync` while a transaction is already active on the session | §7.17 | milestone 3 |
 
-## VAL — SchemaGuard (registered now, enforced milestone 6)
+## VAL — SchemaGuard (enforced milestone 6)
 
 | Code | Rule | Origin |
 |---|---|---|
 | `VAL-001` | SQL fails to prepare | §7.19 |
-| `VAL-010` | nullable column mapped to non-nullable property | §7.19 |
+| `VAL-010` | nullable column mapped to non-nullable property; expression columns require a nullable property unless the SQL carries `-- notnull: <col>` | §7.19 |
 | `VAL-011` | column declared type incompatible with property type / no handler | §7.19 |
+| `VAL-012` | mapped relation (table/view) not found in the database | milestone 6 |
+| `VAL-013` | mapped column not found in the relation | milestone 6 |
 | `VAL-020` | non-UTC / non-ISO date storage. Runtime rule (milestone 4): reading a stored datetime without a UTC/offset marker fails; binding a `DateTime` with `Kind == Unspecified` fails (`Local` is converted, `Utc` passes). Also a SchemaGuard lint (milestone 6). | §7.19, ADR-0003 |
 | `VAL-021` | `SELECT *` in registered SQL | §7.19 |
 

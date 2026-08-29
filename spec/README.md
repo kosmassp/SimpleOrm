@@ -12,7 +12,7 @@ Planned documents (each lands with the milestone that stabilizes it):
 | `mapping-rules.md` | naming conventions, construction, conversions, strictness | 4 (done) |
 | `errors.md` | error code registry (`MAP-`, `PRM-`, `MIG-`, `VAL-`, `CRUD-`, `TX-`) | 2+ (live; codes registered before rules are implemented) |
 | `migrations.md` | versioned code model, version table, checksums, locking, up/down semantics | 5 (done) |
-| `validation-rules.md` | every SchemaGuard rule with its error code | 6 |
+| `validation-rules.md` | every SchemaGuard rule with its error code | 6 (done) |
 | `query-ast.md` | query AST | Level 2 |
 
 Rules:

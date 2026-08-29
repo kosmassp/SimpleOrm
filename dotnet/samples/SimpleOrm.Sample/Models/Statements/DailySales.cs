@@ -7,6 +7,7 @@ namespace SimpleOrm.Sample.Models;
 /// projections carry no audit columns.
 /// </summary>
 [Statement("""
+    -- notnull: sales_date, transaction_count, total_amount
     select date(created_at) as sales_date,
            count(id)        as transaction_count,
            sum(amount)      as total_amount

@@ -190,7 +190,7 @@ public sealed class TypeMappingTests(SqliteFixture fixture)
 
         // MAP-031: unknown enum name in the column.
         Query<EmptyArgs, Transaction> badEnum = Query.Inline(
-            "select 1 as id, 1 as user_id, 'Nope' as status, '1' as amount, 0 as version, "
+            "select 1 as id, 1 as user_id, 'Nope' as status, '1' as amount, 0 as version, null as note, "
             + "'2026-01-01T00:00:00Z' as created_at, null as updated_at");
         Assert.Equal("MAP-031", (await Assert.ThrowsAsync<SimpleOrmException>(
             () => db.QueryAsync(badEnum, EmptyArgs.Value, CancellationToken.None))).Code);

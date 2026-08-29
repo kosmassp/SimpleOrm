@@ -17,6 +17,12 @@ public sealed class TransactionRepository(Db db) : Repository<Transaction>(db)
     public Task<IReadOnlyList<DailySales>> GetDailySalesAsync(DateTime sinceUtc, CancellationToken ct)
         => Db.QueryAsync<DailySales>(new DailySalesArgs(sinceUtc), ct);
 
-    public Task<int> SetStatusAsync(long id, TransactionStatus status, DateTime nowUtc, CancellationToken ct)
-        => Db.ExecuteAsync(Commands.SetTransactionStatus, new SetTransactionStatusArgs(id, status, nowUtc), ct);
+    /// <summary>Read-modify-write through the generated update — participates in optimistic concurrency (§7.16).</summary>
+    public async Task SetStatusAsync(long id, TransactionStatus status, DateTime nowUtc, CancellationToken ct)
+    {
+        var transaction = await GetAsync(id, ct);
+        transaction.Status = status;
+        transaction.UpdatedAtUtc = nowUtc;
+        await UpdateAsync(transaction, ct);
+    }
 }

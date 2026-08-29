@@ -1,15 +1,7 @@
 {
-  "entity": "Role",
-  "source": {
-    "kind": "table",
-    "name": "roles"
-  },
-  "key": {
-    "strategy": "database_generated",
-    "columns": [
-      "id"
-    ]
-  },
+  "object": "users",
+  "asOfVersion": 7,
+  "generatedAt": "2026-08-29T07:46:07.2378724Z",
   "columns": [
     {
       "column": "id",
@@ -19,9 +11,19 @@
       "generated": true
     },
     {
-      "column": "role_name",
+      "column": "name",
       "type": "string",
       "nullable": false
+    },
+    {
+      "column": "email",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "column": "display_name",
+      "type": "string",
+      "nullable": true
     },
     {
       "column": "created_at",
@@ -36,14 +38,23 @@
   ],
   "indexes": [
     {
-      "name": "ix_roles_role_name",
+      "name": "ix_users_email",
       "columns": [
         {
-          "column": "role_name",
+          "column": "email",
           "direction": "asc"
         }
       ],
       "unique": true
+    },
+    {
+      "name": "ix_users_display_name",
+      "columns": [
+        {
+          "column": "display_name",
+          "direction": "asc"
+        }
+      ]
     }
   ]
 }

@@ -29,15 +29,16 @@ public sealed class MigrationRunnerTests : IDisposable
         var runner = new MigrationRunner(db, typeof(User).Assembly, "SimpleOrm.Sample.Migrations");
 
         Assert.True(await runner.HasPendingAsync(CancellationToken.None));
-        Assert.Equal(2, await runner.MigrateAsync(CancellationToken.None));      // V0001 + V0002
+        Assert.Equal(7, await runner.MigrateAsync(CancellationToken.None));      // V0001..V0007
         Assert.Equal(0, await runner.MigrateAsync(CancellationToken.None));      // idempotent
         Assert.False(await runner.HasPendingAsync(CancellationToken.None));
 
-        var roles = await db.QueryAllAsync<Role>(CancellationToken.None);        // .Post seed ran
-        Assert.Equal("admin", Assert.Single(roles).Name);
+        // Seeds survived the V0004 rename; V0005 added the second role.
+        var roles = await db.QueryAllAsync<Role>(CancellationToken.None);
+        Assert.Equal(["admin", "user"], roles.Select(r => r.Name));
 
         var status = await runner.StatusAsync(CancellationToken.None);
-        Assert.Equal(7, status.Count);                                           // one row per (version, object)
+        Assert.Equal(13, status.Count);                                          // one row per (version, object)
         Assert.All(status, e => Assert.Equal(MigrationState.Applied, e.State));
     }
 

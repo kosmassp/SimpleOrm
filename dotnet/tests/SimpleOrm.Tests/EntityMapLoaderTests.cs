@@ -23,9 +23,9 @@ public sealed class EntityMapLoaderTests
         Assert.False(map.Properties.Single(p => p.ColumnName == "name").IsNullable);
         Assert.True(map.Properties.Single(p => p.ColumnName == "updated_at").IsNullable);
 
-        var index = Assert.Single(map.Indexes);
-        Assert.Equal("ix_users_email", index.Name);
-        Assert.True(index.Unique);
+        Assert.Equal(2, map.Indexes.Count);
+        Assert.True(map.Indexes.Single(i => i.Name == "ix_users_email").Unique);
+        Assert.False(map.Indexes.Single(i => i.Name == "ix_users_display_name").Unique);
     }
 
     [Fact]

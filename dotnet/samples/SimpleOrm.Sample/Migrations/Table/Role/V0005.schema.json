@@ -1,15 +1,7 @@
 {
-  "entity": "Role",
-  "source": {
-    "kind": "table",
-    "name": "roles"
-  },
-  "key": {
-    "strategy": "database_generated",
-    "columns": [
-      "id"
-    ]
-  },
+  "object": "roles",
+  "asOfVersion": 5,
+  "generatedAt": "2026-08-29T07:46:07.2378724Z",
   "columns": [
     {
       "column": "id",

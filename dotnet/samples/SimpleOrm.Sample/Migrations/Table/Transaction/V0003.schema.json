@@ -1,16 +1,7 @@
 {
-  "entity": "Transaction",
-  "source": {
-    "kind": "table",
-    "name": "transactions"
-  },
-  "key": {
-    "strategy": "database_generated",
-    "columns": [
-      "id"
-    ]
-  },
-  "version": "version",
+  "object": "transactions",
+  "asOfVersion": 3,
+  "generatedAt": "2026-08-29T07:46:07.2378724Z",
   "columns": [
     {
       "column": "id",
@@ -77,13 +68,6 @@
           "direction": "desc"
         }
       ]
-    }
-  ],
-  "relationships": [
-    {
-      "kind": "many_to_one",
-      "foreignKeyColumn": "user_id",
-      "references": "User"
     }
   ]
 }

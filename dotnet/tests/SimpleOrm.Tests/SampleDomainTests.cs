@@ -45,10 +45,9 @@ public sealed class SampleDomainTests(SqliteFixture fixture)
         Assert.Equal(19.99m, transaction.Amount);
         Assert.Null(transaction.User);                                 // navigation stays null at Level 1
 
-        await db.ExecuteAsync(
-            Commands.SetTransactionStatus,
-            new SetTransactionStatusArgs(transaction.Id, TransactionStatus.Completed, TestDb.SeedTime),
-            CancellationToken.None);
+        transaction.Status = TransactionStatus.Completed;
+        transaction.UpdatedAtUtc = TestDb.SeedTime;
+        await db.UpdateAsync(transaction, CancellationToken.None);
 
         var byUser = await db.Query<Transaction>()
             .Where(Criteria.Eq(nameof(Transaction.UserId), ada.Id))

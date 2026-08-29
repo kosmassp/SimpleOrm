@@ -10,6 +10,7 @@ public sealed class Role : BaseModel
     [Column]
     public long Id { get; set; }
 
-    [Column]
+    /// <summary>Column renamed to <c>role_name</c> by migration V0004.</summary>
+    [Column("role_name")]
     public required string Name { get; set; }
 }

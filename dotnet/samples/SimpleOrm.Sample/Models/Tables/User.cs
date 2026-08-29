@@ -3,6 +3,7 @@ namespace SimpleOrm.Sample.Models;
 /// <summary>Table <c>users</c> (STRICT). Key: <c>id</c>, database-generated.</summary>
 [Table("users")]
 [Index(nameof(Email), Unique = true)]
+[Index(nameof(DisplayName))]
 public sealed class User : BaseModel
 {
     [Key]

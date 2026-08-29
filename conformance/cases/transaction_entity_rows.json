@@ -1,10 +1,10 @@
 {
   "name": "transaction_entity_rows",
   "result": "Transaction",
-  "query": "select id, user_id, status, amount, version, created_at, updated_at from transactions",
+  "query": "select id, user_id, status, amount, version, note, created_at, updated_at from transactions",
   "expect": {
     "rows": [
-      { "id": 1, "user_id": 1, "status": "Completed", "amount": "19.99", "version": 0, "created_at": "2026-08-28T09:30:00.0000000Z", "updated_at": null }
+      { "id": 1, "user_id": 1, "status": "Completed", "amount": "19.99", "version": 0, "note": null, "created_at": "2026-08-28T09:30:00.0000000Z", "updated_at": null }
     ]
   }
 }

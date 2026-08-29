@@ -21,6 +21,10 @@ public sealed class UserRole : BaseModel
     [ForeignKey(typeof(Role))]
     public long RoleId { get; set; }
 
+    /// <summary>Added by migration V0005.</summary>
+    [Column]
+    public string? GrantedBy { get; set; }
+
     /// <summary>Populated only by the library (Level 2 loading); no public setter, so it can never disagree with <see cref="UserId"/>.</summary>
     [ManyToOne(nameof(UserId))]
     public User? User { get; private set; }

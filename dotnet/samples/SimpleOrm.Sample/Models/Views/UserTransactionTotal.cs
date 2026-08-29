@@ -12,7 +12,8 @@ namespace SimpleOrm.Sample.Models;
     select u.id              as user_id,
            u.name            as user_name,
            count(t.id)       as transaction_count,
-           coalesce(sum(t.amount), 0) as total_amount
+           coalesce(sum(t.amount), 0) as total_amount,
+           max(t.created_at) as last_transaction_at
     from users u
     left join transactions t on t.user_id = u.id
     group by u.id, u.name
@@ -31,4 +32,8 @@ public sealed class UserTransactionTotal
 
     [Column]
     public decimal TotalAmount { get; set; }
+
+    /// <summary>Added by migration V0006; null for users with no transactions.</summary>
+    [Column("last_transaction_at")]
+    public DateTime? LastTransactionAtUtc { get; set; }
 }

@@ -32,4 +32,8 @@ public sealed class Transaction : BaseModel
     [Version]
     [Column]
     public long Version { get; set; }
+
+    /// <summary>Added by migration V0003.</summary>
+    [Column]
+    public string? Note { get; set; }
 }

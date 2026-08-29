@@ -54,6 +54,15 @@
         }
       ],
       "unique": true
+    },
+    {
+      "name": "ix_users_display_name",
+      "columns": [
+        {
+          "column": "display_name",
+          "direction": "asc"
+        }
+      ]
     }
   ]
 }

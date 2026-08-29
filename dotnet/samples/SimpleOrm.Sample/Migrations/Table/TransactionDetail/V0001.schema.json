@@ -1,7 +1,7 @@
 {
   "object": "transaction_details",
   "asOfVersion": 1,
-  "generatedAt": "2026-08-29T07:39:51.6256155Z",
+  "generatedAt": "2026-08-29T07:46:07.2378724Z",
   "columns": [
     {
       "column": "id",

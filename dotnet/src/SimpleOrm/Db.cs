@@ -29,6 +29,8 @@ public sealed class Db : IAsyncDisposable
     /// <summary>The session's metadata loader (shared cache for this session).</summary>
     public EntityMapLoader Maps { get; }
 
+    internal DbConnection Connection => _connection;
+
     public static async Task<Db> OpenAsync(string connectionString, DbOptions options, CancellationToken ct)
     {
         var connection = options.Dialect.CreateConnection(connectionString);

@@ -22,6 +22,9 @@ public sealed class EntityMapLoader
 
     public EntityMap Load(Type entityType) => _cache.GetOrAdd(entityType, LoadCore);
 
+    /// <summary>Whether the type carries any mapping attributes (used by tooling such as export-metadata).</summary>
+    public static bool HasMappingAttributes(Type entityType) => AttributeMapLoader.HasMappingAttributes(entityType);
+
     private EntityMap LoadCore(Type entityType)
     {
         if (_options.ExplicitMaps.TryGetValue(entityType, out var factory))

@@ -11,7 +11,7 @@ Planned documents (each lands with the milestone that stabilizes it):
 | `metadata-model.md` | `EntityMap`: what it contains, JSON export format | 2 (done) |
 | `mapping-rules.md` | naming conventions, construction, conversions, strictness | 4 (done) |
 | `errors.md` | error code registry (`MAP-`, `PRM-`, `MIG-`, `VAL-`, `CRUD-`, `TX-`) | 2+ (live; codes registered before rules are implemented) |
-| `migrations.md` | file format, version table, checksums, locking, up/down semantics | 5 |
+| `migrations.md` | versioned code model, version table, checksums, locking, up/down semantics | 5 (done) |
 | `validation-rules.md` | every SchemaGuard rule with its error code | 6 |
 | `query-ast.md` | query AST | Level 2 |
 

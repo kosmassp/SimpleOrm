@@ -1,0 +1,15 @@
+{
+  "name": "migrate_two_versions",
+  "versions": [
+    { "version": 1, "steps": [ { "object": "widgets", "description": "create",
+        "up": ["create table widgets (id INTEGER PRIMARY KEY, name TEXT) STRICT"],
+        "down": ["drop table widgets"] } ] },
+    { "version": 2, "steps": [ { "object": "widgets", "description": "add_price",
+        "up": ["alter table widgets add column price TEXT"],
+        "down": ["alter table widgets drop column price"] } ] }
+  ],
+  "run": [
+    { "command": "migrate", "expect": { "applied": [[1, "widgets"], [2, "widgets"]] } },
+    { "command": "migrate", "expect": { "applied": [[1, "widgets"], [2, "widgets"]] } }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "baseline_records_only",
+  "versions": [
+    { "version": 1, "steps": [ { "object": "widgets", "description": "create",
+        "up": ["create table widgets (id INTEGER PRIMARY KEY) STRICT"] } ] }
+  ],
+  "run": [
+    { "command": "baseline", "version": 1, "expect": { "applied": [[1, "widgets"]] } },
+    { "command": "migrate", "expect": { "applied": [[1, "widgets"]] } }
+  ]
+}

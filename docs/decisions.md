@@ -591,3 +591,38 @@ Level 2."
 
 **Status.** Accepted (owner overrule of the Level 2 timing; §10.4 honored — the
 pulled-forward form IS the AST, no strings).
+
+## ADR-0013 — Migrations: versioned code, per-object, generated at authoring time (2026-08-29)
+
+**Context.** The brief specified versioned .sql files (Flyway-style). The owner:
+"I don''t want the migrate only run from sql file" — consistent with the inline-SQL
+philosophy throughout — and, after comparing EF/Hibernate-Flyway/Laravel plus the
+wider design space (state-based, hybrid-generated, DAG, snapshot, zero-downtime,
+dialect-abstraction schools), sketched a per-object structure with per-action
+data hooks. Auto-sync against shared databases was considered and rejected
+(rename-vs-drop ambiguity, no data migrations, SQLite ALTER limits, no history);
+the owner''s conclusion: "no auto migrate, but the migration is automatically
+generated."
+
+**Decision.**
+- **Structure:** root `V<version>` classes under `Migrations/` are the recorded,
+  checksummed units; they compose per-object steps
+  (`Migrations/Table/<Object>/V<version>_<Desc>.cs`, `View/…`) in explicit order.
+  Folder = namespace; one namespace per database. Autoscan validates (orphan steps
+  MIG-004, version mismatches MIG-003) but the root decides.
+- **Actions:** tables execute rename → add → remove → raw SQL regardless of
+  declaration order (the rename-first rule is the data-loss answer); views run as
+  declared. Optional per-action `Pre`/`Post` hooks carry data work and share the
+  version''s atomicity. Literal column specs keep applied migrations frozen;
+  metadata-rendered DDL only for initial creates (frozen by checksum).
+- **Recording:** one `schema_version` row per (version, object); checksum = SHA-256
+  of rendered Up SQL; full-plan validation (MIG-010/011/020) before execution; the
+  SQLite run = one `BEGIN IMMEDIATE` transaction (lock + whole-run atomicity).
+- **Auto vs manual dissolves at authoring:** the post-milestone-6 diff generator
+  writes these same artifacts by diffing metadata against a migrated database;
+  hand-written and generated versions interleave freely. Dev-sync
+  (`CreateTableAsync`) remains a dev/test utility; `baseline` covers fresh installs.
+- The sample''s test schema is now created exclusively by its `Migrations/` tree
+  (including seed data via a `.Post` hook); the CLI loads the app assembly.
+
+**Status.** Accepted.

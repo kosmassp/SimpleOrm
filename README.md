@@ -8,7 +8,7 @@ language-neutral [spec](spec/) and a [conformance suite](conformance/) grow alon
 it so the library can later be ported (Go, Java, PHP) and extended to other dialects
 (PostgreSQL, MySQL, SQL Server).
 
-**Status: Level 1, milestone 4 (strict mapping + types) done.** See
+**Status: Level 1, milestone 5 (migrations + CLI) done.** See
 [CLAUDE.md](CLAUDE.md) for the full project brief and
 [docs/decisions.md](docs/decisions.md) for the decision log.
 
@@ -81,6 +81,39 @@ from transactions t
 Zero children yield an empty list, never null. Custom types register an
 `ITypeHandler<T>` on `DbOptions.TypeHandlers` — the only path for types outside the
 fixed conversion table.
+
+### Migrations (versioned code, per object)
+
+Root versions under `Migrations/` are the recorded units; per-object steps hold the
+changes. Table actions always execute rename → add → remove; every action takes
+optional `Pre`/`Post` data hooks:
+
+```csharp
+public sealed class V0002 : MigrationVersion
+{
+    public override void Compose(VersionBuilder v) => v.Apply<Table.User.V0002_AddDisplayName>();
+}
+
+public sealed class V0002_AddDisplayName : TableMigration<User>
+{
+    public override void Action(TableActions a)
+    {
+        a.RenameColumn("name", "full_name");
+        a.AddColumn("display_name", "TEXT").Post("update users set display_name = full_name");
+    }
+
+    public override void Down(TableActions a) => a.Sql("…");
+}
+```
+
+```bash
+dotnet run --project dotnet/src/SimpleOrm.Cli -- migrate --assembly App.dll --db app.db --namespace App.Migrations
+```
+
+Checksums (SHA-256 of rendered SQL) catch drift (`MIG-010`); on SQLite the whole
+run is one `BEGIN IMMEDIATE` transaction — a failed run applies nothing. The app
+never migrates at startup; `status`, `migrate down --to`, `baseline`, and
+`export-metadata` round out the CLI.
 
 ## Layout
 

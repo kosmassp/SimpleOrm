@@ -34,6 +34,17 @@ public interface IDialect
     /// <summary>Whether the database has stored procedures / set-returning functions (SQLite: no).</summary>
     bool SupportsProcedures { get; }
 
+    /// <summary>Whether DDL participates in transactions (SQLite: yes) — §7.23.</summary>
+    bool SupportsTransactionalDdl { get; }
+
+    /// <summary>
+    /// The migration run lock (§7.23): a transaction held for the whole run. On
+    /// SQLite this is <c>BEGIN IMMEDIATE</c> — exclusive writer, and with
+    /// transactional DDL it also makes a failed run fully atomic. A future Postgres
+    /// dialect evolves this member (advisory lock + per-migration transactions).
+    /// </summary>
+    DbTransaction BeginMigrationRunLock(DbConnection connection);
+
     /// <summary>
     /// Renders the generated INSERT (§7.14): explicit column list, every
     /// non-generated column, <c>RETURNING</c> the key when the database generates it.

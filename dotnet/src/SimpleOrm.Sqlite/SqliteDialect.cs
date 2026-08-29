@@ -22,6 +22,11 @@ public sealed class SqliteDialect : IDialect
 
     public bool SupportsProcedures => false;
 
+    public bool SupportsTransactionalDdl => true;
+
+    public DbTransaction BeginMigrationRunLock(DbConnection connection)
+        => ((SqliteConnection)connection).BeginTransaction(deferred: false);   // BEGIN IMMEDIATE
+
     public string CreateViewSql(EntityMap map)
         => "create view if not exists " + map.RelationName + " as\n" + map.DefiningSql;
 

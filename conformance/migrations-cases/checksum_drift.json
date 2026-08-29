@@ -1,0 +1,14 @@
+{
+  "name": "checksum_drift",
+  "versions": [
+    { "version": 1, "steps": [ { "object": "widgets", "description": "create",
+        "up": ["create table widgets (id INTEGER PRIMARY KEY) STRICT"] } ] }
+  ],
+  "run": [
+    { "command": "migrate", "expect": { "applied": [[1, "widgets"]] } },
+    { "command": "migrate",
+      "versions": [ { "version": 1, "steps": [ { "object": "widgets", "description": "create",
+          "up": ["create table widgets (id INTEGER PRIMARY KEY, extra TEXT) STRICT"] } ] } ],
+      "expect": { "error": "MIG-010" } }
+  ]
+}

@@ -82,13 +82,18 @@ these codes.
 | `VAL-020` | non-UTC / non-ISO date storage. Runtime rule (milestone 4): reading a stored datetime without a UTC/offset marker fails; binding a `DateTime` with `Kind == Unspecified` fails (`Local` is converted, `Utc` passes). Also a SchemaGuard lint (milestone 6). | §7.19, ADR-0003 |
 | `VAL-021` | `SELECT *` in registered SQL | §7.19 |
 
-## MIG — migrations (registered now, enforced milestone 5)
+## MIG — migrations (enforced milestone 5)
 
 | Code | Rule | Origin |
 |---|---|---|
-| `MIG-010` | applied migration checksum changed | §7.23 |
-| `MIG-020` | `migrate down` past a version with no down file | §7.22 |
-| `MIG-030` | pending migrations at validation time | §7.24 |
+| `MIG-001` | migration class name malformed (roots are `V<version>`, object steps `V<version>_<Description>`) | ADR-0013 |
+| `MIG-002` | two roots declare the same version, or one version composes the same object twice | ADR-0013 |
+| `MIG-003` | an object step's version differs from the root version composing it | ADR-0013 |
+| `MIG-004` | an object step is not composed into any root version | ADR-0013 |
+| `MIG-010` | applied migration checksum changed (checksum = SHA-256 of the rendered Up SQL) | §7.23 |
+| `MIG-011` | an applied version is unknown to the code | ADR-0013 |
+| `MIG-020` | `migrate down` past a version with no down statements | §7.22 |
+| `MIG-030` | pending migrations at validation time | §7.24 (milestone 6) |
 
 ## CRUD — generated CRUD (registered now, enforced milestone 7)
 

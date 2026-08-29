@@ -1,0 +1,11 @@
+{
+  "name": "down_missing",
+  "versions": [
+    { "version": 1, "steps": [ { "object": "widgets", "description": "create",
+        "up": ["create table widgets (id INTEGER PRIMARY KEY) STRICT"] } ] }
+  ],
+  "run": [
+    { "command": "migrate", "expect": { "applied": [[1, "widgets"]] } },
+    { "command": "down", "to": 0, "expect": { "error": "MIG-020" } }
+  ]
+}

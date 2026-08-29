@@ -98,6 +98,10 @@ reading an unloaded navigation never fires SQL:
 await db.LoadAsync(tx, nameof(Transaction.User), ct);          // one entity, one query
 await db.LoadEachAsync(users, nameof(User.Transactions), ct);  // N entities, still one query
 await db.LoadEachAsync(users, nameof(User.Roles), ct);         // many-to-many: two (link, targets)
+
+var page = await db.Query<User>()                              // eager (ADR-0022): root query +
+    .Include(nameof(User.Transactions), nameof(User.Profile))  // one batch load per navigation —
+    .OrderBy("Id").Limit(20).ToListAsync(ct);                  // paging stays correct, no join fan-out
 ```
 
 Criteria queries are an **AST rendered by the dialect** (ADR-0020) — front-ends

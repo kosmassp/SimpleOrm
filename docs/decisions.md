@@ -1219,3 +1219,38 @@ refuted or confirmed). The confirmed findings and decisions:
   (the case format cannot seed drifted data or shape-broken metadata).
 
 **Status.** Accepted.
+
+## ADR-0022 — L2 M4: eager loading is multi-query, not joins (2026-08-29)
+
+ADR-0019 sketched M4 as "join-based includes through the AST; reshaping joined
+rows with per-result identity". Building M3 changed the calculus, and per §13
+the change is recorded rather than silently made:
+
+- **Eager loading ships as `Include(params string[])` on the criteria chain**:
+  the root query runs, then **one batch load per included navigation** (the M3
+  machinery — `LoadEachAsync` — with its structural identity, target-key
+  ordering, chunking, and REL codes). `SingleAsync`/`SingleOrDefaultAsync`
+  eager-load their one row the same way. An unknown navigation is `REL-001`
+  even when the query matches no rows. This is the "requested eagerly, loaded
+  automatically with the query" contract of ADR-0019 add.1, with every round
+  trip still visible and countable: 1 + one per navigation (many-to-many: two).
+- **Why not joins now.** (1) Paging: a JOIN multiplies root rows, so
+  `Limit`/`Offset` on the joined set limits child rows, not roots — the classic
+  ORM bug; multi-query pages correctly by construction. (2) Per-result identity
+  falls out of M3's key-tuple maps instead of needing joined-row deduplication.
+  (3) It is Eloquent's actual strategy (`with()` runs separate queries), the
+  ergonomic reference the owner has favored throughout. (4) The join machinery
+  earns its complexity only when criteria can *filter on related data* — a
+  front-end feature no milestone needs yet.
+- **What this defers, explicitly**: joins in `SelectAst` and joined-row graph
+  reshaping move out of the Level 2 exit criteria; they land when
+  filtering-on-related arrives (Level 2 extension or Level 3), and the
+  json_group_array nesting path (§7.10) remains the single-round-trip option
+  meanwhile. **Open for the owner**: whether a join-based single-query include
+  mode is still wanted as an alternative (EF offers both as "single vs. split
+  query"); the AST was left extensible for it.
+- Conformance: eager loading composes two already-pinned primitives (the
+  criteria query, `ast/`; batch loading, `load-cases/`), so it is pinned by
+  implementation tests rather than a third case family duplicating both.
+
+**Status.** Accepted. Amends ADR-0019's M4 sketch.

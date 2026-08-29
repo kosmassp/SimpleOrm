@@ -166,6 +166,43 @@ public sealed class RelationshipLoadingTests(SqliteFixture fixture)
     }
 
     [Fact]
+    public async Task Include_eager_loads_with_the_query()
+    {
+        await using var db = await TestDb.OpenAsync(fixture);
+        var (ada, grace, t1, t2, t3) = await SeedAsync(db);
+        await db.InsertAsync(
+            new UserProfile { UserId = ada.Id, Bio = "Included", CreatedAtUtc = TestDb.SeedTime },
+            CancellationToken.None);
+
+        // Requested eagerly → loaded automatically with the query (ADR-0022):
+        // one root query + one batch load per included navigation.
+        var users = await db.Query<User>()
+            .Where(Criteria.In(nameof(User.Id), ada.Id, grace.Id))
+            .OrderBy(nameof(User.Id))
+            .Include(nameof(User.Transactions), nameof(User.Profile))
+            .ToListAsync(CancellationToken.None);
+
+        Assert.Equal([t1.Id, t2.Id], users[0].Transactions.Select(t => t.Id));
+        Assert.Equal("Included", users[0].Profile!.Bio);
+        Assert.Equal([t3.Id], users[1].Transactions.Select(t => t.Id));
+        Assert.Null(users[1].Profile);
+
+        // The single-row terminals eager-load too.
+        var single = await db.Query<Transaction>()
+            .Where(Criteria.Eq(nameof(Transaction.Id), t1.Id))
+            .Include(nameof(Transaction.User))
+            .SingleAsync(CancellationToken.None);
+        Assert.Equal(ada.Id, single.User!.Id);
+
+        // An unknown navigation refuses even when the query matches nothing.
+        var refused = await Assert.ThrowsAsync<SimpleOrmException>(() => db.Query<User>()
+            .Where(Criteria.Eq(nameof(User.Id), -1))
+            .Include("NoSuchNavigation")
+            .ToListAsync(CancellationToken.None));
+        Assert.Equal("REL-001", refused.Code);
+    }
+
+    [Fact]
     public async Task Null_foreign_key_leaves_the_navigation_null()
     {
         await using var db = await TestDb.OpenAsync(fixture);

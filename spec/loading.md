@@ -34,6 +34,28 @@ await db.LoadEachAsync(users, nameof(User.Transactions), ct);         // the bat
 - Loading overwrites the navigation with fresh state (a reload is a reload);
   entities the call did not name are untouched.
 
+## Eager loading (`Include`, ADR-0022)
+
+Eager loading is the same contract requested **with the query**: the criteria
+chain's `Include(navigations…)` runs the root query and then one batch load per
+included navigation — multi-query, never a row-multiplying join, so paging
+stays correct and every round trip stays visible and countable
+(1 + one per navigation; many-to-many: two).
+
+```csharp
+var users = await db.Query<User>()
+    .Where(Criteria.Ge("CreatedAtUtc", since))
+    .Include(nameof(User.Transactions), nameof(User.Profile))
+    .OrderBy("Id").Limit(20)
+    .ToListAsync(ct);
+```
+
+The single-row terminals eager-load their row identically. An unknown
+navigation is `REL-001` even when the query matches no rows. Includes are
+single-level (a navigation of the root); deeper graphs load explicitly from the
+loaded entities. The `json_group_array` nesting pattern (mapping-rules.md)
+remains the single-round-trip alternative.
+
 ## Per kind
 
 | kind | fills | notes |

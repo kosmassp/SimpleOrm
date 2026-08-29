@@ -15,6 +15,7 @@ public sealed class CriteriaQuery<TEntity>
     private readonly Db _db;
     private readonly List<Criteria> _where = [];
     private readonly List<Ordering> _orderings = [];
+    private readonly List<string> _includes = [];
     private long? _limit;
     private long? _offset;
 
@@ -45,8 +46,36 @@ public sealed class CriteriaQuery<TEntity>
         return this;
     }
 
-    public Task<IReadOnlyList<TEntity>> ToListAsync(CancellationToken ct)
-        => _db.ExecuteCriteriaAsync<TEntity>(BuildCommand, ct);
+    /// <summary>
+    /// Eager loading (ADR-0022): the named navigations load automatically with
+    /// the query — the root query plus **one batch load per navigation** (M3
+    /// machinery: visible round trips, correct paging, shared instances). An
+    /// unknown name is <c>REL-001</c>, even when the query matches no rows.
+    /// Repeatable; duplicates load once.
+    /// </summary>
+    public CriteriaQuery<TEntity> Include(params string[] navigations)
+    {
+        foreach (var navigation in navigations)
+        {
+            if (!_includes.Contains(navigation))
+            {
+                _includes.Add(navigation);
+            }
+        }
+
+        return this;
+    }
+
+    public async Task<IReadOnlyList<TEntity>> ToListAsync(CancellationToken ct)
+    {
+        var rows = await _db.ExecuteCriteriaAsync<TEntity>(BuildCommand, ct).ConfigureAwait(false);
+        foreach (var navigation in _includes)
+        {
+            await _db.LoadEachAsync(rows, navigation, ct).ConfigureAwait(false);
+        }
+
+        return rows;
+    }
 
     /// <summary>Exactly one row: zero throws <c>QRY-001</c>, more than one throws <c>QRY-002</c>.</summary>
     public async Task<TEntity> SingleAsync(CancellationToken ct)

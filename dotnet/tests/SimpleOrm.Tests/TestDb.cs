@@ -23,7 +23,7 @@ internal static class TestDb
         // The schema arrives the production way: the sample's versioned migrations.
         await new MigrationRunner(db, typeof(User).Assembly, "SimpleOrm.Sample.Migrations").MigrateAsync(ct);
 
-        foreach (var table in new[] { "transaction_details", "transactions", "user_roles", "roles", "users" })   // incl. seeded roles
+        foreach (var table in new[] { "transaction_details", "transactions", "user_roles", "user_profiles", "roles", "users" })   // incl. seeded roles
         {
             Command<EmptyArgs> clear = Query.Inline("delete from " + table);
             await db.ExecuteAsync(clear, EmptyArgs.Value, ct);

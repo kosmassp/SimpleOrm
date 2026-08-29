@@ -1,0 +1,17 @@
+{
+  "name": "transaction_concurrency",
+  "steps": [
+    { "op": "insert", "entity": "Transaction",
+      "values": { "user_id": 1, "status": "Pending", "amount": "10", "version": 0,
+                  "created_at": "2026-08-28T09:30:00.0000000Z" } },
+    { "op": "get", "entity": "Transaction", "key": "$last", "as": "a" },
+    { "op": "get", "entity": "Transaction", "key": "$last", "as": "b" },
+    { "op": "update", "from": "a", "values": { "amount": "12" } },
+    { "op": "update", "from": "b", "values": { "amount": "99" }, "expect": { "error": "CRUD-010" } },
+    { "op": "get", "entity": "Transaction", "key": "$last",
+      "expect": { "values": { "amount": "12", "version": 1, "status": "Pending" } } },
+    { "op": "delete", "from": "b", "expect": { "error": "CRUD-010" } },
+    { "op": "delete", "from": "a" },
+    { "op": "get", "entity": "Transaction", "key": "$last", "expect": { "error": "CRUD-001" } }
+  ]
+}

@@ -61,4 +61,14 @@ public interface IDialect
     /// Placeholders are <c>@&lt;column&gt;</c>.
     /// </summary>
     string InsertSql(EntityMap map);
+
+    /// <summary>
+    /// Renders the generated full-row UPDATE by key (§7.15/§7.16): every mapped
+    /// non-key, non-version column; when a version column is mapped, it is set to
+    /// <c>version + 1</c> and the WHERE clause requires the caller's version.
+    /// </summary>
+    string UpdateSql(EntityMap map);
+
+    /// <summary>Renders the generated DELETE by key; with <paramref name="checkVersion"/>, the WHERE also requires the version (§7.16).</summary>
+    string DeleteSql(EntityMap map, bool checkVersion);
 }

@@ -446,6 +446,143 @@ public sealed class Db : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Generated full-row update by key (§7.15): writes every mapped non-key column.
+    /// With a version column (§7.16): sets <c>version = version + 1</c>, requires the
+    /// entity's version in the WHERE, throws <see cref="ConcurrencyException"/>
+    /// (<c>CRUD-010</c>) on zero rows, and bumps the entity's version on success.
+    /// Without one, zero rows is <c>CRUD-001</c>. Partial updates are hand SQL.
+    /// </summary>
+    public async Task UpdateAsync<TEntity>(TEntity entity, CancellationToken ct)
+        where TEntity : class
+    {
+        var map = RequireWritableKeyed<TEntity>();
+        CheckNavigationConsistency(map, entity);
+
+        using var command = _connection.CreateCommand();
+        command.Transaction = _transaction;
+        command.CommandText = Options.Dialect.UpdateSql(map);
+        // Bind SET values, key values, and the current version for the WHERE;
+        // database-generated non-key columns are never written.
+        foreach (var property in map.Properties.Where(p => p.IsKey || p.IsVersion || !p.IsGenerated))
+        {
+            AddEntityParameter(command, property, entity);
+        }
+
+        var affected = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        if (affected == 0)
+        {
+            if (map.VersionProperty is { } version)
+            {
+                throw new ConcurrencyException(
+                    typeof(TEntity).Name,
+                    $"update affected no rows: version {version.Property.GetValue(entity)} is stale or the row is gone");
+            }
+
+            throw new SimpleOrmException(
+                "CRUD-001", typeof(TEntity).Name, $"update affected no rows: no row with key ({FormatKey(KeyOf(map, entity))})");
+        }
+
+        if (map.VersionProperty is { } bump)
+        {
+            var current = Convert.ToInt64(bump.Property.GetValue(entity), System.Globalization.CultureInfo.InvariantCulture);
+            bump.Property.SetValue(entity, Convert.ChangeType(
+                current + 1, bump.ClrType, System.Globalization.CultureInfo.InvariantCulture));
+        }
+    }
+
+    /// <summary>
+    /// Generated delete (§7.16). Pass a key (or tuple) to delete by key — a missing
+    /// row throws <c>CRUD-001</c>. Pass the entity to get the version-checked form
+    /// when a version column is mapped: zero rows throws
+    /// <see cref="ConcurrencyException"/> (<c>CRUD-010</c>).
+    /// </summary>
+    public async Task DeleteAsync<TEntity>(object keyOrEntity, CancellationToken ct)
+        where TEntity : class
+    {
+        var map = RequireWritableKeyed<TEntity>();
+
+        using var command = _connection.CreateCommand();
+        command.Transaction = _transaction;
+
+        var byEntity = keyOrEntity is TEntity;
+        var checkVersion = byEntity && map.VersionProperty is not null;
+        command.CommandText = Options.Dialect.DeleteSql(map, checkVersion);
+
+        if (byEntity)
+        {
+            var entity = (TEntity)keyOrEntity;
+            foreach (var key in map.KeyProperties)
+            {
+                AddEntityParameter(command, key, entity);
+            }
+
+            if (checkVersion)
+            {
+                AddEntityParameter(command, map.VersionProperty!, entity);
+            }
+        }
+        else
+        {
+            var keyValues = ValidateKey(map, keyOrEntity);
+            for (var i = 0; i < keyValues.Length; i++)
+            {
+                var parameter = command.CreateParameter();
+                parameter.ParameterName = "@" + map.KeyProperties[i].ColumnName;
+                parameter.Value = _converter.ToDatabase(keyValues[i], $"{typeof(TEntity).Name} key[{i}]");
+                command.Parameters.Add(parameter);
+            }
+        }
+
+        var affected = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        if (affected == 0)
+        {
+            if (checkVersion)
+            {
+                throw new ConcurrencyException(
+                    typeof(TEntity).Name, "delete affected no rows: the version is stale or the row is gone");
+            }
+
+            throw new SimpleOrmException(
+                "CRUD-001", typeof(TEntity).Name,
+                $"delete affected no rows: no row with key ({FormatKey(byEntity ? KeyOf(map, keyOrEntity) : keyOrEntity)})");
+        }
+    }
+
+    private EntityMap RequireWritableKeyed<TEntity>()
+        where TEntity : class
+    {
+        var map = Maps.Load<TEntity>();
+        if (map.Kind != RelationKind.Table)
+        {
+            throw new SimpleOrmException(
+                "CRUD-003", typeof(TEntity).Name, $"is {map.Kind}-backed and read-only; writes need a table");
+        }
+
+        if (map.KeyProperties.Count == 0)
+        {
+            throw new SimpleOrmException("CRUD-002", typeof(TEntity).Name, "the entity defines no key");
+        }
+
+        return map;
+    }
+
+    private void AddEntityParameter(DbCommand command, PropertyMap property, object entity)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "@" + property.ColumnName;
+        parameter.Value = _converter.ToDatabase(
+            property.Property.GetValue(entity),
+            $"{entity.GetType().Name}.{property.PropertyName}",
+            property.EnumAsInt);
+        command.Parameters.Add(parameter);
+    }
+
+    private static object KeyOf(EntityMap map, object entity)
+        => map.KeyProperties.Count == 1
+            ? map.KeyProperties[0].Property.GetValue(entity)!
+            : string.Join(", ", map.GetKeyValues(entity));
+
     private void CheckNavigationConsistency(EntityMap map, object entity)
     {
         foreach (var relationship in map.Relationships)

@@ -107,9 +107,9 @@ var affected = await db.ExecuteAsync(Commands.MarkShipped, new MarkShippedArgs(I
 await tx.CommitAsync(ct);
 
 // CRUD by key
-var id = await db.InsertAsync(order, ct);      // RETURNING the generated key
+await db.InsertAsync(order, ct);               // generated key written back onto the entity (ADR-0014)
 await db.UpdateAsync(order, ct);               // full row by key; optimistic concurrency if a version column is mapped
-await db.DeleteAsync<Order>(id, ct);
+await db.DeleteAsync<Order>(id, ct);           // by key (CRUD-001 if missing); pass the entity for the version-checked form
 
 // Read by key (ADR-0006, implemented early by ADR-0012) — strict variant throws with a code; composite keys pass a tuple
 var order = await db.GetAsync<Order>(7, ct);
@@ -173,7 +173,7 @@ The registry is what the validator enumerates. (The Level 4 source-generator ide
 
 ### Writes
 
-14. CRUD is generated from `EntityMap`, never from attributes directly. Explicit column lists always. Generated keys via the dialect (`RETURNING`; SQLite supports it since 3.35). Key strategies: database-generated (`INTEGER PRIMARY KEY`), client-generated GUID, natural/composite. (No sequence strategy at Level 1 — SQLite has no sequences; it returns with a dialect that has them.) The FK property is what is written; if a `[ManyToOne]` navigation is non-null and its object's key disagrees with the FK property, `Insert`/`Update` throw a consistency error instead of writing (ADR-0005 addendum). Read-by-key is generated the same way: `GetAsync<T>` (missing row throws) / `GetOrDefaultAsync<T>` (null); composite keys pass a tuple validated at runtime against the `EntityMap` key — arity, order, and types, each mismatch a named error (ADR-0006). CRUD writes exist only for table-backed entities; view-, materialized-view-, statement-, and procedure-backed entities are read-only and refuse writes with a named error (ADR-0008). `InsertAsync` and metadata-generated DDL (`CreateTableAsync`/`CreateViewAsync`, IF NOT EXISTS dev/test utility — versioned migrations stay the schema-evolution path) were pulled forward to milestone 3 by ADR-0011; Update/Delete/Get remain milestone 7.
+14. CRUD is generated from `EntityMap`, never from attributes directly. Explicit column lists always. Generated keys via the dialect (`RETURNING`; SQLite supports it since 3.35). Key strategies: database-generated (`INTEGER PRIMARY KEY`), client-generated GUID, natural/composite. (No sequence strategy at Level 1 — SQLite has no sequences; it returns with a dialect that has them.) The FK property is what is written; if a `[ManyToOne]` navigation is non-null and its object's key disagrees with the FK property, `Insert`/`Update` throw a consistency error instead of writing (ADR-0005 addendum). Read-by-key is generated the same way: `GetAsync<T>` (missing row throws) / `GetOrDefaultAsync<T>` (null); composite keys pass a tuple validated at runtime against the `EntityMap` key — arity, order, and types, each mismatch a named error (ADR-0006). CRUD writes exist only for table-backed entities; view-, materialized-view-, statement-, and procedure-backed entities are read-only and refuse writes with a named error (ADR-0008). `InsertAsync` and metadata-generated DDL (`CreateTableAsync`/`CreateViewAsync`, IF NOT EXISTS dev/test utility — versioned migrations stay the schema-evolution path) were pulled forward by ADR-0011, `GetAsync` by ADR-0012; Update/Delete + concurrency completed in milestone 7 (ADR-0014: insert returns `Task`, the key lands on the entity; `DeleteAsync` takes a key for the plain form or the entity for the version-checked form).
 15. `Update` writes every mapped non-key column by key. Partial updates are hand SQL at Level 1.
 16. Optimistic concurrency when a version column is mapped: `... SET version = version + 1 WHERE <key> = @key AND version = @version`; zero rows affected throws `ConcurrencyException` (`CRUD-010`). Same on `Delete`.
 

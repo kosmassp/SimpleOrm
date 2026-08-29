@@ -13,6 +13,7 @@ Layout (populated milestone by milestone):
 | `cases/` | query/error cases: `{ "name", "result", "query", "expect": { "rows" } \| { "error": "MAP-001" } }` — value encoding defined in spec/mapping-rules.md | 4 (live) |
 | `fixtures/` | seed data (`seed.json`) applied before each case | 4 (live) |
 | `migrations-cases/` | runner scenarios: a migration set as data plus `{ "command", "expect": { "applied" } \| { "error" } }` steps (format in spec/migrations.md) | 5 (live) |
+| `crud-cases/` | generated CRUD + concurrency scenarios: insert/get/update/delete steps with snapshots (`as`/`from`), `$last` keys, and expected values or error codes | 7 (live) |
 | `ast/` | query AST with expected SQL per dialect | Level 2 |
 
 Rules:

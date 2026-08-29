@@ -682,3 +682,31 @@ Owner refinements to the generator/apply design:
 
 Error codes for sync refusal/reporting are registered when this is implemented
 (post-milestone 6, with the generator).
+
+## ADR-0014 — CRUD completion: update/delete semantics (2026-08-29)
+
+**Decisions finalized with milestone 7:**
+
+- **`InsertAsync` returns `Task`** (final answer to the §6 "returns id" sketch,
+  deferred by ADR-0011): the generated key is written onto the entity — one rule
+  that works for int64, GUID, and composite strategies alike. §6 updated.
+- **`UpdateAsync(entity)`** writes every mapped non-key column by key (§7.15).
+  With a `[Version]` column: `SET … , version = version + 1 WHERE key AND
+  version = @old`; zero rows throws `ConcurrencyException` (`CRUD-010`); on success
+  the entity''s version is bumped in memory so sequential updates keep working.
+  Without one, zero rows is `CRUD-001` (strict: silently updating nothing is a bug).
+  Navigation/FK consistency (`CRUD-004`) and read-only guards (`CRUD-003`) apply as
+  on insert.
+- **`DeleteAsync<T>(keyOrEntity)`** — one method, runtime dispatch: a key (or
+  tuple, ADR-0006 validation) deletes by key, zero rows `CRUD-001`; passing the
+  entity gives the version-checked form (`CRUD-010` when stale). §7.16''s "same on
+  delete" made concrete.
+- `ConcurrencyException` is its own public type carrying `CRUD-010` (§7.16 names
+  it), distinct from `SimpleOrmException` so callers can catch the
+  reload-and-retry case specifically.
+- Client-GUID keys proven end to end (empty GUID assigned on insert).
+- Conformance gains `crud-cases/`: step scripts with snapshots (`as`/`from`) and
+  `$last` keys so stale-version conflicts are expressible as data; the lifecycle
+  and concurrency cases run through the same generated paths every port must match.
+
+**Status.** Accepted.

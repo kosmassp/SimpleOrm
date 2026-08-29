@@ -20,6 +20,11 @@ public abstract class BaseDao<TEntity>(Db db)
 
     public Task InsertAsync(TEntity entity, CancellationToken ct) => Db.InsertAsync(entity, ct);
 
+    public Task UpdateAsync(TEntity entity, CancellationToken ct) => Db.UpdateAsync(entity, ct);
+
+    /// <summary>Key (or tuple) deletes by key; passing the entity gives the version-checked delete.</summary>
+    public Task DeleteAsync(object keyOrEntity, CancellationToken ct) => Db.DeleteAsync<TEntity>(keyOrEntity, ct);
+
     public Task<IReadOnlyList<TEntity>> GetAllAsync(CancellationToken ct) => Db.QueryAllAsync<TEntity>(ct);
 
     /// <summary>Read by key (ADR-0006/0012); composite keys pass a tuple. Missing row throws <c>CRUD-001</c>.</summary>

@@ -8,7 +8,7 @@ language-neutral [spec](spec/) and a [conformance suite](conformance/) grow alon
 it so the library can later be ported (Go, Java, PHP) and extended to other dialects
 (PostgreSQL, MySQL, SQL Server).
 
-**Status: Level 1, milestone 6 (SchemaGuard) done.** See
+**Status: Level 1, milestone 7 (CRUD + concurrency) done.** See
 [CLAUDE.md](CLAUDE.md) for the full project brief and
 [docs/decisions.md](docs/decisions.md) for the decision log.
 
@@ -30,6 +30,16 @@ var users = await db.Query<User>()                                 // criteria: 
            Criteria.Ge("CreatedAtUtc", since))                     // Where args are ANDed
     .OrderBy("Name").Limit(20)
     .ToListAsync(ct);
+
+await db.InsertAsync(user, ct);        // generated; key written back
+user.Name = "Ada Lovelace";
+await db.UpdateAsync(user, ct);        // full row by key
+await db.DeleteAsync<User>(user.Id, ct);
+
+// Optimistic concurrency ([Version] column): stale writes throw CRUD-010
+tx.Amount = 12m;
+await db.UpdateAsync(tx, ct);          // SET ... version = version + 1 WHERE id = @id AND version = @old
+                                       // zero rows → ConcurrencyException; tx.Version bumped on success
 
 await using (var tx = await db.BeginAsync(ct))
 {

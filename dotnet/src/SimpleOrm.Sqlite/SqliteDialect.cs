@@ -123,6 +123,31 @@ public sealed class SqliteDialect : IDialect
         return sql;
     }
 
+    public string UpdateSql(EntityMap map)
+    {
+        var assignments = map.Properties
+            .Where(p => !p.IsKey && !p.IsVersion)
+            .Select(p => p.ColumnName + " = @" + p.ColumnName)
+            .ToList();
+        if (map.VersionProperty is { } version)
+        {
+            assignments.Add(version.ColumnName + " = " + version.ColumnName + " + 1");
+        }
+
+        return "update " + map.RelationName
+            + " set " + string.Join(", ", assignments)
+            + " where " + KeyPredicate(map)
+            + (map.VersionProperty is { } v ? " and " + v.ColumnName + " = @" + v.ColumnName : string.Empty);
+    }
+
+    public string DeleteSql(EntityMap map, bool checkVersion)
+        => "delete from " + map.RelationName
+            + " where " + KeyPredicate(map)
+            + (checkVersion && map.VersionProperty is { } v ? " and " + v.ColumnName + " = @" + v.ColumnName : string.Empty);
+
+    private static string KeyPredicate(EntityMap map)
+        => string.Join(" and ", map.KeyProperties.Select(k => k.ColumnName + " = @" + k.ColumnName));
+
     /// <summary>CLR → SQLite storage type per the §7.9 conventions (dates/decimals/GUIDs as TEXT).</summary>
     private static string ColumnType(PropertyMap property)
     {

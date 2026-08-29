@@ -97,11 +97,11 @@ these codes.
 | `MIG-020` | `migrate down` past a version with no down statements | §7.22 |
 | `MIG-030` | pending migrations at validation time | §7.24 (milestone 6) |
 
-## CRUD — generated CRUD (registered now, enforced milestone 7)
+## CRUD — generated CRUD (enforced; Insert/Get early via ADR-0011/0012, Update/Delete milestone 7)
 
 | Code | Rule | Origin |
 |---|---|---|
-| `CRUD-001` | `GetAsync` found no row for the key | ADR-0006 (enforced early, ADR-0012) |
+| `CRUD-001` | no row for the key (`GetAsync`; zero rows affected by an unversioned update/delete) | ADR-0006/0014 |
 | `CRUD-002` | key shape mismatch (arity, order, or types vs. `EntityMap` key), or the entity defines no key | ADR-0006 (enforced early, ADR-0012) |
 | `CRUD-003` | write attempted on a read-only relation source | ADR-0008 |
 | `CRUD-004` | `[ManyToOne]` navigation key disagrees with FK property on write | ADR-0005 add.1 |

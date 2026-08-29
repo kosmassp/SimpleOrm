@@ -1,56 +1,47 @@
 {
   "object": "transactions",
   "asOfVersion": 1,
-  "generatedAt": "2026-08-29T07:39:51.6256155Z",
+  "generatedAt": "2026-08-29T09:44:25.1779298Z",
   "columns": [
     {
+      "column": "amount",
+      "type": "TEXT",
+      "nullable": false
+    },
+    {
+      "column": "created_at",
+      "type": "TEXT",
+      "nullable": false
+    },
+    {
       "column": "id",
-      "type": "int64",
+      "type": "INTEGER",
       "nullable": false,
       "key": true,
       "generated": true
     },
     {
-      "column": "user_id",
-      "type": "int64",
-      "nullable": false
-    },
-    {
       "column": "status",
-      "type": "enum_text",
-      "nullable": false
-    },
-    {
-      "column": "amount",
-      "type": "decimal",
-      "nullable": false
-    },
-    {
-      "column": "version",
-      "type": "int64",
-      "nullable": false
-    },
-    {
-      "column": "created_at",
-      "type": "datetime",
+      "type": "TEXT",
       "nullable": false
     },
     {
       "column": "updated_at",
-      "type": "datetime",
+      "type": "TEXT",
       "nullable": true
+    },
+    {
+      "column": "user_id",
+      "type": "INTEGER",
+      "nullable": false
+    },
+    {
+      "column": "version",
+      "type": "INTEGER",
+      "nullable": false
     }
   ],
   "indexes": [
-    {
-      "name": "ix_transactions_user_id",
-      "columns": [
-        {
-          "column": "user_id",
-          "direction": "asc"
-        }
-      ]
-    },
     {
       "name": "ix_transactions_status_created",
       "columns": [
@@ -61,6 +52,15 @@
         {
           "column": "created_at",
           "direction": "desc"
+        }
+      ]
+    },
+    {
+      "name": "ix_transactions_user_id",
+      "columns": [
+        {
+          "column": "user_id",
+          "direction": "asc"
         }
       ]
     }

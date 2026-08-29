@@ -133,6 +133,40 @@ run is one `BEGIN IMMEDIATE` transaction — a failed run applies nothing. The a
 never migrates at startup; `status`, `migrate down --to`, `baseline`, `validate`,
 and `export-metadata` round out the CLI.
 
+### Generating migrations (ADR-0017)
+
+The model is the final truth; the committed `V000N.schema.json` snapshots are the
+recorded past; `diff` turns the difference into the next migration — ordinary
+source with literal SQL and a generated `Down()` derived from the snapshot, no
+database needed:
+
+```bash
+dotnet run --project dotnet/src/SimpleOrm.Cli -- diff --assembly App.dll --out App/Migrations --namespace App.Migrations --name AddNote
+```
+
+Renames are declared, never inferred (`--rename users.name=full_name`); removals
+need `--allow-remove` (`DDL-003`); type/nullability changes and NOT NULL additions
+are refused as `DDL-004` — write those by hand with
+`AddColumn(name, type, nullable: false, defaultSql: …)`. The everyday loop:
+
+1. change the model → `diff` → review the generated `V000N` → build → `migrate`
+2. `snapshot --out App/Migrations` to record the new shape (commit it)
+
+`shadow` rebuilds the snapshots from history instead — it replays every version
+into a throwaway database and introspects after each one, which both regenerates
+lost files and proves the snapshots match the migrations. When history is too long
+to replay, `--from V000N` trusts version N (baseline restored from the committed
+snapshots, nothing below N verified) and regenerates only `--to V000M`:
+
+```bash
+dotnet run --project dotnet/src/SimpleOrm.Cli -- shadow --assembly App.dll --out App/Migrations --from V0007 --to V0009
+```
+
+`migrate --force` then syncs any remaining live-schema gap to the model after
+migrations run: additive fixes apply immediately, deletions only with
+`--allow-delete` (`DDL-003`), and anything inexpressible is reported (`DDL-004`),
+never guessed.
+
 ### Validation (SchemaGuard)
 
 Once at startup, and in a test calling the same code:

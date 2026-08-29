@@ -1,43 +1,43 @@
 {
   "object": "transaction_details",
   "asOfVersion": 1,
-  "generatedAt": "2026-08-29T07:46:07.2378724Z",
+  "generatedAt": "2026-08-29T09:44:25.1779298Z",
   "columns": [
     {
+      "column": "created_at",
+      "type": "TEXT",
+      "nullable": false
+    },
+    {
+      "column": "description",
+      "type": "TEXT",
+      "nullable": false
+    },
+    {
       "column": "id",
-      "type": "int64",
+      "type": "INTEGER",
       "nullable": false,
       "key": true,
       "generated": true
     },
     {
-      "column": "transaction_id",
-      "type": "int64",
-      "nullable": false
-    },
-    {
-      "column": "description",
-      "type": "string",
-      "nullable": false
-    },
-    {
       "column": "quantity",
-      "type": "int32",
+      "type": "INTEGER",
+      "nullable": false
+    },
+    {
+      "column": "transaction_id",
+      "type": "INTEGER",
       "nullable": false
     },
     {
       "column": "unit_price",
-      "type": "decimal",
-      "nullable": false
-    },
-    {
-      "column": "created_at",
-      "type": "datetime",
+      "type": "TEXT",
       "nullable": false
     },
     {
       "column": "updated_at",
-      "type": "datetime",
+      "type": "TEXT",
       "nullable": true
     }
   ],

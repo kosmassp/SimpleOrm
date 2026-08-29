@@ -38,6 +38,9 @@ public interface IDialect
     /// <summary>The declared-type → CLR compatibility table (§7.25), honoring [EnumAsInt].</summary>
     bool IsDeclaredTypeCompatible(string declaredType, Type clrType, bool enumAsInt);
 
+    /// <summary>The storage (declared) type a mapped property renders to — what CREATE TABLE emits (§7.25).</summary>
+    string StorageType(PropertyMap property);
+
     /// <summary>Whether the database has materialized views (SQLite: no; creating one throws <c>DDL-002</c>).</summary>
     bool SupportsMaterializedViews { get; }
 

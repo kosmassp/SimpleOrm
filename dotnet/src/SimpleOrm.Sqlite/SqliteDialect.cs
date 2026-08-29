@@ -148,6 +148,8 @@ public sealed class SqliteDialect : IDialect
     private static string KeyPredicate(EntityMap map)
         => string.Join(" and ", map.KeyProperties.Select(k => k.ColumnName + " = @" + k.ColumnName));
 
+    public string StorageType(PropertyMap property) => ColumnType(property);
+
     /// <summary>CLR → SQLite storage type per the §7.9 conventions (dates/decimals/GUIDs as TEXT).</summary>
     private static string ColumnType(PropertyMap property)
     {

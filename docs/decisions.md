@@ -774,3 +774,62 @@ Four owner directives in one pass:
   refusing honestly is the designed behavior until generation lands.
 
 **Status.** Accepted.
+
+## ADR-0017 — The generator toolchain: diff, shadow, force sync, derived downs (2026-08-29)
+
+The migration-authoring toolchain designed in ADR-0013's addenda, built. The model
+is the final truth; snapshots are the recorded past; the diff between them is the
+next migration. Four pieces:
+
+- **Snapshot format v2 (storage types, name-sorted).** `V000N.schema.json` columns
+  now carry the dialect **storage type** (`TEXT`/`INTEGER`/`REAL`/`BLOB`, via the
+  new `IDialect.StorageType`) instead of neutral CLR tokens, plus `key`/`generated`
+  flags; columns and indexes are name-sorted. Rationale: storage types are what
+  CREATE TABLE emits and what `pragma table_info` reports, so the same file is
+  (a) directly renderable as DDL (derived downs, trusted baselines) and
+  (b) byte-comparable with database introspection — the metadata-side
+  `snapshot` command and the introspection-side `shadow` command must produce
+  identical files, and the test suite asserts they do. `TableSchema` is the shared
+  model; `SchemaSnapshot.Export/Parse` own the format.
+- **`simpleorm diff`** (`MigrationGenerator` in core): compares each table's
+  metadata against its latest committed snapshot — **no database involved** — and
+  emits ordinary migration source: a per-object step with literal SQL actions and
+  a **generated `Down()`** derived from the snapshot, plus the root `V000N` class
+  (new tables FK-ordered). Generated code is indistinguishable from hand-written
+  code and freezes the same way; nothing special is recorded. Renames are declared
+  (`--rename table.old=new`, repeatable), **never inferred**. Removals require
+  `--allow-remove` (`DDL-003`). Type/nullability changes and non-nullable
+  additions are refused as `DDL-004` — write those by hand (the `AddColumn`
+  default/backfill path exists for exactly that). Views are excluded: their
+  definitions self-reflect; view changes stay hand-authored (`RecreateView`).
+- **`simpleorm shadow`** (`SqliteShadow` in the SQLite package): rebuilds
+  snapshots from *history* rather than from the model — replays the versions into
+  a throwaway temp database, introspects the touched tables after each version
+  (`pragma table_info` / `index_list` origin `c` / `index_xinfo`), and writes the
+  per-version files. Full-rebuild equality with the committed snapshots is the
+  proof that snapshots derive from migrations. **Range form (owner):**
+  `--from V000N [--to V000M]` trusts version N as correct — the baseline state is
+  reconstructed from the committed snapshots at ≤ N (rendered straight to DDL),
+  versions ≤ N are baselined in the shadow's version table and **never verified**,
+  and only (N, M] replays and re-snapshots. This is the "migration history has
+  grown too long to fight" escape valve, and the mechanism a future squash reuses.
+  The rowid-alias key (`INTEGER PRIMARY KEY`, single pk) introspects as
+  `key`+`generated`; composite-key order is not recorded (name-sorted), which DDL
+  reconstruction tolerates because SQLite doesn't care.
+- **`simpleorm migrate --force`** (`SchemaSync` in core): after migrations apply,
+  compares the live schema against the model and syncs the difference. Additive
+  fixes (missing table, missing nullable column) apply immediately; deletions
+  (extra columns) only with `--allow-delete` (`DDL-003`, off by default — "delete
+  is rather fearful"); type/nullability mismatches and non-nullable additions are
+  reported as `DDL-004` and never auto-applied. Renames are never inferred here
+  either — an undeclared rename syncs as add + (gated) drop.
+
+First live run: the shadow rebuild exposed real drift the metadata-side snapshot
+command had papered over — `Role` declares `ix_roles_role_name` (unique) but no
+migration ever created it. `diff` then authored `V0008_AddRoleNameIndex`
+(committed in the sample) and converged: a second `diff` reports no changes,
+SchemaGuard validates clean. New codes: `DDL-003`, `DDL-004`. CLI grew repeated
+and boolean flag parsing (`--rename` ×N, `--force`, `--allow-delete`,
+`--allow-remove`).
+
+**Status.** Accepted.

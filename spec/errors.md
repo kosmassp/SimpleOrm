@@ -65,6 +65,8 @@ these codes.
 |---|---|---|---|
 | `DDL-001` | schema creation requested for a relation source it does not apply to | ADR-0011 | milestone 3 |
 | `DDL-002` | materialized-view creation on a dialect without materialized views | ADR-0008 add.3 | milestone 3 |
+| `DDL-003` | a destructive change requires its explicit flag (`--allow-remove` on diff, `--allow-delete` on force sync) | ADR-0017 | generator |
+| `DDL-004` | a change the generator/sync cannot express safely (type/nullability change, non-nullable addition) — write the migration by hand | ADR-0017 | generator |
 
 ## TX — transactions and session
 

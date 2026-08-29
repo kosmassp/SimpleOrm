@@ -1,42 +1,51 @@
 {
   "object": "users",
   "asOfVersion": 7,
-  "generatedAt": "2026-08-29T07:46:07.2378724Z",
+  "generatedAt": "2026-08-29T09:44:25.1779298Z",
   "columns": [
     {
+      "column": "created_at",
+      "type": "TEXT",
+      "nullable": false
+    },
+    {
+      "column": "display_name",
+      "type": "TEXT",
+      "nullable": true
+    },
+    {
+      "column": "email",
+      "type": "TEXT",
+      "nullable": false
+    },
+    {
       "column": "id",
-      "type": "int64",
+      "type": "INTEGER",
       "nullable": false,
       "key": true,
       "generated": true
     },
     {
       "column": "name",
-      "type": "string",
-      "nullable": false
-    },
-    {
-      "column": "email",
-      "type": "string",
-      "nullable": false
-    },
-    {
-      "column": "display_name",
-      "type": "string",
-      "nullable": true
-    },
-    {
-      "column": "created_at",
-      "type": "datetime",
+      "type": "TEXT",
       "nullable": false
     },
     {
       "column": "updated_at",
-      "type": "datetime",
+      "type": "TEXT",
       "nullable": true
     }
   ],
   "indexes": [
+    {
+      "name": "ix_users_display_name",
+      "columns": [
+        {
+          "column": "display_name",
+          "direction": "asc"
+        }
+      ]
+    },
     {
       "name": "ix_users_email",
       "columns": [
@@ -46,15 +55,6 @@
         }
       ],
       "unique": true
-    },
-    {
-      "name": "ix_users_display_name",
-      "columns": [
-        {
-          "column": "display_name",
-          "direction": "asc"
-        }
-      ]
     }
   ]
 }

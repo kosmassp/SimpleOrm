@@ -68,6 +68,51 @@ advisory locks (Level 4 Postgres) evolve this member.
 fresh-database path pairs it with metadata-generated schema
 (`CreateTableAsync`, dev/test) or a restored dump.
 
+## Snapshots (schema history as data)
+
+Each table's shape is recorded per version in
+`Migrations/Table/<Object>/V000N.schema.json` (ADR-0016/0017 — tables only; views,
+statements, and procedures self-reflect from their defining SQL):
+
+```json
+{ "object": "roles", "asOfVersion": 4, "generatedAt": "…Z",
+  "columns": [ { "column": "id", "type": "INTEGER", "nullable": false,
+                 "key": true, "generated": true }, … ],
+  "indexes": [ { "name": "ix_…", "columns": [ { "column": "…", "direction": "asc" } ],
+                 "unique": true } ] }
+```
+
+Column `type` is the dialect **storage type** (what CREATE TABLE emits and what
+introspection reports), columns and indexes are **name-sorted** — so the same file
+is producible two ways, and the two must be byte-identical apart from
+`generatedAt`:
+
+- **from metadata** (`snapshot`): the current model rendered at the last version
+  touching each object;
+- **from history** (`shadow`): the migrations replayed into a throwaway database,
+  each touched table introspected after each version.
+
+That equality is the integrity check between model and history. Snapshots are also
+directly renderable as DDL: derived `Down()` bodies and trusted baselines come from
+them.
+
+## The generator toolchain (ADR-0017)
+
+- **`diff`** — metadata vs the latest committed snapshot, no database: emits a
+  normal per-object step (literal SQL, generated Down derived from the snapshot)
+  plus the composing root, new tables FK-ordered. Generated code freezes exactly
+  like hand-written code. Renames are **declared** (`--rename table.old=new`),
+  never inferred. Removals gate on `--allow-remove` (`DDL-003`); type/nullability
+  changes and non-nullable additions are `DDL-004` — hand-written, using the
+  literal `AddColumn(name, type, nullable, defaultSql)` path.
+- **`shadow`** — rebuilds the snapshot files from history (above). The range form
+  `--from V000N [--to V000M]` **trusts** version N: the baseline is reconstructed
+  from the committed snapshots at ≤ N (no verification below N), versions ≤ N are
+  baselined, and only (N, M] replays and re-snapshots.
+- **`migrate --force`** — post-migration live-schema sync to the model: additive
+  fixes apply; deletions require `--allow-delete` (`DDL-003`); inexpressible
+  changes are reported as `DDL-004` and never auto-applied.
+
 ## Conformance cases
 
 `conformance/migrations-cases/*.json`: a migration set as data plus commands and

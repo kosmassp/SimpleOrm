@@ -1,20 +1,10 @@
 {
-  "object": "users",
-  "asOfVersion": 2,
+  "object": "roles",
+  "asOfVersion": 4,
   "generatedAt": "2026-08-29T09:44:25.1779298Z",
   "columns": [
     {
       "column": "created_at",
-      "type": "TEXT",
-      "nullable": false
-    },
-    {
-      "column": "display_name",
-      "type": "TEXT",
-      "nullable": true
-    },
-    {
-      "column": "email",
       "type": "TEXT",
       "nullable": false
     },
@@ -26,7 +16,7 @@
       "generated": true
     },
     {
-      "column": "name",
+      "column": "role_name",
       "type": "TEXT",
       "nullable": false
     },
@@ -36,16 +26,5 @@
       "nullable": true
     }
   ],
-  "indexes": [
-    {
-      "name": "ix_users_email",
-      "columns": [
-        {
-          "column": "email",
-          "direction": "asc"
-        }
-      ],
-      "unique": true
-    }
-  ]
+  "indexes": []
 }

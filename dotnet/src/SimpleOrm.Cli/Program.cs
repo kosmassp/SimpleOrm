@@ -75,7 +75,10 @@ int Usage()
                                       (MIG-012) unless --force recreates it; --force then
                                       also syncs the live schema to the model (additive
                                       only; deletions need --allow-delete, DDL-003)
-          migrate down --to <N>       revert versions above N
+          migrate down --to <N> [--snapshots <MigrationsDir>] [--force]
+                                      revert versions above N; rollbacks derive from the
+                                      snapshots (embedded in the assembly, or --snapshots);
+                                      Down() overrides; no snapshot is MIG-020
           status                      list (version, object) states
           baseline --version <N>      record versions <= N without running them
           export-metadata [--out dir] write each entity's EntityMap JSON
@@ -139,7 +142,11 @@ async Task<(Db Db, MigrationRunner Runner)> OpenAsync()
     var connectionString = db.Contains('=') ? db : $"Data Source={db}";
     var session = await Db.OpenAsync(
         connectionString, new DbOptions { Dialect = new SqliteDialect() }, CancellationToken.None);
-    return (session, new MigrationRunner(session, LoadAssembly(), Option("namespace")));
+
+    // Rollbacks derive from the snapshots (ADR-0018): embedded in the assembly by
+    // default, or read from the source Migrations dir via --snapshots.
+    var snapshots = Option("snapshots") is { } snapshotDir ? SnapshotSet.FromDirectory(snapshotDir) : null;
+    return (session, new MigrationRunner(session, LoadAssembly(), Option("namespace"), snapshots));
 }
 
 async Task<int> MigrateAsync()

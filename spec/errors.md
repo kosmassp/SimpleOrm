@@ -97,7 +97,8 @@ these codes.
 | `MIG-010` | applied migration checksum changed (checksum = SHA-256 of the rendered Up SQL) | §7.23 |
 | `MIG-011` | an applied version is unknown to the code | ADR-0013 |
 | `MIG-012` | a view's live definition does not match the step's expected previous definition (changed outside migrations); `--force` recreates it | ADR-0017 add.1 |
-| `MIG-020` | `migrate down` past a version with no down statements | §7.22 |
+| `MIG-020` | `migrate down` past a step whose rollback cannot be derived from the snapshots (none embedded/found, or a type/nullability change) and no `Down()` override | ADR-0018 |
+| `MIG-021` | a migration statement failed to execute; the message names the statement | ADR-0018 |
 | `MIG-030` | pending migrations at validation time | §7.24 (milestone 6) |
 
 ## CRUD — generated CRUD (enforced; Insert/Get early via ADR-0011/0012, Update/Delete milestone 7)

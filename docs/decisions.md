@@ -914,3 +914,50 @@ model wants a plain one (or vice versa) is a different object — the constraint
 semantics differ — so it diffs as add + gated remove, never as a silent match.
 
 **Status.** Accepted.
+
+## ADR-0018 — Rollbacks derive at runtime from the snapshots; nobody writes Down (2026-08-29)
+
+Owner, rejecting the plan to backfill (or keep generating) `Down()` bodies:
+"i don't like adding down to each migration. Down could be deducted from the
+previous schema." ADR-0016 said downs derive from snapshots; ADR-0017 realized
+that at *authoring* time by generating `Down()` into steps. This goes the rest of
+the way: **no step carries down DDL at all** — the runner deduces it at
+`migrate down` time from the versioned snapshots.
+
+- **Derivation.** For each step being reverted, the runner resolves the object's
+  snapshot at that version and the latest one before it (creation when none).
+  Tables: the one thing two shapes cannot reveal is whether a column moved or was
+  replaced — a rename and a drop+add look identical — so the step's **typed
+  `RenameColumn` actions** are inverted first, data-preservingly, and the
+  remaining shape diff derives the rest: dropped columns restored (a NOT NULL
+  restore lands nullable with a notice — the constraint and the data are not
+  derivable; hooks carry data), added columns dropped, indexes reverted
+  structurally (add.2). Views: expected-definition guard on the current DDL
+  (MIG-012 — a rollback must not silently destroy an outside hotfix either), drop,
+  previous definition restored. A same-column type/nullability change is not
+  derivable → `MIG-020`, hand-write `Down()`. Data-only steps derive an empty
+  rollback (schema unchanged is the correct structural answer); their data work
+  belongs to `PreDown`/`PostDown` — the sample's V0005 seed now demonstrates it
+  (its re-seed after a hookless rollback tripped V0008's unique index; the
+  `PreDown` delete closes the cycle).
+- **Precedence.** A hand-written `Down()` is the manual override and always wins;
+  `PreDown`/`PostDown` hooks wrap whichever core runs. The whole reverting range
+  resolves before anything executes (§7.23); `MIG-020` now means "no snapshot to
+  derive from and no override" rather than "no down file".
+- **Snapshots travel with the assembly.** The runner needs history at rollback
+  time, deployed or not, so `Migrations/**/*.schema.json` are **embedded
+  resources** (one csproj line; `SnapshotSet.FromAssembly` reads them,
+  `--snapshots <dir>` overrides from source). `SnapshotDdl` (create table/index
+  from a snapshot) moved into the core — the shadow's trusted baseline and the
+  deriver share it.
+- **The generator emits no `Down()` anymore** (table or view steps; the sample's
+  V0008 was stripped accordingly). Its diff logic and the deriver are the same
+  algorithm at two moments; the runtime one wins because it needs no regeneration
+  when snapshots change and it keeps migrations pure Up.
+- Also: migration statement failures now name the failing SQL (`MIG-021`) —
+  found the hard way while debugging the deriver's rename handling.
+
+Proven end-to-end: the sample's full 8-version history migrates up, down to zero,
+and up again — with not a single `Down()` in the codebase.
+
+**Status.** Accepted. Supersedes ADR-0017's generated-`Down()` emission.

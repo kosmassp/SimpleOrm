@@ -140,8 +140,8 @@ public static class SqliteShadow
                     continue;   // table born after the trusted version
                 }
 
-                Execute(connection, CreateTableSql(latest.Parsed.Schema));
-                foreach (var indexSql in CreateIndexSql(latest.Parsed.Schema))
+                Execute(connection, SnapshotDdl.CreateTableSql(latest.Parsed.Schema));
+                foreach (var indexSql in SnapshotDdl.CreateIndexSql(latest.Parsed.Schema))
                 {
                     Execute(connection, indexSql);
                 }
@@ -191,43 +191,6 @@ public static class SqliteShadow
         command.Parameters.AddWithValue("@name", relation);
         return command.ExecuteScalar() is string sql ? SchemaSnapshot.NormalizeDdl(sql) : null;
     }
-
-    private static string CreateTableSql(TableSchema schema)
-    {
-        var builder = new StringBuilder("create table if not exists ").Append(schema.Name).Append(" (");
-        var first = true;
-        foreach (var column in schema.Columns)
-        {
-            builder.Append(first ? "\n    " : ",\n    ").Append(column.Name).Append(' ');
-            first = false;
-            if (column.Key && column.Generated)
-            {
-                builder.Append("INTEGER PRIMARY KEY");   // the rowid alias spelling
-                continue;
-            }
-
-            builder.Append(column.StorageType);
-            if (!column.Nullable)
-            {
-                builder.Append(" NOT NULL");
-            }
-        }
-
-        var plainKeys = schema.Columns.Where(c => c.Key && !c.Generated).ToArray();
-        if (plainKeys.Length > 0 && !schema.Columns.Any(c => c.Key && c.Generated))
-        {
-            builder.Append(",\n    primary key (").Append(string.Join(", ", plainKeys.Select(k => k.Name))).Append(')');
-        }
-
-        return builder.Append("\n) STRICT").ToString();
-    }
-
-    private static IEnumerable<string> CreateIndexSql(TableSchema schema)
-        => schema.Indexes.Select(index =>
-            "create " + (index.Unique ? "unique " : string.Empty) + "index if not exists " + index.Name
-            + " on " + schema.Name + " ("
-            + string.Join(", ", index.Columns.Select(p => p.ColumnName + (p.Descending ? " desc" : string.Empty)))
-            + ")");
 
     // --- introspection --------------------------------------------------------------
 

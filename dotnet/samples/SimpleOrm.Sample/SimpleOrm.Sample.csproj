@@ -11,5 +11,11 @@
     <ProjectReference Include="..\..\src\SimpleOrm\SimpleOrm.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The versioned snapshots ship inside the assembly (ADR-0018): the runner
+         derives migrate-down rollbacks from them, deployed or not. -->
+    <EmbeddedResource Include="Migrations\**\*.schema.json" />
+  </ItemGroup>
+
 
 </Project>

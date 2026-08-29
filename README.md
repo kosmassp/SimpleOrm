@@ -119,8 +119,6 @@ public sealed class V0002_AddDisplayName : TableMigration<User>
         a.RenameColumn("name", "full_name");
         a.AddColumn("display_name", "TEXT").Post("update users set display_name = full_name");
     }
-
-    public override void Down(TableActions a) => a.Sql("…");
 }
 ```
 
@@ -133,13 +131,26 @@ run is one `BEGIN IMMEDIATE` transaction — a failed run applies nothing. The a
 never migrates at startup; `status`, `migrate down --to`, `baseline`, `validate`,
 and `export-metadata` round out the CLI.
 
+**Nobody writes `Down()`** (ADR-0018): `migrate down` derives each rollback from
+the versioned snapshots — typed renames invert data-preservingly, removed columns
+come back, added ones drop, indexes revert, a view's previous definition is
+restored. Embed the snapshots so rollbacks work deployed:
+
+```xml
+<EmbeddedResource Include="Migrations\**\*.schema.json" />
+```
+
+`Down()` stays available as a manual override, and `PreDown`/`PostDown` hooks
+carry the data work the schema history can't know (a seed step deletes its rows
+in `PreDown`, for example). No snapshot and no override refuses honestly
+(`MIG-020`).
+
 ### Generating migrations (ADR-0017)
 
 The model is the final truth; the committed `V000N.schema.json` snapshots are the
 recorded past; `diff` turns the difference into the next migration — ordinary
-source with literal SQL and a generated `Down()` derived from the snapshot, no
-database needed. Tables diff by columns; views (and, on capable dialects,
-materialized views) diff by their normalized DDL:
+source with literal SQL, no database needed. Tables diff by columns; views (and,
+on capable dialects, materialized views) diff by their normalized DDL:
 
 ```bash
 dotnet run --project dotnet/src/SimpleOrm.Cli -- diff --assembly App.dll --out App/Migrations --namespace App.Migrations --name AddNote

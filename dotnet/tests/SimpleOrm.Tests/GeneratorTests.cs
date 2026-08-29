@@ -120,7 +120,7 @@ public sealed class GeneratorTests
     }
 
     [Fact]
-    public void Emitted_new_table_step_creates_up_and_drops_down()
+    public void Emitted_new_table_step_is_literal_and_has_no_down()
     {
         var diff = MigrationGenerator.Diff(Map, Dialect, snapshot: null, NoRenames);
         var code = MigrationGenerator.EmitTableStep(
@@ -130,11 +130,13 @@ public sealed class GeneratorTests
         Assert.Contains("class V0003_CreateWidgets : TableMigration<global::GenModels.Widget>", code);
         Assert.Contains("create table if not exists gen_widgets", code);
         Assert.Contains("ix_gen_widgets_name", code);
-        Assert.Contains("actions.DropTable();", code);
+
+        // ADR-0018: nobody writes Down — the runner derives it from the snapshots.
+        Assert.DoesNotContain("Down(", code);
     }
 
     [Fact]
-    public void Emitted_change_step_has_literal_actions_and_derived_down()
+    public void Emitted_change_step_has_literal_actions_and_no_down()
     {
         var snapshot = Snapshot([Id(), NameCol(), new TableSchema.Column("remark", "TEXT", nullable: true), new TableSchema.Column("legacy", "TEXT", nullable: true)]);
         var diff = MigrationGenerator.Diff(Map, Dialect, snapshot, new Dictionary<string, string> { ["remark"] = "note" });
@@ -143,14 +145,11 @@ public sealed class GeneratorTests
 
         Assert.Contains("actions.RenameColumn(\"remark\", \"note\");", code);
         Assert.Contains("actions.RemoveColumn(\"legacy\");", code);
-
-        // The Down derives from the snapshot: reverse rename, restore the removed column.
-        Assert.Contains("actions.RenameColumn(\"note\", \"remark\");", code);
-        Assert.Contains("actions.AddColumn(\"legacy\", \"TEXT\");", code);
+        Assert.DoesNotContain("Down(", code);
     }
 
     [Fact]
-    public void Emitted_view_create_is_literal_with_a_guarded_drop_down()
+    public void Emitted_view_create_is_literal_and_has_no_down()
     {
         var code = MigrationGenerator.EmitViewStep(
             "My.Migrations", typeof(Widget), "View", "widget_totals",
@@ -158,12 +157,12 @@ public sealed class GeneratorTests
 
         Assert.Contains("namespace My.Migrations.View.Widget;", code);
         Assert.Contains("actions.Sql(\"create view widget_totals as select 1 as one\");", code);
-        Assert.Contains("actions.ExpectDefinition(\"create view widget_totals as select 1 as one\");", code);
-        Assert.Contains("actions.Sql(\"drop view if exists widget_totals\");", code);
+        Assert.DoesNotContain("Down(", code);
+        Assert.DoesNotContain("ExpectDefinition", code);   // a create has nothing previous to expect
     }
 
     [Fact]
-    public void Emitted_view_change_guards_the_previous_definition_and_derives_the_down()
+    public void Emitted_view_change_guards_the_previous_definition_and_has_no_down()
     {
         var code = MigrationGenerator.EmitViewStep(
             "My.Migrations", typeof(Widget), "View", "widget_totals",
@@ -173,11 +172,9 @@ public sealed class GeneratorTests
 
         // Up: expect the previous definition (MIG-012 on outside drift), drop, create the new one.
         Assert.Contains("actions.ExpectDefinition(\"create view widget_totals as select 1 as one\");", code);
+        Assert.Contains("actions.Sql(\"drop view if exists widget_totals\");", code);
         Assert.Contains("actions.Sql(\"create view widget_totals as select 1 as one, 2 as two\");", code);
-
-        // Down: expect the new definition, then restore the previous one from the snapshot.
-        Assert.Contains("actions.ExpectDefinition(\"create view widget_totals as select 1 as one, 2 as two\");", code);
-        Assert.Contains("actions.Sql(\"create view widget_totals as select 1 as one\");", code);
+        Assert.DoesNotContain("Down(", code);
     }
 
     [Fact]

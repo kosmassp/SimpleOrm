@@ -70,6 +70,13 @@ public abstract class MigrationStep
 
     internal abstract DownPlan RenderDown(EntityMapLoader maps, IDialect dialect);
 
+    /// <summary>
+    /// The step's declared column renames, for the derived rollback (ADR-0018):
+    /// snapshots alone cannot distinguish a rename from a drop+add, but the typed
+    /// actions can — so the deriver inverts them data-preservingly.
+    /// </summary>
+    internal virtual IReadOnlyList<(string From, string To)> UpRenames(EntityMapLoader maps, IDialect dialect) => [];
+
     private (long Version, string Description) Parse()
     {
         var match = NamePattern.Match(GetType().Name);
@@ -112,9 +119,11 @@ internal sealed class DownPlan(
     IReadOnlyList<MigrationStatement> core,
     IReadOnlyList<MigrationStatement> post)
 {
+    public IReadOnlyList<MigrationStatement> Pre { get; } = pre;
+
     public IReadOnlyList<MigrationStatement> Core { get; } = core;
 
-    public IReadOnlyList<MigrationStatement> All { get; } = [.. pre, .. core, .. post];
+    public IReadOnlyList<MigrationStatement> Post { get; } = post;
 }
 
 /// <summary>Collects plain data statements for the step-level down hooks (ADR-0016).</summary>
@@ -158,7 +167,7 @@ public abstract class TableMigration<TEntity> : MigrationStep
     internal override string ObjectName(EntityMapLoader maps) => maps.Load<TEntity>().RelationName!;
 
     internal override IReadOnlyList<MigrationStatement> RenderUp(EntityMapLoader maps, IDialect dialect)
-        => Render(maps, dialect, Action);
+        => Compose(maps, dialect, Action).Build();
 
     internal override DownPlan RenderDown(EntityMapLoader maps, IDialect dialect)
     {
@@ -168,12 +177,14 @@ public abstract class TableMigration<TEntity> : MigrationStep
         PostDown(post);
         return new DownPlan(
             pre.Statements.Select(s => new MigrationStatement(s, "pre-down")).ToArray(),
-            Render(maps, dialect, Down),
+            Compose(maps, dialect, Down).Build(),
             post.Statements.Select(s => new MigrationStatement(s, "post-down")).ToArray());
     }
 
-    private IReadOnlyList<MigrationStatement> Render(
-        EntityMapLoader maps, IDialect dialect, Action<TableActions> compose)
+    internal override IReadOnlyList<(string From, string To)> UpRenames(EntityMapLoader maps, IDialect dialect)
+        => Compose(maps, dialect, Action).ColumnRenames;
+
+    private TableActions Compose(EntityMapLoader maps, IDialect dialect, Action<TableActions> compose)
     {
         var map = maps.Load<TEntity>();
         if (map.Kind != RelationKind.Table)
@@ -184,7 +195,7 @@ public abstract class TableMigration<TEntity> : MigrationStep
 
         var actions = new TableActions(map, dialect);
         compose(actions);
-        return actions.Build();
+        return actions;
     }
 }
 
@@ -340,9 +351,15 @@ public sealed class TableActions
         => Track(_renames, new MigrationAction(
             $"rename table {fromName}", [$"alter table {fromName} rename to {Table}"]));
 
+    /// <summary>Column renames, kept structurally too — the derived rollback inverts them (ADR-0018).</summary>
+    internal List<(string From, string To)> ColumnRenames { get; } = [];
+
     public MigrationAction RenameColumn(string fromName, string toName)
-        => Track(_renames, new MigrationAction(
+    {
+        ColumnRenames.Add((fromName, toName));
+        return Track(_renames, new MigrationAction(
             $"rename {Table}.{fromName}", [$"alter table {Table} rename column {fromName} to {toName}"]));
+    }
 
     /// <summary>Literal column spec; a NOT NULL addition to a populated table needs <paramref name="defaultSql"/>.</summary>
     public MigrationAction AddColumn(string name, string type, bool nullable = true, string? defaultSql = null)

@@ -40,20 +40,26 @@ public sealed class MigrationRunner
 {
     private readonly Db _db;
     private readonly IReadOnlyList<MigrationVersion> _versions;
+    private readonly SnapshotSet _snapshots;
 
-    public MigrationRunner(Db db, Assembly assembly, string? migrationsNamespace = null)
-        : this(db, Discover(assembly, migrationsNamespace, out var strays), straySteps: strays)
+    /// <summary>Snapshots default to the assembly's embedded resources; pass <paramref name="snapshots"/> to read them elsewhere.</summary>
+    public MigrationRunner(Db db, Assembly assembly, string? migrationsNamespace = null, SnapshotSet? snapshots = null)
+        : this(db, Discover(assembly, migrationsNamespace, out var strays), straySteps: strays,
+            snapshots ?? SnapshotSet.FromAssembly(assembly))
     {
     }
 
-    public MigrationRunner(Db db, IEnumerable<MigrationVersion> versions)
-        : this(db, versions.ToArray(), straySteps: [])
+    public MigrationRunner(Db db, IEnumerable<MigrationVersion> versions, SnapshotSet? snapshots = null)
+        : this(db, versions.ToArray(), straySteps: [], snapshots)
     {
     }
 
-    private MigrationRunner(Db db, IReadOnlyList<MigrationVersion> versions, IReadOnlyList<MigrationStep> straySteps)
+    private MigrationRunner(
+        Db db, IReadOnlyList<MigrationVersion> versions, IReadOnlyList<MigrationStep> straySteps,
+        SnapshotSet? snapshots = null)
     {
         _db = db;
+        _snapshots = snapshots ?? new SnapshotSet();
         _versions = versions.OrderBy(v => v.Version).ToArray();
 
         var duplicate = _versions.GroupBy(v => v.Version).FirstOrDefault(g => g.Count() > 1);
@@ -125,21 +131,42 @@ public sealed class MigrationRunner
             .Where(v => v.Version > targetVersion && recorded.Versions.Contains(v.Version))
             .OrderByDescending(v => v.Version)
             .ToArray();
+
+        // Resolve every step's rollback before anything executes (§7.23): the
+        // hand-written Down() wins as the manual override; otherwise it derives
+        // from the versioned snapshots (ADR-0018). Only a step the snapshots
+        // cannot support still refuses (MIG-020).
+        var notices = new List<string>();
         foreach (var step in reverting.SelectMany(v => v.Steps))
         {
-            if (step.Up.Count > 0 && !step.Reversible)
+            if (step.Up.Count == 0 || step.ManualDownCore.Count > 0)
+            {
+                continue;
+            }
+
+            step.DerivedDownCore = DownDeriver.Derive(
+                step.ObjectName, step.Version, _snapshots, step.UpRenames, notices);
+            if (step.DerivedDownCore is null)
             {
                 throw new SimpleOrmException(
                     "MIG-020", $"V{step.Version:0000} {step.ObjectName}",
-                    "has no down DDL; rollbacks derive from versioned snapshots once generated, or override Down()");
+                    "no snapshot to derive the rollback from (run simpleorm snapshot/shadow and embed the .schema.json files), or override Down()");
             }
+        }
+
+        foreach (var notice in notices)
+        {
+            notify?.Invoke(notice);
         }
 
         foreach (var version in reverting)
         {
             foreach (var step in version.Steps.Reverse())
             {
-                foreach (var statement in step.Down)
+                var statements = step.DownPre
+                    .Concat(step.ManualDownCore.Count > 0 ? step.ManualDownCore : step.DerivedDownCore ?? [])
+                    .Concat(step.DownPost);
+                foreach (var statement in statements)
                 {
                     await ApplyStatementAsync(run, version.Version, statement, allowViewDrift, notify, ct)
                         .ConfigureAwait(false);
@@ -262,7 +289,8 @@ public sealed class MigrationRunner
 
     private sealed class RenderedStep(
         long version, string objectName, string description,
-        IReadOnlyList<MigrationStatement> up, DownPlan down)
+        IReadOnlyList<MigrationStatement> up, DownPlan down,
+        IReadOnlyList<(string From, string To)> upRenames)
     {
         public long Version { get; } = version;
 
@@ -272,10 +300,18 @@ public sealed class MigrationRunner
 
         public IReadOnlyList<MigrationStatement> Up { get; } = up;
 
-        public IReadOnlyList<MigrationStatement> Down { get; } = down.All;
+        /// <summary>The hand-written down core — the manual override (ADR-0018); empty means derive.</summary>
+        public IReadOnlyList<MigrationStatement> ManualDownCore { get; } = down.Core;
 
-        /// <summary>Hooks alone don't revert DDL: reversibility needs a down core (hand-written or generated).</summary>
-        public bool Reversible { get; } = down.Core.Count > 0;
+        public IReadOnlyList<MigrationStatement> DownPre { get; } = down.Pre;
+
+        public IReadOnlyList<MigrationStatement> DownPost { get; } = down.Post;
+
+        /// <summary>The step's declared renames — the one piece the snapshot diff can't recover.</summary>
+        public IReadOnlyList<(string From, string To)> UpRenames { get; } = upRenames;
+
+        /// <summary>The rollback derived from the snapshots, resolved during down validation.</summary>
+        public IReadOnlyList<MigrationStatement>? DerivedDownCore { get; set; }
 
         public string Checksum { get; } = ComputeChecksum(up);
     }
@@ -298,7 +334,8 @@ public sealed class MigrationRunner
                     step.ObjectName(_db.Maps),
                     step.Description,
                     step.RenderUp(_db.Maps, _db.Options.Dialect),
-                    step.RenderDown(_db.Maps, _db.Options.Dialect)))
+                    step.RenderDown(_db.Maps, _db.Options.Dialect),
+                    step.UpRenames(_db.Maps, _db.Options.Dialect)))
                 .ToArray());
         }).ToArray();
 
@@ -468,7 +505,14 @@ public sealed class MigrationRunner
         using var command = _db.Connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = sql;
-        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+        catch (DbException exception)
+        {
+            throw new SimpleOrmException("MIG-021", "migration statement", exception.Message + " -- while executing: " + sql);
+        }
     }
 
     private static void AddParameter(DbCommand command, string name, object value)

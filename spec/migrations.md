@@ -54,8 +54,34 @@ applied_at TEXT (ISO-8601 UTC), execution_ms INTEGER, primary key (version, obje
 One row per (version, object); a version is applied atomically. The checksum is
 SHA-256 over the step's rendered Up statements. Every run validates the whole plan
 **before executing anything**: drift on any applied step is `MIG-010`; history rows
-unknown to the code are `MIG-011`; `migrate down` past any step lacking Down
-statements is `MIG-020` — checked for the full range before the first statement.
+unknown to the code are `MIG-011`; a `migrate down` step whose rollback can
+neither be derived from the snapshots nor comes from a `Down()` override is
+`MIG-020` — checked for the full range before the first statement. A statement
+that fails mid-run reports as `MIG-021`, naming the SQL.
+
+## Derived rollbacks (ADR-0018)
+
+Steps carry **no down DDL** — "Down could be deducted from the previous schema."
+At `migrate down` time the runner resolves, per step, the object's snapshot at
+that version and the latest one before it, then derives the reverse:
+
+- no earlier snapshot → the version created the object → drop it;
+- tables → the step's typed `RenameColumn` actions invert first (snapshots alone
+  cannot tell a rename from a drop+add; the actions can, and inverting them
+  preserves data), then the shape diff: dropped columns restored (a NOT NULL
+  restore lands nullable with a notice — constraint and data are not derivable),
+  added columns dropped, indexes reverted structurally;
+- views → expected-definition guard on the current DDL (`MIG-012` — a rollback
+  must not silently destroy an outside hotfix either), drop, previous definition
+  restored;
+- a same-column type/nullability change is not derivable → `MIG-020`.
+
+`Down()` remains the manual override and always wins; `PreDown`/`PostDown` hooks
+wrap whichever core runs and carry the data work (a data-only step derives an
+empty rollback — schema-correct; its inserted rows are the hooks' job). The
+snapshots ship **embedded in the migrations assembly**
+(`<EmbeddedResource Include="Migrations\**\*.schema.json" />`) so rollbacks work
+deployed; the CLI's `--snapshots <dir>` reads them from source instead.
 
 ## Locking and atomicity
 
@@ -104,14 +130,15 @@ byte-identical apart from `generatedAt`:
   each touched table introspected after each version.
 
 That equality is the integrity check between model and history. Snapshots are also
-directly renderable as DDL: derived `Down()` bodies and trusted baselines come from
-them.
+directly renderable as DDL: derived rollbacks (ADR-0018) and trusted baselines
+come from them.
 
 ## The generator toolchain (ADR-0017)
 
 - **`diff`** — metadata vs the latest committed snapshot, no database: emits a
-  normal per-object step (literal SQL, generated Down derived from the snapshot)
-  plus the composing root, new tables FK-ordered, view steps after table steps.
+  normal per-object step (literal SQL, no Down — rollbacks derive at runtime,
+  ADR-0018) plus the composing root, new tables FK-ordered, view steps after
+  table steps.
   Generated code freezes exactly like hand-written code. Tables diff by columns;
   views diff by normalized DDL, and a generated view change step is literal DDL
   opening with the `ExpectDefinition` guard (below). Indexes match
@@ -142,9 +169,9 @@ definition (normalized) against the expectation: match → apply; mismatch or ab
 → the run refuses with `MIG-012` and, the run being one transaction, nothing is
 applied — the outside hotfix is preserved for review. Forcing
 (`migrate --force` / `MigrateAsync(allowViewDrift: true, notify, ct)`) recreates
-the view from the code and reports the drift. Downs are guarded symmetrically.
-Guards evaluate at execution time (chained pending view changes stay valid) and
-count into the step checksum.
+the view from the code and reports the drift. Derived view rollbacks carry the
+mirrored guard. Guards evaluate at execution time (chained pending view changes
+stay valid); declared ones count into the step checksum.
 
 ## Conformance cases
 

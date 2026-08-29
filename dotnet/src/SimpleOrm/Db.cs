@@ -51,16 +51,43 @@ public sealed class Db : IAsyncDisposable
         return new Db(connection, options);
     }
 
-    public async Task<IReadOnlyList<TResult>> QueryAsync<TArgs, TResult>(
+    public Task<IReadOnlyList<TResult>> QueryAsync<TArgs, TResult>(
         Query<TArgs, TResult> query, TArgs args, CancellationToken ct)
-    {
-        var results = new List<TResult>();
-        await foreach (var row in StreamAsync(query, args, ct).ConfigureAwait(false))
-        {
-            results.Add(row);
-        }
+        => MaterializeAsync<TResult>(CreateCommand(query.Source, args!), query.Source.Description, ct);
 
-        return results;
+    /// <summary>
+    /// The one list-materialization loop (milestone 8): the reader opens async, rows
+    /// read synchronously — the SQLite provider is synchronous underneath (ADR-0003)
+    /// and per-row async machinery only adds overhead — with cooperative
+    /// cancellation checked periodically.
+    /// </summary>
+    private async Task<IReadOnlyList<TResult>> MaterializeAsync<TResult>(
+        DbCommand command, string name, CancellationToken ct)
+    {
+        using (command)
+        {
+            var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            try
+            {
+                var plan = _mapper.CreatePlan<TResult>(reader, name);
+                var results = new List<TResult>();
+                var row = 0;
+                while (reader.Read())
+                {
+                    results.Add(plan(reader));
+                    if ((++row & 63) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+                }
+
+                return results;
+            }
+            finally
+            {
+                reader.Dispose();
+            }
+        }
     }
 
     /// <summary>Exactly one row; zero rows throws <c>QRY-001</c>, more than one throws <c>QRY-002</c>.</summary>
@@ -140,31 +167,15 @@ public sealed class Db : IAsyncDisposable
         return new CriteriaQuery<TEntity>(this);
     }
 
-    internal async Task<IReadOnlyList<TEntity>> ExecuteCriteriaAsync<TEntity>(
+    internal Task<IReadOnlyList<TEntity>> ExecuteCriteriaAsync<TEntity>(
         Func<DbCommand, EntityMap, TypeConverter, IDialect, string> build, CancellationToken ct)
         where TEntity : class
     {
         var map = Maps.Load<TEntity>();
-        using var command = _connection.CreateCommand();
+        var command = _connection.CreateCommand();
         command.Transaction = _transaction;
         command.CommandText = build(command, map, _converter, Options.Dialect);
-
-        var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        try
-        {
-            var results = new List<TEntity>();
-            var plan = _mapper.CreatePlan<TEntity>(reader, typeof(TEntity).Name + " criteria");
-            while (await reader.ReadAsync(ct).ConfigureAwait(false))
-            {
-                results.Add(plan(reader));
-            }
-
-            return results;
-        }
-        finally
-        {
-            reader.Dispose();
-        }
+        return MaterializeAsync<TEntity>(command, typeof(TEntity).Name + " criteria", ct);
     }
 
     /// <summary>Read by key (ADR-0006): a missing row throws <c>CRUD-001</c>; composite keys pass a tuple.</summary>
@@ -209,7 +220,7 @@ public sealed class Db : IAsyncDisposable
         {
             var plan = _mapper.CreatePlan<TEntity>(reader, typeof(TEntity).Name + " get");
             TEntity? result = null;
-            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            while (reader.Read())
             {
                 if (result is not null)
                 {
@@ -369,25 +380,10 @@ public sealed class Db : IAsyncDisposable
             sql += " order by " + string.Join(", ", map.KeyProperties.Select(k => k.ColumnName));
         }
 
-        using var command = _connection.CreateCommand();
+        var command = _connection.CreateCommand();
         command.Transaction = _transaction;
         command.CommandText = sql;
-        var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        try
-        {
-            var results = new List<TEntity>();
-            var plan = _mapper.CreatePlan<TEntity>(reader, typeof(TEntity).Name + " select-all");
-            while (await reader.ReadAsync(ct).ConfigureAwait(false))
-            {
-                results.Add(plan(reader));
-            }
-
-            return results;
-        }
-        finally
-        {
-            reader.Dispose();
-        }
+        return await MaterializeAsync<TEntity>(command, typeof(TEntity).Name + " select-all", ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -624,16 +620,8 @@ public sealed class Db : IAsyncDisposable
     // --- statement-backed entities (ADR-0010): the type IS the query -------------
 
     /// <summary>Runs a <c>[Statement]</c>-backed entity's own SQL (ADR-0008/0010); args bind against its declared parameters.</summary>
-    public async Task<IReadOnlyList<TResult>> QueryAsync<TResult>(object args, CancellationToken ct)
-    {
-        var results = new List<TResult>();
-        await foreach (var row in StreamAsync<TResult>(args, ct).ConfigureAwait(false))
-        {
-            results.Add(row);
-        }
-
-        return results;
-    }
+    public Task<IReadOnlyList<TResult>> QueryAsync<TResult>(object args, CancellationToken ct)
+        => MaterializeAsync<TResult>(CreateStatementCommand<TResult>(args), StatementName<TResult>(), ct);
 
     /// <summary>Statement-entity variant of <see cref="QuerySingleAsync{TArgs, TResult}"/> (<c>QRY-001</c>/<c>QRY-002</c>).</summary>
     public async Task<TResult> QuerySingleAsync<TResult>(object args, CancellationToken ct)

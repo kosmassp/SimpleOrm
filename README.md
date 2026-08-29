@@ -8,7 +8,7 @@ language-neutral [spec](spec/) and a [conformance suite](conformance/) grow alon
 it so the library can later be ported (Go, Java, PHP) and extended to other dialects
 (PostgreSQL, MySQL, SQL Server).
 
-**Status: Level 1, milestone 7 (CRUD + concurrency) done.** See
+**Status: all eight Level 1 milestones complete.** See
 [CLAUDE.md](CLAUDE.md) for the full project brief and
 [docs/decisions.md](docs/decisions.md) for the decision log.
 
@@ -140,6 +140,15 @@ nullability per column (`VAL-010`/`011`), `SELECT *` and non-UTC-timestamp lints
 (`VAL-012`/`013`), and migrations must be applied, matching, and known
 (`MIG-030`/`010`/`011`). Expression columns require nullable members unless the
 SQL carries `-- notnull: col`. One exception carries the complete report.
+
+## Performance
+
+Compiled expression-tree mappers with typed-getter fast paths. BenchmarkDotNet vs
+Dapper and raw `Microsoft.Data.Sqlite` (net10.0, `dotnet/benchmarks/`): mapping
+1000 rows to entities runs **~3% faster than Dapper with 22% less allocation**
+(matching the raw reader's allocation floor); single-row reads are within 2.5%.
+Numbers are machine-specific — run `dotnet run -c Release` in the benchmarks
+project for yours.
 
 ## Layout
 

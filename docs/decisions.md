@@ -710,3 +710,34 @@ Error codes for sync refusal/reporting are registered when this is implemented
   and concurrency cases run through the same generated paths every port must match.
 
 **Status.** Accepted.
+
+## ADR-0015 — Milestone 8 performance pass (2026-08-29)
+
+**Work.** (1) The compiled mapper gained **typed-getter fast paths**: provider-native
+types (int16/32/64, string, double, float, bool, decimal, Guid) compile to direct
+`GetInt64`/`GetString`/… calls — no boxing, no converter dispatch — wrapped in a
+compiled try/catch so conversion failures still carry `MAP-031` ("errors name
+things" holds on the fast path). Types with rules stay on the converter path by
+design: DateTime/Offset (the VAL-020 UTC rule), enums, and handler-registered types
+(checked per plan). (2) **Direct list materialization**: one shared loop replaces
+per-row async-iterator machinery; the reader opens async, rows read synchronously —
+the SQLite provider is synchronous underneath (ADR-0003) — with cooperative
+cancellation checked every 64 rows. `StreamAsync` keeps true async streaming.
+(3) `DbBatch` (§8.8''s example) was evaluated and **not adopted**: Level 1 has no
+multi-statement write path to batch; it becomes relevant with the Level 3 unit of
+work.
+
+**Results** (BenchmarkDotNet ShortRun, net10.0, this machine; benchmarks/ project —
+the milestone-8-only Dapper/BenchmarkDotNet dependencies live there):
+
+| benchmark | SimpleOrm | Dapper | ratio |
+|---|---|---|---|
+| 1000 rows → entities | 870.6 µs / 166 KB | 893.5 µs / 213 KB | **0.97, −22% alloc** |
+| single row, GetAsync | 69.7 µs | 69.4 µs | 1.004 |
+| single row, QuerySingleAsync | 71.1 µs | 69.4 µs | 1.024 |
+| raw reader loop (floor) | 666.2 µs / 165 KB | — | 0.75 |
+
+The §8.8 target (within 10% of Dapper on net10.0) is met on every benchmark;
+the 1000-row case is faster than Dapper with allocations at the raw-reader floor.
+
+**Status.** Accepted. Milestone 8 complete — all eight Level 1 milestones done.

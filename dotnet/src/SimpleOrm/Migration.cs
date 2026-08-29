@@ -68,7 +68,7 @@ public abstract class MigrationStep
 
     internal abstract IReadOnlyList<MigrationStatement> RenderUp(EntityMapLoader maps, IDialect dialect);
 
-    internal abstract IReadOnlyList<MigrationStatement> RenderDown(EntityMapLoader maps, IDialect dialect);
+    internal abstract DownPlan RenderDown(EntityMapLoader maps, IDialect dialect);
 
     private (long Version, string Description) Parse()
     {
@@ -92,14 +92,56 @@ internal sealed class MigrationStatement(string sql, string origin)
     public string Origin { get; } = origin;
 }
 
+/// <summary>
+/// A step's rendered rollback: data hooks around the DDL core. Reversibility is
+/// judged on the core alone — hooks without a core (hand-written or, later,
+/// generated from versioned snapshots) do not make a step reversible.
+/// </summary>
+internal sealed class DownPlan(
+    IReadOnlyList<MigrationStatement> pre,
+    IReadOnlyList<MigrationStatement> core,
+    IReadOnlyList<MigrationStatement> post)
+{
+    public IReadOnlyList<MigrationStatement> Core { get; } = core;
+
+    public IReadOnlyList<MigrationStatement> All { get; } = [.. pre, .. core, .. post];
+}
+
+/// <summary>Collects plain data statements for the step-level down hooks (ADR-0016).</summary>
+public sealed class MigrationSql
+{
+    internal List<string> Statements { get; } = [];
+
+    public MigrationSql Sql(string sql)
+    {
+        Statements.Add(sql);
+        return this;
+    }
+}
+
 /// <summary>A table's change: actions execute rename → add → remove → raw SQL, regardless of call order.</summary>
 public abstract class TableMigration<TEntity> : MigrationStep
     where TEntity : class
 {
     public abstract void Action(TableActions actions);
 
-    /// <summary>Optional inverse; rendering nothing means not reversible (<c>MIG-020</c> on migrate down).</summary>
+    /// <summary>
+    /// The rollback DDL — normally NOT hand-written (ADR-0016): it derives from the
+    /// versioned schema snapshots once the generator exists; overriding is the
+    /// manual escape hatch. A step whose down core renders nothing refuses
+    /// <c>migrate down</c> (<c>MIG-020</c>).
+    /// </summary>
     public virtual void Down(TableActions actions)
+    {
+    }
+
+    /// <summary>Data work before the rollback DDL (e.g. stash values a destructive revert would lose).</summary>
+    public virtual void PreDown(MigrationSql sql)
+    {
+    }
+
+    /// <summary>Data work after the rollback DDL (e.g. restore or transform).</summary>
+    public virtual void PostDown(MigrationSql sql)
     {
     }
 
@@ -108,8 +150,17 @@ public abstract class TableMigration<TEntity> : MigrationStep
     internal override IReadOnlyList<MigrationStatement> RenderUp(EntityMapLoader maps, IDialect dialect)
         => Render(maps, dialect, Action);
 
-    internal override IReadOnlyList<MigrationStatement> RenderDown(EntityMapLoader maps, IDialect dialect)
-        => Render(maps, dialect, Down);
+    internal override DownPlan RenderDown(EntityMapLoader maps, IDialect dialect)
+    {
+        var pre = new MigrationSql();
+        PreDown(pre);
+        var post = new MigrationSql();
+        PostDown(post);
+        return new DownPlan(
+            pre.Statements.Select(s => new MigrationStatement(s, "pre-down")).ToArray(),
+            Render(maps, dialect, Down),
+            post.Statements.Select(s => new MigrationStatement(s, "post-down")).ToArray());
+    }
 
     private IReadOnlyList<MigrationStatement> Render(
         EntityMapLoader maps, IDialect dialect, Action<TableActions> compose)
@@ -137,13 +188,30 @@ public abstract class ViewMigration<TEntity> : MigrationStep
     {
     }
 
+    public virtual void PreDown(MigrationSql sql)
+    {
+    }
+
+    public virtual void PostDown(MigrationSql sql)
+    {
+    }
+
     internal override string ObjectName(EntityMapLoader maps) => maps.Load<TEntity>().RelationName!;
 
     internal override IReadOnlyList<MigrationStatement> RenderUp(EntityMapLoader maps, IDialect dialect)
         => Render(maps, dialect, Action);
 
-    internal override IReadOnlyList<MigrationStatement> RenderDown(EntityMapLoader maps, IDialect dialect)
-        => Render(maps, dialect, Down);
+    internal override DownPlan RenderDown(EntityMapLoader maps, IDialect dialect)
+    {
+        var pre = new MigrationSql();
+        PreDown(pre);
+        var post = new MigrationSql();
+        PostDown(post);
+        return new DownPlan(
+            pre.Statements.Select(s => new MigrationStatement(s, "pre-down")).ToArray(),
+            Render(maps, dialect, Down),
+            post.Statements.Select(s => new MigrationStatement(s, "post-down")).ToArray());
+    }
 
     private IReadOnlyList<MigrationStatement> Render(
         EntityMapLoader maps, IDialect dialect, Action<ViewActions> compose)
@@ -376,7 +444,7 @@ public sealed class SqlVersion(long version, params SqlVersion.Step[] steps) : M
         internal override IReadOnlyList<MigrationStatement> RenderUp(EntityMapLoader maps, IDialect dialect)
             => step.Up.Select(s => new MigrationStatement(s, "sql " + step.ObjectName)).ToArray();
 
-        internal override IReadOnlyList<MigrationStatement> RenderDown(EntityMapLoader maps, IDialect dialect)
-            => step.Down.Select(s => new MigrationStatement(s, "sql " + step.ObjectName)).ToArray();
+        internal override DownPlan RenderDown(EntityMapLoader maps, IDialect dialect)
+            => new([], step.Down.Select(s => new MigrationStatement(s, "sql " + step.ObjectName)).ToArray(), []);
     }
 }

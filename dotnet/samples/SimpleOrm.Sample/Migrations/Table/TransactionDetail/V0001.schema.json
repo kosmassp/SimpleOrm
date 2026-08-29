@@ -1,15 +1,7 @@
 {
-  "entity": "User",
-  "source": {
-    "kind": "table",
-    "name": "users"
-  },
-  "key": {
-    "strategy": "database_generated",
-    "columns": [
-      "id"
-    ]
-  },
+  "object": "transaction_details",
+  "asOfVersion": 1,
+  "generatedAt": "2026-08-29T07:39:51.6256155Z",
   "columns": [
     {
       "column": "id",
@@ -19,19 +11,24 @@
       "generated": true
     },
     {
-      "column": "name",
+      "column": "transaction_id",
+      "type": "int64",
+      "nullable": false
+    },
+    {
+      "column": "description",
       "type": "string",
       "nullable": false
     },
     {
-      "column": "email",
-      "type": "string",
+      "column": "quantity",
+      "type": "int32",
       "nullable": false
     },
     {
-      "column": "display_name",
-      "type": "string",
-      "nullable": true
+      "column": "unit_price",
+      "type": "decimal",
+      "nullable": false
     },
     {
       "column": "created_at",
@@ -46,14 +43,13 @@
   ],
   "indexes": [
     {
-      "name": "ix_users_email",
+      "name": "ix_transaction_details_transaction_id",
       "columns": [
         {
-          "column": "email",
+          "column": "transaction_id",
           "direction": "asc"
         }
-      ],
-      "unique": true
+      ]
     }
   ]
 }

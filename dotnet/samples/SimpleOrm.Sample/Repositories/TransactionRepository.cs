@@ -1,12 +1,12 @@
 using SimpleOrm.Sample.Models;
 
-namespace SimpleOrm.Sample.Dao;
+namespace SimpleOrm.Sample.Repositories;
 
 /// <summary>
-/// Transaction DAO: criteria reads (ADR-0012), the statement entity executed by
-/// type, and the one legitimate hand-SQL write — a partial update (§7.15).
+/// Transaction repository: criteria reads, the statement entity executed by type,
+/// and the one legitimate hand-SQL write — a partial update (§7.15).
 /// </summary>
-public sealed class TransactionDao(Db db) : BaseDao<Transaction>(db)
+public sealed class TransactionRepository(Db db) : Repository<Transaction>(db)
 {
     public Task<IReadOnlyList<Transaction>> GetByUserAsync(long userId, CancellationToken ct)
         => Query().Where(Criteria.Eq(nameof(Transaction.UserId), userId)).OrderBy(nameof(Transaction.Id)).ToListAsync(ct);

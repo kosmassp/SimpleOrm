@@ -51,6 +51,14 @@ await using (var tx = await db.BeginAsync(ct))
 // no registry entry, executed by type, args checked against the declared contract.
 var days = await db.QueryAsync<DailySales>(new DailySalesArgs(since), ct);
 
+// Or layer repositories over the session (ADR-0016) — the generic surface ships
+// in the library; subclass to add entity-specific criteria reads:
+public sealed class UserRepository(Db db) : Repository<User>(db)
+{
+    public Task<User> GetByEmailAsync(string email, CancellationToken ct)
+        => Query().Where(Criteria.Eq(nameof(User.Email), email)).SingleAsync(ct);
+}
+
 // Generated from metadata (ADR-0011): schema (dev/test utility) and inserts —
 // no handwritten DDL or insert commands. RETURNING writes the key back.
 await db.CreateTableAsync<User>(ct);

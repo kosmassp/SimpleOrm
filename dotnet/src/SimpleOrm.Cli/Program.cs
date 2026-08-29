@@ -35,6 +35,7 @@ try
         "baseline" => await BaselineAsync(),
         "export-metadata" => ExportMetadata(),
         "validate" => await ValidateAsync(),
+        "snapshot" => await SnapshotAsync(),
         _ => Usage(),
     };
 }
@@ -62,6 +63,8 @@ int Usage()
           baseline --version <N>      record versions <= N without running them
           export-metadata [--out dir] write each entity's EntityMap JSON
           validate                    SchemaGuard: full report or exit 0
+          snapshot --out <MigrationsDir>
+                                      write V000N.schema.json per table (versioned, timestamped)
 
         options:
           --assembly <path>   the application assembly containing migrations/entities
@@ -166,6 +169,42 @@ async Task<int> ValidateAsync()
         options.TryGetValue("namespace", out var migrationsNamespace);
         await SchemaGuard.ValidateAsync(db, LoadAssembly(), migrationsNamespace, CancellationToken.None);
         Console.WriteLine("valid");
+        return 0;
+    }
+}
+
+async Task<int> SnapshotAsync()
+{
+    if (!options.TryGetValue("out", out var outDir))
+    {
+        return Fail("snapshot requires --out <MigrationsDir>");
+    }
+
+    var (db, runner) = await OpenAsync();
+    await using (db)
+    {
+        // Last version touching each object, from the code-side plan (any state).
+        var perObject = (await runner.StatusAsync(CancellationToken.None))
+            .GroupBy(e => e.ObjectName)
+            .ToDictionary(g => g.Key, g => g.Max(e => e.Version));
+
+        var generatedAt = DateTimeOffset.UtcNow;
+        foreach (var type in LoadAssembly().GetExportedTypes()
+            .Where(t => t is { IsClass: true, IsAbstract: false } && EntityMapLoader.HasMappingAttributes(t)))
+        {
+            var map = db.Maps.Load(type);
+            if (map.Kind != RelationKind.Table || !perObject.TryGetValue(map.RelationName!, out var version))
+            {
+                continue;   // tables only — views/statements/procedures self-reflect (ADR-0013 add.3)
+            }
+
+            var directory = Path.Combine(outDir, "Table", type.Name);
+            Directory.CreateDirectory(directory);
+            var file = Path.Combine(directory, $"V{version:0000}.schema.json");
+            File.WriteAllText(file, SchemaSnapshot.Export(map, version, generatedAt) + "\n");
+            Console.WriteLine("wrote " + file);
+        }
+
         return 0;
     }
 }

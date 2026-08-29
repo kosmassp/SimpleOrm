@@ -741,3 +741,36 @@ The §8.8 target (within 10% of Dapper on net10.0) is met on every benchmark;
 the 1000-row case is faster than Dapper with allocations at the raw-reader floor.
 
 **Status.** Accepted. Milestone 8 complete — all eight Level 1 milestones done.
+
+## ADR-0016 — Repository in core; versioned snapshots realized; downs are derived (2026-08-29)
+
+Four owner directives in one pass:
+
+- **A real change migration in the sample**: `V0002` adds `users.display_name`
+  (literal `AddColumn` + `.Post` backfill), which forced the ADR-0013 freeze rule
+  into practice — `V0001_CreateUsers` is now literal SQL, because a
+  metadata-rendered create is only stable while the object never changes again.
+  The strict-mapping ripple (every hand-written `select … from users` needed the
+  new column or failed `MAP-002`) is the §7.7 contract demonstrating itself.
+- **`Repository<TEntity>` moves into the core** (was the sample''s `BaseDao`):
+  generic Insert/Update/Delete/Get/GetOrDefault/GetAll/Find/Query over one injected
+  session — boilerplate every app rewrote. Named `Repository`, deliberately not
+  `DbContext` (EF''s word for the *session*, which is `Db` here) and not a
+  `DbSet`-style property facade (rejected earlier). The sample''s layer is now
+  `Repositories/` with per-entity subclasses.
+- **Versioned schema snapshots implemented** (ADR-0013 add.3 made real):
+  `simpleorm snapshot --out <MigrationsDir>` writes
+  `Table/<Object>/V000N.schema.json` — object, `asOfVersion` (last version touching
+  the object), `generatedAt` (ISO-8601 UTC), columns, indexes — one file **per
+  (table, version)** so version-to-version diffs have endpoints. Tables only;
+  views/statements/procedures self-reflect. The sample commits User V0001 (its
+  historical shape) and V0002 plus V0001 for the other tables.
+- **No hand-written `Down()` DDL** (owner): a rollback''s DDL derives from
+  diffing adjacent snapshots once the generator exists; `Down()` stays as the
+  manual escape hatch and generator target, and new step-level `PreDown`/`PostDown`
+  hooks carry the underivable data work (stash before a destructive revert,
+  restore after) — reversibility is judged on the down *core* only, so hooks alone
+  still refuse `migrate down` (`MIG-020`). Sample migrations carry no downs;
+  refusing honestly is the designed behavior until generation lands.
+
+**Status.** Accepted.

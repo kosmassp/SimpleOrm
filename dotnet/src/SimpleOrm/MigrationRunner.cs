@@ -111,10 +111,11 @@ public sealed class MigrationRunner
             .ToArray();
         foreach (var step in reverting.SelectMany(v => v.Steps))
         {
-            if (step.Up.Count > 0 && step.Down.Count == 0)
+            if (step.Up.Count > 0 && !step.Reversible)
             {
                 throw new SimpleOrmException(
-                    "MIG-020", $"V{step.Version:0000} {step.ObjectName}", "has no down statements; cannot migrate down past it");
+                    "MIG-020", $"V{step.Version:0000} {step.ObjectName}",
+                    "has no down DDL; rollbacks derive from versioned snapshots once generated, or override Down()");
             }
         }
 
@@ -244,7 +245,7 @@ public sealed class MigrationRunner
 
     private sealed class RenderedStep(
         long version, string objectName, string description,
-        IReadOnlyList<MigrationStatement> up, IReadOnlyList<MigrationStatement> down)
+        IReadOnlyList<MigrationStatement> up, DownPlan down)
     {
         public long Version { get; } = version;
 
@@ -254,7 +255,10 @@ public sealed class MigrationRunner
 
         public IReadOnlyList<MigrationStatement> Up { get; } = up;
 
-        public IReadOnlyList<MigrationStatement> Down { get; } = down;
+        public IReadOnlyList<MigrationStatement> Down { get; } = down.All;
+
+        /// <summary>Hooks alone don't revert DDL: reversibility needs a down core (hand-written or generated).</summary>
+        public bool Reversible { get; } = down.Core.Count > 0;
 
         public string Checksum { get; } = ComputeChecksum(up);
     }

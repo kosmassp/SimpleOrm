@@ -1,15 +1,7 @@
 {
-  "entity": "User",
-  "source": {
-    "kind": "table",
-    "name": "users"
-  },
-  "key": {
-    "strategy": "database_generated",
-    "columns": [
-      "id"
-    ]
-  },
+  "object": "roles",
+  "asOfVersion": 1,
+  "generatedAt": "2026-08-29T07:39:51.6256155Z",
   "columns": [
     {
       "column": "id",
@@ -24,16 +16,6 @@
       "nullable": false
     },
     {
-      "column": "email",
-      "type": "string",
-      "nullable": false
-    },
-    {
-      "column": "display_name",
-      "type": "string",
-      "nullable": true
-    },
-    {
       "column": "created_at",
       "type": "datetime",
       "nullable": false
@@ -46,10 +28,10 @@
   ],
   "indexes": [
     {
-      "name": "ix_users_email",
+      "name": "ix_roles_name",
       "columns": [
         {
-          "column": "email",
+          "column": "name",
           "direction": "asc"
         }
       ],

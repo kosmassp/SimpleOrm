@@ -14,7 +14,7 @@ public sealed class DbQueryTests(SqliteFixture fixture)
         Query.Embedded("Users/GetUserByEmail.sql");
 
     private static readonly Query<EmptyArgs, User> AllUsersInline = Query.Inline(
-        "select id, name, email, created_at, updated_at from users order by id");
+        "select id, name, email, display_name, created_at, updated_at from users order by id");
 
     [Fact]
     public async Task Query_maps_entities_through_their_entity_map()

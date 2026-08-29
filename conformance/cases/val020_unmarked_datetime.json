@@ -1,6 +1,6 @@
 {
   "name": "val020_unmarked_datetime",
   "result": "User",
-  "query": "select 1 as id, 'A' as name, 'a@example.com' as email, '2026-01-01T00:00:00' as created_at, null as updated_at",
+  "query": "select 1 as id, 'A' as name, 'a@example.com' as email, null as display_name, '2026-01-01T00:00:00' as created_at, null as updated_at",
   "expect": { "error": "VAL-020" }
 }

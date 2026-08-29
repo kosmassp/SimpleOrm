@@ -15,4 +15,8 @@ public sealed class User : BaseModel
 
     [Column]
     public required string Email { get; set; }
+
+    /// <summary>Added by migration V0002; backfilled from <see cref="Name"/> for pre-existing rows.</summary>
+    [Column]
+    public string? DisplayName { get; set; }
 }

@@ -1,0 +1,40 @@
+{
+  "object": "user_roles",
+  "asOfVersion": 1,
+  "generatedAt": "2026-08-29T07:39:51.6256155Z",
+  "columns": [
+    {
+      "column": "user_id",
+      "type": "int64",
+      "nullable": false,
+      "key": true
+    },
+    {
+      "column": "role_id",
+      "type": "int64",
+      "nullable": false,
+      "key": true
+    },
+    {
+      "column": "created_at",
+      "type": "datetime",
+      "nullable": false
+    },
+    {
+      "column": "updated_at",
+      "type": "datetime",
+      "nullable": true
+    }
+  ],
+  "indexes": [
+    {
+      "name": "ix_user_roles_role_id",
+      "columns": [
+        {
+          "column": "role_id",
+          "direction": "asc"
+        }
+      ]
+    }
+  ]
+}

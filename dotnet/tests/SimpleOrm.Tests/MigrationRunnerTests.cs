@@ -29,7 +29,7 @@ public sealed class MigrationRunnerTests : IDisposable
         var runner = new MigrationRunner(db, typeof(User).Assembly, "SimpleOrm.Sample.Migrations");
 
         Assert.True(await runner.HasPendingAsync(CancellationToken.None));
-        Assert.Equal(1, await runner.MigrateAsync(CancellationToken.None));
+        Assert.Equal(2, await runner.MigrateAsync(CancellationToken.None));      // V0001 + V0002
         Assert.Equal(0, await runner.MigrateAsync(CancellationToken.None));      // idempotent
         Assert.False(await runner.HasPendingAsync(CancellationToken.None));
 
@@ -37,7 +37,7 @@ public sealed class MigrationRunnerTests : IDisposable
         Assert.Equal("admin", Assert.Single(roles).Name);
 
         var status = await runner.StatusAsync(CancellationToken.None);
-        Assert.Equal(6, status.Count);                                           // one row per (version, object)
+        Assert.Equal(7, status.Count);                                           // one row per (version, object)
         Assert.All(status, e => Assert.Equal(MigrationState.Applied, e.State));
     }
 
@@ -58,7 +58,13 @@ public sealed class MigrationRunnerTests : IDisposable
             actions.RenameColumn("label", "title");
         }
 
-        public override void Down(TableActions actions) => actions.Sql("select 1");
+        public override void Down(TableActions actions) => actions.RemoveColumn("label");
+
+        public override void PreDown(MigrationSql sql)
+            => sql.Sql("update gadgets set title = label");        // works only while label still exists
+
+        public override void PostDown(MigrationSql sql)
+            => sql.Sql("update gadgets set title = title || '!'"); // runs after the DDL
     }
 
     private sealed class GadgetV2 : MigrationVersion
@@ -80,6 +86,11 @@ public sealed class MigrationRunnerTests : IDisposable
 
         Assert.Equal("hello-old", row.Title);   // pre-remove ran after the add group, before remove
         Assert.Equal("L-hello", row.Label);     // post-add backfilled from the renamed column
+
+        // Down: PreDown (needs label) → DDL (drops label) → PostDown.
+        await runner.MigrateDownAsync(1, CancellationToken.None);
+        Query<EmptyArgs, string> title = Query.Inline("select title from gadgets");
+        Assert.Equal("L-hello!", await db.QuerySingleAsync(title, EmptyArgs.Value, CancellationToken.None));
     }
 
     public sealed record GadgetRow(string Title, string Label);

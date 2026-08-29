@@ -19,7 +19,7 @@ public sealed class EntityMapLoaderTests
         Assert.Equal(["id"], map.KeyProperties.Select(k => k.ColumnName));
 
         // Derived class columns first, BaseModel audit columns last, [Column] overrides applied.
-        Assert.Equal(["id", "name", "email", "created_at", "updated_at"], map.Properties.Select(p => p.ColumnName));
+        Assert.Equal(["id", "name", "email", "display_name", "created_at", "updated_at"], map.Properties.Select(p => p.ColumnName));
         Assert.False(map.Properties.Single(p => p.ColumnName == "name").IsNullable);
         Assert.True(map.Properties.Single(p => p.ColumnName == "updated_at").IsNullable);
 

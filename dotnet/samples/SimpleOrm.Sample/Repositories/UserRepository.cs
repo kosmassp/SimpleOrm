@@ -1,12 +1,13 @@
 using SimpleOrm.Sample.Models;
 
-namespace SimpleOrm.Sample.Dao;
+namespace SimpleOrm.Sample.Repositories;
 
 /// <summary>
-/// Per-entity DAO: generic operations from the base; specific reads are one-line
-/// criteria (ADR-0012) — no per-table SQL anywhere.
+/// Per-entity repository: the generic surface comes from the library's
+/// <see cref="Repository{TEntity}"/> (ADR-0016); only entity-specific reads live
+/// here — one-line criteria, no per-table SQL.
 /// </summary>
-public sealed class UserDao(Db db) : BaseDao<User>(db)
+public sealed class UserRepository(Db db) : Repository<User>(db)
 {
     public Task<User> GetByEmailAsync(string email, CancellationToken ct)
         => Query().Where(Criteria.Eq(nameof(User.Email), email)).SingleAsync(ct);

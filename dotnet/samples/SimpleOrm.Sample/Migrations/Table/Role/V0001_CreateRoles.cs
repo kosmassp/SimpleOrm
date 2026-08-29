@@ -6,6 +6,4 @@ public sealed class V0001_CreateRoles : TableMigration<Models.Role>
     public override void Action(TableActions actions) => actions
         .CreateTable()
         .Post("insert into roles (name, created_at) values ('admin', '2026-01-01T00:00:00.0000000Z')");
-
-    public override void Down(TableActions actions) => actions.DropTable();
 }

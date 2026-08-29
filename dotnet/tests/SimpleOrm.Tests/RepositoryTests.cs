@@ -1,22 +1,22 @@
-using SimpleOrm.Sample.Dao;
 using SimpleOrm.Sample.Models;
+using SimpleOrm.Sample.Repositories;
 using Xunit;
 
 namespace SimpleOrm.Tests;
 
 /// <summary>
-/// The sample DAO layer end to end: instance DAOs over one injected session,
-/// generic operations from the base, entity-specific reads on top.
+/// The repository layer end to end: the library's Repository&lt;TEntity&gt; base
+/// (ADR-0016) plus the sample's entity-specific methods, over one injected session.
 /// </summary>
 [Collection(SqliteCollection.Name)]
-public sealed class DaoLayerTests(SqliteFixture fixture)
+public sealed class RepositoryTests(SqliteFixture fixture)
 {
     [Fact]
-    public async Task Daos_share_one_session_and_cover_the_flow()
+    public async Task Repositories_share_one_session_and_cover_the_flow()
     {
         await using var db = await TestDb.OpenAsync(fixture);
-        var users = new UserDao(db);
-        var transactions = new TransactionDao(db);
+        var users = new UserRepository(db);
+        var transactions = new TransactionRepository(db);
 
         var ada = new User { Name = "Ada", Email = "ada@example.com", CreatedAtUtc = TestDb.SeedTime };
         await users.InsertAsync(ada, CancellationToken.None);                       // generic, from the base
@@ -41,14 +41,19 @@ public sealed class DaoLayerTests(SqliteFixture fixture)
         var days = await transactions.GetDailySalesAsync(TestDb.SeedTime.AddDays(-1), CancellationToken.None);
         Assert.Equal(42m, Assert.Single(days).TotalAmount);
 
-        Assert.Single(await users.GetAllAsync(CancellationToken.None));            // generic, from the base
+        ada.DisplayName = "The Countess";                                          // generic update from the base
+        await users.UpdateAsync(ada, CancellationToken.None);
+        Assert.Equal("The Countess", (await users.GetAsync(ada.Id, CancellationToken.None)).DisplayName);
+
+        await users.DeleteAsync(ada.Id, CancellationToken.None);
+        Assert.Null(await users.GetOrDefaultAsync(ada.Id, CancellationToken.None));
     }
 
     [Fact]
-    public async Task Transactions_wrap_dao_work_through_the_shared_session()
+    public async Task Transactions_wrap_repository_work_through_the_shared_session()
     {
         await using var db = await TestDb.OpenAsync(fixture);
-        var users = new UserDao(db);
+        var users = new UserRepository(db);
 
         await using (await db.BeginAsync(CancellationToken.None))
         {

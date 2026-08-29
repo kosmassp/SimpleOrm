@@ -1,15 +1,7 @@
 {
-  "entity": "User",
-  "source": {
-    "kind": "table",
-    "name": "users"
-  },
-  "key": {
-    "strategy": "database_generated",
-    "columns": [
-      "id"
-    ]
-  },
+  "object": "users",
+  "asOfVersion": 1,
+  "generatedAt": "2026-08-28T09:30:00.0000000Z",
   "columns": [
     {
       "column": "id",
@@ -27,11 +19,6 @@
       "column": "email",
       "type": "string",
       "nullable": false
-    },
-    {
-      "column": "display_name",
-      "type": "string",
-      "nullable": true
     },
     {
       "column": "created_at",

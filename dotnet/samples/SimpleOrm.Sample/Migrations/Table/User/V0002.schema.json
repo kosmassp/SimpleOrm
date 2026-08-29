@@ -1,15 +1,7 @@
 {
-  "entity": "User",
-  "source": {
-    "kind": "table",
-    "name": "users"
-  },
-  "key": {
-    "strategy": "database_generated",
-    "columns": [
-      "id"
-    ]
-  },
+  "object": "users",
+  "asOfVersion": 2,
+  "generatedAt": "2026-08-29T07:39:51.6256155Z",
   "columns": [
     {
       "column": "id",

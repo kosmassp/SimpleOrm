@@ -87,58 +87,8 @@ public static class EntityMapJson
                 writer.WriteString("version", map.VersionProperty.ColumnName);
             }
 
-            writer.WritePropertyName("columns");
-            writer.WriteStartArray();
-            foreach (var property in map.Properties)
-            {
-                writer.WriteStartObject();
-                writer.WriteString("column", property.ColumnName);
-                writer.WriteString("type", TypeToken(property.ClrType, property.EnumAsInt));
-                writer.WriteBoolean("nullable", property.IsNullable);
-                if (property.IsKey)
-                {
-                    writer.WriteBoolean("key", true);
-                }
-
-                if (property.IsGenerated)
-                {
-                    writer.WriteBoolean("generated", true);
-                }
-
-                writer.WriteEndObject();
-            }
-
-            writer.WriteEndArray();
-
-            if (map.Indexes.Count > 0)
-            {
-                writer.WritePropertyName("indexes");
-                writer.WriteStartArray();
-                foreach (var index in map.Indexes)
-                {
-                    writer.WriteStartObject();
-                    writer.WriteString("name", index.Name);
-                    writer.WritePropertyName("columns");
-                    writer.WriteStartArray();
-                    foreach (var column in index.Columns)
-                    {
-                        writer.WriteStartObject();
-                        writer.WriteString("column", column.ColumnName);
-                        writer.WriteString("direction", column.Descending ? "desc" : "asc");
-                        writer.WriteEndObject();
-                    }
-
-                    writer.WriteEndArray();
-                    if (index.Unique)
-                    {
-                        writer.WriteBoolean("unique", true);
-                    }
-
-                    writer.WriteEndObject();
-                }
-
-                writer.WriteEndArray();
-            }
+            WriteColumns(writer, map);
+            WriteIndexes(writer, map);
 
             if (map.Relationships.Count > 0)
             {
@@ -161,6 +111,67 @@ public static class EntityMapJson
         }
 
         return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    internal static void WriteColumns(Utf8JsonWriter writer, EntityMap map)
+    {
+        writer.WritePropertyName("columns");
+        writer.WriteStartArray();
+        foreach (var property in map.Properties)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("column", property.ColumnName);
+            writer.WriteString("type", TypeToken(property.ClrType, property.EnumAsInt));
+            writer.WriteBoolean("nullable", property.IsNullable);
+            if (property.IsKey)
+            {
+                writer.WriteBoolean("key", true);
+            }
+
+            if (property.IsGenerated)
+            {
+                writer.WriteBoolean("generated", true);
+            }
+
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
+    }
+
+    internal static void WriteIndexes(Utf8JsonWriter writer, EntityMap map)
+    {
+        if (map.Indexes.Count == 0)
+        {
+            return;
+        }
+
+        writer.WritePropertyName("indexes");
+        writer.WriteStartArray();
+        foreach (var index in map.Indexes)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("name", index.Name);
+            writer.WritePropertyName("columns");
+            writer.WriteStartArray();
+            foreach (var column in index.Columns)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("column", column.ColumnName);
+                writer.WriteString("direction", column.Descending ? "desc" : "asc");
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+            if (index.Unique)
+            {
+                writer.WriteBoolean("unique", true);
+            }
+
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
     }
 
     private static string KindToken(RelationKind kind) => kind switch

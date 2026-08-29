@@ -69,14 +69,27 @@
     {
       "kind": "one_to_many",
       "references": "Transaction",
-      "targetForeignKeyProperty": "UserId"
+      "targetForeignKeyProperties": [
+        "UserId"
+      ]
     },
     {
       "kind": "many_to_many",
       "references": "Role",
       "through": "UserRole",
-      "linkForeignKeyToOwner": "UserId",
-      "linkForeignKeyToTarget": "RoleId"
+      "linkForeignKeysToOwner": [
+        "UserId"
+      ],
+      "linkForeignKeysToTarget": [
+        "RoleId"
+      ]
+    },
+    {
+      "kind": "one_to_one",
+      "references": "UserProfile",
+      "targetForeignKeyProperties": [
+        "UserId"
+      ]
     }
   ]
 }

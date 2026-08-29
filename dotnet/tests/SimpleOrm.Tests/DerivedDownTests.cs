@@ -31,17 +31,17 @@ public sealed class DerivedDownTests : IDisposable
         await using var db = await OpenAsync();
         var runner = new MigrationRunner(db, typeof(User).Assembly, "SimpleOrm.Sample.Migrations");
 
-        Assert.Equal(8, await runner.MigrateAsync(CancellationToken.None));
+        Assert.Equal(9, await runner.MigrateAsync(CancellationToken.None));
 
         // No sample step overrides Down(); every rollback below is derived —
         // reverse renames, removed columns restored, added columns dropped,
         // indexes structurally reverted, the view's previous definition restored,
         // creates dropped.
-        Assert.Equal(8, await runner.MigrateDownAsync(0, CancellationToken.None));
+        Assert.Equal(9, await runner.MigrateDownAsync(0, CancellationToken.None));
         Assert.Equal(0, await CountObjectsAsync());
 
         // And the same plan applies cleanly again: down really reached V0000.
-        Assert.Equal(8, await runner.MigrateAsync(CancellationToken.None));
+        Assert.Equal(9, await runner.MigrateAsync(CancellationToken.None));
         var roles = await db.QueryAllAsync<Role>(CancellationToken.None);
         Assert.Equal(["admin", "user"], roles.Select(r => r.Name));
     }

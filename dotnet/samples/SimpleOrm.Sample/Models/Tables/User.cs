@@ -28,4 +28,8 @@ public sealed class User : BaseModel
     /// <summary>Resolved through the <see cref="UserRole"/> link — declared, never inferred (ADR-0019).</summary>
     [ManyToMany(typeof(UserRole))]
     public IReadOnlyList<Role> Roles { get; private set; } = [];
+
+    /// <summary>The inverse side of the 1:1 — the FK (with its unique index) lives on <see cref="UserProfile"/>.</summary>
+    [OneToOne(nameof(UserProfile.UserId))]
+    public UserProfile? Profile { get; private set; }
 }

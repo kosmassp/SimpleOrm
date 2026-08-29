@@ -63,7 +63,9 @@
   "relationships": [
     {
       "kind": "many_to_one",
-      "foreignKeyColumn": "transaction_id",
+      "foreignKeyColumns": [
+        "transaction_id"
+      ],
       "references": "Transaction"
     }
   ]

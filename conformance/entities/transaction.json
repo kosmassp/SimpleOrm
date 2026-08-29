@@ -82,13 +82,17 @@
   "relationships": [
     {
       "kind": "many_to_one",
-      "foreignKeyColumn": "user_id",
+      "foreignKeyColumns": [
+        "user_id"
+      ],
       "references": "User"
     },
     {
       "kind": "one_to_many",
       "references": "TransactionDetail",
-      "targetForeignKeyProperty": "TransactionId"
+      "targetForeignKeyProperties": [
+        "TransactionId"
+      ]
     }
   ]
 }

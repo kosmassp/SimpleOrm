@@ -76,12 +76,13 @@ public sealed class EntityIndex
     public bool Unique { get; }
 }
 
-/// <summary>Navigation cardinality (ADR-0005/0019).</summary>
+/// <summary>Navigation cardinality (ADR-0005/0019). Polymorphic and "through" relations are ruled out permanently (ADR-0019 add.1).</summary>
 public enum RelationshipKind
 {
     ManyToOne,
     OneToMany,
     ManyToMany,
+    OneToOne,
 }
 
 /// <summary>
@@ -96,18 +97,18 @@ public sealed class RelationshipMap
         string propertyName,
         RelationshipKind kind,
         Type targetType,
-        string? foreignKeyProperty,
+        IReadOnlyList<string> foreignKeyProperties,
         Type? linkType = null,
-        string? linkForeignKeyToOwner = null,
-        string? linkForeignKeyToTarget = null)
+        IReadOnlyList<string>? linkForeignKeysToOwner = null,
+        IReadOnlyList<string>? linkForeignKeysToTarget = null)
     {
         PropertyName = propertyName;
         Kind = kind;
         TargetType = targetType;
-        ForeignKeyProperty = foreignKeyProperty;
+        ForeignKeyProperties = foreignKeyProperties;
         LinkType = linkType;
-        LinkForeignKeyToOwner = linkForeignKeyToOwner;
-        LinkForeignKeyToTarget = linkForeignKeyToTarget;
+        LinkForeignKeysToOwner = linkForeignKeysToOwner ?? [];
+        LinkForeignKeysToTarget = linkForeignKeysToTarget ?? [];
     }
 
     public string PropertyName { get; }
@@ -117,17 +118,22 @@ public sealed class RelationshipMap
     /// <summary>The related entity type (a collection navigation's element type).</summary>
     public Type TargetType { get; }
 
-    /// <summary>Many-to-one: the FK property on this class. One-to-many: the FK property on the target. Null for many-to-many.</summary>
-    public string? ForeignKeyProperty { get; }
+    /// <summary>
+    /// Many-to-one: the FK properties on this class, in the target's key order.
+    /// One-to-many / one-to-one: the FK properties on the target, in this
+    /// entity's key order. Empty for many-to-many. One entry per key part —
+    /// composite keys carry several (ADR-0019 add.1).
+    /// </summary>
+    public IReadOnlyList<string> ForeignKeyProperties { get; }
 
     /// <summary>Many-to-many only: the link entity.</summary>
     public Type? LinkType { get; }
 
-    /// <summary>Many-to-many only: the link property referencing this class (via [ForeignKey]).</summary>
-    public string? LinkForeignKeyToOwner { get; }
+    /// <summary>Many-to-many only: the link properties referencing this class (via [ForeignKey]), in declaration order.</summary>
+    public IReadOnlyList<string> LinkForeignKeysToOwner { get; }
 
-    /// <summary>Many-to-many only: the link property referencing the element type (via [ForeignKey]).</summary>
-    public string? LinkForeignKeyToTarget { get; }
+    /// <summary>Many-to-many only: the link properties referencing the element type (via [ForeignKey]), in declaration order.</summary>
+    public IReadOnlyList<string> LinkForeignKeysToTarget { get; }
 }
 
 /// <summary>One mapped property ↔ column pair.</summary>

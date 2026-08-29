@@ -1,8 +1,8 @@
 {
-  "entity": "Role",
+  "entity": "UserProfile",
   "source": {
     "kind": "table",
-    "name": "roles"
+    "name": "user_profiles"
   },
   "key": {
     "strategy": "database_generated",
@@ -19,9 +19,19 @@
       "generated": true
     },
     {
-      "column": "role_name",
-      "type": "string",
+      "column": "user_id",
+      "type": "int64",
       "nullable": false
+    },
+    {
+      "column": "bio",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "column": "avatar_url",
+      "type": "string",
+      "nullable": true
     },
     {
       "column": "created_at",
@@ -36,10 +46,10 @@
   ],
   "indexes": [
     {
-      "name": "ix_roles_role_name",
+      "name": "ix_user_profiles_user_id",
       "columns": [
         {
-          "column": "role_name",
+          "column": "user_id",
           "direction": "asc"
         }
       ],
@@ -48,15 +58,11 @@
   ],
   "relationships": [
     {
-      "kind": "many_to_many",
-      "references": "User",
-      "through": "UserRole",
-      "linkForeignKeysToOwner": [
-        "RoleId"
+      "kind": "many_to_one",
+      "foreignKeyColumns": [
+        "user_id"
       ],
-      "linkForeignKeysToTarget": [
-        "UserId"
-      ]
+      "references": "User"
     }
   ]
 }

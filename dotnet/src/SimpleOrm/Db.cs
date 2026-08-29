@@ -581,8 +581,9 @@ public sealed class Db : IAsyncDisposable
 
     private void CheckNavigationConsistency(EntityMap map, object entity)
     {
-        // Only a many-to-one can disagree with its FK column; collection
-        // navigations carry no FK on this row (ADR-0019).
+        // Only a many-to-one can disagree with its FK columns; collection
+        // navigations carry no FK on this row (ADR-0019). Composite keys check
+        // pairwise, FK list against key parts in key order (ADR-0019 add.1).
         foreach (var relationship in map.Relationships.Where(r => r.Kind == RelationshipKind.ManyToOne))
         {
             var navigation = map.EntityType.GetProperty(relationship.PropertyName)?.GetValue(entity);
@@ -592,21 +593,24 @@ public sealed class Db : IAsyncDisposable
             }
 
             var targetMap = Maps.Load(relationship.TargetType);
-            if (targetMap.KeyProperties.Count != 1)
+            if (targetMap.KeyProperties.Count != relationship.ForeignKeyProperties.Count)
             {
-                continue;
+                continue;   // arity problems are loader errors, not write-time ones
             }
 
-            var navigationKey = targetMap.KeyProperties[0].Property.GetValue(navigation);
-            var foreignKey = map.Properties
-                .First(p => p.PropertyName == relationship.ForeignKeyProperty)
-                .Property.GetValue(entity);
-            if (!Equals(navigationKey, foreignKey))
+            for (var i = 0; i < targetMap.KeyProperties.Count; i++)
             {
-                throw new SimpleOrmException(
-                    "CRUD-004",
-                    $"{map.EntityType.Name}.{relationship.PropertyName}",
-                    $"navigation key {navigationKey} disagrees with {relationship.ForeignKeyProperty} = {foreignKey}");
+                var navigationKey = targetMap.KeyProperties[i].Property.GetValue(navigation);
+                var foreignKey = map.Properties
+                    .First(p => p.PropertyName == relationship.ForeignKeyProperties[i])
+                    .Property.GetValue(entity);
+                if (!Equals(navigationKey, foreignKey))
+                {
+                    throw new SimpleOrmException(
+                        "CRUD-004",
+                        $"{map.EntityType.Name}.{relationship.PropertyName}",
+                        $"navigation key {navigationKey} disagrees with {relationship.ForeignKeyProperties[i]} = {foreignKey}");
+                }
             }
         }
     }

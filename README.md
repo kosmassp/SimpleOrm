@@ -67,20 +67,28 @@ var user = new User { Name = "Ada", Email = "ada@example.com", CreatedAtUtc = no
 await db.InsertAsync(user, ct);        // user.Id is set
 ```
 
-Relationships are **declared** on the model — all three cardinalities since Level 2
-milestone 1 (ADR-0005/0019) — and stay declaration-only until explicit loading
-lands (L2 M3): never a column, never written, never populated implicitly, and
-never publicly settable (the library is a navigation's only writer):
+Relationships are **declared** on the model — all four classic cardinalities since
+Level 2 milestone 1 (ADR-0005/0019) — and stay declaration-only until loading
+lands (L2 M3). Nothing loads implicitly: a navigation is empty/null until
+requested (explicitly, or eagerly with the query), never populated on access, and
+never publicly settable (the library is a navigation's only writer). Polymorphic
+and "through" relations are out permanently:
 
 ```csharp
 [ManyToOne(nameof(UserId))]                 // FK on this class
 public User? User { get; private set; }
+
+[OneToOne(nameof(UserProfile.UserId))]      // singular inverse; the unique index on the
+public UserProfile? Profile { get; private set; }   // target FK is what makes it 1:1
 
 [OneToMany(nameof(Transaction.UserId))]     // FK on the target
 public IReadOnlyList<Transaction> Transactions { get; private set; } = [];
 
 [ManyToMany(typeof(UserRole))]              // link declared, never inferred;
 public IReadOnlyList<Role> Roles { get; private set; } = [];   // resolved via its [ForeignKey]s
+
+[ManyToOne(nameof(UserId), nameof(RoleId))] // composite-key target: FK list in key order
+public UserRole? Grant { get; private set; }
 ```
 
 Rules that always hold: parameters bind from the args record's properties, both ways

@@ -168,6 +168,7 @@ internal static class AttributeMapLoader
             var column = property.GetCustomAttribute<ColumnAttribute>();
             var ignore = property.GetCustomAttribute<IgnoreAttribute>();
             var manyToOne = property.GetCustomAttribute<ManyToOneAttribute>();
+            var oneToOne = property.GetCustomAttribute<OneToOneAttribute>();
             var oneToMany = property.GetCustomAttribute<OneToManyAttribute>();
             var manyToMany = property.GetCustomAttribute<ManyToManyAttribute>();
             var key = property.GetCustomAttribute<KeyAttribute>();
@@ -176,9 +177,10 @@ internal static class AttributeMapLoader
             var enumAsInt = property.GetCustomAttribute<EnumAsIntAttribute>();
             var foreignKey = property.GetCustomAttribute<ForeignKeyAttribute>();
 
-            if (manyToOne is not null || oneToMany is not null || manyToMany is not null)
+            if (manyToOne is not null || oneToOne is not null || oneToMany is not null || manyToMany is not null)
             {
-                var navigationCount = (manyToOne is null ? 0 : 1) + (oneToMany is null ? 0 : 1) + (manyToMany is null ? 0 : 1);
+                var navigationCount = (manyToOne is null ? 0 : 1) + (oneToOne is null ? 0 : 1)
+                    + (oneToMany is null ? 0 : 1) + (manyToMany is null ? 0 : 1);
                 if (navigationCount > 1)
                 {
                     errors.Add(new MappingError(
@@ -201,8 +203,21 @@ internal static class AttributeMapLoader
 
                 if (manyToOne is not null)
                 {
-                    relationships.Add(new RelationshipSpec(
-                        property.Name, RelationshipKind.ManyToOne, property.PropertyType, manyToOne.ForeignKeyProperty));
+                    if (manyToOne.ForeignKeyProperties.Count == 0)
+                    {
+                        errors.Add(new MappingError(
+                            "MAP-016", target, "[ManyToOne] needs at least one foreign-key property"));
+                    }
+                    else
+                    {
+                        relationships.Add(new RelationshipSpec(
+                            property.Name, RelationshipKind.ManyToOne, property.PropertyType,
+                            manyToOne.ForeignKeyProperties));
+                    }
+                }
+                else if (oneToOne is not null)
+                {
+                    ReadOneToOneNavigation(property, target, oneToOne, relationships, errors);
                 }
                 else
                 {
@@ -376,7 +391,61 @@ internal static class AttributeMapLoader
         return PropertiesInDeclarationOrder(entityType).Any(p => p.GetCustomAttributes()
             .Any(a => a is ColumnAttribute or IgnoreAttribute or KeyAttribute or GeneratedAttribute
                 or VersionAttribute or EnumAsIntAttribute or ForeignKeyAttribute or ManyToOneAttribute
-                or OneToManyAttribute or ManyToManyAttribute));
+                or OneToOneAttribute or OneToManyAttribute or ManyToManyAttribute));
+    }
+
+    /// <summary>
+    /// Resolves a [OneToOne] navigation (ADR-0019 add.1): a single entity
+    /// reference — a collection here is MAP-020 — whose foreign key lives on the
+    /// target, named by property (MAP-021 when absent), exactly like [OneToMany]
+    /// but singular.
+    /// </summary>
+    private static void ReadOneToOneNavigation(
+        PropertyInfo property,
+        string target,
+        OneToOneAttribute oneToOne,
+        List<RelationshipSpec> relationships,
+        List<MappingError> errors)
+    {
+        var targetType = property.PropertyType;
+        if (CollectionElementType(targetType) is not null || !targetType.IsClass || targetType == typeof(string))
+        {
+            errors.Add(new MappingError(
+                "MAP-020", target,
+                "a [OneToOne] navigation must be a single entity reference, not a collection"));
+            return;
+        }
+
+        if (ValidateTargetForeignKeys(
+            target, "[OneToOne]", targetType, oneToOne.TargetForeignKeyProperties, errors))
+        {
+            relationships.Add(new RelationshipSpec(
+                property.Name, RelationshipKind.OneToOne, targetType, oneToOne.TargetForeignKeyProperties));
+        }
+    }
+
+    /// <summary>Every named FK property must exist on the target, and at least one must be named (MAP-021).</summary>
+    private static bool ValidateTargetForeignKeys(
+        string target, string attribute, Type targetType, IReadOnlyList<string> names, List<MappingError> errors)
+    {
+        if (names.Count == 0)
+        {
+            errors.Add(new MappingError(
+                "MAP-021", target, $"{attribute} needs at least one target foreign-key property"));
+            return false;
+        }
+
+        var missing = names.Where(n => targetType.GetProperty(n) is null).ToArray();
+        if (missing.Length > 0)
+        {
+            errors.Add(new MappingError(
+                "MAP-021", target,
+                $"{attribute} names foreign-key propert{(missing.Length == 1 ? "y" : "ies")} "
+                + $"'{string.Join("', '", missing)}' not found on '{targetType.Name}'"));
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -406,55 +475,57 @@ internal static class AttributeMapLoader
 
         if (oneToMany is not null)
         {
-            if (elementType.GetProperty(oneToMany.TargetForeignKeyProperty) is null)
+            if (ValidateTargetForeignKeys(
+                target, "[OneToMany]", elementType, oneToMany.TargetForeignKeyProperties, errors))
             {
-                errors.Add(new MappingError(
-                    "MAP-021", target,
-                    $"[OneToMany] names foreign-key property '{oneToMany.TargetForeignKeyProperty}', which does not exist on '{elementType.Name}'"));
-                return;
+                relationships.Add(new RelationshipSpec(
+                    property.Name, RelationshipKind.OneToMany, elementType, oneToMany.TargetForeignKeyProperties));
             }
 
-            relationships.Add(new RelationshipSpec(
-                property.Name, RelationshipKind.OneToMany, elementType, oneToMany.TargetForeignKeyProperty));
             return;
         }
 
         var link = manyToMany!.Through;
-        var toOwner = LinkForeignKey(link, entityType, target, "this type", errors);
-        var toTarget = LinkForeignKey(link, elementType, target, $"'{elementType.Name}'", errors);
-        if (toOwner is null || toTarget is null)
+        var toOwner = LinkForeignKeys(link, entityType, target, "this type", errors);
+        var toTarget = LinkForeignKeys(link, elementType, target, $"'{elementType.Name}'", errors);
+        if (toOwner.Count == 0 || toTarget.Count == 0)
         {
             return;
         }
 
         relationships.Add(new RelationshipSpec(
-            property.Name, RelationshipKind.ManyToMany, elementType, foreignKeyProperty: null)
+            property.Name, RelationshipKind.ManyToMany, elementType, foreignKeyProperties: [])
         {
             LinkType = link,
-            LinkForeignKeyToOwner = toOwner,
-            LinkForeignKeyToTarget = toTarget,
+            LinkForeignKeysToOwner = toOwner,
+            LinkForeignKeysToTarget = toTarget,
         });
     }
 
-    /// <summary>The single link property carrying [ForeignKey(referenced)] — missing or ambiguous is MAP-022.</summary>
-    private static string? LinkForeignKey(
+    /// <summary>
+    /// The link properties carrying [ForeignKey(referenced)], in declaration order —
+    /// a composite-key side legitimately has several, pairing with the referenced
+    /// key parts in that order (ADR-0019 add.1); none at all is MAP-022. The
+    /// count-vs-key-arity check happens at assembly, where key shapes are known.
+    /// </summary>
+    private static IReadOnlyList<string> LinkForeignKeys(
         Type link, Type referenced, string target, string side, List<MappingError> errors)
     {
         var candidates = link
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => p.GetCustomAttribute<ForeignKeyAttribute>()?.References == referenced)
+            .Where(p => p.GetIndexParameters().Length == 0
+                && p.GetCustomAttribute<ForeignKeyAttribute>()?.References == referenced)
+            .OrderBy(p => p.MetadataToken)
+            .Select(p => p.Name)
             .ToArray();
-        if (candidates.Length == 1)
+        if (candidates.Length == 0)
         {
-            return candidates[0].Name;
+            errors.Add(new MappingError(
+                "MAP-022", target,
+                $"[ManyToMany] link '{link.Name}' has no [ForeignKey] property referencing {side}"));
         }
 
-        errors.Add(new MappingError(
-            "MAP-022", target,
-            candidates.Length == 0
-                ? $"[ManyToMany] link '{link.Name}' has no [ForeignKey] property referencing {side}"
-                : $"[ManyToMany] link '{link.Name}' has {candidates.Length} [ForeignKey] properties referencing {side}; exactly one is required"));
-        return null;
+        return candidates;
     }
 
     /// <summary>The entity element type of a collection property, or null (string and byte[] are not collections of entities).</summary>

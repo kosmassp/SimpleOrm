@@ -97,28 +97,32 @@ public static class EntityMapJson
                 foreach (var relationship in map.Relationships)
                 {
                     writer.WriteStartObject();
+                    // FK lists pair with the referenced key parts in order; composite
+                    // keys carry several entries (ADR-0019 add.1).
                     switch (relationship.Kind)
                     {
                         case RelationshipKind.ManyToOne:
-                            var foreignKey = map.Properties.First(p => p.PropertyName == relationship.ForeignKeyProperty);
                             writer.WriteString("kind", "many_to_one");
-                            writer.WriteString("foreignKeyColumn", foreignKey.ColumnName);
+                            WriteNames(writer, "foreignKeyColumns", relationship.ForeignKeyProperties
+                                .Select(n => map.Properties.First(p => p.PropertyName == n).ColumnName));
                             writer.WriteString("references", relationship.TargetType.Name);
                             break;
                         case RelationshipKind.OneToMany:
-                            // The FK lives on the target; its column name belongs to
-                            // the target's own export, so the property name is the
+                        case RelationshipKind.OneToOne:
+                            // The FKs live on the target; their column names belong to
+                            // the target's own export, so property names are the
                             // cross-language contract here (ADR-0019).
-                            writer.WriteString("kind", "one_to_many");
+                            writer.WriteString(
+                                "kind", relationship.Kind == RelationshipKind.OneToOne ? "one_to_one" : "one_to_many");
                             writer.WriteString("references", relationship.TargetType.Name);
-                            writer.WriteString("targetForeignKeyProperty", relationship.ForeignKeyProperty);
+                            WriteNames(writer, "targetForeignKeyProperties", relationship.ForeignKeyProperties);
                             break;
                         default:
                             writer.WriteString("kind", "many_to_many");
                             writer.WriteString("references", relationship.TargetType.Name);
                             writer.WriteString("through", relationship.LinkType!.Name);
-                            writer.WriteString("linkForeignKeyToOwner", relationship.LinkForeignKeyToOwner);
-                            writer.WriteString("linkForeignKeyToTarget", relationship.LinkForeignKeyToTarget);
+                            WriteNames(writer, "linkForeignKeysToOwner", relationship.LinkForeignKeysToOwner);
+                            WriteNames(writer, "linkForeignKeysToTarget", relationship.LinkForeignKeysToTarget);
                             break;
                     }
 
@@ -302,4 +306,16 @@ public static class EntityMapJson
     /// <summary>Collapses whitespace so the exported SQL is layout-independent across implementations.</summary>
     private static string NormalizeSql(string sql)
         => string.Join(" ", sql.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+
+    private static void WriteNames(Utf8JsonWriter writer, string property, IEnumerable<string> names)
+    {
+        writer.WritePropertyName(property);
+        writer.WriteStartArray();
+        foreach (var name in names)
+        {
+            writer.WriteStringValue(name);
+        }
+
+        writer.WriteEndArray();
+    }
 }

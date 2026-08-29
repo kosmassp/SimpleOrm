@@ -17,8 +17,13 @@ namespace SimpleOrm;
 [AttributeUsage(AttributeTargets.Property)]
 public sealed class OneToManyAttribute : Attribute
 {
-    public OneToManyAttribute(string targetForeignKeyProperty) => TargetForeignKeyProperty = targetForeignKeyProperty;
+    public OneToManyAttribute(params string[] targetForeignKeyProperties)
+        => TargetForeignKeyProperties = targetForeignKeyProperties;
 
-    /// <summary>Name of the property on the target (element) type that holds this entity's key.</summary>
-    public string TargetForeignKeyProperty { get; }
+    /// <summary>
+    /// The properties on the target (element) type holding this entity's key —
+    /// one per key part, **in this entity's key order** (composite owners pass
+    /// several, ADR-0019 add.1).
+    /// </summary>
+    public IReadOnlyList<string> TargetForeignKeyProperties { get; }
 }

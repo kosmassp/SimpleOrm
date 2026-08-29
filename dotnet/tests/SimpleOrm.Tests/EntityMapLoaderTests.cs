@@ -37,7 +37,7 @@ public sealed class EntityMapLoaderTests
         Assert.Equal(["user_id", "role_id"], map.KeyProperties.Select(k => k.ColumnName));
         Assert.Equal(2, map.Relationships.Count);
         Assert.Equal(typeof(User), map.Relationships.Single(r => r.PropertyName == "User").TargetType);
-        Assert.Equal("RoleId", map.Relationships.Single(r => r.PropertyName == "Role").ForeignKeyProperty);
+        Assert.Equal(["RoleId"], map.Relationships.Single(r => r.PropertyName == "Role").ForeignKeyProperties);
     }
 
     [Fact]
@@ -55,7 +55,7 @@ public sealed class EntityMapLoaderTests
         Assert.Equal([false, true], named.Columns.Select(c => c.Descending));
 
         var relationship = Assert.Single(map.Relationships, r => r.Kind == RelationshipKind.ManyToOne);
-        Assert.Equal("UserId", relationship.ForeignKeyProperty);
+        Assert.Equal(["UserId"], relationship.ForeignKeyProperties);
     }
 
     [Fact]

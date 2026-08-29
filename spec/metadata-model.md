@@ -122,29 +122,42 @@ byte-equality):
     { "name": "ix_t_a", "columns": [{ "column": "a", "direction": "asc" }], "unique": true }
   ],
   "relationships": [
-    { "kind": "many_to_one", "foreignKeyColumn": "user_id", "references": "User" },
-    { "kind": "one_to_many", "references": "Transaction", "targetForeignKeyProperty": "UserId" },
+    { "kind": "many_to_one", "foreignKeyColumns": ["user_id"], "references": "User" },
+    { "kind": "one_to_one", "references": "UserProfile", "targetForeignKeyProperties": ["UserId"] },
+    { "kind": "one_to_many", "references": "Transaction", "targetForeignKeyProperties": ["UserId"] },
     { "kind": "many_to_many", "references": "Role", "through": "UserRole",
-      "linkForeignKeyToOwner": "UserId", "linkForeignKeyToTarget": "RoleId" }
+      "linkForeignKeysToOwner": ["UserId"], "linkForeignKeysToTarget": ["RoleId"] }
   ]
 }
 ```
 
 Relationship declarations (ADR-0005/0019) are metadata only until Level 2
-milestone 3 loading; nothing is ever loaded implicitly. Rules:
+milestone 3 loading. **Nothing loads implicitly**: a navigation stays
+empty/null until requested — explicitly, or eagerly with the query — and never
+loads on access (ADR-0019 add.1). The four classic cardinalities are the whole
+taxonomy: polymorphic relations and "through" traversals are ruled out
+permanently (no foreign-key integrity / plain SQL says it better). Rules:
 
 - A navigation is transient — never a column, never written — and must not be
   publicly settable (`MAP-011`): the library is its only writer, so it can never
   disagree with the foreign key.
-- `many_to_one`: the foreign key is a mapped property of this entity
-  (`MAP-016` when unknown); the export carries its **column** name.
-- `one_to_many`: the foreign key lives on the target entity, named by
-  **property** (its column name belongs to the target's own export); the named
-  property must exist on the target (`MAP-021`). The element type comes from the
-  collection property's `IEnumerable<T>` — anything else is `MAP-020`.
+- **Foreign keys are lists**: one entry per part of the referenced side's key,
+  **in that key's order** — composite keys declare several (ADR-0019 add.1), and
+  the count must match the key's arity wherever the key shape is declared.
+- `many_to_one`: the FK properties are mapped properties of this entity
+  (`MAP-016` when unknown, or on an arity mismatch with the target key); the
+  export carries their **column** names.
+- `one_to_one` / `one_to_many`: the FK lives on the target entity, named by
+  **property** (its column names belong to the target's own export); the named
+  properties must exist there, and their count must match this entity's key
+  arity (`MAP-021`). `one_to_many` is a collection — the element type comes from
+  the property's `IEnumerable<T>`, anything else is `MAP-020`; `one_to_one` is a
+  single entity reference — a collection is `MAP-020`. True 1:1 integrity is the
+  database's (a unique index on the target FK).
 - `many_to_many`: the link entity is **declared, never inferred**; its
-  `[ForeignKey]` declarations identify which link property references each side,
-  and each side must be referenced exactly once (`MAP-022`).
+  `[ForeignKey]` declarations identify which link properties reference each
+  side, in declaration order, and each side's count must match that side's key
+  arity (`MAP-022` — missing, surplus, or short).
 - A property carries at most one relationship declaration, and none of
   `[Column]`/`[Ignore]` beside it (`MAP-019`).
 

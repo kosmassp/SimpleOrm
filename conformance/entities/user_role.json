@@ -54,12 +54,16 @@
   "relationships": [
     {
       "kind": "many_to_one",
-      "foreignKeyColumn": "user_id",
+      "foreignKeyColumns": [
+        "user_id"
+      ],
       "references": "User"
     },
     {
       "kind": "many_to_one",
-      "foreignKeyColumn": "role_id",
+      "foreignKeyColumns": [
+        "role_id"
+      ],
       "references": "Role"
     }
   ]

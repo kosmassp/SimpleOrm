@@ -1013,3 +1013,45 @@ composition. Milestones, one at a time, stop and report — same discipline as �
   names. `many_to_one` is unchanged.
 
 **Status.** Accepted.
+
+### ADR-0019 addendum 1 — one-to-one; composite foreign keys; polymorphic and "through" ruled out; loading defaults (2026-08-29)
+
+Owner, on the relationship taxonomy comparison: "i dont like polymorphic, no for
+that, as well as 'through'. ok to implement the rest. Remember that the default
+is lazy, only when requested to eager then it is load automatically." And
+mid-build: "don't forget about the composite key. I remember this could need
+special implement."
+
+- **`[OneToOne]`** completes the four classic cardinalities: the singular inverse
+  of a many-to-one — same resolution as `[OneToMany]` (FK on the target, named by
+  property), but the property is a single entity reference (`T?`), and a
+  collection there is `MAP-020`. True 1:1 integrity is the database's job: the
+  sample's `user_profiles` carries the unique index on `user_id`, and migration
+  V0009 (authored by `simpleorm diff`, snapshotted by the trusted-range shadow)
+  ships it.
+- **Composite foreign keys.** Every FK declaration is a **list**, one entry per
+  part of the referenced side's key, in that key's order:
+  `[ManyToOne(nameof(UserId), nameof(RoleId))]` references a composite-key
+  target; `[OneToMany]`/`[OneToOne]` list the target's FK properties in this
+  entity's key order; a many-to-many link references a composite side with
+  several `[ForeignKey]` properties, pairing in declaration order. Counts are
+  validated against key arity wherever the key shape is declared ([Key]
+  attributes) — mismatches are `MAP-016`/`MAP-021`/`MAP-022`; convention-mapped
+  targets skip the arity check rather than guess. The `CRUD-004` write-time
+  navigation/FK consistency check is now composite-aware (it silently skipped
+  composite targets before). JSON export uses arrays
+  (`foreignKeyColumns`, `targetForeignKeyProperties`, `linkForeignKeysToOwner`/
+  `...ToTarget`).
+- **Ruled out permanently** (owner): polymorphic relations (a type-name column
+  instead of a real FK — no database integrity, against §2) and
+  "through"-style traversal relations (Eloquent's hasManyThrough — plain SQL or
+  a `[Statement]` says it better). Self-referential relationships need no
+  special kind; owned types stay scheduled later in Level 2.
+- **Loading contract for M3/M4** (owner): the default is unloaded — a navigation
+  stays empty/null until loading is requested; requesting **eager** loads it
+  automatically with the query. Within the §2 no-hidden-queries principle this
+  is deferred-until-requested, not access-triggered: touching an unloaded
+  navigation never fires SQL. Whether unloaded access should *throw* instead of
+  returning empty (strictness vs. convenience) is an open M3 design question.
+
+**Status.** Accepted.

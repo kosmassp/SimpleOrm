@@ -14,22 +14,28 @@ public sealed class RelationshipMetadataTests
     private static readonly EntityMapLoader Loader = new();
 
     [Fact]
-    public void User_declares_one_to_many_and_many_to_many()
+    public void User_declares_all_navigation_kinds()
     {
         var map = Loader.Load<User>();
-        Assert.Equal(2, map.Relationships.Count);
+        Assert.Equal(3, map.Relationships.Count);
 
         var transactions = Assert.Single(map.Relationships, r => r.PropertyName == nameof(User.Transactions));
         Assert.Equal(RelationshipKind.OneToMany, transactions.Kind);
         Assert.Equal(typeof(Transaction), transactions.TargetType);
-        Assert.Equal(nameof(Transaction.UserId), transactions.ForeignKeyProperty);
+        Assert.Equal([nameof(Transaction.UserId)], transactions.ForeignKeyProperties);
 
         var roles = Assert.Single(map.Relationships, r => r.PropertyName == nameof(User.Roles));
         Assert.Equal(RelationshipKind.ManyToMany, roles.Kind);
         Assert.Equal(typeof(Role), roles.TargetType);
         Assert.Equal(typeof(UserRole), roles.LinkType);
-        Assert.Equal(nameof(UserRole.UserId), roles.LinkForeignKeyToOwner);
-        Assert.Equal(nameof(UserRole.RoleId), roles.LinkForeignKeyToTarget);
+        Assert.Equal([nameof(UserRole.UserId)], roles.LinkForeignKeysToOwner);
+        Assert.Equal([nameof(UserRole.RoleId)], roles.LinkForeignKeysToTarget);
+
+        // The fourth classic cardinality (ADR-0019 add.1): singular inverse, FK on the target.
+        var profile = Assert.Single(map.Relationships, r => r.PropertyName == nameof(User.Profile));
+        Assert.Equal(RelationshipKind.OneToOne, profile.Kind);
+        Assert.Equal(typeof(UserProfile), profile.TargetType);
+        Assert.Equal([nameof(UserProfile.UserId)], profile.ForeignKeyProperties);
     }
 
     [Fact]
@@ -38,12 +44,30 @@ public sealed class RelationshipMetadataTests
         var map = Loader.Load<Transaction>();
         var user = Assert.Single(map.Relationships, r => r.PropertyName == nameof(Transaction.User));
         Assert.Equal(RelationshipKind.ManyToOne, user.Kind);
-        Assert.Equal(nameof(Transaction.UserId), user.ForeignKeyProperty);
+        Assert.Equal([nameof(Transaction.UserId)], user.ForeignKeyProperties);
 
         var details = Assert.Single(map.Relationships, r => r.PropertyName == nameof(Transaction.Details));
         Assert.Equal(RelationshipKind.OneToMany, details.Kind);
         Assert.Equal(typeof(TransactionDetail), details.TargetType);
     }
+
+    [Fact]
+    public void Composite_key_target_takes_a_foreign_key_list_in_key_order()
+    {
+        // UserRole's key is (UserId, RoleId): the referencing side declares both,
+        // in that order (ADR-0019 add.1).
+        var map = Loader.Load<CompositeReferenceFixture>();
+        var grant = Assert.Single(map.Relationships);
+        Assert.Equal(RelationshipKind.ManyToOne, grant.Kind);
+        Assert.Equal(typeof(UserRole), grant.TargetType);
+        Assert.Equal(["UserId", "RoleId"], grant.ForeignKeyProperties);
+    }
+
+    [Fact]
+    public void Foreign_key_arity_must_match_the_target_key() => AssertCode<CompositeArityFixture>("MAP-016");
+
+    [Fact]
+    public void One_to_one_on_a_collection_is_MAP020() => AssertCode<Map020OneToOneFixture>("MAP-020");
 
     [Fact]
     public void Navigations_are_transient_and_never_columns()
@@ -121,13 +145,13 @@ public sealed class RelationshipMetadataTests
     {
         [Key]
         [Column]
-        [ForeignKey(typeof(User))]
-        public long UserId { get; set; }
+        [ForeignKey(typeof(Map022AmbiguousFixture))]
+        public long WidgetId { get; set; }
 
         [Key]
         [Column]
-        [ForeignKey(typeof(User))]
-        public long OtherUserId { get; set; }
+        [ForeignKey(typeof(Map022AmbiguousFixture))]
+        public long OtherWidgetId { get; set; }
 
         [Column]
         [ForeignKey(typeof(Role))]
@@ -137,6 +161,8 @@ public sealed class RelationshipMetadataTests
     [Table("m22_ambiguous_widgets")]
     private sealed class Map022AmbiguousFixture
     {
+        // Single-part key, but the link declares two [ForeignKey]s to this type:
+        // the FK count must equal the key arity (ADR-0019 add.1).
         [Key]
         [Generated]
         [Column]
@@ -144,6 +170,51 @@ public sealed class RelationshipMetadataTests
 
         [ManyToMany(typeof(AmbiguousLink))]
         public IReadOnlyList<Role> Roles { get; private set; } = [];
+    }
+
+    [Table("composite_grants")]
+    private sealed class CompositeReferenceFixture
+    {
+        [Key]
+        [Generated]
+        [Column]
+        public long Id { get; set; }
+
+        [Column]
+        public long UserId { get; set; }
+
+        [Column]
+        public long RoleId { get; set; }
+
+        [ManyToOne(nameof(UserId), nameof(RoleId))]
+        public UserRole? Grant { get; private set; }
+    }
+
+    [Table("composite_arity_widgets")]
+    private sealed class CompositeArityFixture
+    {
+        [Key]
+        [Generated]
+        [Column]
+        public long Id { get; set; }
+
+        [Column]
+        public long UserId { get; set; }
+
+        [ManyToOne(nameof(UserId))]   // UserRole's key has two parts
+        public UserRole? Grant { get; private set; }
+    }
+
+    [Table("m20_one_to_one_widgets")]
+    private sealed class Map020OneToOneFixture
+    {
+        [Key]
+        [Generated]
+        [Column]
+        public long Id { get; set; }
+
+        [OneToOne(nameof(Transaction.UserId))]
+        public IReadOnlyList<Transaction> Child { get; private set; } = [];   // a collection is not one-to-one
     }
 
     [Table("m11_widgets")]

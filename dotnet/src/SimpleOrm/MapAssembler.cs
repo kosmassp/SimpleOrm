@@ -1,3 +1,5 @@
+using System.Reflection;
+
 namespace SimpleOrm;
 
 /// <summary>
@@ -195,24 +197,91 @@ internal static class MapAssembler
         List<MappingError> errors)
     {
         var relationships = new List<RelationshipMap>(relationshipSpecs.Count);
+        var ownerKeyCount = byProperty.Values.Count(p => p.IsKey);
         foreach (var spec in relationshipSpecs)
         {
-            // Only a many-to-one's FK lives on this class; the collection kinds
-            // resolve against the target/link types in the loader (ADR-0019).
-            if (spec.Kind == RelationshipKind.ManyToOne && !byProperty.ContainsKey(spec.ForeignKeyProperty!))
+            var target = $"{entityType.Name}.{spec.PropertyName}";
+
+            // Composite keys need composite foreign keys (ADR-0019 add.1): the FK
+            // list pairs with the referenced side's key parts, in key order, so
+            // the counts must agree wherever the key shape is known.
+            switch (spec.Kind)
             {
-                errors.Add(new MappingError(
-                    "MAP-016",
-                    $"{entityType.Name}.{spec.PropertyName}",
-                    $"[ManyToOne] names foreign-key property '{spec.ForeignKeyProperty}', which is not a mapped property"));
-                continue;
+                case RelationshipKind.ManyToOne:
+                    var unmapped = spec.ForeignKeyProperties.Where(n => !byProperty.ContainsKey(n)).ToArray();
+                    if (unmapped.Length > 0)
+                    {
+                        errors.Add(new MappingError(
+                            "MAP-016", target,
+                            $"[ManyToOne] names foreign-key propert{(unmapped.Length == 1 ? "y" : "ies")} "
+                            + $"'{string.Join("', '", unmapped)}' that are not mapped properties"));
+                        continue;
+                    }
+
+                    if (KeyArity(spec.TargetType) is { } targetArity && targetArity != spec.ForeignKeyProperties.Count)
+                    {
+                        errors.Add(new MappingError(
+                            "MAP-016", target,
+                            $"[ManyToOne] declares {spec.ForeignKeyProperties.Count} foreign-key propert{(spec.ForeignKeyProperties.Count == 1 ? "y" : "ies")} "
+                            + $"but '{spec.TargetType.Name}' has a {targetArity}-part key"));
+                        continue;
+                    }
+
+                    break;
+
+                case RelationshipKind.OneToMany:
+                case RelationshipKind.OneToOne:
+                    if (ownerKeyCount > 0 && spec.ForeignKeyProperties.Count != ownerKeyCount)
+                    {
+                        errors.Add(new MappingError(
+                            "MAP-021", target,
+                            $"declares {spec.ForeignKeyProperties.Count} target foreign-key propert{(spec.ForeignKeyProperties.Count == 1 ? "y" : "ies")} "
+                            + $"but this entity has a {ownerKeyCount}-part key"));
+                        continue;
+                    }
+
+                    break;
+
+                default:
+                    if (ownerKeyCount > 0 && spec.LinkForeignKeysToOwner.Count != ownerKeyCount)
+                    {
+                        errors.Add(new MappingError(
+                            "MAP-022", target,
+                            $"link '{spec.LinkType!.Name}' declares {spec.LinkForeignKeysToOwner.Count} [ForeignKey] "
+                            + $"propert{(spec.LinkForeignKeysToOwner.Count == 1 ? "y" : "ies")} referencing this type, whose key has {ownerKeyCount} part(s)"));
+                        continue;
+                    }
+
+                    if (KeyArity(spec.TargetType) is { } elementArity && spec.LinkForeignKeysToTarget.Count != elementArity)
+                    {
+                        errors.Add(new MappingError(
+                            "MAP-022", target,
+                            $"link '{spec.LinkType!.Name}' declares {spec.LinkForeignKeysToTarget.Count} [ForeignKey] "
+                            + $"propert{(spec.LinkForeignKeysToTarget.Count == 1 ? "y" : "ies")} referencing '{spec.TargetType.Name}', whose key has {elementArity} part(s)"));
+                        continue;
+                    }
+
+                    break;
             }
 
             relationships.Add(new RelationshipMap(
-                spec.PropertyName, spec.Kind, spec.TargetType, spec.ForeignKeyProperty,
-                spec.LinkType, spec.LinkForeignKeyToOwner, spec.LinkForeignKeyToTarget));
+                spec.PropertyName, spec.Kind, spec.TargetType, spec.ForeignKeyProperties,
+                spec.LinkType, spec.LinkForeignKeysToOwner, spec.LinkForeignKeysToTarget));
         }
 
         return relationships;
+    }
+
+    /// <summary>
+    /// The related type's key arity by its [Key] declarations — null when it
+    /// declares none (convention-mapped or unknown: the check is skipped rather
+    /// than guessed).
+    /// </summary>
+    private static int? KeyArity(Type entityType)
+    {
+        var count = entityType
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Count(p => p.GetCustomAttribute<KeyAttribute>() is not null);
+        return count > 0 ? count : null;
     }
 }

@@ -31,13 +31,13 @@ these codes.
 | `MAP-013` | attribute illegal for the relation source (`[Generated]`/`[Version]` on any non-table; `[Key]` on statement/procedure) | ADR-0008 | milestone 2 |
 | `MAP-014` | `[Index]` on a relation source that cannot carry one (view, statement, procedure) | ADR-0007/0008 | milestone 2 |
 | `MAP-015` | invalid `[Index]` column stream (empty; leading/doubled `SortOrder`; token neither string nor `SortOrder`; unknown or unmapped property) | ADR-0007 add.3 | milestone 2 |
-| `MAP-016` | `[ManyToOne]` foreign-key property name unknown or unmapped | ADR-0005 | milestone 2 |
+| `MAP-016` | `[ManyToOne]` foreign-key properties unknown/unmapped, empty, or their count mismatches the target key's arity | ADR-0005, ADR-0019 add.1 | milestone 2 |
 | `MAP-017` | invalid `[Statement]` parameter declaration (odd token count; token neither name string nor `Type`; duplicate name) | ADR-0008 add.2 | milestone 2 |
 | `MAP-018` | two properties map to the same column name | ADR-0004 | milestone 2 |
 | `MAP-019` | no key defined where one is required, or `[Generated]`/`[Version]` on a property without `[Column]` | §7.1 | milestone 2 |
-| `MAP-020` | a collection navigation is not a generic collection (`IEnumerable<T>`) of an entity type | ADR-0019 | L2 milestone 1 |
-| `MAP-021` | `[OneToMany]` names a foreign-key property that does not exist on the target type | ADR-0019 | L2 milestone 1 |
-| `MAP-022` | `[ManyToMany]` link entity misses or ambiguously declares the `[ForeignKey]` reference to one side (exactly one per side) | ADR-0019 | L2 milestone 1 |
+| `MAP-020` | a navigation property has the wrong shape: `[OneToMany]`/`[ManyToMany]` need a generic collection (`IEnumerable<T>`) of an entity type; `[OneToOne]` needs a single entity reference | ADR-0019 (+add.1) | L2 milestone 1 |
+| `MAP-021` | `[OneToMany]`/`[OneToOne]` target foreign-key properties missing on the target, empty, or their count mismatches this entity's key arity | ADR-0019 (+add.1) | L2 milestone 1 |
+| `MAP-022` | `[ManyToMany]` link entity's `[ForeignKey]` references to a side are missing or their count mismatches that side's key arity | ADR-0019 (+add.1) | L2 milestone 1 |
 | `MAP-030` | no conversion or handler between the CLR type and the database value (either direction) | §7.9 | milestone 4 |
 | `MAP-031` | value conversion failed (format, overflow, unknown enum name) | §7.9 | milestone 4 |
 

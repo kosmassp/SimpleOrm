@@ -16,8 +16,12 @@ namespace SimpleOrm;
 [AttributeUsage(AttributeTargets.Property)]
 public sealed class ManyToOneAttribute : Attribute
 {
-    public ManyToOneAttribute(string foreignKeyProperty) => ForeignKeyProperty = foreignKeyProperty;
+    public ManyToOneAttribute(params string[] foreignKeyProperties) => ForeignKeyProperties = foreignKeyProperties;
 
-    /// <summary>Name of the property on this class that holds the foreign-key value.</summary>
-    public string ForeignKeyProperty { get; }
+    /// <summary>
+    /// The properties on this class holding the foreign-key value — one per part
+    /// of the target's key, **in the target's key order** (composite keys pass
+    /// several: <c>[ManyToOne(nameof(UserId), nameof(RoleId))]</c>, ADR-0019 add.1).
+    /// </summary>
+    public IReadOnlyList<string> ForeignKeyProperties { get; }
 }

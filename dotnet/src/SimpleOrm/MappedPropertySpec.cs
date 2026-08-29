@@ -42,12 +42,13 @@ internal sealed class IndexSpec
 /// <summary>Loader-internal working shape of a declared navigation before validation.</summary>
 internal sealed class RelationshipSpec
 {
-    public RelationshipSpec(string propertyName, RelationshipKind kind, Type targetType, string? foreignKeyProperty)
+    public RelationshipSpec(
+        string propertyName, RelationshipKind kind, Type targetType, IReadOnlyList<string> foreignKeyProperties)
     {
         PropertyName = propertyName;
         Kind = kind;
         TargetType = targetType;
-        ForeignKeyProperty = foreignKeyProperty;
+        ForeignKeyProperties = foreignKeyProperties;
     }
 
     public string PropertyName { get; }
@@ -56,11 +57,11 @@ internal sealed class RelationshipSpec
 
     public Type TargetType { get; }
 
-    public string? ForeignKeyProperty { get; }
+    public IReadOnlyList<string> ForeignKeyProperties { get; }
 
     public Type? LinkType { get; init; }
 
-    public string? LinkForeignKeyToOwner { get; init; }
+    public IReadOnlyList<string> LinkForeignKeysToOwner { get; init; } = [];
 
-    public string? LinkForeignKeyToTarget { get; init; }
+    public IReadOnlyList<string> LinkForeignKeysToTarget { get; init; } = [];
 }

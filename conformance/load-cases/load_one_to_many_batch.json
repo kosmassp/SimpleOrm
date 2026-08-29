@@ -1,0 +1,8 @@
+{
+  "name": "load_one_to_many_batch",
+  "comment": "The batch form: one query fills every owner — user 1 gets its transactions (ordered by target key), user 2 gets an empty list, never null.",
+  "load": { "entity": "User", "navigation": "Transactions", "keys": [1, 2] },
+  "expect": { "loaded": {
+    "1": [ { "id": 1, "user_id": 1, "amount": "19.99" } ],
+    "2": [ ] } }
+}

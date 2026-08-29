@@ -33,4 +33,12 @@ public class Repository<TEntity>(Db db)
 
     /// <summary>The full criteria chain for ordering and paging.</summary>
     public CriteriaQuery<TEntity> Query() => Db.Query<TEntity>();
+
+    /// <summary>Explicit navigation loading (ADR-0021); nothing loads implicitly.</summary>
+    public Task LoadAsync(TEntity entity, string navigation, CancellationToken ct)
+        => Db.LoadAsync(entity, navigation, ct);
+
+    /// <summary>The batch form: one query per navigation for the whole list (ADR-0021).</summary>
+    public Task LoadEachAsync(IReadOnlyList<TEntity> entities, string navigation, CancellationToken ct)
+        => Db.LoadEachAsync(entities, navigation, ct);
 }

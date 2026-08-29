@@ -1,0 +1,7 @@
+{
+  "name": "load_many_to_one_composite_owner",
+  "comment": "A composite-key owner: keys are arrays of parts (in key order), and 'loaded' keys join the parts with '|'. UserRole (1,1) loads its User navigation.",
+  "load": { "entity": "UserRole", "navigation": "User", "keys": [[1, 1]] },
+  "expect": { "loaded": {
+    "1|1": { "id": 1, "name": "Ada" } } }
+}

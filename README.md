@@ -91,6 +91,15 @@ public IReadOnlyList<Role> Roles { get; private set; } = [];   // resolved via i
 public UserRole? Grant { get; private set; }
 ```
 
+Relationships load **explicitly** (ADR-0021) — nothing loads implicitly, and
+reading an unloaded navigation never fires SQL:
+
+```csharp
+await db.LoadAsync(tx, nameof(Transaction.User), ct);          // one entity, one query
+await db.LoadEachAsync(users, nameof(User.Transactions), ct);  // N entities, still one query
+await db.LoadEachAsync(users, nameof(User.Roles), ct);         // many-to-many: two (link, targets)
+```
+
 Criteria queries are an **AST rendered by the dialect** (ADR-0020) — front-ends
 never emit SQL text — with strict null semantics: `Criteria.Eq(p, null)` renders
 `is null` (never `= NULL`, which silently matches nothing), `Ne(p, null)` renders

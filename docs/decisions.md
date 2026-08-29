@@ -1143,3 +1143,79 @@ forced:
   orderBy `QRY-006`. The ast runner is strict about order tokens.
 
 **Status.** Accepted.
+
+## ADR-0021 — L2 M3: explicit and batch loading; nothing loads implicitly (2026-08-29)
+
+Level 2 milestone 3, on the ADR-0019 add.1 contract (owner): the default is
+unloaded; loading happens when requested; never on access.
+
+- **Two calls, one contract**: `LoadAsync(entity, nameof(T.Nav), ct)` and the
+  batch form `LoadEachAsync(entities, nameof(T.Nav), ct)` — distinct names
+  because a single-method overload pair falls into the identity-beats-interface
+  overload trap (a `List<T>` binds to the single-entity overload as its own
+  TEntity). String-named navigations match the criteria surface; the M5 fluent
+  front-end adds lambdas over the same core.
+- **Visible, bounded round trips** (§2): one criteria query per navigation per
+  call — many-to-many is exactly two (link rows, then targets) — chunked at 500
+  owners per query only for the parameter budget, never one query per entity.
+  All SQL goes through the SelectAst pipeline (ADR-0020): explicit columns,
+  parameterized, dialect-rendered, ordered by the target key for determinism.
+- **Kinds**: many-to-one fills from the owner's FK tuple (owners sharing a
+  target share the loaded instance within one call; a null FK part leaves the
+  navigation null); one-to-many fills a fresh list per owner (empty, never
+  null); one-to-one fills a single instance or null — **more than one matching
+  row is `REL-002`** (the unique index is what makes a 1:1; drift is refused,
+  not resolved silently); many-to-many resolves the declared link's FK pairs and
+  orders by target key. Composite keys ride the same paths via OR-of-ANDed
+  equality tuples.
+- **Errors**: `REL-001` (not a declared navigation — the message lists what is),
+  `REL-002` (above), `REL-003` (shape disagreements the declaration-time loader
+  could not validate: unmapped FK properties on the target/link, arity vs. an
+  undeclared key). New `REL-` family in errors.md.
+- **Unloaded access stays silent-empty for now**: a navigation reads as its
+  initialized empty/null until loaded. The strict alternative (throwing on
+  unloaded access) remains the open owner question from ADR-0019 add.1 —
+  reading it is not I/O, so nothing hidden happens either way.
+- **Conformance**: `conformance/load-cases/*.json` — owner keys in, loaded
+  values out (object/null for singular, target-key-ordered arrays for
+  collections; listed columns checked, lengths exact), or an error code. The
+  fixture seed grew roles/links/one profile (additively — no existing case
+  reads those tables); the case database builder is shared plumbing now
+  (`ConformanceDatabase`).
+
+**Status.** Accepted.
+
+### ADR-0021 addendum 1 — the loading review pass: structural identity, value-wise order (2026-08-29)
+
+M3 ran through a 29-agent adversarial review (three lenses, every finding
+refuted or confirmed). The confirmed findings and decisions:
+
+- **Key/FK tuples match by structural value equality, never string tokens.**
+  The first implementation tokenized tuples with `Convert.ToString`, which is
+  lossy: DateTime keys lose fractional seconds (two distinct keys, one token —
+  live-reproduced loading the *wrong entity* silently) and every `byte[]` key
+  stringifies as `System.Byte[]`. Replaced by a tuple comparer implementing the
+  §7.4 identity rule (element-wise equality; `byte[]` by content — which
+  `EntityMap.KeysEqual` itself gets wrong for blobs, a pre-existing nit).
+- **Collections order by the target key compared as values** — the token sort
+  put `10` before `2`, violating the spec, and the test suite masked it by
+  re-sorting before asserting. Fixed; the unit test now uses ids across a
+  digit-length boundary asserted unsorted, and the conformance case seeds role
+  id 10 so any port with the string bug diverges.
+- **The empty batch validates too**: `REL-001` fires for a wrong navigation name
+  regardless of list size (previously an empty list short-circuited validation).
+- **Owners with a null key part are excluded from querying** (navigations stay
+  empty/null), symmetric with the many-to-one null-FK rule — previously a null
+  key part leaked into the IN list and failed with a misdirected `QRY-007`.
+- **Dangling many-to-many links are skipped, deliberately**: a link row whose
+  target row is gone contributes nothing, exactly as a join would — referential
+  integrity is the database's story. Documented in spec/loading.md rather than
+  invented as an error.
+- **Repository parity**: `LoadAsync`/`LoadEachAsync` pass-throughs.
+- **Conformance format grew composite owner keys** (arrays of parts in key
+  order; `|`-joined in `loaded`) with a UserRole case; `REL-003` gained a unit
+  test (an `[Ignore]`d target FK property — declared-time check passes, load
+  refuses); `REL-002`/`REL-003` are documented as implementation-test territory
+  (the case format cannot seed drifted data or shape-broken metadata).
+
+**Status.** Accepted.

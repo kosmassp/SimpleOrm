@@ -15,6 +15,7 @@ these codes.
 | `MIG-` | migrations |
 | `CRUD-` | generated CRUD |
 | `QRY-` | query execution |
+| `REL-` | relationship loading |
 | `DDL-` | schema generation from metadata |
 | `TX-` | transactions and session |
 
@@ -63,6 +64,9 @@ these codes.
 | `QRY-006` | criteria references an unknown or unmapped property | ADR-0012 | milestone 4 |
 | `QRY-007` | a criteria comparison with null (other than Eq/Ne, which render IS [NOT] NULL) or a null inside an IN list — meaningless three-valued SQL; use IsNull/IsNotNull | ADR-0020 | L2 milestone 2 |
 | `QRY-008` | a negative limit or offset in a criteria query — dialects disagree on its meaning (SQLite silently disables the limit); refused as an arithmetic bug | ADR-0020 add.1 | L2 milestone 2 |
+| `REL-001` | LoadAsync/LoadEachAsync names a property that is not a declared navigation; the error lists what is declared | ADR-0021 | L2 milestone 3 |
+| `REL-002` | a one-to-one navigation matched more than one row — the target foreign key needs a unique index | ADR-0021 | L2 milestone 3 |
+| `REL-003` | a navigation's shape disagrees with the maps at load time (FK properties unmapped on the target/link, or FK count vs. key arity) — for targets the loader could not validate at declaration | ADR-0021 | L2 milestone 3 |
 
 ## DDL — schema generation from metadata
 

@@ -8,7 +8,7 @@ namespace SimpleOrm;
 /// dialect and, at most, one active transaction. Every command runs on this
 /// connection and inside the current transaction, if any. No ambient state.
 /// </summary>
-public sealed class Db : IAsyncDisposable
+public sealed partial class Db : IAsyncDisposable
 {
     private readonly DbConnection _connection;
     private readonly ResultMapper _mapper;

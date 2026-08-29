@@ -1,0 +1,6 @@
+{
+  "name": "load_unknown_navigation_refused",
+  "comment": "Loading names a declared navigation or refuses — never a silent no-op.",
+  "load": { "entity": "User", "navigation": "NoSuchNavigation", "keys": [1] },
+  "expect": { "error": "REL-001" }
+}

@@ -33,7 +33,7 @@ C# on SQLite is the **reference implementation**. The long-term plan is a langua
 | Identity map, change tracking, unit of work, cascades, merge/detach | 3 |
 | Inheritance mapping, event hooks (audit, soft delete) | 3 |
 | Draft migrations generated from the metadata diff | 3 |
-| Additional dialects (PostgreSQL, MySQL, SQL Server, Oracle) | 4 (seam exists from Level 1) |
+| Additional dialects — order per ADR-0023: **SQL Server first** (owner field-tests with Fidelis), **PostgreSQL second**, then MySQL/Oracle | 4 (seam exists from Level 1) |
 | Read/write splitting and multi-database routing, incl. mixed engines (session-level, never per-entity — see decision log 2026-08-28) | 4 |
 | Caching, observability, resilience, analyzers, source generators | 4 |
 
@@ -213,8 +213,10 @@ The registry is what the validator enumerates. (The Level 4 source-generator ide
 2. **Query AST + renderer + null semantics.** *(Done, ADR-0020 + add.1.)* `SelectAst` as data; the dialect renders (`IDialect.SelectSql`, `AnsiSelectRenderer` as the reference rendering); strict null semantics (`Eq/Ne(null)` → `IS [NOT] NULL`, other null comparisons and null-in-IN are `QRY-007`); empty composites render identity truth-values; negative paging is `QRY-008`; property-aware binding (`[EnumAsInt]` applies to criteria); ambiguous property names refuse; operator tokens pinned. `spec/query-ast.md` + `conformance/ast/` (15 cases); Level 1 spec debt closed (`spec/session.md`, `spec/crud.md`). Fixed in passing: IN-expansion inside literals/comments, `SupportsArrayParameters` realized, `UpdateSql` generated-column exclusion, integer-only generated keys.
 3. **Explicit + batch loading.** *(Done, ADR-0021 + add.1/2.)* `LoadAsync(entity, nameof(T.Nav), ct)` + `LoadEachAsync(entities, …)` — one criteria query per navigation per call (many-to-many: two — link then targets), chunked at 500 owners, ordered by target key **value-wise**, composite keys via OR-of-ANDed tuples, structural §7.4 identity (never string tokens); owners sharing a many-to-one target share the instance. Nothing loads implicitly; **unloaded collection access on a database-read entity throws `REL-004`** (owner ruling; guard replaced by loading; user-constructed entities keep their initializers; singular navigations stay null — no proxies — and a **dead link loads as null**). `REL-001` unknown navigation, `REL-002` one-to-one matched >1 row, `REL-003` load-time shape disagreement. `spec/loading.md` + `conformance/load-cases/`.
 4. **Eager loading.** *(Done, ADR-0022 + add.1 — configurable per owner ruling.)* `Include(navigations…).Fetch(FetchMode)`: **MultiQuery** (default; root + one batched query per navigation), **SubSelect** (`IN (select …)` over the root query — pages correctly, never chunks), **Join** (one SELECT with LEFT JOINs; `SelectAst` gained joins/projection, rows partition into segment readers reusing the one mapping pipeline §7.11; refuses paging `REL-005` and >1 collection `REL-006` — never in-memory paging or silent Cartesian products). All modes load identical graphs — pinned by `"viaQuery"` load-cases replaying every mode. JSON nesting stays the single-round-trip option for arbitrary shapes.
-5. **Fluent front-end.** Typed lambda → AST; LINQ provider stays out. Owner-approved as an *addition*, explicitly per-language sugar (ADR-0021 add.2) — the portable contract stays the string/AST core.
-6. **Level 2 exit.** Spec + conformance completeness; reimplementable from `spec/` + `conformance/` alone.
+5. **Fluent front-end.** *(Skipped for now — ADR-0023: owner is field-testing basics first; starts on an owner sample.)* Typed lambda → AST; LINQ provider stays out. Owner-approved as an *addition*, explicitly per-language sugar (ADR-0021 add.2) — the portable contract stays the string/AST core.
+6. **Level 2 exit.** *(Pending.)* Spec + conformance completeness + benchmark refresh; reimplementable from `spec/` + `conformance/` alone.
+
+**Session state (2026-08-30, ADR-0023):** M1–M4 done; owner is field-testing SimpleOrm against Fidelis on a SQL Server machine. Level 4 dialect order: **SQL Server first, PostgreSQL second**. Port order: **PHP → Go → Rust** (supersedes the old Go-first §12).
 
 ## 8. Level 1 milestones — one at a time; stop and report; do not start the next unprompted
 
@@ -261,7 +263,7 @@ The suite is the executable definition of the library. Every implementation runs
 
 - Ports share **no code**; they share `spec/` and `conformance/`. C# is the reference; a port is correct when it passes the same conformance files unchanged.
 - Do not port before Level 1 exit criteria are met. The first port covers Levels 0–1 only.
-- **Port to Go first**, precisely because it is the most different (struct tags instead of attributes, `database/sql` instead of ADO.NET, no exceptions, no async/await, no inheritance). Its purpose is to find places where the spec is secretly C#-shaped. Expect the port to change the spec; that is the point. Java second (closest, validates ergonomics). PHP last (request-scoped lifecycle changes session semantics).
+- **Port order (ADR-0023): PHP first** — it aligns with the owner's real codebase (Fidelis), so the first port doubles as field validation (request-scoped lifecycle changes session semantics; expect that to stress the spec early). Then, if PHP proves out, **Go** and **Rust** — the spec-neutrality stress tests (struct tags/traits instead of attributes, no exceptions, no async/await, no inheritance): their purpose is to find places where the spec is secretly C#-shaped, and the port changing the spec is the point.
 - Keep the C# public API a thin layer over spec concepts (`EntityMap`, registry, session, rules, runner) so each concept has an obvious counterpart in another language.
 - Realistic expectation: Levels 0–2 port with high fidelity because they are data plus rules plus an AST. Level 3 shares behavioral spec and conformance cases, but each language's session API will diverge. Level 4 is per-ecosystem.
 

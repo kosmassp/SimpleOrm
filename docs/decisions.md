@@ -1363,3 +1363,32 @@ findings and decisions:
   key set), closing its silently-passing gap.
 
 **Status.** Accepted.
+
+## ADR-0023 — Roadmap rulings: dialect order, port order, M5 deferred; field-testing begins (2026-08-30)
+
+Owner rulings closing this development stretch:
+
+- **Level 4 dialect order: SQL Server first, PostgreSQL second.** The owner will
+  field-test SimpleOrm against Fidelis (their real inventory/sales domain) on a
+  SQL Server machine (not this computer). Known seam-stress points to expect
+  when that dialect starts: `RETURNING` → `OUTPUT`/`SCOPE_IDENTITY`, no
+  row-value `IN` (the SubSelect composite rendering already documents the
+  dialect override), `TOP`/`OFFSET-FETCH` paging, `sp_getapplock` for the
+  migration run lock, no STRICT tables (the strict-by-default story needs a
+  SQL Server answer), and a different storage-type table for snapshots/diff.
+- **Port order: PHP first, then — if it proves out — Go, then Rust.** This
+  supersedes §12's "Go first" ordering: PHP aligns with the owner's real
+  codebase (Fidelis), so the first port doubles as field validation. Go and
+  Rust keep their role as the spec-neutrality stress tests (Rust is new to the
+  list; Java drops out of the near-term order). The §12 rules stand: ports
+  share no code, consume `spec/` + `conformance/` unchanged, and no port starts
+  before the current level's exit criteria hold.
+- **M5 (lambda front-end) is skipped for now** — "my focus is testing the ORM
+  for basic need first." It remains approved as a per-language addition
+  (ADR-0021 add.2) and can start any time on an owner sample.
+- **Where this leaves Level 2**: M1–M4 done (relationships, AST + renderer,
+  loading, configurable eager fetch); M5 deferred; M6 (exit audit +
+  benchmark refresh) pending. Next session continues from here — this ADR,
+  CLAUDE.md §7b/§11/§12, and the git log are the state.
+
+**Status.** Accepted.

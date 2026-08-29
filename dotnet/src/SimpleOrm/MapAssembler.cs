@@ -197,7 +197,9 @@ internal static class MapAssembler
         var relationships = new List<RelationshipMap>(relationshipSpecs.Count);
         foreach (var spec in relationshipSpecs)
         {
-            if (!byProperty.ContainsKey(spec.ForeignKeyProperty))
+            // Only a many-to-one's FK lives on this class; the collection kinds
+            // resolve against the target/link types in the loader (ADR-0019).
+            if (spec.Kind == RelationshipKind.ManyToOne && !byProperty.ContainsKey(spec.ForeignKeyProperty!))
             {
                 errors.Add(new MappingError(
                     "MAP-016",
@@ -206,7 +208,9 @@ internal static class MapAssembler
                 continue;
             }
 
-            relationships.Add(new RelationshipMap(spec.PropertyName, spec.TargetType, spec.ForeignKeyProperty));
+            relationships.Add(new RelationshipMap(
+                spec.PropertyName, spec.Kind, spec.TargetType, spec.ForeignKeyProperty,
+                spec.LinkType, spec.LinkForeignKeyToOwner, spec.LinkForeignKeyToTarget));
         }
 
         return relationships;

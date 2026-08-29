@@ -961,3 +961,55 @@ Proven end-to-end: the sample's full 8-version history migrates up, down to zero
 and up again — with not a single `Down()` in the codebase.
 
 **Status.** Accepted. Supersedes ADR-0017's generated-`Down()` emission.
+
+## ADR-0019 — Level 2 begins: milestone plan; M1 = relationship metadata (2026-08-29)
+
+Owner: "go level 2 first" (chosen over the Go port; the port follows Level 2).
+Level 2 scope from the brief (§11): relationship metadata, explicit → batch →
+eager loading, graph reshaping with per-result identity, the query AST and its
+dialect renderer, explicit null semantics, a fluent front-end, dynamic
+composition. Milestones, one at a time, stop and report — same discipline as §8:
+
+1. **Relationship metadata.** `[OneToMany]` and `[ManyToMany]` declarations join
+   `[ManyToOne]`/`[ForeignKey]`; `RelationshipMap` gains a kind and link info;
+   JSON export + conformance entities + spec/metadata-model.md. Declaration-only:
+   nothing loads yet. Owned types are NOT in M1 — they land later in Level 2 once
+   loading exists to give them meaning.
+2. **Query AST + renderer + null semantics.** The ADR-0012 criteria core
+   formalized as the Level 2 AST, every SQL string rendered by the dialect;
+   explicit null rules; dynamic composition documented; `spec/query-ast.md` +
+   `conformance/ast/`. Also closes the Level 1 spec debt (session/CRUD/criteria
+   documents) since this milestone rewrites that ground anyway.
+3. **Explicit + batch loading.** `LoadAsync` for navigations — one visible round
+   trip per call; the batch form loads a navigation for N entities in one IN
+   query. No hidden queries, no lazy proxies (the §2 principle holds: Level 2's
+   answer is that no implicit form exists).
+4. **Eager loading + graph reshaping.** Join-based includes through the AST;
+   reshaping joined rows into graphs with per-result identity (§7.4 key
+   equality); the json_group_array path stays supported.
+5. **Fluent front-end.** Typed lambda → AST for the criteria surface; LINQ
+   provider explicitly out (later). String-based Criteria stays first-class.
+6. **Level 2 exit.** Spec + conformance completeness; exit criteria mirror
+   Level 1's ("reimplementable from spec/ + conformance/ alone").
+
+**M1 decisions:**
+
+- `[OneToMany(nameof(Target.FkProperty))]` on a collection navigation: the
+  foreign key lives on the target, named by its property. `[ManyToMany(typeof(Link))]`
+  names the link entity explicitly — never inferred; the link's `[ForeignKey]`
+  declarations (ADR-0005) resolve which of its properties reference each side,
+  and must do so exactly once per side.
+- Collection navigations follow ADR-0005 add.2: no public setter (`MAP-011` —
+  the library is the only writer), initialized empty
+  (`{ get; private set; } = [];`), transient — never a column, never written.
+- Element type comes from the property's `IEnumerable<T>` with a single entity
+  `T`; anything else is `MAP-020`. An unknown target FK property is `MAP-021`;
+  a link that misses or ambiguously references a side is `MAP-022`.
+- Relationships stay attribute-declared only; `EntityMapBuilder` parity waits
+  for a demonstrated need (no abstractions for the future, §13).
+- JSON export: `one_to_many` carries `references` + `targetForeignKeyProperty`
+  (property name — target column names belong to the target's own export);
+  `many_to_many` carries `references`, `through`, and the two link FK property
+  names. `many_to_one` is unchanged.
+
+**Status.** Accepted.

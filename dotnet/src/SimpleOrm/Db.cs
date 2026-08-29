@@ -581,7 +581,9 @@ public sealed class Db : IAsyncDisposable
 
     private void CheckNavigationConsistency(EntityMap map, object entity)
     {
-        foreach (var relationship in map.Relationships)
+        // Only a many-to-one can disagree with its FK column; collection
+        // navigations carry no FK on this row (ADR-0019).
+        foreach (var relationship in map.Relationships.Where(r => r.Kind == RelationshipKind.ManyToOne))
         {
             var navigation = map.EntityType.GetProperty(relationship.PropertyName)?.GetValue(entity);
             if (navigation is null)

@@ -35,6 +35,9 @@ these codes.
 | `MAP-017` | invalid `[Statement]` parameter declaration (odd token count; token neither name string nor `Type`; duplicate name) | ADR-0008 add.2 | milestone 2 |
 | `MAP-018` | two properties map to the same column name | ADR-0004 | milestone 2 |
 | `MAP-019` | no key defined where one is required, or `[Generated]`/`[Version]` on a property without `[Column]` | §7.1 | milestone 2 |
+| `MAP-020` | a collection navigation is not a generic collection (`IEnumerable<T>`) of an entity type | ADR-0019 | L2 milestone 1 |
+| `MAP-021` | `[OneToMany]` names a foreign-key property that does not exist on the target type | ADR-0019 | L2 milestone 1 |
+| `MAP-022` | `[ManyToMany]` link entity misses or ambiguously declares the `[ForeignKey]` reference to one side (exactly one per side) | ADR-0019 | L2 milestone 1 |
 | `MAP-030` | no conversion or handler between the CLR type and the database value (either direction) | §7.9 | milestone 4 |
 | `MAP-031` | value conversion failed (format, overflow, unknown enum name) | §7.9 | milestone 4 |
 

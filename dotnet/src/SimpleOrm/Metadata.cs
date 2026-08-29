@@ -76,21 +76,58 @@ public sealed class EntityIndex
     public bool Unique { get; }
 }
 
-/// <summary>A declared many-to-one navigation (ADR-0005); declaration-only until Level 2 loading.</summary>
+/// <summary>Navigation cardinality (ADR-0005/0019).</summary>
+public enum RelationshipKind
+{
+    ManyToOne,
+    OneToMany,
+    ManyToMany,
+}
+
+/// <summary>
+/// A declared navigation (ADR-0005, extended by ADR-0019): many-to-one through a
+/// foreign key on this class, one-to-many through a foreign key on the target, or
+/// many-to-many through an explicit link entity. Declaration-only until Level 2
+/// milestone 3 loading.
+/// </summary>
 public sealed class RelationshipMap
 {
-    public RelationshipMap(string propertyName, Type targetType, string foreignKeyProperty)
+    public RelationshipMap(
+        string propertyName,
+        RelationshipKind kind,
+        Type targetType,
+        string? foreignKeyProperty,
+        Type? linkType = null,
+        string? linkForeignKeyToOwner = null,
+        string? linkForeignKeyToTarget = null)
     {
         PropertyName = propertyName;
+        Kind = kind;
         TargetType = targetType;
         ForeignKeyProperty = foreignKeyProperty;
+        LinkType = linkType;
+        LinkForeignKeyToOwner = linkForeignKeyToOwner;
+        LinkForeignKeyToTarget = linkForeignKeyToTarget;
     }
 
     public string PropertyName { get; }
 
+    public RelationshipKind Kind { get; }
+
+    /// <summary>The related entity type (a collection navigation's element type).</summary>
     public Type TargetType { get; }
 
-    public string ForeignKeyProperty { get; }
+    /// <summary>Many-to-one: the FK property on this class. One-to-many: the FK property on the target. Null for many-to-many.</summary>
+    public string? ForeignKeyProperty { get; }
+
+    /// <summary>Many-to-many only: the link entity.</summary>
+    public Type? LinkType { get; }
+
+    /// <summary>Many-to-many only: the link property referencing this class (via [ForeignKey]).</summary>
+    public string? LinkForeignKeyToOwner { get; }
+
+    /// <summary>Many-to-many only: the link property referencing the element type (via [ForeignKey]).</summary>
+    public string? LinkForeignKeyToTarget { get; }
 }
 
 /// <summary>One mapped property ↔ column pair.</summary>

@@ -39,19 +39,28 @@ internal sealed class IndexSpec
     public IReadOnlyList<(string PropertyName, bool Descending)> Columns { get; }
 }
 
-/// <summary>Loader-internal working shape of a declared many-to-one before validation.</summary>
+/// <summary>Loader-internal working shape of a declared navigation before validation.</summary>
 internal sealed class RelationshipSpec
 {
-    public RelationshipSpec(string propertyName, Type targetType, string foreignKeyProperty)
+    public RelationshipSpec(string propertyName, RelationshipKind kind, Type targetType, string? foreignKeyProperty)
     {
         PropertyName = propertyName;
+        Kind = kind;
         TargetType = targetType;
         ForeignKeyProperty = foreignKeyProperty;
     }
 
     public string PropertyName { get; }
 
+    public RelationshipKind Kind { get; }
+
     public Type TargetType { get; }
 
-    public string ForeignKeyProperty { get; }
+    public string? ForeignKeyProperty { get; }
+
+    public Type? LinkType { get; init; }
+
+    public string? LinkForeignKeyToOwner { get; init; }
+
+    public string? LinkForeignKeyToTarget { get; init; }
 }

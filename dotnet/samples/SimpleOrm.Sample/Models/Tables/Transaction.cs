@@ -36,4 +36,8 @@ public sealed class Transaction : BaseModel
     /// <summary>Added by migration V0003.</summary>
     [Column]
     public string? Note { get; set; }
+
+    /// <summary>Populated only by the library (Level 2 milestone 3 loading); never a column, never written.</summary>
+    [OneToMany(nameof(TransactionDetail.TransactionId))]
+    public IReadOnlyList<TransactionDetail> Details { get; private set; } = [];
 }

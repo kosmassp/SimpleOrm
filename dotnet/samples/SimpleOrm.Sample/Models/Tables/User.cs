@@ -20,4 +20,12 @@ public sealed class User : BaseModel
     /// <summary>Added by migration V0002; backfilled from <see cref="Name"/> for pre-existing rows.</summary>
     [Column]
     public string? DisplayName { get; set; }
+
+    /// <summary>Populated only by the library (Level 2 milestone 3 loading); never a column, never written.</summary>
+    [OneToMany(nameof(Transaction.UserId))]
+    public IReadOnlyList<Transaction> Transactions { get; private set; } = [];
+
+    /// <summary>Resolved through the <see cref="UserRole"/> link — declared, never inferred (ADR-0019).</summary>
+    [ManyToMany(typeof(UserRole))]
+    public IReadOnlyList<Role> Roles { get; private set; } = [];
 }

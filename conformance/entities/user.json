@@ -64,5 +64,19 @@
         }
       ]
     }
+  ],
+  "relationships": [
+    {
+      "kind": "one_to_many",
+      "references": "Transaction",
+      "targetForeignKeyProperty": "UserId"
+    },
+    {
+      "kind": "many_to_many",
+      "references": "Role",
+      "through": "UserRole",
+      "linkForeignKeyToOwner": "UserId",
+      "linkForeignKeyToTarget": "RoleId"
+    }
   ]
 }

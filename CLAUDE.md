@@ -10,7 +10,7 @@ A SQL-first ORM that grows in levels: a mapper (Level 0), a micro-ORM with migra
 
 C# on SQLite is the **reference implementation**. The long-term plan is a language-neutral **spec** plus a **conformance suite**, with ports to other languages (Go, Java, PHP) and dialects (PostgreSQL, MySQL, SQL Server, Oracle) that pass the same conformance files. Early decisions are made so that later levels and ports don't require rewrites.
 
-**Current target: Level 1.** Do not build Level 2+ features unprompted. If I casually ask for something listed under "Deferred," tell me which level it belongs to and why it's deferred before doing anything.
+**Current target: Level 2** (Level 1 complete; ADR-0019 has the milestone plan — one milestone at a time, stop and report). Do not build Level 3+ features unprompted. If I casually ask for something listed under "Deferred," tell me which level it belongs to and why it's deferred before doing anything.
 
 ## 2. Principles that don't change at any level
 
@@ -26,7 +26,7 @@ C# on SQLite is the **reference implementation**. The long-term plan is a langua
 
 | Feature | Level |
 |---|---|
-| Relationships (one-to-many, many-to-one, many-to-many, owned types), graph reshaping | 2 — but declaration-only `[ForeignKey]`/`[ManyToOne]` attributes exist from Level 1 (ADR-0005); loading/reshaping stay Level 2 |
+| Relationships (one-to-many, many-to-one, many-to-many, owned types), graph reshaping | 2 (active) — all three cardinalities declared since L2 M1 (`[ForeignKey]`/`[ManyToOne]` ADR-0005; `[OneToMany]`/`[ManyToMany]` ADR-0019); loading is M3, reshaping M4, owned types later in L2 |
 | Query AST + query front-ends (fluent builder, LINQ provider) | 2 — but the criteria core (the AST: `Criteria` factories + `db.Query<T>()` with Where/OrderBy/Limit) was pulled to Level 1 by ADR-0012; lambda/LINQ front-ends stay Level 2 |
 | Dynamic SQL composition (optional filters, sorting from UI) | covered at Level 1 by the ADR-0012 criteria core |
 | Explicit/batch/eager loading | 2 |
@@ -148,7 +148,7 @@ The registry is what the validator enumerates. (The Level 4 source-generator ide
 
 1. **`EntityMap` is the single source of truth about a type**: CLR type, relation source — table, view, materialized view, statement, or procedure (ADR-0008) — schema-qualified where named, key columns and key strategy, version column, declared indexes (ADR-0007; tables and materialized views only), and one entry per mapped property: property name, column name, CLR type, provider type name, nullability, generated flag, custom handler. Every other subsystem — mapping, CRUD generation, validation, migrations (Level 3), the query model (Level 2) — reads `EntityMap` and nothing else. No subsystem reads attributes directly.
 2. **Loaders produce `EntityMap`.** Three, with precedence explicit → attribute → convention:
-   - Attributes: `[Table]`, `[Column]`, `[Key]`, `[Generated]`, `[Version]`, `[Ignore]`, `[EnumAsInt]`; declaration-only relationship metadata `[ForeignKey]`, `[ManyToOne]` (ADR-0005); declaration-only DDL metadata `[Index]` (class-level, repeatable, ADR-0007 — consumed by Level 3 draft migrations); relation sources `[View]`, `[MaterializedView]` (separate from `[View]` because it may carry `[Index]`), `[Statement]`, `[Procedure]` (ADR-0008 + addenda; every non-table source carries its defining SQL in the attribute — statements and procedures also their (name, typeof) parameter pairs; materialized views and procedures don't exist on SQLite — dormant until Level 4) — a class carries exactly one of `[Table]`/`[View]`/`[MaterializedView]`/`[Statement]`/`[Procedure]`
+   - Attributes: `[Table]`, `[Column]`, `[Key]`, `[Generated]`, `[Version]`, `[Ignore]`, `[EnumAsInt]`; declaration-only relationship metadata `[ForeignKey]`, `[ManyToOne]` (ADR-0005), `[OneToMany]`, `[ManyToMany]` (ADR-0019, L2 M1); declaration-only DDL metadata `[Index]` (class-level, repeatable, ADR-0007 — consumed by Level 3 draft migrations); relation sources `[View]`, `[MaterializedView]` (separate from `[View]` because it may carry `[Index]`), `[Statement]`, `[Procedure]` (ADR-0008 + addenda; every non-table source carries its defining SQL in the attribute — statements and procedures also their (name, typeof) parameter pairs; materialized views and procedures don't exist on SQLite — dormant until Level 4) — a class carries exactly one of `[Table]`/`[View]`/`[MaterializedView]`/`[Statement]`/`[Procedure]`
    - Manual: a fluent `EntityMapBuilder<T>` for types you can't or won't annotate
    - Conventions: `snake_case` ↔ `PascalCase` by default; pluggable `INamingConvention`
 3. **`EntityMap` exports to JSON** (`export-metadata` CLI command and an API), in the format defined in `spec/metadata-model.md`. This export is a conformance artifact: every port must produce identical JSON from its own annotations.
@@ -206,6 +206,15 @@ The registry is what the validator enumerates. (The Level 4 source-generator ide
 ### Dialect seam (`IDialect`, minimal and capability-based)
 
 25. Members at Level 1, and no more: create connection; quote identifier; parameter prefix; render `RETURNING`/generated-key retrieval; render limit/offset; render CREATE TABLE/INDEX/VIEW and the generated INSERT from `EntityMap` (ADR-0011, ADR-0008 add.3); capability flags — array parameters, transactional DDL, materialized views, procedures; migration run-lock acquire/release; describe-statement implementation; declared-type → CLR type compatibility table; storage type per mapped property (ADR-0017 — what CREATE TABLE emits, used by snapshots/diff/sync); view-definition query (ADR-0017 add.1 — backs the `MIG-012` guard and shadow view snapshots). Add members only when a second dialect needs them. Do not speculate about Oracle.
+
+## 7b. Level 2 milestones (ADR-0019) — one at a time; stop and report; do not start the next unprompted
+
+1. **Relationship metadata.** `[OneToMany(nameof(Target.Fk))]` + `[ManyToMany(typeof(Link))]` join the Level 1 declarations; `RelationshipMap` gains kind + link info; collection navigations follow the no-public-setter rule (`MAP-011`), element type from `IEnumerable<T>` (`MAP-020`), target FK must exist (`MAP-021`), link must reference both sides via `[ForeignKey]` exactly once each (`MAP-022`). Declaration-only. Owned types deferred until loading exists.
+2. **Query AST + renderer + null semantics.** Criteria core formalized; dialect renders all SQL; explicit null rules; `spec/query-ast.md` + `conformance/ast/`; closes the Level 1 spec debt (session/CRUD/criteria docs).
+3. **Explicit + batch loading.** `LoadAsync` per navigation; batch form via one IN query. No lazy proxies, ever — Level 2's answer to the §2 question is that no implicit form exists.
+4. **Eager loading + graph reshaping.** Join-based includes through the AST; per-result identity (§7.4); JSON nesting stays.
+5. **Fluent front-end.** Typed lambda → AST; LINQ provider stays out.
+6. **Level 2 exit.** Spec + conformance completeness; reimplementable from `spec/` + `conformance/` alone.
 
 ## 8. Level 1 milestones — one at a time; stop and report; do not start the next unprompted
 

@@ -45,5 +45,14 @@
       ],
       "unique": true
     }
+  ],
+  "relationships": [
+    {
+      "kind": "many_to_many",
+      "references": "User",
+      "through": "UserRole",
+      "linkForeignKeyToOwner": "RoleId",
+      "linkForeignKeyToTarget": "UserId"
+    }
   ]
 }

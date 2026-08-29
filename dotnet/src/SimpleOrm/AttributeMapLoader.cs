@@ -168,28 +168,47 @@ internal static class AttributeMapLoader
             var column = property.GetCustomAttribute<ColumnAttribute>();
             var ignore = property.GetCustomAttribute<IgnoreAttribute>();
             var manyToOne = property.GetCustomAttribute<ManyToOneAttribute>();
+            var oneToMany = property.GetCustomAttribute<OneToManyAttribute>();
+            var manyToMany = property.GetCustomAttribute<ManyToManyAttribute>();
             var key = property.GetCustomAttribute<KeyAttribute>();
             var generated = property.GetCustomAttribute<GeneratedAttribute>();
             var version = property.GetCustomAttribute<VersionAttribute>();
             var enumAsInt = property.GetCustomAttribute<EnumAsIntAttribute>();
             var foreignKey = property.GetCustomAttribute<ForeignKeyAttribute>();
 
-            if (manyToOne is not null)
+            if (manyToOne is not null || oneToMany is not null || manyToMany is not null)
             {
+                var navigationCount = (manyToOne is null ? 0 : 1) + (oneToMany is null ? 0 : 1) + (manyToMany is null ? 0 : 1);
+                if (navigationCount > 1)
+                {
+                    errors.Add(new MappingError(
+                        "MAP-019", target, "a property carries at most one relationship attribute"));
+                    continue;
+                }
+
                 if (column is not null || ignore is not null)
                 {
                     errors.Add(new MappingError(
-                        "MAP-019", target, "[ManyToOne] cannot combine with [Column] or [Ignore]"));
+                        "MAP-019", target, "a navigation cannot combine with [Column] or [Ignore]"));
                 }
 
                 if (property.SetMethod is { IsPublic: true })
                 {
                     errors.Add(new MappingError(
                         "MAP-011", target,
-                        "a [ManyToOne] navigation must not expose a public setter; declare it { get; private set; }"));
+                        "a navigation must not expose a public setter; declare it { get; private set; }"));
                 }
 
-                relationships.Add(new RelationshipSpec(property.Name, property.PropertyType, manyToOne.ForeignKeyProperty));
+                if (manyToOne is not null)
+                {
+                    relationships.Add(new RelationshipSpec(
+                        property.Name, RelationshipKind.ManyToOne, property.PropertyType, manyToOne.ForeignKeyProperty));
+                }
+                else
+                {
+                    ReadCollectionNavigation(entityType, property, target, oneToMany, manyToMany, relationships, errors);
+                }
+
                 continue;
             }
 
@@ -356,7 +375,98 @@ internal static class AttributeMapLoader
 
         return PropertiesInDeclarationOrder(entityType).Any(p => p.GetCustomAttributes()
             .Any(a => a is ColumnAttribute or IgnoreAttribute or KeyAttribute or GeneratedAttribute
-                or VersionAttribute or EnumAsIntAttribute or ForeignKeyAttribute or ManyToOneAttribute));
+                or VersionAttribute or EnumAsIntAttribute or ForeignKeyAttribute or ManyToOneAttribute
+                or OneToManyAttribute or ManyToManyAttribute));
+    }
+
+    /// <summary>
+    /// Resolves a [OneToMany]/[ManyToMany] collection navigation (ADR-0019): the
+    /// element type from the property's IEnumerable&lt;T&gt; (MAP-020); a
+    /// [OneToMany] target FK that exists on the element type (MAP-021); a
+    /// [ManyToMany] link whose [ForeignKey] declarations reference each side
+    /// exactly once (MAP-022).
+    /// </summary>
+    private static void ReadCollectionNavigation(
+        Type entityType,
+        PropertyInfo property,
+        string target,
+        OneToManyAttribute? oneToMany,
+        ManyToManyAttribute? manyToMany,
+        List<RelationshipSpec> relationships,
+        List<MappingError> errors)
+    {
+        var elementType = CollectionElementType(property.PropertyType);
+        if (elementType is null)
+        {
+            errors.Add(new MappingError(
+                "MAP-020", target,
+                "a collection navigation must be a generic collection (IEnumerable<T>) of an entity type"));
+            return;
+        }
+
+        if (oneToMany is not null)
+        {
+            if (elementType.GetProperty(oneToMany.TargetForeignKeyProperty) is null)
+            {
+                errors.Add(new MappingError(
+                    "MAP-021", target,
+                    $"[OneToMany] names foreign-key property '{oneToMany.TargetForeignKeyProperty}', which does not exist on '{elementType.Name}'"));
+                return;
+            }
+
+            relationships.Add(new RelationshipSpec(
+                property.Name, RelationshipKind.OneToMany, elementType, oneToMany.TargetForeignKeyProperty));
+            return;
+        }
+
+        var link = manyToMany!.Through;
+        var toOwner = LinkForeignKey(link, entityType, target, "this type", errors);
+        var toTarget = LinkForeignKey(link, elementType, target, $"'{elementType.Name}'", errors);
+        if (toOwner is null || toTarget is null)
+        {
+            return;
+        }
+
+        relationships.Add(new RelationshipSpec(
+            property.Name, RelationshipKind.ManyToMany, elementType, foreignKeyProperty: null)
+        {
+            LinkType = link,
+            LinkForeignKeyToOwner = toOwner,
+            LinkForeignKeyToTarget = toTarget,
+        });
+    }
+
+    /// <summary>The single link property carrying [ForeignKey(referenced)] — missing or ambiguous is MAP-022.</summary>
+    private static string? LinkForeignKey(
+        Type link, Type referenced, string target, string side, List<MappingError> errors)
+    {
+        var candidates = link
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.GetCustomAttribute<ForeignKeyAttribute>()?.References == referenced)
+            .ToArray();
+        if (candidates.Length == 1)
+        {
+            return candidates[0].Name;
+        }
+
+        errors.Add(new MappingError(
+            "MAP-022", target,
+            candidates.Length == 0
+                ? $"[ManyToMany] link '{link.Name}' has no [ForeignKey] property referencing {side}"
+                : $"[ManyToMany] link '{link.Name}' has {candidates.Length} [ForeignKey] properties referencing {side}; exactly one is required"));
+        return null;
+    }
+
+    /// <summary>The entity element type of a collection property, or null (string and byte[] are not collections of entities).</summary>
+    private static Type? CollectionElementType(Type propertyType)
+    {
+        var enumerable = propertyType.IsInterface && propertyType.IsGenericType
+                && propertyType.GetGenericTypeDefinition() == typeof(IEnumerable<>)
+            ? propertyType
+            : propertyType.GetInterfaces().FirstOrDefault(i =>
+                i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>));
+        var element = enumerable?.GetGenericArguments()[0];
+        return element is { IsClass: true } && element != typeof(string) ? element : null;
     }
 
     private static string Describe(object? token) => token switch

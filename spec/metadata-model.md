@@ -122,10 +122,31 @@ byte-equality):
     { "name": "ix_t_a", "columns": [{ "column": "a", "direction": "asc" }], "unique": true }
   ],
   "relationships": [
-    { "kind": "many_to_one", "foreignKeyColumn": "user_id", "references": "User" }
+    { "kind": "many_to_one", "foreignKeyColumn": "user_id", "references": "User" },
+    { "kind": "one_to_many", "references": "Transaction", "targetForeignKeyProperty": "UserId" },
+    { "kind": "many_to_many", "references": "Role", "through": "UserRole",
+      "linkForeignKeyToOwner": "UserId", "linkForeignKeyToTarget": "RoleId" }
   ]
 }
 ```
+
+Relationship declarations (ADR-0005/0019) are metadata only until Level 2
+milestone 3 loading; nothing is ever loaded implicitly. Rules:
+
+- A navigation is transient — never a column, never written — and must not be
+  publicly settable (`MAP-011`): the library is its only writer, so it can never
+  disagree with the foreign key.
+- `many_to_one`: the foreign key is a mapped property of this entity
+  (`MAP-016` when unknown); the export carries its **column** name.
+- `one_to_many`: the foreign key lives on the target entity, named by
+  **property** (its column name belongs to the target's own export); the named
+  property must exist on the target (`MAP-021`). The element type comes from the
+  collection property's `IEnumerable<T>` — anything else is `MAP-020`.
+- `many_to_many`: the link entity is **declared, never inferred**; its
+  `[ForeignKey]` declarations identify which link property references each side,
+  and each side must be referenced exactly once (`MAP-022`).
+- A property carries at most one relationship declaration, and none of
+  `[Column]`/`[Ignore]` beside it (`MAP-019`).
 
 A statement source instead carries
 `{ "kind": "statement", "sql": "…", "parameters": [{ "name": "since", "type": "datetime" }] }`;

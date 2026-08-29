@@ -54,7 +54,7 @@ public sealed class EntityMapLoaderTests
         Assert.Equal("ix_transactions_status_created", named.Name);
         Assert.Equal([false, true], named.Columns.Select(c => c.Descending));
 
-        var relationship = Assert.Single(map.Relationships);
+        var relationship = Assert.Single(map.Relationships, r => r.Kind == RelationshipKind.ManyToOne);
         Assert.Equal("UserId", relationship.ForeignKeyProperty);
     }
 

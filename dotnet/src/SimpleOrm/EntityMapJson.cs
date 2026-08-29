@@ -96,11 +96,32 @@ public static class EntityMapJson
                 writer.WriteStartArray();
                 foreach (var relationship in map.Relationships)
                 {
-                    var foreignKey = map.Properties.First(p => p.PropertyName == relationship.ForeignKeyProperty);
                     writer.WriteStartObject();
-                    writer.WriteString("kind", "many_to_one");
-                    writer.WriteString("foreignKeyColumn", foreignKey.ColumnName);
-                    writer.WriteString("references", relationship.TargetType.Name);
+                    switch (relationship.Kind)
+                    {
+                        case RelationshipKind.ManyToOne:
+                            var foreignKey = map.Properties.First(p => p.PropertyName == relationship.ForeignKeyProperty);
+                            writer.WriteString("kind", "many_to_one");
+                            writer.WriteString("foreignKeyColumn", foreignKey.ColumnName);
+                            writer.WriteString("references", relationship.TargetType.Name);
+                            break;
+                        case RelationshipKind.OneToMany:
+                            // The FK lives on the target; its column name belongs to
+                            // the target's own export, so the property name is the
+                            // cross-language contract here (ADR-0019).
+                            writer.WriteString("kind", "one_to_many");
+                            writer.WriteString("references", relationship.TargetType.Name);
+                            writer.WriteString("targetForeignKeyProperty", relationship.ForeignKeyProperty);
+                            break;
+                        default:
+                            writer.WriteString("kind", "many_to_many");
+                            writer.WriteString("references", relationship.TargetType.Name);
+                            writer.WriteString("through", relationship.LinkType!.Name);
+                            writer.WriteString("linkForeignKeyToOwner", relationship.LinkForeignKeyToOwner);
+                            writer.WriteString("linkForeignKeyToTarget", relationship.LinkForeignKeyToTarget);
+                            break;
+                    }
+
                     writer.WriteEndObject();
                 }
 

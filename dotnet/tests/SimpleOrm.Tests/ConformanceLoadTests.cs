@@ -92,6 +92,30 @@ public sealed class ConformanceLoadTests
                 var actual = navigationProperty.GetValue(entities[i]);
                 AssertLoaded(db, expected, actual, $"key {keys[i].Token}");
             }
+
+            // Every fetch mode must load the identical graph (ADR-0022 add.1):
+            // single-part-key cases replay through Include under all three.
+            if (spec.TryGetProperty("viaQuery", out var viaQuery) && viaQuery.GetBoolean())
+            {
+                foreach (var mode in new[] { FetchMode.MultiQuery, FetchMode.SubSelect, FetchMode.Join })
+                {
+                    var eager = await EagerQueryAsync(
+                        db, entityType, navigation, keys.Select(k => (long)k.Value).ToArray(), mode);
+                    Assert.Equal(keys.Length, eager.Count);   // every requested owner comes back, once
+                    var seen = new HashSet<string>();
+                    foreach (var entity in eager)
+                    {
+                        var map = db.Maps.Load(entityType);
+                        var token = map.KeyProperties[0].Property.GetValue(entity)!.ToString()!;
+                        Assert.True(seen.Add(token), $"{mode}: key {token} returned twice");
+                        AssertLoaded(
+                            db, loadedExpectations.GetProperty(token),
+                            navigationProperty.GetValue(entity), $"{mode} key {token}");
+                    }
+
+                    Assert.Equal(keys.Select(k => k.Token).OrderBy(t => t), seen.OrderBy(t => t));
+                }
+            }
         }
         finally
         {
@@ -152,6 +176,22 @@ public sealed class ConformanceLoadTests
         var task = (Task)method.Invoke(db, [key, CancellationToken.None])!;
         await task.ConfigureAwait(false);
         return task.GetType().GetProperty("Result")!.GetValue(task)!;
+    }
+
+    private static async Task<IReadOnlyList<object>> EagerQueryAsync(
+        Db db, Type entityType, string navigation, long[] keys, FetchMode mode)
+    {
+        var map = db.Maps.Load(entityType);
+        var query = typeof(Db).GetMethod(nameof(Db.Query))!.MakeGenericMethod(entityType).Invoke(db, [])!;
+        var queryType = query.GetType();
+        queryType.GetMethod("Where")!.Invoke(
+            query, [new[] { Criteria.In(map.KeyProperties[0].PropertyName, keys.Cast<object?>().ToArray()) }]);
+        queryType.GetMethod("Include")!.Invoke(query, [new[] { navigation }]);
+        queryType.GetMethod("Fetch")!.Invoke(query, [mode]);
+        var task = (Task)queryType.GetMethod("ToListAsync")!.Invoke(query, [CancellationToken.None])!;
+        await task.ConfigureAwait(false);
+        return ((System.Collections.IEnumerable)task.GetType().GetProperty("Result")!.GetValue(task)!)
+            .Cast<object>().ToArray();
     }
 
     private static async Task LoadEachAsync(Db db, Type entityType, IReadOnlyList<object> entities, string navigation)

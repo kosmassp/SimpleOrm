@@ -1283,3 +1283,83 @@ Owner rulings on the three open questions:
   by a live test (FK intact, target row deleted, load → null).
 
 **Status.** Accepted.
+
+### ADR-0022 addendum 1 — fetch modes: eager loading is configurable (2026-08-29)
+
+Owner, on whether join includes are still wanted: "can it be configurable? i
+think it will depends on the need. As a developer, at some point i tend to find
+which one is faster, at other point, which one is more efficient" — after the
+Hibernate walkthrough. So `Include` gains `Fetch(FetchMode)`; the modes must
+load **identical graphs** and differ only in round trips and data shape:
+
+- **`MultiQuery` (default)**: root query + one batched key-list query per
+  navigation. No duplicated data, paging always correct — the ADR-0022 baseline.
+- **`SubSelect`** (the Hibernate idea worth stealing): each navigation query
+  filters by `IN (select … from the root query)` — the root's where, orderings,
+  and paging ride into the subquery, so it pages correctly, never chunks, and
+  stays one query per navigation regardless of root count. Composite keys render
+  as row-value IN. Mechanics: the AST grew an internal `InSelect` node and a
+  `Projection` (the subquery selects only the FK/key columns); no front-end or
+  conformance encoding exposes them yet.
+- **`Join`**: one SELECT with LEFT JOINs — fewest round trips ("faster" when
+  latency dominates). The AST grew `SelectJoin` (alias, ON pairs, projected or
+  not — a many-to-many's link joins unprojected); the reference renderer aliases
+  the root `t` and joins `j0…`, columns as `alias_column`. Each row partitions
+  into **segment readers** — a column-window `DbDataReader` decorator — so every
+  entity segment materializes through the **one mapping pipeline** (§7.11),
+  unchanged. Roots deduplicate by §7.4 identity; children attach with the same
+  semantics as the multi-query path (shared instances, `REL-002` on one-to-one
+  duplicates, collections sorted value-wise by target key). Strict where
+  Hibernate famously is not: **`REL-005`** refuses join + limit/offset (never
+  HHH000104-style in-memory paging) and **`REL-006`** refuses joining two
+  collection navigations (never a silent Cartesian product) — one collection
+  plus any number of to-one navigations is fine.
+- Conformance: the four kind cases in `load-cases/` carry `"viaQuery": true` —
+  the runner replays each through `Include` under **all three modes** against
+  the same expectations, so a port whose modes diverge fails the suite.
+- The unloaded-navigation guard (`REL-004`) composes: join-loaded roots guard
+  their non-included collections exactly like every other materialized entity.
+
+**Status.** Accepted.
+
+### ADR-0022 addendum 2 — the fetch-modes review pass (2026-08-29)
+
+A 24-agent adversarial review of the fetch-modes feature; the confirmed
+findings and decisions:
+
+- **Join-loaded children guard too**: child entities materialized by join mode
+  never received the `REL-004` unloaded-collection sentinel — their own
+  navigations read as silently empty, the exact bug the guard exists to catch
+  (live-reproduced). Each attachment now marks freshly materialized children.
+- **Single-navigation joins count raw rows**: the per-root identity dedup
+  existed to cancel cross-navigation fan-out, but with one included navigation
+  there is no fan-out — and the dedup was swallowing genuine duplicate-key
+  source rows and masking `REL-002` (live-reproduced with a drifted 1:1).
+  Raw counting now applies with one navigation (full mode parity, pinned across
+  all three modes); with several, dedup stays and the residual — a same-key
+  duplicate source row is indistinguishable from fan-out — is documented, with
+  MultiQuery as the escape.
+- **Keyless views refuse with a name**: a keyless root or target crashed join
+  mode with a raw InvalidOperationException (and could materialize a phantom
+  child from an all-NULL LEFT JOIN row); now `REL-003` at plan time, before any
+  SQL. MultiQuery remains the mode that serves keyless views.
+- **`REL-005` narrowed to what is actually unsound**: to-one joins never
+  multiply root rows (they join the full target key), so paging with
+  to-one-only includes now works in join mode; only a collection include
+  refuses.
+- **SubSelect paging made deterministic**: a paged subselect re-evaluates the
+  root, so a non-total ordering could pick a *different* page in the two
+  evaluations; the paged root now gains key-tiebroken ordering applied to both
+  the root execution and every subquery (the criteria path was refactored onto
+  one `ExecuteAstAsync`, retiring the string-building callback). Subquery
+  orderings are dropped when unpaged (dead weight). Docs corrected: the
+  many-to-many link→target hop still key-lists client-side.
+- **Client-side key ordering is ordinal for strings** — `Comparer<string>`
+  is culture-sensitive and diverged from SQLite's BINARY `ORDER BY`
+  (live-reproduced); `CompareKeyTuples` now compares strings ordinally.
+- Includes validate (`REL-001`) before any SQL in every mode; the reflection
+  child-plan call unwraps TargetInvocationException so mapping codes surface;
+  the conformance viaQuery replay asserts owner-set completeness (count and
+  key set), closing its silently-passing gap.
+
+**Status.** Accepted.

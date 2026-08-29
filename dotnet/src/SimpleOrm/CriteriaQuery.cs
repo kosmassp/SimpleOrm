@@ -3,6 +3,32 @@ using System.Data.Common;
 namespace SimpleOrm;
 
 /// <summary>
+/// How <see cref="CriteriaQuery{TEntity}.Include"/> fetches (ADR-0022 add.1,
+/// owner: "it will depends on the need"). All three produce identical loaded
+/// graphs; they differ in round trips and data shape:
+/// <list type="bullet">
+/// <item><see cref="MultiQuery"/> (default): root query + one batched query per
+/// navigation — no duplicated data, paging always correct.</item>
+/// <item><see cref="SubSelect"/>: like MultiQuery, but each navigation's owner
+/// filter is <c>IN (select … from the root query)</c> instead of a client-side
+/// key list — no owner-side chunking and correct paging (a paged root gains
+/// key-tiebroken ordering so both evaluations pick the same rows; the
+/// many-to-many link→target hop still key-lists client-side).</item>
+/// <item><see cref="Join"/>: one SELECT with LEFT JOINs — fewest round trips;
+/// a collection include refuses paging (<c>REL-005</c>, never in-memory — to-one
+/// includes page fine) and at most one collection navigation joins
+/// (<c>REL-006</c>, never a Cartesian product); keyless roots/targets refuse
+/// (<c>REL-003</c>).</item>
+/// </list>
+/// </summary>
+public enum FetchMode
+{
+    MultiQuery,
+    SubSelect,
+    Join,
+}
+
+/// <summary>
 /// The session-first criteria chain (ADR-0012): <c>db.Query&lt;User&gt;()
 /// .Where(…).OrderBy(…).Limit(…)</c>. <see cref="Where"/> arguments are implicitly
 /// ANDed. The rendered SELECT lists explicit columns (never <c>*</c>), resolves
@@ -16,6 +42,7 @@ public sealed class CriteriaQuery<TEntity>
     private readonly List<Criteria> _where = [];
     private readonly List<Ordering> _orderings = [];
     private readonly List<string> _includes = [];
+    private FetchMode _fetch = FetchMode.MultiQuery;
     private long? _limit;
     private long? _offset;
 
@@ -66,12 +93,56 @@ public sealed class CriteriaQuery<TEntity>
         return this;
     }
 
+    /// <summary>Chooses how the includes fetch (ADR-0022 add.1); no includes, no effect.</summary>
+    public CriteriaQuery<TEntity> Fetch(FetchMode mode)
+    {
+        _fetch = mode;
+        return this;
+    }
+
     public async Task<IReadOnlyList<TEntity>> ToListAsync(CancellationToken ct)
     {
-        var rows = await _db.ExecuteCriteriaAsync<TEntity>(BuildCommand, ct).ConfigureAwait(false);
+        var map = _db.Maps.Load<TEntity>();
+
+        // Includes validate before any SQL runs (REL-001 in every mode).
         foreach (var navigation in _includes)
         {
-            await _db.LoadEachAsync(rows, navigation, ct).ConfigureAwait(false);
+            _db.ResolveNavigation<TEntity>(map, navigation);
+        }
+
+        if (_includes.Count > 0 && _fetch == FetchMode.Join)
+        {
+            return await _db.EagerJoinLoadAsync<TEntity>(ToAst(map), _includes, ct).ConfigureAwait(false);
+        }
+
+        var ast = ToAst(map);
+        if (_fetch == FetchMode.SubSelect && _includes.Count > 0
+            && (ast.Limit is not null || ast.Offset is not null))
+        {
+            // A paged subselect re-evaluates the root, so the page must be
+            // deterministic: the key columns break ordering ties. The tiebroken
+            // AST drives BOTH the root query and every subquery, so the two
+            // evaluations pick the same rows.
+            var orderings = new List<Ordering>(ast.Orderings);
+            foreach (var key in map.KeyProperties)
+            {
+                if (!orderings.Any(o => string.Equals(o.Property, key.PropertyName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    orderings.Add(new Ordering(key.PropertyName));
+                }
+            }
+
+            ast = new SelectAst(map, ast.Where, orderings, ast.Limit, ast.Offset);
+        }
+
+        var rows = await _db.ExecuteAstAsync<TEntity>(ast, ct).ConfigureAwait(false);
+        if (_includes.Count > 0)
+        {
+            var ownerSubquery = _fetch == FetchMode.SubSelect ? ast : null;
+            foreach (var navigation in _includes)
+            {
+                await _db.LoadEachAsync(rows, navigation, ownerSubquery, ct).ConfigureAwait(false);
+            }
         }
 
         return rows;
@@ -104,12 +175,6 @@ public sealed class CriteriaQuery<TEntity>
 
     /// <summary>The query as data; the dialect renders it (§10.4, ADR-0020).</summary>
     internal SelectAst ToAst(EntityMap map) => new(map, [.. _where], [.. _orderings], _limit, _offset);
-
-    private string BuildCommand(DbCommand command, EntityMap map, TypeConverter converter, IDialect dialect)
-    {
-        var binder = new CommandParameterBinder(command, converter, QueryName);
-        return dialect.SelectSql(ToAst(map), binder.Add);
-    }
 }
 
 /// <summary>

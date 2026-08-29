@@ -53,6 +53,15 @@ public abstract class Criteria
 
     public static Criteria IsNotNull(string property) => new NullCheck(property, negated: true);
 
+    /// <summary>
+    /// Membership in a subquery's result (ADR-0022 add.1 — subselect eager
+    /// loading): <c>(p1, p2) in (select …)</c>. Internal: no front-end or
+    /// conformance encoding exposes it yet; the subquery's projection must match
+    /// the property count.
+    /// </summary>
+    internal static Criteria InSelect(IReadOnlyList<string> properties, SelectAst subquery)
+        => new SubqueryMembership(properties, subquery);
+
     public static Criteria And(params Criteria[] criteria) => new Composite("and", criteria);
 
     public static Criteria Or(params Criteria[] criteria) => new Composite("or", criteria);
@@ -92,5 +101,12 @@ public abstract class Criteria
     internal sealed class Negation(Criteria inner) : Criteria
     {
         public Criteria Inner { get; } = inner;
+    }
+
+    internal sealed class SubqueryMembership(IReadOnlyList<string> properties, SelectAst subquery) : Criteria
+    {
+        public IReadOnlyList<string> Properties { get; } = properties;
+
+        public SelectAst Subquery { get; } = subquery;
     }
 }

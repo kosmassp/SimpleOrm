@@ -32,19 +32,23 @@ public sealed partial class Db
     /// one call, owners sharing a many-to-one target share the same loaded
     /// instance.
     /// </summary>
-    public async Task LoadEachAsync<TEntity>(IReadOnlyList<TEntity> entities, string navigation, CancellationToken ct)
+    public Task LoadEachAsync<TEntity>(IReadOnlyList<TEntity> entities, string navigation, CancellationToken ct)
+        where TEntity : class
+        => LoadEachAsync(entities, navigation, ownerSubquery: null, ct);
+
+    /// <summary>
+    /// With <paramref name="ownerSubquery"/> (ADR-0022 add.1, SubSelect mode) the
+    /// owner set is expressed as <c>IN (select …)</c> over the root query instead
+    /// of a client-side key list — one query per navigation, no chunking.
+    /// </summary>
+    internal async Task LoadEachAsync<TEntity>(
+        IReadOnlyList<TEntity> entities, string navigation, SelectAst? ownerSubquery, CancellationToken ct)
         where TEntity : class
     {
         // The navigation validates even for an empty batch: a wrong name is a
         // bug regardless of how many entities happened to be in the list.
         var map = Maps.Load<TEntity>();
-        var relationship = map.Relationships.FirstOrDefault(
-            r => string.Equals(r.PropertyName, navigation, StringComparison.Ordinal))
-            ?? throw new SimpleOrmException(
-                "REL-001", typeof(TEntity).Name,
-                $"'{navigation}' is not a declared navigation "
-                + $"(declared: {(map.Relationships.Count == 0 ? "none" : string.Join(", ", map.Relationships.Select(r => r.PropertyName)))})");
-
+        var relationship = ResolveNavigation<TEntity>(map, navigation);
         if (entities.Count == 0)
         {
             return;
@@ -54,21 +58,21 @@ public sealed partial class Db
         switch (relationship.Kind)
         {
             case RelationshipKind.ManyToOne:
-                await LoadManyToOneAsync(map, relationship, property, entities, ct).ConfigureAwait(false);
+                await LoadManyToOneAsync(map, relationship, property, entities, ownerSubquery, ct).ConfigureAwait(false);
                 break;
             case RelationshipKind.OneToOne:
             case RelationshipKind.OneToMany:
-                await LoadFromTargetForeignKeyAsync(map, relationship, property, entities, ct).ConfigureAwait(false);
+                await LoadFromTargetForeignKeyAsync(map, relationship, property, entities, ownerSubquery, ct).ConfigureAwait(false);
                 break;
             default:
-                await LoadManyToManyAsync(map, relationship, property, entities, ct).ConfigureAwait(false);
+                await LoadManyToManyAsync(map, relationship, property, entities, ownerSubquery, ct).ConfigureAwait(false);
                 break;
         }
     }
 
     private async Task LoadManyToOneAsync<TEntity>(
         EntityMap map, RelationshipMap relationship, PropertyInfo navigation,
-        IReadOnlyList<TEntity> entities, CancellationToken ct)
+        IReadOnlyList<TEntity> entities, SelectAst? ownerSubquery, CancellationToken ct)
         where TEntity : class
     {
         var targetMap = Maps.Load(relationship.TargetType);
@@ -91,12 +95,11 @@ public sealed partial class Db
         }
 
         var loaded = new Dictionary<object?[], object>(KeyTupleComparer.Instance);
-        foreach (var chunk in Chunks(wanted.Keys.ToArray()))
+        foreach (var filter in OwnerFilters(
+            targetMap.KeyProperties, wanted.Keys.ToArray(), ownerSubquery, foreignKeys))
         {
             var rows = await RowsAsync(
-                relationship.TargetType,
-                [KeyMembership(targetMap.KeyProperties, chunk)],
-                targetMap.KeyProperties, ct).ConfigureAwait(false);
+                relationship.TargetType, [filter], targetMap.KeyProperties, ct).ConfigureAwait(false);
             foreach (var row in rows)
             {
                 loaded[targetMap.GetKeyValues(row)] = row;
@@ -116,7 +119,7 @@ public sealed partial class Db
 
     private async Task LoadFromTargetForeignKeyAsync<TEntity>(
         EntityMap map, RelationshipMap relationship, PropertyInfo navigation,
-        IReadOnlyList<TEntity> entities, CancellationToken ct)
+        IReadOnlyList<TEntity> entities, SelectAst? ownerSubquery, CancellationToken ct)
         where TEntity : class
     {
         var targetMap = Maps.Load(relationship.TargetType);
@@ -132,12 +135,11 @@ public sealed partial class Db
 
         var ownerKeys = entities.Select(e => map.GetKeyValues(e)).ToArray();
         var byOwner = new Dictionary<object?[], List<object>>(KeyTupleComparer.Instance);
-        foreach (var chunk in Chunks(DistinctComplete(ownerKeys)))
+        foreach (var filter in OwnerFilters(
+            targetForeignKeys!, DistinctComplete(ownerKeys), ownerSubquery, map.KeyProperties.ToArray()))
         {
             var rows = await RowsAsync(
-                relationship.TargetType,
-                [KeyMembership(targetForeignKeys!, chunk)],
-                targetMap.KeyProperties, ct).ConfigureAwait(false);
+                relationship.TargetType, [filter], targetMap.KeyProperties, ct).ConfigureAwait(false);
             foreach (var row in rows)
             {
                 var owner = targetForeignKeys.Select(p => p!.Property.GetValue(row)).ToArray();
@@ -179,7 +181,7 @@ public sealed partial class Db
 
     private async Task LoadManyToManyAsync<TEntity>(
         EntityMap map, RelationshipMap relationship, PropertyInfo navigation,
-        IReadOnlyList<TEntity> entities, CancellationToken ct)
+        IReadOnlyList<TEntity> entities, SelectAst? ownerSubquery, CancellationToken ct)
         where TEntity : class
     {
         var linkMap = Maps.Load(relationship.LinkType!);
@@ -201,12 +203,11 @@ public sealed partial class Db
         // First visible query: the link rows for these owners.
         var ownerKeys = entities.Select(e => map.GetKeyValues(e)).ToArray();
         var targetKeysByOwner = new Dictionary<object?[], List<object?[]>>(KeyTupleComparer.Instance);
-        foreach (var chunk in Chunks(DistinctComplete(ownerKeys)))
+        foreach (var filter in OwnerFilters(
+            toOwner!, DistinctComplete(ownerKeys), ownerSubquery, map.KeyProperties.ToArray()))
         {
             var links = await RowsAsync(
-                relationship.LinkType!,
-                [KeyMembership(toOwner!, chunk)],
-                linkMap.KeyProperties, ct).ConfigureAwait(false);
+                relationship.LinkType!, [filter], linkMap.KeyProperties, ct).ConfigureAwait(false);
             foreach (var link in links)
             {
                 var owner = toOwner.Select(p => p!.Property.GetValue(link)).ToArray();
@@ -277,6 +278,39 @@ public sealed partial class Db
                 .Select(t => Criteria.And(parts.Select((p, i) => Criteria.Eq(p!.PropertyName, t[i])).ToArray()))
                 .ToArray());
 
+    /// <summary>
+    /// The owner-set filters for one related-side query: chunked key-list
+    /// membership normally; a single <c>IN (select …)</c> over the root query in
+    /// SubSelect mode (ADR-0022 add.1) — the subquery projects
+    /// <paramref name="subqueryProjection"/> (the root's FK or key properties)
+    /// and keeps the root's where/orderings/paging.
+    /// </summary>
+    private static IEnumerable<Criteria> OwnerFilters(
+        IReadOnlyList<PropertyMap?> parts,
+        IReadOnlyList<object?[]> tuples,
+        SelectAst? ownerSubquery,
+        IReadOnlyList<PropertyMap> subqueryProjection)
+    {
+        if (ownerSubquery is not null)
+        {
+            // Orderings matter to a subquery only when paging trims it; without
+            // limit/offset they are dead weight (and dialect-divergent noise).
+            var paged = ownerSubquery.Limit is not null || ownerSubquery.Offset is not null;
+            yield return Criteria.InSelect(
+                parts.Select(p => p!.PropertyName).ToArray(),
+                new SelectAst(
+                    ownerSubquery.Map, ownerSubquery.Where,
+                    paged ? ownerSubquery.Orderings : [],
+                    ownerSubquery.Limit, ownerSubquery.Offset, projection: subqueryProjection));
+            yield break;
+        }
+
+        foreach (var chunk in Chunks(tuples))
+        {
+            yield return KeyMembership(parts, chunk);
+        }
+    }
+
     /// <summary>Loads rows of a runtime entity type through the criteria pipeline, ordered by the given key for determinism.</summary>
     private async Task<IReadOnlyList<object>> RowsAsync(
         Type entityType, IReadOnlyList<Criteria> where, IReadOnlyList<PropertyMap> orderBy, CancellationToken ct)
@@ -341,14 +375,22 @@ public sealed partial class Db
         return list;
     }
 
-    /// <summary>Value-wise key ordering (parts are the same CLR type within one target and implement IComparable; byte[] compares lexicographically).</summary>
+    /// <summary>
+    /// Value-wise key ordering (parts are the same CLR type within one target and
+    /// implement IComparable). Strings compare **ordinally** — matching SQLite's
+    /// BINARY collation, so client-side ordering agrees with SQL ORDER BY —
+    /// and byte[] compares lexicographically.
+    /// </summary>
     private static int CompareKeyTuples(IReadOnlyList<object?> left, IReadOnlyList<object?> right)
     {
         for (var i = 0; i < left.Count; i++)
         {
-            var comparison = left[i] is byte[] lb && right[i] is byte[] rb
-                ? CompareBytes(lb, rb)
-                : Comparer<object?>.Default.Compare(left[i], right[i]);
+            var comparison = (left[i], right[i]) switch
+            {
+                (byte[] lb, byte[] rb) => CompareBytes(lb, rb),
+                (string ls, string rs) => string.CompareOrdinal(ls, rs),
+                var (l, r) => Comparer<object?>.Default.Compare(l, r),
+            };
             if (comparison != 0)
             {
                 return comparison;

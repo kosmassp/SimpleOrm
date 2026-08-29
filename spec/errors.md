@@ -68,6 +68,8 @@ these codes.
 | `REL-002` | a one-to-one navigation matched more than one row — the target foreign key needs a unique index | ADR-0021 | L2 milestone 3 |
 | `REL-003` | a navigation's shape disagrees with the maps at load time (FK properties unmapped on the target/link, or FK count vs. key arity) — for targets the loader could not validate at declaration | ADR-0021 | L2 milestone 3 |
 | `REL-004` | a collection navigation of a database-read entity was accessed without being loaded — Include it or call LoadAsync/LoadEachAsync (navigations never load implicitly; loading replaces the guard) | ADR-0021 add.2 | L2 milestone 4 |
+| `REL-005` | join-mode eager loading of a **collection** navigation with limit/offset — the join multiplies root rows, so paging would count children (to-one includes page fine); use MultiQuery or SubSelect (never in-memory paging) | ADR-0022 add.1/2 | L2 milestone 4 |
+| `REL-006` | join-mode eager loading of more than one collection navigation — a Cartesian product; use MultiQuery or SubSelect for the rest | ADR-0022 add.1 | L2 milestone 4 |
 
 ## DDL — schema generation from metadata
 

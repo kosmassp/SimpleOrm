@@ -176,16 +176,16 @@ public sealed partial class Db : IAsyncDisposable
         return new CriteriaQuery<TEntity>(this);
     }
 
-    internal Task<IReadOnlyList<TEntity>> ExecuteCriteriaAsync<TEntity>(
-        Func<DbCommand, EntityMap, TypeConverter, IDialect, string> build, CancellationToken ct)
+    /// <summary>Renders a criteria AST through the dialect and materializes it (§10.4).</summary>
+    internal Task<IReadOnlyList<TEntity>> ExecuteAstAsync<TEntity>(SelectAst ast, CancellationToken ct)
         where TEntity : class
     {
-        var map = Maps.Load<TEntity>();
         var command = _connection.CreateCommand();
         command.Transaction = _transaction;
         try
         {
-            command.CommandText = build(command, map, _converter, Options.Dialect);
+            var binder = new CommandParameterBinder(command, _converter, typeof(TEntity).Name + " criteria");
+            command.CommandText = Options.Dialect.SelectSql(ast, binder.Add);
         }
         catch
         {

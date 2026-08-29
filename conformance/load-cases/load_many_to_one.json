@@ -1,6 +1,7 @@
 {
   "name": "load_many_to_one",
   "comment": "Explicit loading of a many-to-one: transaction 1's user fills from its FK; nothing was loaded before the call. Listed columns are checked, others ignored.",
+  "viaQuery": true,
   "load": { "entity": "Transaction", "navigation": "User", "keys": [1] },
   "expect": { "loaded": {
     "1": { "id": 1, "name": "Ada", "email": "ada@example.com" } } }

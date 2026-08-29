@@ -103,9 +103,10 @@ await db.LoadAsync(tx, nameof(Transaction.User), ct);          // one entity, on
 await db.LoadEachAsync(users, nameof(User.Transactions), ct);  // N entities, still one query
 await db.LoadEachAsync(users, nameof(User.Roles), ct);         // many-to-many: two (link, targets)
 
-var page = await db.Query<User>()                              // eager (ADR-0022): root query +
-    .Include(nameof(User.Transactions), nameof(User.Profile))  // one batch load per navigation —
-    .OrderBy("Id").Limit(20).ToListAsync(ct);                  // paging stays correct, no join fan-out
+var page = await db.Query<User>()                              // eager (ADR-0022): loads with the query;
+    .Include(nameof(User.Transactions), nameof(User.Profile))  // Fetch picks the strategy —
+    .Fetch(FetchMode.SubSelect)                                // MultiQuery (default) | SubSelect | Join —
+    .OrderBy("Id").Limit(20).ToListAsync(ct);                  // identical graphs, different trade-offs
 ```
 
 Criteria queries are an **AST rendered by the dialect** (ADR-0020) — front-ends

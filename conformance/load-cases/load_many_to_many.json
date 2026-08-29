@@ -1,6 +1,7 @@
 {
   "name": "load_many_to_many",
   "comment": "Many-to-many resolves through the declared link in two visible queries (link rows, then targets); results order by target KEY, compared as values — role 10 comes after 2, though '10' sorts before '2' as a string (ADR-0021 add.1).",
+  "viaQuery": true,
   "load": { "entity": "User", "navigation": "Roles", "keys": [1, 2] },
   "expect": { "loaded": {
     "1": [ { "id": 1, "role_name": "admin" }, { "id": 2, "role_name": "user" }, { "id": 10, "role_name": "auditor" } ],

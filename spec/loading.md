@@ -41,27 +41,39 @@ await db.LoadEachAsync(users, nameof(User.Transactions), ct);         // the bat
 - Loading overwrites the navigation with fresh state (a reload is a reload);
   entities the call did not name are untouched.
 
-## Eager loading (`Include`, ADR-0022)
+## Eager loading (`Include` + `Fetch`, ADR-0022 + add.1)
 
 Eager loading is the same contract requested **with the query**: the criteria
-chain's `Include(navigations…)` runs the root query and then one batch load per
-included navigation — multi-query, never a row-multiplying join, so paging
-stays correct and every round trip stays visible and countable
-(1 + one per navigation; many-to-many: two).
+chain's `Include(navigations…)` loads the named navigations automatically. The
+**fetch mode** chooses how — the modes must load **identical graphs** and
+differ only in round trips and data shape ("depends on the need"):
 
 ```csharp
 var users = await db.Query<User>()
     .Where(Criteria.Ge("CreatedAtUtc", since))
     .Include(nameof(User.Transactions), nameof(User.Profile))
+    .Fetch(FetchMode.SubSelect)          // or MultiQuery (default), or Join
     .OrderBy("Id").Limit(20)
     .ToListAsync(ct);
 ```
 
-The single-row terminals eager-load their row identically. An unknown
-navigation is `REL-001` even when the query matches no rows. Includes are
-single-level (a navigation of the root); deeper graphs load explicitly from the
-loaded entities. The `json_group_array` nesting pattern (mapping-rules.md)
-remains the single-round-trip alternative.
+| mode | queries | traits |
+|---|---|---|
+| `MultiQuery` (default) | root + one batched key-list query per navigation | no duplicated data; paging always correct; chunks past the parameter budget |
+| `SubSelect` | root + one query per navigation filtering `IN (select … from the root query)` | no owner-side chunking (the many-to-many link→target hop still key-lists); pages correctly — a paged root gains **key-tiebroken ordering** applied to both the root and the subquery, so both evaluations pick the same rows. The subquery re-evaluates the root: rows changing between the two queries can drift, the same window every multi-statement mode has. Composite keys render row-value `IN`; a dialect without row values overrides |
+| `Join` | **one** SELECT with LEFT JOINs | fewest round trips; a **collection** include refuses limit/offset (`REL-005` — the join multiplies root rows, and in-memory paging is never acceptable; to-one-only includes page fine) and at most one collection navigation joins (`REL-006` — never a silent Cartesian product); keyless roots/targets refuse (`REL-003` — identity drives the reshaping; load them via MultiQuery). With a **single** included navigation, rows count raw — duplicate-key source rows and `REL-002` behave exactly as in the other modes; with several, identity-dedup cancels the cross-navigation fan-out, and a same-key duplicate source row is then indistinguishable from it — targets whose declared key is not actually unique should load via MultiQuery |
+
+In every mode: roots deduplicate and children share instances by §7.4 identity;
+collections order by target key value-wise; one-to-one duplicates are
+`REL-002`; an unknown navigation is `REL-001` even when the query matches no
+rows; non-included collection navigations keep the `REL-004` guard. The
+single-row terminals eager-load their row identically. Includes are
+single-level; deeper graphs load explicitly from the loaded entities. The
+`json_group_array` nesting pattern (mapping-rules.md) remains the
+single-round-trip alternative for arbitrary shapes.
+
+Conformance: load cases marked `"viaQuery": true` replay through `Include`
+under **all three modes** against the same `loaded` expectations.
 
 ## Per kind
 

@@ -138,7 +138,8 @@ and `export-metadata` round out the CLI.
 The model is the final truth; the committed `V000N.schema.json` snapshots are the
 recorded past; `diff` turns the difference into the next migration — ordinary
 source with literal SQL and a generated `Down()` derived from the snapshot, no
-database needed:
+database needed. Tables diff by columns; views (and, on capable dialects,
+materialized views) diff by their normalized DDL:
 
 ```bash
 dotnet run --project dotnet/src/SimpleOrm.Cli -- diff --assembly App.dll --out App/Migrations --namespace App.Migrations --name AddNote
@@ -162,7 +163,13 @@ snapshots, nothing below N verified) and regenerates only `--to V000M`:
 dotnet run --project dotnet/src/SimpleOrm.Cli -- shadow --assembly App.dll --out App/Migrations --from V0007 --to V0009
 ```
 
-`migrate --force` then syncs any remaining live-schema gap to the model after
+A generated view change step opens with `ExpectDefinition(<previous ddl>)`:
+because views get patched directly in the database during urgencies, the step
+refuses to apply over a definition that was changed outside the code (`MIG-012`) —
+the whole run rolls back and the hotfix survives for review. `migrate --force`
+recreates the view from the code and prints what drifted.
+
+`migrate --force` also syncs any remaining live-schema gap to the model after
 migrations run: additive fixes apply immediately, deletions only with
 `--allow-delete` (`DDL-003`), and anything inexpressible is reported (`DDL-004`),
 never guessed.

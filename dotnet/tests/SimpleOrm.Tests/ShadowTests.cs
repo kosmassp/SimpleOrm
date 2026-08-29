@@ -70,8 +70,8 @@ public sealed class ShadowTests
             // Seed the out dir with the committed snapshots at <= 7: the trusted base.
             foreach (var file in Directory.GetFiles(committed, "*.schema.json", SearchOption.AllDirectories))
             {
-                var (_, asOfVersion) = SchemaSnapshot.Parse(File.ReadAllText(file));
-                if (asOfVersion <= 7)
+                using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllText(file));
+                if (document.RootElement.GetProperty("asOfVersion").GetInt64() <= 7)
                 {
                     var target = Path.Combine(outDir, file.Substring(committed.Length + 1));
                     Directory.CreateDirectory(Path.GetDirectoryName(target)!);

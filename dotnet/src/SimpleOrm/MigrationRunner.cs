@@ -67,7 +67,17 @@ public sealed class MigrationRunner
     }
 
     /// <summary>Applies pending versions in order; returns how many were applied.</summary>
-    public async Task<int> MigrateAsync(CancellationToken ct)
+    public Task<int> MigrateAsync(CancellationToken ct)
+        => MigrateAsync(allowViewDrift: false, notify: null, ct);
+
+    /// <summary>
+    /// As <see cref="MigrateAsync(CancellationToken)"/>. A view step's
+    /// <c>ExpectDefinition</c> guard normally refuses on a live definition that was
+    /// changed outside the code (<c>MIG-012</c>); with
+    /// <paramref name="allowViewDrift"/> the drift is reported through
+    /// <paramref name="notify"/> and the view is recreated anyway.
+    /// </summary>
+    public async Task<int> MigrateAsync(bool allowViewDrift, Action<string>? notify, CancellationToken ct)
     {
         var plan = RenderAll();
         using var run = _db.Options.Dialect.BeginMigrationRunLock(_db.Connection);
@@ -83,7 +93,8 @@ public sealed class MigrationRunner
                 var stopwatch = Stopwatch.StartNew();
                 foreach (var statement in step.Up)
                 {
-                    await ExecuteAsync(run, statement.Sql, ct).ConfigureAwait(false);
+                    await ApplyStatementAsync(run, version.Version, statement, allowViewDrift, notify, ct)
+                        .ConfigureAwait(false);
                 }
 
                 await RecordAsync(run, version.Version, step, stopwatch.ElapsedMilliseconds, ct).ConfigureAwait(false);
@@ -97,7 +108,12 @@ public sealed class MigrationRunner
     }
 
     /// <summary>Reverts versions above <paramref name="targetVersion"/>, newest first; refuses when any lacks down statements (<c>MIG-020</c>).</summary>
-    public async Task<int> MigrateDownAsync(long targetVersion, CancellationToken ct)
+    public Task<int> MigrateDownAsync(long targetVersion, CancellationToken ct)
+        => MigrateDownAsync(targetVersion, allowViewDrift: false, notify: null, ct);
+
+    /// <summary>As <see cref="MigrateDownAsync(long, CancellationToken)"/>, with the view-drift override (see MigrateAsync).</summary>
+    public async Task<int> MigrateDownAsync(
+        long targetVersion, bool allowViewDrift, Action<string>? notify, CancellationToken ct)
     {
         var plan = RenderAll();
         using var run = _db.Options.Dialect.BeginMigrationRunLock(_db.Connection);
@@ -125,7 +141,8 @@ public sealed class MigrationRunner
             {
                 foreach (var statement in step.Down)
                 {
-                    await ExecuteAsync(run, statement.Sql, ct).ConfigureAwait(false);
+                    await ApplyStatementAsync(run, version.Version, statement, allowViewDrift, notify, ct)
+                        .ConfigureAwait(false);
                 }
             }
 
@@ -398,6 +415,52 @@ public sealed class MigrationRunner
         AddParameter(command, "@applied_at", DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
         AddParameter(command, "@execution_ms", executionMs);
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Executes one rendered statement — or, for a guard, checks the view's live definition instead.</summary>
+    private async Task ApplyStatementAsync(
+        DbTransaction transaction, long version, MigrationStatement statement,
+        bool allowViewDrift, Action<string>? notify, CancellationToken ct)
+    {
+        if (statement.GuardView is null)
+        {
+            await ExecuteAsync(transaction, statement.Sql, ct).ConfigureAwait(false);
+            return;
+        }
+
+        var live = await ReadViewDefinitionAsync(transaction, statement.GuardView, ct).ConfigureAwait(false);
+        var normalized = live is null ? null : SchemaSnapshot.NormalizeDdl(live);
+        if (normalized == statement.Sql)
+        {
+            return;
+        }
+
+        var drift = live is null
+            ? $"V{version:0000} {statement.GuardView}: the view is absent; expected the previous definition"
+            : $"V{version:0000} {statement.GuardView}: the live definition does not match the expected one — it was changed outside migrations";
+        if (!allowViewDrift)
+        {
+            throw new SimpleOrmException(
+                "MIG-012", $"V{version:0000} {statement.GuardView}",
+                (live is null
+                    ? "the view is absent but a previous definition was expected"
+                    : "the live definition was changed outside migrations")
+                + "; review the drift, then rerun with --force to recreate it from the code");
+        }
+
+        notify?.Invoke(drift + "; recreating (--force)");
+    }
+
+    private async Task<string?> ReadViewDefinitionAsync(DbTransaction transaction, string view, CancellationToken ct)
+    {
+        using var command = _db.Connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = _db.Options.Dialect.ViewDefinitionSql;
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "@relation";
+        parameter.Value = view;
+        command.Parameters.Add(parameter);
+        return await command.ExecuteScalarAsync(ct).ConfigureAwait(false) as string;
     }
 
     private async Task ExecuteAsync(DbTransaction transaction, string sql, CancellationToken ct)

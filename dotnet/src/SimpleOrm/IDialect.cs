@@ -38,6 +38,13 @@ public interface IDialect
     /// <summary>The declared-type → CLR compatibility table (§7.25), honoring [EnumAsInt].</summary>
     bool IsDeclaredTypeCompatible(string declaredType, Type clrType, bool enumAsInt);
 
+    /// <summary>
+    /// Query for a view's stored create DDL (parameter <c>@relation</c>; no rows =
+    /// view absent). Backs the <c>ExpectDefinition</c> migration guard (MIG-012)
+    /// and the shadow replayer's view snapshots (ADR-0017).
+    /// </summary>
+    string ViewDefinitionSql { get; }
+
     /// <summary>The storage (declared) type a mapped property renders to — what CREATE TABLE emits (§7.25).</summary>
     string StorageType(PropertyMap property);
 

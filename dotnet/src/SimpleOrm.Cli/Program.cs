@@ -70,22 +70,26 @@ int Usage()
 
         commands (all need --assembly <dll>; migrate/status/baseline/validate/snapshot also --db):
           migrate [--force [--allow-delete]]
-                                      apply pending versions; --force then syncs the live
-                                      schema to the model (additive only; deletions need
-                                      --allow-delete, DDL-003)
+                                      apply pending versions; a guarded view step refuses
+                                      when the live view was changed outside the code
+                                      (MIG-012) unless --force recreates it; --force then
+                                      also syncs the live schema to the model (additive
+                                      only; deletions need --allow-delete, DDL-003)
           migrate down --to <N>       revert versions above N
           status                      list (version, object) states
           baseline --version <N>      record versions <= N without running them
           export-metadata [--out dir] write each entity's EntityMap JSON
           validate                    SchemaGuard: full report or exit 0
           snapshot --out <MigrationsDir>
-                                      write V000N.schema.json per table (versioned, timestamped)
+                                      write V000N.schema.json per object (tables by
+                                      columns; views by DDL), versioned and timestamped
           diff --out <MigrationsDir> --namespace <ns>
                [--name <Description>] [--rename table.old=new]... [--allow-remove]
                                       generate the next migration version from the model vs
-                                      the latest snapshots; no database needed; removals
-                                      need --allow-remove (DDL-003); inexpressible changes
-                                      are DDL-004 (write by hand)
+                                      the latest snapshots (tables by columns, views by
+                                      DDL); no database needed; removals need
+                                      --allow-remove (DDL-003); inexpressible changes are
+                                      DDL-004 (write by hand)
           shadow --out <MigrationsDir> [--from V000N] [--to V000M]
                                       rebuild snapshots by replaying migrations in a
                                       throwaway database; --from trusts version N as
@@ -143,7 +147,8 @@ async Task<int> MigrateAsync()
     var (db, runner) = await OpenAsync();
     await using (db)
     {
-        var applied = await runner.MigrateAsync(CancellationToken.None);
+        var applied = await runner.MigrateAsync(
+            allowViewDrift: Flag("force"), notify: m => Console.WriteLine("MIG-012 " + m), CancellationToken.None);
         Console.WriteLine(applied == 0 ? "nothing pending" : $"applied {applied} version(s)");
         return Flag("force") ? await ForceSyncAsync(db) : 0;
     }
@@ -200,7 +205,8 @@ async Task<int> MigrateDownAsync()
     var (db, runner) = await OpenAsync();
     await using (db)
     {
-        var reverted = await runner.MigrateDownAsync(target, CancellationToken.None);
+        var reverted = await runner.MigrateDownAsync(
+            target, allowViewDrift: Flag("force"), notify: m => Console.WriteLine("MIG-012 " + m), CancellationToken.None);
         Console.WriteLine($"reverted {reverted} version(s); now at <= V{target:0000}");
         return 0;
     }
@@ -266,19 +272,45 @@ async Task<int> SnapshotAsync()
         foreach (var type in MappedTypes(LoadAssembly()))
         {
             var map = db.Maps.Load(type);
-            if (map.Kind != RelationKind.Table || !perObject.TryGetValue(map.RelationName!, out var version))
+            if (map.RelationName is null || !perObject.TryGetValue(map.RelationName, out var version))
             {
-                continue;   // tables only — views/statements/procedures self-reflect (ADR-0013 add.3)
+                continue;
             }
 
-            var directory = Path.Combine(outDir, "Table", type.Name);
+            // Tables snapshot by columns; views by DDL (ADR-0017 add.1). Kinds the
+            // dialect cannot create (MV/procedure here) have no history to record.
+            var (folder, content) = SnapshotContent(db.Options.Dialect, type, map, version, generatedAt);
+            if (content is null)
+            {
+                continue;
+            }
+
+            var directory = Path.Combine(outDir, folder, type.Name);
             Directory.CreateDirectory(directory);
             var file = Path.Combine(directory, $"V{version:0000}.schema.json");
-            File.WriteAllText(file, SchemaSnapshot.Export(map, db.Options.Dialect, version, generatedAt) + "\n");
+            File.WriteAllText(file, content + "\n");
             Console.WriteLine("wrote " + file);
         }
 
         return 0;
+    }
+}
+
+static (string Folder, string? Content) SnapshotContent(
+    IDialect dialect, Type type, EntityMap map, long version, DateTimeOffset generatedAt)
+{
+    switch (map.Kind)
+    {
+        case RelationKind.Table:
+            return ("Table", SchemaSnapshot.Export(map, dialect, version, generatedAt));
+        case RelationKind.View:
+            return ("View", SchemaSnapshot.ExportDdl(
+                map.RelationName!, "view", dialect.CreateViewSql(map), version, generatedAt));
+        case RelationKind.MaterializedView when dialect.SupportsMaterializedViews:
+            return ("MaterializedView", SchemaSnapshot.ExportDdl(
+                map.RelationName!, "materialized_view", dialect.CreateViewSql(map), version, generatedAt));
+        default:
+            return (string.Empty, null);
     }
 }
 
@@ -326,33 +358,51 @@ int DiffCommand()
         .Max();
 
     var changed = new List<(Type Type, EntityMap Map, MigrationGenerator.TableDiff Diff)>();
+    var viewChanges = new List<(Type Type, string Folder, string ObjectName, string Ddl, string? PreviousDdl)>();
     var problems = new List<string>();
     var removals = new List<string>();
     foreach (var type in MappedTypes(assembly).OrderBy(t => t.Name, StringComparer.Ordinal))
     {
         var map = loader.Load(type);
-        if (map.Kind != RelationKind.Table)
+        if (map.Kind == RelationKind.Table)
         {
-            continue;   // views/statements self-reflect; view changes are authored by hand (RecreateView)
+            var snapshotDir = Path.Combine(outDir, "Table", type.Name);
+            var latest = Directory.Exists(snapshotDir)
+                ? Directory.GetFiles(snapshotDir, "V*.schema.json")
+                    .Select(f => SchemaSnapshot.Parse(File.ReadAllText(f)))
+                    .OrderByDescending(s => s.AsOfVersion)
+                    .Select(s => s.Schema)
+                    .FirstOrDefault()
+                : null;
+
+            renames.TryGetValue(map.RelationName!, out var tableRenames);
+            var diff = MigrationGenerator.Diff(map, dialect, latest, tableRenames ?? new Dictionary<string, string>());
+            problems.AddRange(diff.Unsupported.Select(m => $"{map.RelationName}: {m}"));
+            removals.AddRange(diff.Removed.Select(c => $"{map.RelationName}.{c.Name}")
+                .Concat(diff.RemovedIndexNames.Select(n => $"index {n}")));
+            if (diff.HasChanges)
+            {
+                changed.Add((type, map, diff));
+            }
         }
-
-        var snapshotDir = Path.Combine(outDir, "Table", type.Name);
-        var latest = Directory.Exists(snapshotDir)
-            ? Directory.GetFiles(snapshotDir, "V*.schema.json")
-                .Select(f => SchemaSnapshot.Parse(File.ReadAllText(f)))
-                .OrderByDescending(s => s.AsOfVersion)
-                .Select(s => s.Schema)
-                .FirstOrDefault()
-            : null;
-
-        renames.TryGetValue(map.RelationName!, out var tableRenames);
-        var diff = MigrationGenerator.Diff(map, dialect, latest, tableRenames ?? new Dictionary<string, string>());
-        problems.AddRange(diff.Unsupported.Select(m => $"{map.RelationName}: {m}"));
-        removals.AddRange(diff.Removed.Select(c => $"{map.RelationName}.{c.Name}")
-            .Concat(diff.RemovedIndexNames.Select(n => $"index {n}")));
-        if (diff.HasChanges)
+        else if (map.Kind == RelationKind.View
+            || (map.Kind == RelationKind.MaterializedView && dialect.SupportsMaterializedViews))
         {
-            changed.Add((type, map, diff));
+            // Views diff by DDL (ADR-0017 add.1): the definition is the schema.
+            var folder = map.Kind == RelationKind.View ? "View" : "MaterializedView";
+            var current = SchemaSnapshot.NormalizeDdl(dialect.CreateViewSql(map));
+            var snapshotDir = Path.Combine(outDir, folder, type.Name);
+            var previous = Directory.Exists(snapshotDir)
+                ? Directory.GetFiles(snapshotDir, "V*.schema.json")
+                    .Select(f => SchemaSnapshot.ParseDdl(File.ReadAllText(f)))
+                    .OrderByDescending(s => s.AsOfVersion)
+                    .Select(s => (string?)s.Ddl)
+                    .FirstOrDefault()
+                : null;
+            if (previous != current)
+            {
+                viewChanges.Add((type, folder, map.RelationName!, current, previous));
+            }
         }
     }
 
@@ -371,7 +421,7 @@ int DiffCommand()
         return Fail("DDL-003 destructive changes need --allow-remove: " + string.Join(", ", removals));
     }
 
-    if (changed.Count == 0)
+    if (changed.Count == 0 && viewChanges.Count == 0)
     {
         Console.WriteLine("no schema changes: the model matches the snapshots");
         return 0;
@@ -400,6 +450,24 @@ int DiffCommand()
             rootNamespace, type, map, dialect, nextVersion, description, diff));
         written.Add(file);
         stepRefs.Add($"Table.{type.Name}.V{nextVersion:0000}_{description}");
+    }
+
+    // Views compose after tables (§7.22 ordering) — literal DDL with the
+    // expected-previous-definition guard (MIG-012 on outside drift).
+    foreach (var (type, folder, objectName, ddl, previousDdl) in viewChanges)
+    {
+        var directory = Path.Combine(outDir, folder, type.Name);
+        Directory.CreateDirectory(directory);
+        var file = Path.Combine(directory, $"V{nextVersion:0000}_{description}.cs");
+        if (File.Exists(file))
+        {
+            return Fail($"refusing to overwrite {file}");
+        }
+
+        File.WriteAllText(file, MigrationGenerator.EmitViewStep(
+            rootNamespace, type, folder, objectName, nextVersion, description, ddl, previousDdl));
+        written.Add(file);
+        stepRefs.Add($"{folder}.{type.Name}.V{nextVersion:0000}_{description}");
     }
 
     var rootFile = Path.Combine(outDir, $"V{nextVersion:0000}.cs");

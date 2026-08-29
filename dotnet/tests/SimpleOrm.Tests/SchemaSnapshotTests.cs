@@ -41,4 +41,30 @@ public sealed class SchemaSnapshotTests
         // Name-sorted for determinism: introspection order and metadata order both normalize.
         Assert.Equal(schema.Columns.Select(c => c.Name).OrderBy(n => n, StringComparer.Ordinal), schema.Columns.Select(c => c.Name));
     }
+
+    [Fact]
+    public void Ddl_snapshot_round_trips_and_normalizes()
+    {
+        var json = SchemaSnapshot.ExportDdl(
+            "totals", "view", "create view if not exists totals as\n  select 1 as one",
+            asOfVersion: 6, DateTimeOffset.UtcNow);
+
+        var (objectName, kind, ddl, asOfVersion) = SchemaSnapshot.ParseDdl(json);
+        Assert.Equal(("totals", "view", 6L), (objectName, kind, asOfVersion));
+        Assert.Equal("create view totals as select 1 as one", ddl);
+    }
+
+    [Fact]
+    public void Ddl_normalization_canonicalizes_the_prefix_the_database_rewrites()
+    {
+        // SQLite stores "CREATE VIEW x" for "create view if not exists x": layout,
+        // case, and IF NOT EXISTS in the prefix are not schema; the body is.
+        var rendered = SchemaSnapshot.NormalizeDdl("create view if not exists totals as\n    select 1 as one");
+        var introspected = SchemaSnapshot.NormalizeDdl("CREATE VIEW totals as select 1 as one");
+        Assert.Equal(rendered, introspected);
+
+        Assert.NotEqual(
+            SchemaSnapshot.NormalizeDdl("create view totals as select 1 as one"),
+            SchemaSnapshot.NormalizeDdl("create view totals as select 2 as one"));
+    }
 }

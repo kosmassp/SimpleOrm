@@ -70,9 +70,11 @@ fresh-database path pairs it with metadata-generated schema
 
 ## Snapshots (schema history as data)
 
-Each table's shape is recorded per version in
-`Migrations/Table/<Object>/V000N.schema.json` (ADR-0016/0017 — tables only; views,
-statements, and procedures self-reflect from their defining SQL):
+Each object's shape is recorded per version in
+`Migrations/<Kind>/<Object>/V000N.schema.json` (ADR-0016/0017). Tables snapshot by
+**columns**; views, materialized views, and procedures snapshot by **DDL** — they
+self-reflect from their defining SQL, so the definition *is* the schema (ADR-0017
+add.1). Statements are queries, not schema objects: no snapshots.
 
 ```json
 { "object": "roles", "asOfVersion": 4, "generatedAt": "…Z",
@@ -82,10 +84,19 @@ statements, and procedures self-reflect from their defining SQL):
                  "unique": true } ] }
 ```
 
-Column `type` is the dialect **storage type** (what CREATE TABLE emits and what
-introspection reports), columns and indexes are **name-sorted** — so the same file
-is producible two ways, and the two must be byte-identical apart from
-`generatedAt`:
+The DDL-shaped form for the other kinds:
+
+```json
+{ "object": "user_transaction_totals", "kind": "view", "asOfVersion": 6,
+  "generatedAt": "…Z", "ddl": "create view user_transaction_totals as select …" }
+```
+
+The DDL is normalized — whitespace collapsed and the create-view prefix
+canonicalized (databases rewrite that prefix when storing it) — and stays
+executable. Column `type` in the table form is the dialect **storage type** (what
+CREATE TABLE emits and what introspection reports), columns and indexes are
+**name-sorted** — so every snapshot is producible two ways, and the two must be
+byte-identical apart from `generatedAt`:
 
 - **from metadata** (`snapshot`): the current model rendered at the last version
   touching each object;
@@ -100,11 +111,14 @@ them.
 
 - **`diff`** — metadata vs the latest committed snapshot, no database: emits a
   normal per-object step (literal SQL, generated Down derived from the snapshot)
-  plus the composing root, new tables FK-ordered. Generated code freezes exactly
-  like hand-written code. Renames are **declared** (`--rename table.old=new`),
-  never inferred. Removals gate on `--allow-remove` (`DDL-003`); type/nullability
-  changes and non-nullable additions are `DDL-004` — hand-written, using the
-  literal `AddColumn(name, type, nullable, defaultSql)` path.
+  plus the composing root, new tables FK-ordered, view steps after table steps.
+  Generated code freezes exactly like hand-written code. Tables diff by columns;
+  views diff by normalized DDL, and a generated view change step is literal DDL
+  opening with the `ExpectDefinition` guard (below). Renames are **declared**
+  (`--rename table.old=new`), never inferred. Removals gate on `--allow-remove`
+  (`DDL-003`); type/nullability changes and non-nullable additions are `DDL-004` —
+  hand-written, using the literal `AddColumn(name, type, nullable, defaultSql)`
+  path.
 - **`shadow`** — rebuilds the snapshot files from history (above). The range form
   `--from V000N [--to V000M]` **trusts** version N: the baseline is reconstructed
   from the committed snapshots at ≤ N (no verification below N), versions ≤ N are
@@ -112,6 +126,19 @@ them.
 - **`migrate --force`** — post-migration live-schema sync to the model: additive
   fixes apply; deletions require `--allow-delete` (`DDL-003`); inexpressible
   changes are reported as `DDL-004` and never auto-applied.
+
+## The view apply guard (`MIG-012`, ADR-0017 add.1)
+
+Views get adjusted outside the code in urgencies. A view step may declare
+`ExpectDefinition(ddl)` — generated change steps always do, carrying the previous
+snapshot's definition. When the step applies, the runner compares the live
+definition (normalized) against the expectation: match → apply; mismatch or absent
+→ the run refuses with `MIG-012` and, the run being one transaction, nothing is
+applied — the outside hotfix is preserved for review. Forcing
+(`migrate --force` / `MigrateAsync(allowViewDrift: true, notify, ct)`) recreates
+the view from the code and reports the drift. Downs are guarded symmetrically.
+Guards evaluate at execution time (chained pending view changes stay valid) and
+count into the step checksum.
 
 ## Conformance cases
 

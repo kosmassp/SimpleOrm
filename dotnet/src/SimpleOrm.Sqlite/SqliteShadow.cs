@@ -38,7 +38,7 @@ public static class SqliteShadow
             return result;
         }
 
-        var tableTypeByRelation = MapTableEntities(assembly);
+        var entityByRelation = MapEntities(assembly);
         var shadowFile = Path.Combine(Path.GetTempPath(), "simpleorm-shadow-" + Guid.NewGuid().ToString("n") + ".db");
         var generatedAt = DateTimeOffset.UtcNow;
         try
@@ -69,23 +69,42 @@ public static class SqliteShadow
 
                     foreach (var relation in touched)
                     {
-                        var schema = Introspect(probe, relation);
-                        if (schema is null)
-                        {
-                            continue;   // a view, or a table this version dropped — no snapshot
-                        }
-
-                        if (!tableTypeByRelation.TryGetValue(relation, out var typeName))
+                        if (!entityByRelation.TryGetValue(relation, out var entity))
                         {
                             result.Notes.Add(
-                                $"V{version.Version:0000}: table '{relation}' has no mapped entity; snapshot skipped");
+                                $"V{version.Version:0000}: '{relation}' has no mapped entity; snapshot skipped");
                             continue;
                         }
 
-                        var directory = Path.Combine(migrationsDir, "Table", typeName);
+                        string? content = null;
+                        if (entity.Kind == RelationKind.Table)
+                        {
+                            var schema = Introspect(probe, relation);
+                            if (schema is not null)
+                            {
+                                content = SchemaSnapshot.Export(schema, version.Version, generatedAt);
+                            }
+                        }
+                        else
+                        {
+                            // Views self-reflect: their history is the DDL, verbatim from sqlite_master.
+                            var ddl = ViewDdl(probe, relation);
+                            if (ddl is not null)
+                            {
+                                content = SchemaSnapshot.ExportDdl(
+                                    relation, entity.KindToken, ddl, version.Version, generatedAt);
+                            }
+                        }
+
+                        if (content is null)
+                        {
+                            continue;   // dropped at this version — its snapshot history ends here
+                        }
+
+                        var directory = Path.Combine(migrationsDir, entity.KindFolder, entity.TypeName);
                         Directory.CreateDirectory(directory);
                         var file = Path.Combine(directory, $"V{version.Version:0000}.schema.json");
-                        File.WriteAllText(file, SchemaSnapshot.Export(schema, version.Version, generatedAt) + "\n");
+                        File.WriteAllText(file, content + "\n");
                         result.WrittenFiles.Add(file);
                     }
                 }
@@ -107,33 +126,70 @@ public static class SqliteShadow
     private static void RestoreBaseline(SqliteConnection connection, string migrationsDir, long fromVersion, Result result)
     {
         var tableRoot = Path.Combine(migrationsDir, "Table");
-        if (!Directory.Exists(tableRoot))
+        if (Directory.Exists(tableRoot))
+        {
+            foreach (var objectDir in Directory.GetDirectories(tableRoot))
+            {
+                var latest = Directory.GetFiles(objectDir, "V*.schema.json")
+                    .Select(file => (File: file, Parsed: SchemaSnapshot.Parse(File.ReadAllText(file))))
+                    .Where(s => s.Parsed.AsOfVersion <= fromVersion)
+                    .OrderByDescending(s => s.Parsed.AsOfVersion)
+                    .FirstOrDefault();
+                if (latest.File is null)
+                {
+                    continue;   // table born after the trusted version
+                }
+
+                Execute(connection, CreateTableSql(latest.Parsed.Schema));
+                foreach (var indexSql in CreateIndexSql(latest.Parsed.Schema))
+                {
+                    Execute(connection, indexSql);
+                }
+
+                result.Notes.Add(
+                    $"baseline: {latest.Parsed.Schema.Name} restored from V{latest.Parsed.AsOfVersion:0000} snapshot (trusted)");
+            }
+        }
+        else
         {
             result.Notes.Add($"--from V{fromVersion:0000}: no committed snapshots under {tableRoot}; starting empty");
-            return;
         }
 
-        foreach (var objectDir in Directory.GetDirectories(tableRoot))
+        // Views restore after tables — their DDL snapshots are executable as stored.
+        foreach (var kindFolder in new[] { "View", "MaterializedView" })
         {
-            var latest = Directory.GetFiles(objectDir, "V*.schema.json")
-                .Select(file => (File: file, Parsed: SchemaSnapshot.Parse(File.ReadAllText(file))))
-                .Where(s => s.Parsed.AsOfVersion <= fromVersion)
-                .OrderByDescending(s => s.Parsed.AsOfVersion)
-                .FirstOrDefault();
-            if (latest.File is null)
+            var kindRoot = Path.Combine(migrationsDir, kindFolder);
+            if (!Directory.Exists(kindRoot))
             {
-                continue;   // table born after the trusted version
+                continue;
             }
 
-            Execute(connection, CreateTableSql(latest.Parsed.Schema));
-            foreach (var indexSql in CreateIndexSql(latest.Parsed.Schema))
+            foreach (var objectDir in Directory.GetDirectories(kindRoot))
             {
-                Execute(connection, indexSql);
-            }
+                var latest = Directory.GetFiles(objectDir, "V*.schema.json")
+                    .Select(file => SchemaSnapshot.ParseDdl(File.ReadAllText(file)))
+                    .Where(s => s.AsOfVersion <= fromVersion)
+                    .OrderByDescending(s => s.AsOfVersion)
+                    .FirstOrDefault();
+                if (latest.Ddl is null)
+                {
+                    continue;
+                }
 
-            result.Notes.Add(
-                $"baseline: {latest.Parsed.Schema.Name} restored from V{latest.Parsed.AsOfVersion:0000} snapshot (trusted)");
+                Execute(connection, latest.Ddl);
+                result.Notes.Add(
+                    $"baseline: {latest.Object} restored from V{latest.AsOfVersion:0000} snapshot (trusted)");
+            }
         }
+    }
+
+    /// <summary>The stored create statement of a view, normalized — null when absent (dropped).</summary>
+    private static string? ViewDdl(SqliteConnection connection, string relation)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "select sql from sqlite_master where type = 'view' and name = @name";
+        command.Parameters.AddWithValue("@name", relation);
+        return command.ExecuteScalar() is string sql ? SchemaSnapshot.NormalizeDdl(sql) : null;
     }
 
     private static string CreateTableSql(TableSchema schema)
@@ -254,17 +310,39 @@ public static class SqliteShadow
             .OrderBy(v => v.Version)
             .ToArray();
 
-    private static Dictionary<string, string> MapTableEntities(Assembly assembly)
+    private sealed class MappedEntity(string typeName, RelationKind kind)
+    {
+        public string TypeName { get; } = typeName;
+
+        public RelationKind Kind { get; } = kind;
+
+        public string KindFolder => Kind switch
+        {
+            RelationKind.Table => "Table",
+            RelationKind.View => "View",
+            RelationKind.MaterializedView => "MaterializedView",
+            _ => "Procedure",
+        };
+
+        public string KindToken => Kind switch
+        {
+            RelationKind.View => "view",
+            RelationKind.MaterializedView => "materialized_view",
+            _ => "procedure",
+        };
+    }
+
+    private static Dictionary<string, MappedEntity> MapEntities(Assembly assembly)
     {
         var loader = new EntityMapLoader();
-        var byRelation = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var byRelation = new Dictionary<string, MappedEntity>(StringComparer.OrdinalIgnoreCase);
         foreach (var type in assembly.GetExportedTypes()
             .Where(t => t is { IsClass: true, IsAbstract: false } && EntityMapLoader.HasMappingAttributes(t)))
         {
             var map = loader.Load(type);
-            if (map.Kind == RelationKind.Table)
+            if (map.RelationName is not null && map.Kind != RelationKind.Statement)
             {
-                byRelation[map.RelationName!] = type.Name;
+                byRelation[map.RelationName] = new MappedEntity(type.Name, map.Kind);
             }
         }
 

@@ -130,6 +130,37 @@ public sealed class GeneratorTests
     }
 
     [Fact]
+    public void Emitted_view_create_is_literal_with_a_guarded_drop_down()
+    {
+        var code = MigrationGenerator.EmitViewStep(
+            "My.Migrations", typeof(Widget), "View", "widget_totals",
+            version: 5, "CreateTotals", "create view widget_totals as select 1 as one", previousDdl: null);
+
+        Assert.Contains("namespace My.Migrations.View.Widget;", code);
+        Assert.Contains("actions.Sql(\"create view widget_totals as select 1 as one\");", code);
+        Assert.Contains("actions.ExpectDefinition(\"create view widget_totals as select 1 as one\");", code);
+        Assert.Contains("actions.Sql(\"drop view if exists widget_totals\");", code);
+    }
+
+    [Fact]
+    public void Emitted_view_change_guards_the_previous_definition_and_derives_the_down()
+    {
+        var code = MigrationGenerator.EmitViewStep(
+            "My.Migrations", typeof(Widget), "View", "widget_totals",
+            version: 6, "AddTwo",
+            "create view widget_totals as select 1 as one, 2 as two",
+            "create view widget_totals as select 1 as one");
+
+        // Up: expect the previous definition (MIG-012 on outside drift), drop, create the new one.
+        Assert.Contains("actions.ExpectDefinition(\"create view widget_totals as select 1 as one\");", code);
+        Assert.Contains("actions.Sql(\"create view widget_totals as select 1 as one, 2 as two\");", code);
+
+        // Down: expect the new definition, then restore the previous one from the snapshot.
+        Assert.Contains("actions.ExpectDefinition(\"create view widget_totals as select 1 as one, 2 as two\");", code);
+        Assert.Contains("actions.Sql(\"create view widget_totals as select 1 as one\");", code);
+    }
+
+    [Fact]
     public void Emitted_root_composes_steps_in_order()
     {
         var code = MigrationGenerator.EmitRoot("My.Migrations", 4, ["Table.Widget.V0004_Reshape", "Table.Other.V0004_Reshape"]);

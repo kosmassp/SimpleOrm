@@ -1,4 +1,4 @@
-namespace SimpleOrm.Sample.Migrations.View.UserTransactionTotals;
+namespace SimpleOrm.Sample.Migrations.View.UserTransactionTotal;
 
 public sealed class V0001_CreateTotalsView : ViewMigration<Models.UserTransactionTotal>
 {

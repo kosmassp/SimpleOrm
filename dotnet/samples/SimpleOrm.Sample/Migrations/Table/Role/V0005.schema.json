@@ -1,7 +1,7 @@
 {
   "object": "roles",
   "asOfVersion": 5,
-  "generatedAt": "2026-08-29T09:44:25.1779298Z",
+  "generatedAt": "2026-08-29T11:03:02.9656298Z",
   "columns": [
     {
       "column": "created_at",

@@ -27,6 +27,9 @@ public sealed class SqliteDialect : IDialect
     public string ColumnsInfoSql
         => "select name, type, \"notnull\", pk from pragma_table_info(@relation)";
 
+    public string ViewDefinitionSql
+        => "select sql from sqlite_master where type = 'view' and name = @relation";
+
     public bool IsDeclaredTypeCompatible(string declaredType, Type clrType, bool enumAsInt)
     {
         var type = Nullable.GetUnderlyingType(clrType) ?? clrType;

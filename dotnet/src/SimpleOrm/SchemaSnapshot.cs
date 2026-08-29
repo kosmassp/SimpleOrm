@@ -142,6 +142,61 @@ public static class SchemaSnapshot
         return Encoding.UTF8.GetString(stream.ToArray());
     }
 
+    /// <summary>
+    /// The DDL-shaped snapshot for view-, materialized-view-, and procedure-backed
+    /// objects: those self-reflect from their defining SQL, so their history is
+    /// compared by DDL, not by columns. The DDL is whitespace-normalized — layout
+    /// changes in the attribute SQL are not schema changes — and stays executable.
+    /// </summary>
+    public static string ExportDdl(string objectName, string kind, string ddl, long asOfVersion, DateTimeOffset generatedAt)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("object", objectName);
+            writer.WriteString("kind", kind);
+            writer.WriteNumber("asOfVersion", asOfVersion);
+            writer.WriteString("generatedAt", generatedAt.UtcDateTime.ToString("o", CultureInfo.InvariantCulture));
+            writer.WriteString("ddl", NormalizeDdl(ddl));
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    public static (string Object, string Kind, string Ddl, long AsOfVersion) ParseDdl(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        return (
+            root.GetProperty("object").GetString()!,
+            root.GetProperty("kind").GetString()!,
+            root.GetProperty("ddl").GetString()!,
+            root.GetProperty("asOfVersion").GetInt64());
+    }
+
+    /// <summary>
+    /// Canonical, comparable, still-executable DDL: whitespace collapses (layout is
+    /// not schema), and a view create's prefix is canonicalized to lowercase
+    /// <c>create [materialized] view &lt;name&gt; as</c> — databases rewrite that
+    /// prefix when storing it (SQLite drops <c>IF NOT EXISTS</c> and recases
+    /// <c>CREATE VIEW</c>), so the rendered and the introspected form must meet in
+    /// the middle. The body is compared as written.
+    /// </summary>
+    public static string NormalizeDdl(string sql)
+    {
+        var collapsed = string.Join(" ", sql.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        var match = System.Text.RegularExpressions.Regex.Match(
+            collapsed,
+            @"^create\s+(?<mat>materialized\s+)?view\s+(if\s+not\s+exists\s+)?(?<name>\S+)\s+as\s+(?<body>.+)$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return match.Success
+            ? "create " + (match.Groups["mat"].Success ? "materialized " : string.Empty)
+                + "view " + match.Groups["name"].Value + " as " + match.Groups["body"].Value
+            : collapsed;
+    }
+
     public static (TableSchema Schema, long AsOfVersion) Parse(string json)
     {
         using var document = JsonDocument.Parse(json);

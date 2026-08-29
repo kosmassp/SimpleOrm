@@ -833,3 +833,54 @@ and boolean flag parsing (`--rename` ×N, `--force`, `--allow-delete`,
 `--allow-remove`).
 
 **Status.** Accepted.
+
+### ADR-0017 addendum 1 — views, materialized views, and procedures snapshot by DDL; the MIG-012 apply guard (2026-08-29)
+
+Owner: view, MV, and procedure get the same `schema.json` approach as tables —
+"the differences is we don't compare the column, we compare the ddl" — and, at
+apply time, "if the previous schema is the expected, we continue to apply, but if
+the previous schema is different, we notify, only when force then view is
+recreated. This is because sometimes view is adjusted outside the code due to
+urgency."
+
+- **DDL-shaped snapshots.** `View|MaterializedView|Procedure/<Object>/V000N.schema.json`
+  holds `{ object, kind, asOfVersion, generatedAt, ddl }`. The DDL is normalized —
+  whitespace collapsed, and the create-view prefix canonicalized to lowercase
+  `create [materialized] view <name> as` — because databases rewrite that prefix
+  when storing it (SQLite drops `IF NOT EXISTS` and recases `CREATE VIEW`), and
+  the rendered and introspected producers must still agree byte-for-byte. The
+  normalized form stays executable: baseline restores run it directly. Both
+  producers exist for views (metadata renders `CreateViewSql`; shadow reads
+  `sqlite_master` via the new `IDialect.ViewDefinitionSql`); MV and procedure use
+  the same format but are capability-gated like everything else about them —
+  dormant on SQLite, alive when a Level 4 dialect brings the flags (and, for
+  procedure *steps*, a `ProcedureMigration` type plus a create-procedure render,
+  added to `IDialect` only when that dialect exists, per §7.25).
+- **Diff by DDL.** `simpleorm diff` compares the normalized current definition
+  against the latest DDL snapshot: missing → create step, different → change step.
+  Emitted view steps are **literal DDL** (never `CreateView()`/`RecreateView()`,
+  which render from current metadata and would drift the checksum of an applied
+  step the next time the definition changes). The generated Down restores the
+  previous snapshot's definition verbatim — derived downs now cover views. View
+  steps compose after table steps in the generated root (§7.22 ordering).
+- **The `ExpectDefinition` guard (`MIG-012`).** A generated change step opens with
+  `actions.ExpectDefinition(<previous ddl>)` — a precondition, not SQL. When the
+  step applies, the runner reads the live definition and compares (normalized):
+  match → continue; mismatch or absent → the run refuses with `MIG-012` naming the
+  view ("changed outside migrations; review the drift, then rerun with --force"),
+  and since the whole run is one transaction, nothing applies — the urgency hotfix
+  in the database is left untouched. `migrate --force` (runner:
+  `MigrateAsync(allowViewDrift, notify, ct)`) recreates over the drift and reports
+  it through the notify channel. Downs carry the mirrored guard (expecting the
+  step's own definition). Guards are evaluated at execution time, not during
+  pre-run validation, so two pending view changes in one run chain correctly; they
+  do count into the step checksum (the expectation is part of the step's
+  identity). Hand-written steps may call `ExpectDefinition` too; steps without it
+  behave as before.
+- Also in this pass: the sample's view step folder renamed
+  `View/UserTransactionTotals` → `View/UserTransactionTotal` (snapshot and
+  generated-step folders key off the *type* name, as tables always did; checksums
+  cover rendered SQL only, so the namespace rename is safe), and the single-line
+  SQL emitters' C#-string escaping fixed (`\"`, not the verbatim `""`).
+
+**Status.** Accepted.

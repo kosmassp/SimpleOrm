@@ -96,6 +96,7 @@ these codes.
 | `MIG-004` | an object step is not composed into any root version | ADR-0013 |
 | `MIG-010` | applied migration checksum changed (checksum = SHA-256 of the rendered Up SQL) | §7.23 |
 | `MIG-011` | an applied version is unknown to the code | ADR-0013 |
+| `MIG-012` | a view's live definition does not match the step's expected previous definition (changed outside migrations); `--force` recreates it | ADR-0017 add.1 |
 | `MIG-020` | `migrate down` past a version with no down statements | §7.22 |
 | `MIG-030` | pending migrations at validation time | §7.24 (milestone 6) |
 

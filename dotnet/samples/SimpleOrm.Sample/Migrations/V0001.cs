@@ -12,5 +12,5 @@ public sealed class V0001 : MigrationVersion
         .Apply<Table.UserRole.V0001_CreateUserRoles>()
         .Apply<Table.Transaction.V0001_CreateTransactions>()
         .Apply<Table.TransactionDetail.V0001_CreateTransactionDetails>()
-        .Apply<View.UserTransactionTotals.V0001_CreateTotalsView>();
+        .Apply<View.UserTransactionTotal.V0001_CreateTotalsView>();
 }

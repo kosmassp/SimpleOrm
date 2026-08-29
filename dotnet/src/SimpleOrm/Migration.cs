@@ -84,12 +84,22 @@ public abstract class MigrationStep
     }
 }
 
-/// <summary>A rendered statement with the action it came from, for error reporting.</summary>
-internal sealed class MigrationStatement(string sql, string origin)
+/// <summary>
+/// A rendered statement with the action it came from, for error reporting. A
+/// statement carrying <see cref="GuardView"/> is a **precondition**, not SQL to
+/// execute: the runner compares the view's live definition against
+/// <see cref="Sql"/> (whitespace-normalized) right before continuing (MIG-012 on
+/// mismatch — views get patched outside code in urgencies, and a migration must
+/// not silently overwrite that). Guards still count into the step checksum.
+/// </summary>
+internal sealed class MigrationStatement(string sql, string origin, string? guardView = null)
 {
     public string Sql { get; } = sql;
 
     public string Origin { get; } = origin;
+
+    /// <summary>When set, this is an expected-definition guard for the named view.</summary>
+    public string? GuardView { get; } = guardView;
 }
 
 /// <summary>
@@ -247,6 +257,9 @@ public sealed class MigrationAction
 
     internal IReadOnlyList<string> Statements { get; }
 
+    /// <summary>An expected-definition precondition rendered ahead of the statements.</summary>
+    internal MigrationStatement? Guard { get; init; }
+
     internal List<string> PreSql { get; } = [];
 
     internal List<string> PostSql { get; } = [];
@@ -267,6 +280,11 @@ public sealed class MigrationAction
 
     internal IEnumerable<MigrationStatement> Render()
     {
+        if (Guard is not null)
+        {
+            yield return Guard;
+        }
+
         foreach (var sql in PreSql)
         {
             yield return new MigrationStatement(sql, Origin + " pre");
@@ -395,6 +413,19 @@ public sealed class ViewActions
     }
 
     public MigrationAction Sql(string sql) => Track(new MigrationAction("sql " + View, [sql]));
+
+    /// <summary>
+    /// Precondition: the view's live definition must match <paramref name="ddl"/>
+    /// (whitespace-normalized) when this step applies. On mismatch — the view was
+    /// adjusted outside the code — the run refuses with <c>MIG-012</c> unless
+    /// forced. Generated change steps carry this automatically from the previous
+    /// snapshot; hand-written steps may declare it too.
+    /// </summary>
+    public MigrationAction ExpectDefinition(string ddl)
+        => Track(new MigrationAction("expect " + View, [])
+        {
+            Guard = new MigrationStatement(SchemaSnapshot.NormalizeDdl(ddl), "expect " + View, View),
+        });
 
     internal IReadOnlyList<MigrationStatement> Build()
         => _actions.SelectMany(a => a.Render()).ToArray();

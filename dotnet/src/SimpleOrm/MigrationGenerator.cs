@@ -45,6 +45,14 @@ public static class MigrationGenerator
     /// <summary>Diffs metadata against the latest snapshot (null = new table). Renames: old column → new column.</summary>
     public static TableDiff Diff(
         EntityMap map, IDialect dialect, TableSchema? snapshot, IReadOnlyDictionary<string, string> renames)
+        => Diff(SchemaSnapshot.FromMap(map, dialect), snapshot, renames);
+
+    /// <summary>
+    /// The shape-vs-shape core: both sides in snapshot form, so the algorithm is
+    /// pure data — which is how the conformance diff cases exercise it.
+    /// </summary>
+    public static TableDiff Diff(
+        TableSchema currentSchema, TableSchema? snapshot, IReadOnlyDictionary<string, string> renames)
     {
         if (snapshot is null)
         {
@@ -56,9 +64,9 @@ public static class MigrationGenerator
             c => c.Name,
             c => new ColumnSpec(c.Name, c.StorageType, c.Nullable),
             StringComparer.OrdinalIgnoreCase);
-        var current = map.Properties.ToDictionary(
-            p => p.ColumnName,
-            p => new ColumnSpec(p.ColumnName, dialect.StorageType(p), p.IsNullable),
+        var current = currentSchema.Columns.ToDictionary(
+            c => c.Name,
+            c => new ColumnSpec(c.Name, c.StorageType, c.Nullable),
             StringComparer.OrdinalIgnoreCase);
 
         foreach (var rename in renames)
@@ -118,14 +126,10 @@ public static class MigrationGenerator
         // never by name (ADR-0017 add.2): indexes get added directly to the database
         // in urgencies, and one that exists under another name is implemented.
         var oldSignatures = new HashSet<string>(snapshot.Indexes.Select(IndexSignature), StringComparer.Ordinal);
-        var modelSignatures = new HashSet<string>(map.Indexes.Select(IndexSignature), StringComparer.Ordinal);
-        var createIndexSql = dialect.CreateIndexSql(map);
-        for (var i = 0; i < map.Indexes.Count; i++)
+        var modelSignatures = new HashSet<string>(currentSchema.Indexes.Select(IndexSignature), StringComparer.Ordinal);
+        foreach (var index in currentSchema.Indexes.Where(i => !oldSignatures.Contains(IndexSignature(i))))
         {
-            if (!oldSignatures.Contains(IndexSignature(map.Indexes[i])))
-            {
-                diff.AddedIndexSql.Add(createIndexSql[i]);
-            }
+            diff.AddedIndexSql.Add(SnapshotDdl.CreateIndexSql(currentSchema.Name, index));
         }
 
         foreach (var index in snapshot.Indexes.Where(i => !modelSignatures.Contains(IndexSignature(i))))

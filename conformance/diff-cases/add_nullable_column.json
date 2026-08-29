@@ -1,0 +1,16 @@
+{
+  "name": "add_nullable_column",
+  "comment": "A nullable addition is generated; identical shapes otherwise mean no change.",
+  "current": { "object": "widgets", "asOfVersion": 0,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+      { "column": "name", "type": "TEXT", "nullable": false },
+      { "column": "note", "type": "TEXT", "nullable": true } ],
+    "indexes": [] },
+  "snapshot": { "object": "widgets", "asOfVersion": 1,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+      { "column": "name", "type": "TEXT", "nullable": false } ],
+    "indexes": [] },
+  "expect": { "added": ["note"] }
+}

@@ -190,3 +190,24 @@ expectations. Each implementation feeds the set through its runner (the
 
 A `run` step may override `versions` (drift scenarios). `expect` is either the
 exact `(version, object)` rows recorded afterwards or an error code.
+
+The generator/derived-rollback additions (ADR-0017/18) extend the format so every
+behavior in this document is expressible as data:
+
+- top-level `"snapshots": [ <snapshot documents> ]` — the history the runner
+  derives rollbacks from;
+- step `"renames": [ { "from", "to" } ]` — the typed pairs the derived rollback
+  inverts (a raw-SQL step cannot convey them any other way);
+- step `"expectDefinition": "<ddl>"` — the MIG-012 view guard, checked against
+  the live definition when the step applies;
+- `"command": "sql", "statements": [...]` — the outside hotfix, applied between
+  runs without touching migration history;
+- `"force": true` on `migrate`/`down` — the view-drift override;
+- deep expects: `"columns": { "<table>": [name-sorted column names] }` and
+  `"ddl": { "<view>": "<normalized definition>" }`.
+
+Two sibling suites cover the generator itself: `conformance/diff-cases/` feeds
+two shapes (snapshot form) plus declared renames through the diff and checks the
+resulting change exactly — no database; `conformance/snapshot-cases/` pins a
+fixture entity, version, and generation time and expects the exact exported
+snapshot document. See `conformance/README.md` for both schemas.

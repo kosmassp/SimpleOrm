@@ -1,0 +1,31 @@
+{
+  "name": "derived_down_refuses_type_change",
+  "comment": "ADR-0018: a same-column type change between adjacent snapshots is not derivable; migrate down refuses with MIG-020 (override Down() by hand). down_missing.json covers the other refusal: no snapshots at all.",
+  "versions": [
+    { "version": 1, "steps": [ { "object": "widgets", "description": "create",
+        "up": ["create table widgets (id INTEGER PRIMARY KEY, price TEXT NOT NULL) STRICT"] } ] },
+    { "version": 2, "steps": [ { "object": "widgets", "description": "retype_price",
+        "up": [
+          "alter table widgets rename to widgets_old",
+          "create table widgets (id INTEGER PRIMARY KEY, price INTEGER NOT NULL) STRICT",
+          "insert into widgets select id, cast(price as INTEGER) from widgets_old",
+          "drop table widgets_old"
+        ] } ] }
+  ],
+  "snapshots": [
+    { "object": "widgets", "asOfVersion": 1,
+      "columns": [
+        { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+        { "column": "price", "type": "TEXT", "nullable": false } ],
+      "indexes": [] },
+    { "object": "widgets", "asOfVersion": 2,
+      "columns": [
+        { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+        { "column": "price", "type": "INTEGER", "nullable": false } ],
+      "indexes": [] }
+  ],
+  "run": [
+    { "command": "migrate", "expect": { "applied": [[1, "widgets"], [2, "widgets"]] } },
+    { "command": "down", "to": 1, "expect": { "error": "MIG-020" } }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "type_change_is_unsupported",
+  "comment": "DDL-004: a same-column storage type (or nullability) change cannot be expressed safely — hand-written.",
+  "current": { "object": "widgets", "asOfVersion": 0,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+      { "column": "price", "type": "INTEGER", "nullable": false } ],
+    "indexes": [] },
+  "snapshot": { "object": "widgets", "asOfVersion": 1,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+      { "column": "price", "type": "TEXT", "nullable": false } ],
+    "indexes": [] },
+  "expect": { "unsupported": ["price"] }
+}

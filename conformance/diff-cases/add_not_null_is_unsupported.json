@@ -1,0 +1,14 @@
+{
+  "name": "add_not_null_is_unsupported",
+  "comment": "DDL-004: a NOT NULL addition needs a default/backfill decision — the generator refuses, the migration is hand-written.",
+  "current": { "object": "widgets", "asOfVersion": 0,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+      { "column": "name", "type": "TEXT", "nullable": false } ],
+    "indexes": [] },
+  "snapshot": { "object": "widgets", "asOfVersion": 1,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true } ],
+    "indexes": [] },
+  "expect": { "unsupported": ["name"] }
+}

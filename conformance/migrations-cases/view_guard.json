@@ -1,0 +1,28 @@
+{
+  "name": "view_guard",
+  "comment": "ADR-0017 add.1: a view change step declares the expected previous definition. Matching applies; a definition hotfixed outside the code refuses with MIG-012 (the atomic run leaves the hotfix untouched); force recreates from the code.",
+  "versions": [
+    { "version": 1, "steps": [ { "object": "totals", "description": "create_view",
+        "up": ["create view totals as select 1 as answer"] } ] },
+    { "version": 2, "steps": [ { "object": "totals", "description": "change_view",
+        "expectDefinition": "create view totals as select 1 as answer",
+        "up": [
+          "drop view if exists totals",
+          "create view totals as select 2 as answer"
+        ] } ] }
+  ],
+  "run": [
+    { "command": "migrate",
+      "versions": [
+        { "version": 1, "steps": [ { "object": "totals", "description": "create_view",
+            "up": ["create view totals as select 1 as answer"] } ] } ],
+      "expect": { "applied": [[1, "totals"]] } },
+    { "command": "sql",
+      "statements": ["drop view totals", "create view totals as select 99 as answer"],
+      "expect": { } },
+    { "command": "migrate", "expect": { "error": "MIG-012" } },
+    { "command": "migrate", "force": true,
+      "expect": { "applied": [[1, "totals"], [2, "totals"]],
+                  "ddl": { "totals": "create view totals as select 2 as answer" } } }
+  ]
+}

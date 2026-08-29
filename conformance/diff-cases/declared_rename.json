@@ -1,0 +1,16 @@
+{
+  "name": "declared_rename",
+  "comment": "Renames are declared, never inferred: with the declaration the diff is one data-preserving rename.",
+  "current": { "object": "widgets", "asOfVersion": 0,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+      { "column": "note", "type": "TEXT", "nullable": true } ],
+    "indexes": [] },
+  "snapshot": { "object": "widgets", "asOfVersion": 1,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+      { "column": "remark", "type": "TEXT", "nullable": true } ],
+    "indexes": [] },
+  "renames": { "remark": "note" },
+  "expect": { "renamed": [["remark", "note"]] }
+}

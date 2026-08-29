@@ -1,0 +1,47 @@
+{
+  "name": "derived_down_table",
+  "comment": "ADR-0018: steps carry no down DDL; the runner derives each rollback from the snapshots. Renames invert from the step's declared pairs (data-preserving); adds revert to drops; the create reverts to a drop table. V1 uses plain 'create table' so the final re-migrate proves the derived drop really ran.",
+  "versions": [
+    { "version": 1, "steps": [ { "object": "widgets", "description": "create",
+        "up": ["create table widgets (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT"] } ] },
+    { "version": 2, "steps": [ { "object": "widgets", "description": "add_note",
+        "up": ["alter table widgets add column note TEXT"] } ] },
+    { "version": 3, "steps": [ { "object": "widgets", "description": "rename_name",
+        "up": ["alter table widgets rename column name to full_name"],
+        "renames": [ { "from": "name", "to": "full_name" } ] } ] }
+  ],
+  "snapshots": [
+    { "object": "widgets", "asOfVersion": 1,
+      "columns": [
+        { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "TEXT", "nullable": false } ],
+      "indexes": [] },
+    { "object": "widgets", "asOfVersion": 2,
+      "columns": [
+        { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "TEXT", "nullable": false },
+        { "column": "note", "type": "TEXT", "nullable": true } ],
+      "indexes": [] },
+    { "object": "widgets", "asOfVersion": 3,
+      "columns": [
+        { "column": "full_name", "type": "TEXT", "nullable": false },
+        { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+        { "column": "note", "type": "TEXT", "nullable": true } ],
+      "indexes": [] }
+  ],
+  "run": [
+    { "command": "migrate",
+      "expect": { "applied": [[1, "widgets"], [2, "widgets"], [3, "widgets"]],
+                  "columns": { "widgets": ["full_name", "id", "note"] } } },
+    { "command": "down", "to": 2,
+      "expect": { "applied": [[1, "widgets"], [2, "widgets"]],
+                  "columns": { "widgets": ["id", "name", "note"] } } },
+    { "command": "down", "to": 1,
+      "expect": { "applied": [[1, "widgets"]],
+                  "columns": { "widgets": ["id", "name"] } } },
+    { "command": "down", "to": 0, "expect": { "applied": [] } },
+    { "command": "migrate",
+      "expect": { "applied": [[1, "widgets"], [2, "widgets"], [3, "widgets"]],
+                  "columns": { "widgets": ["full_name", "id", "note"] } } }
+  ]
+}

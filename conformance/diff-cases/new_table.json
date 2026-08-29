@@ -1,0 +1,11 @@
+{
+  "name": "new_table",
+  "comment": "No snapshot means the table is new: the diff is the create.",
+  "current": { "object": "widgets", "asOfVersion": 0,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+      { "column": "name", "type": "TEXT", "nullable": false } ],
+    "indexes": [] },
+  "snapshot": null,
+  "expect": { "isNew": true }
+}

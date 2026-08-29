@@ -1,0 +1,35 @@
+{
+  "name": "view_derived_down",
+  "comment": "ADR-0018: a view rollback derives from the DDL snapshots — guard on the current definition (MIG-012 protects an outside hotfix from a rollback too), drop, previous definition restored; a create's rollback is the guarded drop. V1 uses plain 'create view' so the final re-migrate proves the derived drop really ran.",
+  "versions": [
+    { "version": 1, "steps": [ { "object": "totals", "description": "create_view",
+        "up": ["create view totals as select 1 as answer"] } ] },
+    { "version": 2, "steps": [ { "object": "totals", "description": "change_view",
+        "expectDefinition": "create view totals as select 1 as answer",
+        "up": [
+          "drop view if exists totals",
+          "create view totals as select 2 as answer"
+        ] } ] }
+  ],
+  "snapshots": [
+    { "object": "totals", "kind": "view", "asOfVersion": 1,
+      "ddl": "create view totals as select 1 as answer" },
+    { "object": "totals", "kind": "view", "asOfVersion": 2,
+      "ddl": "create view totals as select 2 as answer" }
+  ],
+  "run": [
+    { "command": "migrate",
+      "expect": { "applied": [[1, "totals"], [2, "totals"]],
+                  "ddl": { "totals": "create view totals as select 2 as answer" } } },
+    { "command": "down", "to": 1,
+      "expect": { "applied": [[1, "totals"]],
+                  "ddl": { "totals": "create view totals as select 1 as answer" } } },
+    { "command": "sql",
+      "statements": ["drop view totals", "create view totals as select 99 as answer"],
+      "expect": { } },
+    { "command": "down", "to": 0, "expect": { "error": "MIG-012" } },
+    { "command": "down", "to": 0, "force": true, "expect": { "applied": [] } },
+    { "command": "migrate",
+      "expect": { "applied": [[1, "totals"], [2, "totals"]] } }
+  ]
+}

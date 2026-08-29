@@ -78,7 +78,9 @@ conformance/                  the executable definition of the library (see §9)
   fixtures/                   seed data
   entities/                   expected EntityMap JSON for the fixture entities
   cases/                      query/command/error cases as JSON
-  migrations-cases/           runner scenarios as JSON
+  migrations-cases/           runner scenarios as JSON (incl. derived downs, MIG-012 guard)
+  diff-cases/                 generator diff scenarios as JSON (shape vs shape, ADR-0017)
+  snapshot-cases/             exact snapshot exports for fixture entities (ADR-0017)
 dotnet/
   SimpleOrm.sln
   src/SimpleOrm/              core: metadata, mapping, parameters, session, rules, migration runner
@@ -224,7 +226,8 @@ The suite is the executable definition of the library. Every implementation runs
 
 - `entities/`: for each fixture entity, the expected `EntityMap` JSON. Each implementation defines the entity natively (C# attributes, Go struct tags, Java annotations, PHP attributes) and must export identical metadata.
 - `cases/`: `{ "name", "query": "path or inline SQL", "params": {...}, "expect": { "rows": [...] } | { "error": "MAP-001" } }`. Expected values use a small documented JSON encoding for dates, decimals, GUIDs, and byte arrays.
-- `migrations-cases/`: a folder of migration files plus `{ "preState", "command", "expectStatus" | "error" }`.
+- `migrations-cases/`: a folder of migration files plus `{ "preState", "command", "expectStatus" | "error" }` — extended by ADR-0017/18 with snapshots, typed renames, the view guard, raw-SQL hotfix steps, `force`, and deep column/DDL expects.
+- `diff-cases/`: generator scenarios — current shape + latest snapshot + declared renames in, the exact change out (no database). `snapshot-cases/`: a fixture entity + version + pinned time in, the exact exported snapshot document out.
 - Level 2 adds `ast/`: a query AST as JSON with the expected SQL per dialect.
 - Error codes are the cross-language contract for failures; messages may differ per language, codes may not.
 - Rule: every milestone adds conformance files. A feature without a conformance case is not done.

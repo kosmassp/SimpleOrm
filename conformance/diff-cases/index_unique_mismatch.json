@@ -1,0 +1,17 @@
+{
+  "name": "index_unique_mismatch",
+  "comment": "Uniqueness is part of the structure: a unique index is not the plain one the model wants — add the model's, remove the stranger (gated).",
+  "current": { "object": "widgets", "asOfVersion": 0,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+      { "column": "name", "type": "TEXT", "nullable": false } ],
+    "indexes": [
+      { "name": "ix_widgets_name", "columns": [ { "column": "name", "direction": "asc" } ] } ] },
+  "snapshot": { "object": "widgets", "asOfVersion": 1,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+      { "column": "name", "type": "TEXT", "nullable": false } ],
+    "indexes": [
+      { "name": "idx_dba_hotfix", "columns": [ { "column": "name", "direction": "asc" } ], "unique": true } ] },
+  "expect": { "addedIndexes": ["ix_widgets_name"], "removedIndexes": ["idx_dba_hotfix"] }
+}

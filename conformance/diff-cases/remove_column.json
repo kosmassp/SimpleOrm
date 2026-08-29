@@ -1,0 +1,14 @@
+{
+  "name": "remove_column",
+  "comment": "A column only in the snapshot is a removal (the CLI gates emission behind --allow-remove, DDL-003; the diff itself just reports it).",
+  "current": { "object": "widgets", "asOfVersion": 0,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true } ],
+    "indexes": [] },
+  "snapshot": { "object": "widgets", "asOfVersion": 1,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+      { "column": "legacy", "type": "TEXT", "nullable": true } ],
+    "indexes": [] },
+  "expect": { "removed": ["legacy"] }
+}

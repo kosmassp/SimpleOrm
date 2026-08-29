@@ -1,0 +1,23 @@
+{
+  "name": "user_roles_v5",
+  "comment": "Composite natural key: both key columns carry key without generated.",
+  "entity": "UserRole",
+  "asOfVersion": 5,
+  "generatedAt": "2026-08-29T12:00:00.0000000Z",
+  "expect": {
+    "object": "user_roles",
+    "asOfVersion": 5,
+    "generatedAt": "2026-08-29T12:00:00.0000000Z",
+    "columns": [
+      { "column": "created_at", "type": "TEXT", "nullable": false },
+      { "column": "granted_by", "type": "TEXT", "nullable": true },
+      { "column": "role_id", "type": "INTEGER", "nullable": false, "key": true },
+      { "column": "updated_at", "type": "TEXT", "nullable": true },
+      { "column": "user_id", "type": "INTEGER", "nullable": false, "key": true }
+    ],
+    "indexes": [
+      { "name": "ix_user_roles_role_id",
+        "columns": [ { "column": "role_id", "direction": "asc" } ] }
+    ]
+  }
+}

@@ -470,7 +470,9 @@ public sealed class SqlVersion(long version, params SqlVersion.Step[] steps) : M
         }
     }
 
-    public sealed class Step(string objectName, string description, IReadOnlyList<string> up, IReadOnlyList<string>? down = null)
+    public sealed class Step(
+        string objectName, string description, IReadOnlyList<string> up, IReadOnlyList<string>? down = null,
+        IReadOnlyList<(string From, string To)>? renames = null, string? expectDefinition = null)
     {
         public string ObjectName { get; } = objectName;
 
@@ -479,6 +481,12 @@ public sealed class SqlVersion(long version, params SqlVersion.Step[] steps) : M
         public IReadOnlyList<string> Up { get; } = up;
 
         public IReadOnlyList<string> Down { get; } = down ?? [];
+
+        /// <summary>Declared column renames, as data — the derived rollback inverts them (ADR-0018).</summary>
+        public IReadOnlyList<(string From, string To)> Renames { get; } = renames ?? [];
+
+        /// <summary>The expected live definition of the step's view, as data — the MIG-012 apply guard.</summary>
+        public string? ExpectDefinition { get; } = expectDefinition;
     }
 
     private sealed class RawSqlStep(long version, Step step) : MigrationStep
@@ -490,9 +498,22 @@ public sealed class SqlVersion(long version, params SqlVersion.Step[] steps) : M
         internal override string ObjectName(EntityMapLoader maps) => step.ObjectName;
 
         internal override IReadOnlyList<MigrationStatement> RenderUp(EntityMapLoader maps, IDialect dialect)
-            => step.Up.Select(s => new MigrationStatement(s, "sql " + step.ObjectName)).ToArray();
+        {
+            var statements = new List<MigrationStatement>();
+            if (step.ExpectDefinition is not null)
+            {
+                statements.Add(new MigrationStatement(
+                    SchemaSnapshot.NormalizeDdl(step.ExpectDefinition), "expect " + step.ObjectName, step.ObjectName));
+            }
+
+            statements.AddRange(step.Up.Select(s => new MigrationStatement(s, "sql " + step.ObjectName)));
+            return statements;
+        }
 
         internal override DownPlan RenderDown(EntityMapLoader maps, IDialect dialect)
             => new([], step.Down.Select(s => new MigrationStatement(s, "sql " + step.ObjectName)).ToArray(), []);
+
+        internal override IReadOnlyList<(string From, string To)> UpRenames(EntityMapLoader maps, IDialect dialect)
+            => step.Renames;
     }
 }

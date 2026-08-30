@@ -3,7 +3,11 @@
   "comment": "No predicates: explicit column list (never *), no WHERE clause.",
   "entity": "Role",
   "select": { },
-  "expect": { "sqlite": {
-    "sql": "select id, role_name, created_at, updated_at from roles",
-    "parameters": [] } }
+  "expect": {
+    "sqlite": {
+      "sql": "select id, role_name, created_at, updated_at from roles",
+      "parameters": [] },
+    "sqlserver": {
+      "sql": "select [id], [role_name], [created_at], [updated_at] from [roles]",
+      "parameters": [] } }
 }

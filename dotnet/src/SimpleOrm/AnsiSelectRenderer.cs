@@ -46,29 +46,44 @@ public static class AnsiSelectRenderer
         }
 
         var joined = select.Joins.Count > 0;
-        var rootAlias = joined ? "t" : null;
+        // Without row-value IN (ADR-0024) a composite membership rewrites as a
+        // correlated EXISTS, and the correlation needs an unambiguous root alias:
+        // a bare column inside the EXISTS would bind to the derived table first.
+        var rootAlias = joined || (!dialect.SupportsRowValueIn && select.Where.Any(ContainsCompositeMembership))
+            ? "t"
+            : null;
         var rootColumns = (select.Projection ?? map.Properties)
-            .Select(p => joined ? $"t.{p.ColumnName} as t_{p.ColumnName}" : p.ColumnName);
+            .Select(p => joined
+                ? $"t.{dialect.QuoteIdentifier(p.ColumnName)} as {dialect.QuoteIdentifier("t_" + p.ColumnName)}"
+                : rootAlias is null
+                    ? dialect.QuoteIdentifier(p.ColumnName)
+                    : $"t.{dialect.QuoteIdentifier(p.ColumnName)}");
         var columns = rootColumns.Concat(select.Joins
             .Where(j => j.Project)
-            .SelectMany(j => j.Target.Properties.Select(p => $"{j.Alias}.{p.ColumnName} as {j.Alias}_{p.ColumnName}")));
+            .SelectMany(j => j.Target.Properties.Select(p =>
+                $"{j.Alias}.{dialect.QuoteIdentifier(p.ColumnName)} as {dialect.QuoteIdentifier(j.Alias + "_" + p.ColumnName)}")));
 
         var sql = new StringBuilder("select ")
             .Append(string.Join(", ", columns))
-            .Append(" from ").Append(map.RelationName);
-        if (joined)
+            .Append(" from ").Append(dialect.QuoteIdentifier(map.RelationName!));
+        if (rootAlias is not null)
         {
             sql.Append(" t");
+        }
+
+        if (joined)
+        {
             foreach (var join in select.Joins)
             {
                 var parent = join.ParentAlias ?? "t";
                 var parentMap = join.ParentAlias is null
                     ? map
                     : select.Joins.First(j => j.Alias == join.ParentAlias).Target;
-                sql.Append(" left join ").Append(join.Target.RelationName).Append(' ').Append(join.Alias)
+                sql.Append(" left join ").Append(dialect.QuoteIdentifier(join.Target.RelationName!))
+                    .Append(' ').Append(join.Alias)
                     .Append(" on ").Append(string.Join(" and ", join.On.Select(pair =>
-                        $"{join.Alias}.{Resolve(join.Target, pair.TargetProperty, queryName).ColumnName}"
-                        + $" = {parent}.{Resolve(parentMap, pair.ParentProperty, queryName).ColumnName}")));
+                        $"{join.Alias}.{dialect.QuoteIdentifier(Resolve(join.Target, pair.TargetProperty, queryName).ColumnName)}"
+                        + $" = {parent}.{dialect.QuoteIdentifier(Resolve(parentMap, pair.ParentProperty, queryName).ColumnName)}")));
             }
         }
 
@@ -81,12 +96,20 @@ public static class AnsiSelectRenderer
         if (select.Orderings.Count > 0)
         {
             sql.Append(" order by ").Append(string.Join(", ", select.Orderings.Select(o =>
-                Column(map, rootAlias, o.Property, queryName)
+                Column(map, rootAlias, o.Property, queryName, dialect)
                 + (o.Order == SortOrder.Desc ? " desc" : string.Empty))));
         }
 
         if (select.Limit is not null || select.Offset is not null)
         {
+            if (select.Orderings.Count == 0 && dialect.PagingRequiresOrderBy)
+            {
+                // The dialect's paging clause is only legal after ORDER BY (SQL
+                // Server); an unordered page is already order-arbitrary, so the
+                // constant placeholder changes nothing observable (ADR-0024).
+                sql.Append(" order by (select null)");
+            }
+
             var limitParameter = select.Limit is { } limit ? bindParameter(limit, null) : null;
             var offsetParameter = select.Offset is { } offset ? bindParameter(offset, null) : null;
             sql.Append(' ').Append(dialect.LimitOffsetClause(limitParameter, offsetParameter));
@@ -94,6 +117,15 @@ public static class AnsiSelectRenderer
 
         return sql.ToString();
     }
+
+    /// <summary>Whether the predicate tree contains a multi-property subquery membership (the row-value IN form).</summary>
+    private static bool ContainsCompositeMembership(Criteria criteria) => criteria switch
+    {
+        Criteria.SubqueryMembership m => m.Properties.Count > 1,
+        Criteria.Composite c => c.Children.Any(ContainsCompositeMembership),
+        Criteria.Negation n => ContainsCompositeMembership(n.Inner),
+        _ => false,
+    };
 
     private static string Render(
         Criteria criteria, EntityMap map, string? rootAlias, string queryName,
@@ -104,8 +136,8 @@ public static class AnsiSelectRenderer
             case Criteria.Comparison { Value: null } c:
                 return c.Operator switch
                 {
-                    "=" => Column(map, rootAlias, c.Property, queryName) + " is null",
-                    "<>" => Column(map, rootAlias, c.Property, queryName) + " is not null",
+                    "=" => Column(map, rootAlias, c.Property, queryName, dialect) + " is null",
+                    "<>" => Column(map, rootAlias, c.Property, queryName, dialect) + " is not null",
                     _ => throw new SimpleOrmException(
                         "QRY-007", queryName,
                         $"'{c.Property} {c.Operator} null' has no meaning in SQL; use IsNull/IsNotNull"),
@@ -113,7 +145,7 @@ public static class AnsiSelectRenderer
             case Criteria.Comparison c:
             {
                 var property = Resolve(map, c.Property, queryName);
-                return Column(map, rootAlias, c.Property, queryName) + " " + c.Operator + " " + bind(c.Value, property);
+                return Column(map, rootAlias, c.Property, queryName, dialect) + " " + c.Operator + " " + bind(c.Value, property);
             }
 
             case Criteria.InList { Values.Count: 0 } c:
@@ -127,7 +159,7 @@ public static class AnsiSelectRenderer
             case Criteria.InList c:
             {
                 var property = Resolve(map, c.Property, queryName);
-                return Column(map, rootAlias, c.Property, queryName)
+                return Column(map, rootAlias, c.Property, queryName, dialect)
                     + " in (" + string.Join(", ", c.Values.Select(v => bind(v, property))) + ")";
             }
 
@@ -140,14 +172,28 @@ public static class AnsiSelectRenderer
                     Resolve(map, property, queryName);
                 }
 
+                if (c.Properties.Count > 1 && !dialect.SupportsRowValueIn)
+                {
+                    // No row-value IN (ADR-0024): the same subquery becomes a
+                    // derived table and each compared column correlates back to
+                    // the aliased root — identical rows match, identical
+                    // parameter order (the subquery still binds inline, here).
+                    var projected = c.Subquery.Projection ?? c.Subquery.Map.Properties;
+                    return "exists (select 1 from (" + dialect.SelectSql(c.Subquery, bind) + ") s where "
+                        + string.Join(" and ", c.Properties.Select((p, i) =>
+                            "s." + dialect.QuoteIdentifier(projected[i].ColumnName)
+                            + " = " + Column(map, rootAlias, p, queryName, dialect)))
+                        + ")";
+                }
+
                 var lhs = c.Properties.Count == 1
-                    ? Column(map, rootAlias, c.Properties[0], queryName)
-                    : "(" + string.Join(", ", c.Properties.Select(p => Column(map, rootAlias, p, queryName))) + ")";
+                    ? Column(map, rootAlias, c.Properties[0], queryName, dialect)
+                    : "(" + string.Join(", ", c.Properties.Select(p => Column(map, rootAlias, p, queryName, dialect))) + ")";
                 return lhs + " in (" + dialect.SelectSql(c.Subquery, bind) + ")";
             }
 
             case Criteria.NullCheck c:
-                return Column(map, rootAlias, c.Property, queryName) + (c.Negated ? " is not null" : " is null");
+                return Column(map, rootAlias, c.Property, queryName, dialect) + (c.Negated ? " is not null" : " is null");
             case Criteria.Composite { Children.Count: 0 } c:
                 // The identity truth-values: an empty AND is true, an empty OR is
                 // false — dynamic composition may legitimately produce either,
@@ -164,9 +210,9 @@ public static class AnsiSelectRenderer
         }
     }
 
-    private static string Column(EntityMap map, string? rootAlias, string property, string queryName)
+    private static string Column(EntityMap map, string? rootAlias, string property, string queryName, IDialect dialect)
     {
-        var column = Resolve(map, property, queryName).ColumnName;
+        var column = dialect.QuoteIdentifier(Resolve(map, property, queryName).ColumnName);
         return rootAlias is null ? column : rootAlias + "." + column;
     }
 

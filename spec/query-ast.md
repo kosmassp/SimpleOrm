@@ -128,10 +128,27 @@ what `is_not_null` composition is for.)
 `IDialect` carries one member for the whole contract: render a select AST, given
 the bind function (§7.25 grew `SelectSql` in ADR-0020). The core ships the
 reference rendering above (`AnsiSelectRenderer`); a dialect normally delegates to
-it and overrides only what its SQL disagrees with — SQLite overrides nothing
-beyond the pre-existing limit/offset knob, which the reference consults. This
-keeps a second dialect's rendering cost near zero while preserving the rule that
-matters: **front-ends never emit SQL text; only the dialect does.**
+it and overrides only what its SQL disagrees with. The reference consults four
+dialect knobs (ADR-0024 — SQL Server was the second dialect that forced them):
+
+- **Limit/offset clause** (`LimitOffsetClause`): SQLite renders `limit`/`offset`,
+  SQL Server `offset … rows fetch next … rows only`. Parameters always bind
+  limit-first regardless of where the clause places them.
+- **Identifier quoting** (`QuoteIdentifier`): every relation and column name the
+  renderer emits passes through it. SQLite returns the name unquoted (the
+  reference rendering *is* the SQLite rendering, byte for byte); SQL Server
+  brackets everything — legacy schemas are full of reserved words.
+- **Paging needs ORDER BY** (`PagingRequiresOrderBy`): where true (SQL Server), a
+  paged select with no orderings gains the constant placeholder
+  `order by (select null)` — an unordered page was order-arbitrary anyway.
+- **Row-value IN** (`SupportsRowValueIn`): where false (SQL Server), a composite
+  subquery membership `(a, b) in (select …)` rewrites as a correlated EXISTS over
+  the same subquery — the root aliases as `t`, the subquery becomes derived table
+  `s`, and each compared column correlates `s.<projected> = t.<property>`.
+  Identical rows match; parameters keep their order (the subquery binds inline).
+
+This keeps a second dialect's rendering cost near zero while preserving the rule
+that matters: **front-ends never emit SQL text; only the dialect does.**
 
 ## Deliberately absent
 
@@ -165,13 +182,18 @@ database:
 ```json
 { "name": "…", "comment": "…", "entity": "User",
   "select": { "where": [ … ], "orderBy": [ … ], "limit": 20, "offset": 5 },
-  "expect": { "sqlite": { "sql": "…", "parameters": [1, "Ada", "Grace"] } } }
+  "expect": {
+    "sqlite":    { "sql": "…", "parameters": [1, "Ada", "Grace"] },
+    "sqlserver": { "sql": "…", "parameters": [1, "Ada", "Grace"] } } }
 ```
 
 The runner builds the AST from `select` (the encodings above), renders it through
-the dialect, and compares the **exact SQL text** and the **ordered parameter
-values** — or, for `"expect": { "error": "QRY-007" }`, the error code. `expect`
-carries one entry per dialect; error expectations are dialect-neutral (refusal
-happens in the shared rendering, before any dialect divergence). Expected
-parameters are the AST values in bind order — their database encoding is
+**every dialect**, and compares the **exact SQL text** and the **ordered
+parameter values** — or, for `"expect": { "error": "QRY-007" }`, the error code.
+`expect` carries one entry per dialect and every entry is mandatory (ADR-0024): a
+case missing a dialect's expectation fails the suite. Error expectations are
+dialect-neutral (refusal happens in the shared rendering, before any dialect
+divergence). Expected parameters are the AST values in bind order — the same
+order on every dialect, even where a rendered clause places them differently
+(SQL Server's `offset @c5 … fetch next @c4`) — their database encoding is
 `spec/mapping-rules.md` territory.

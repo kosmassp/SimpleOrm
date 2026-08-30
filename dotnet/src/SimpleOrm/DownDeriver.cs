@@ -20,7 +20,7 @@ internal static class DownDeriver
     /// </summary>
     public static IReadOnlyList<MigrationStatement>? Derive(
         string objectName, long version, SnapshotSet snapshots,
-        IReadOnlyList<(string From, string To)> upRenames, List<string> notices)
+        IReadOnlyList<(string From, string To)> upRenames, List<string> notices, IDialect dialect)
     {
         var at = snapshots.At(objectName, version);
         if (at is null)
@@ -31,7 +31,7 @@ internal static class DownDeriver
         var before = snapshots.LatestBefore(objectName, version);
         return at.Ddl is not null
             ? DeriveView(objectName, at.Ddl, before?.Ddl)
-            : DeriveTable(objectName, version, at.Table!, before?.Table, upRenames, notices);
+            : DeriveTable(objectName, version, at.Table!, before?.Table, upRenames, notices, dialect);
     }
 
     private static IReadOnlyList<MigrationStatement> DeriveView(string objectName, string ddlAt, string? ddlBefore)
@@ -53,11 +53,11 @@ internal static class DownDeriver
 
     private static IReadOnlyList<MigrationStatement> DeriveTable(
         string objectName, long version, TableSchema at, TableSchema? before,
-        IReadOnlyList<(string From, string To)> upRenames, List<string> notices)
+        IReadOnlyList<(string From, string To)> upRenames, List<string> notices, IDialect dialect)
     {
         if (before is null)
         {
-            return [new MigrationStatement("drop table " + objectName, "derived drop " + objectName)];
+            return [new MigrationStatement(dialect.DropTableSql(objectName), "derived drop " + objectName)];
         }
 
         var statements = new List<MigrationStatement>();
@@ -68,7 +68,7 @@ internal static class DownDeriver
         foreach (var (from, to) in upRenames.Reverse())
         {
             statements.Add(new MigrationStatement(
-                $"alter table {objectName} rename column {to} to {from}", "derived rename " + objectName));
+                dialect.RenameColumnSql(objectName, to, from), "derived rename " + objectName));
             nameAtToBefore[to] = from;
         }
 
@@ -80,7 +80,7 @@ internal static class DownDeriver
 
         foreach (var column in previous.Values.Where(c => !current.ContainsKey(c.Name)))
         {
-            var sql = $"alter table {objectName} add column {column.Name} {column.StorageType}";
+            var sql = dialect.AddColumnSql(objectName, column.Name, column.StorageType, nullable: true, defaultSql: null);
             if (!column.Nullable)
             {
                 // The database refuses a bare NOT NULL addition; the structure
@@ -97,7 +97,7 @@ internal static class DownDeriver
         foreach (var name in current.Keys.Where(n => !previous.ContainsKey(n)))
         {
             statements.Add(new MigrationStatement(
-                $"alter table {objectName} drop column {name}", "derived remove " + objectName));
+                dialect.DropColumnSql(objectName, name), "derived remove " + objectName));
         }
 
         foreach (var name in current.Keys.Where(previous.ContainsKey))
@@ -118,7 +118,8 @@ internal static class DownDeriver
         var beforeIndexes = before.Indexes.ToDictionary(MigrationGenerator.IndexSignature, i => i, StringComparer.Ordinal);
         foreach (var pair in atIndexes.Where(p => !beforeIndexes.ContainsKey(ApplyRenames(p.Key, nameAtToBefore))))
         {
-            statements.Add(new MigrationStatement("drop index " + pair.Value.Name, "derived drop index"));
+            statements.Add(new MigrationStatement(
+                dialect.DropIndexSql(objectName, pair.Value.Name), "derived drop index"));
         }
 
         foreach (var pair in beforeIndexes.Where(p =>

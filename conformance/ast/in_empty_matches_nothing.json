@@ -5,7 +5,11 @@
   "select": {
     "where": [ { "op": "in", "property": "Id", "values": [] } ]
   },
-  "expect": { "sqlite": {
-    "sql": "select id, role_name, created_at, updated_at from roles where 1 = 0",
-    "parameters": [] } }
+  "expect": {
+    "sqlite": {
+      "sql": "select id, role_name, created_at, updated_at from roles where 1 = 0",
+      "parameters": [] },
+    "sqlserver": {
+      "sql": "select [id], [role_name], [created_at], [updated_at] from [roles] where 1 = 0",
+      "parameters": [] } }
 }

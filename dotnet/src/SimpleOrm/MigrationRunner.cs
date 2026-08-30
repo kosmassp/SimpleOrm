@@ -145,7 +145,7 @@ public sealed class MigrationRunner
             }
 
             step.DerivedDownCore = DownDeriver.Derive(
-                step.ObjectName, step.Version, _snapshots, step.UpRenames, notices);
+                step.ObjectName, step.Version, _snapshots, step.UpRenames, notices, _db.Options.Dialect);
             if (step.DerivedDownCore is null)
             {
                 throw new SimpleOrmException(
@@ -393,20 +393,7 @@ public sealed class MigrationRunner
     }
 
     private Task EnsureVersionTableAsync(DbTransaction transaction, CancellationToken ct)
-        => ExecuteAsync(
-            transaction,
-            """
-            create table if not exists schema_version (
-                version      INTEGER NOT NULL,
-                object       TEXT NOT NULL,
-                description  TEXT NOT NULL,
-                checksum     TEXT NOT NULL,
-                applied_at   TEXT NOT NULL,
-                execution_ms INTEGER NOT NULL,
-                primary key (version, object)
-            ) STRICT
-            """,
-            ct);
+        => ExecuteAsync(transaction, _db.Options.Dialect.VersionTableSql, ct);
 
     private async Task<RecordedHistory> ReadRecordedAsync(DbTransaction? transaction, CancellationToken ct)
     {

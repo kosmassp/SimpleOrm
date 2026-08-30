@@ -10,6 +10,9 @@ public sealed class SqliteDialect : IDialect
     public DbConnection CreateConnection(string connectionString)
         => new SqliteConnection(connectionString);
 
+    /// <summary>Unquoted (ADR-0024): snake_case names need nothing, and the reference renderings stay byte-identical.</summary>
+    public string QuoteIdentifier(string identifier) => identifier;
+
     public string LimitOffsetClause(string? limitParameter, string? offsetParameter) => (limitParameter, offsetParameter) switch
     {
         (not null, not null) => $"limit {limitParameter} offset {offsetParameter}",
@@ -22,6 +25,10 @@ public sealed class SqliteDialect : IDialect
         => AnsiSelectRenderer.SelectSql(this, select, bindParameter);
 
     public bool SupportsArrayParameters => false;
+
+    public bool PagingRequiresOrderBy => false;
+
+    public bool SupportsRowValueIn => true;
 
     public bool SupportsMaterializedViews => false;
 
@@ -68,6 +75,42 @@ public sealed class SqliteDialect : IDialect
 
     public DbTransaction BeginMigrationRunLock(DbConnection connection)
         => ((SqliteConnection)connection).BeginTransaction(deferred: false);   // BEGIN IMMEDIATE
+
+    public string VersionTableSql
+        => """
+           create table if not exists schema_version (
+               version      INTEGER NOT NULL,
+               object       TEXT NOT NULL,
+               description  TEXT NOT NULL,
+               checksum     TEXT NOT NULL,
+               applied_at   TEXT NOT NULL,
+               execution_ms INTEGER NOT NULL,
+               primary key (version, object)
+           ) STRICT
+           """;
+
+    // Migration-action DDL (ADR-0024): these strings are frozen — recorded
+    // checksums hash them.
+
+    public string RenameTableSql(string fromName, string toName)
+        => $"alter table {fromName} rename to {toName}";
+
+    public string RenameColumnSql(string table, string fromName, string toName)
+        => $"alter table {table} rename column {fromName} to {toName}";
+
+    public string AddColumnSql(string table, string column, string storageType, bool nullable, string? defaultSql)
+        => $"alter table {table} add column {column} {storageType}"
+            + (nullable ? string.Empty : " not null")
+            + (defaultSql is null ? string.Empty : " default " + defaultSql);
+
+    public string DropColumnSql(string table, string column)
+        => $"alter table {table} drop column {column}";
+
+    public string DropTableSql(string table)
+        => "drop table " + table;
+
+    public string DropIndexSql(string table, string index)
+        => "drop index " + index;
 
     public string CreateViewSql(EntityMap map)
         => "create view if not exists " + map.RelationName + " as\n" + map.DefiningSql;

@@ -345,11 +345,11 @@ public sealed class TableActions
     }
 
     public MigrationAction DropTable()
-        => Track(_removes, new MigrationAction("drop " + Table, ["drop table " + Table]));
+        => Track(_removes, new MigrationAction("drop " + Table, [_dialect.DropTableSql(Table)]));
 
     public MigrationAction RenameTable(string fromName)
         => Track(_renames, new MigrationAction(
-            $"rename table {fromName}", [$"alter table {fromName} rename to {Table}"]));
+            $"rename table {fromName}", [_dialect.RenameTableSql(fromName, Table)]));
 
     /// <summary>Column renames, kept structurally too — the derived rollback inverts them (ADR-0018).</summary>
     internal List<(string From, string To)> ColumnRenames { get; } = [];
@@ -358,21 +358,17 @@ public sealed class TableActions
     {
         ColumnRenames.Add((fromName, toName));
         return Track(_renames, new MigrationAction(
-            $"rename {Table}.{fromName}", [$"alter table {Table} rename column {fromName} to {toName}"]));
+            $"rename {Table}.{fromName}", [_dialect.RenameColumnSql(Table, fromName, toName)]));
     }
 
     /// <summary>Literal column spec; a NOT NULL addition to a populated table needs <paramref name="defaultSql"/>.</summary>
     public MigrationAction AddColumn(string name, string type, bool nullable = true, string? defaultSql = null)
-    {
-        var sql = $"alter table {Table} add column {name} {type}"
-            + (nullable ? string.Empty : " not null")
-            + (defaultSql is null ? string.Empty : " default " + defaultSql);
-        return Track(_adds, new MigrationAction($"add {Table}.{name}", [sql]));
-    }
+        => Track(_adds, new MigrationAction(
+            $"add {Table}.{name}", [_dialect.AddColumnSql(Table, name, type, nullable, defaultSql)]));
 
     public MigrationAction RemoveColumn(string name)
         => Track(_removes, new MigrationAction(
-            $"remove {Table}.{name}", [$"alter table {Table} drop column {name}"]));
+            $"remove {Table}.{name}", [_dialect.DropColumnSql(Table, name)]));
 
     public MigrationAction CreateIndexes()
         => Track(_adds, new MigrationAction("indexes " + Table, _dialect.CreateIndexSql(_map)));

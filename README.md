@@ -251,6 +251,38 @@ nullability per column (`VAL-010`/`011`), `SELECT *` and non-UTC-timestamp lints
 (`MIG-030`/`010`/`011`). Expression columns require nullable members unless the
 SQL carries `-- notnull: col`. One exception carries the complete report.
 
+## SQL Server dialect (ADR-0024)
+
+The first Level 4 dialect, pulled forward for real-world field-testing. Same
+code, different dialect:
+
+```csharp
+await using var db = await Db.OpenAsync(
+    "Server=.;Database=app;Integrated Security=true",
+    new DbOptions { Dialect = new SqlServerDialect() }, ct);
+```
+
+What differs under the hood — and only under the hood, the API is identical:
+identifiers are always bracketed (legacy schemas are full of reserved words),
+generated keys come back via `scope_identity()` (trigger-safe), paging renders
+`OFFSET/FETCH` (an unordered page gains `order by (select null)`), composite
+subquery membership rewrites as a correlated EXISTS (no row-value `IN` in
+T-SQL), and the migration run lock is `sp_getapplock` inside one transaction.
+The CLI takes `--dialect sqlserver`.
+
+Dates: the §7.9 UTC rule maps to **`datetimeoffset`** — it carries the marker,
+reads back as `DateTime` Kind=Utc. A legacy `datetime`/`datetime2` column reads
+back **refusing with `VAL-020`** (no marker — same strictness as markerless TEXT
+on SQLite); if you know such a column's kind, register an `ITypeHandler<DateTime>`
+that declares it. Generated DDL uses `nvarchar(max)` for strings
+(`nvarchar(450)` for keys) and `decimal(38, 9)` — declare real precision in
+migrations.
+
+Not there yet (deferred loudly, not silently): `shadow`/snapshot regeneration —
+so `migrate down` on SQL Server needs `Down()` overrides (`MIG-020` names this);
+`diff`/force-sync are untested against SQL Server; procedures stay dormant until
+Level 4. Tests run on SQL Server LocalDB when present and skip cleanly when not.
+
 ## Performance
 
 Compiled expression-tree mappers with typed-getter fast paths. BenchmarkDotNet vs
@@ -268,9 +300,11 @@ conformance/   executable definition: JSON cases every implementation must pass
 dotnet/        C# reference implementation
   src/SimpleOrm/           core (netstandard2.0 + net10.0, depends only on System.Data.Common)
   src/SimpleOrm.Sqlite/    SQLite dialect (Microsoft.Data.Sqlite)
+  src/SimpleOrm.SqlServer/ SQL Server dialect (Microsoft.Data.SqlClient, ADR-0024)
   src/SimpleOrm.Cli/       CLI (stub until milestone 5)
   samples/SimpleOrm.Sample/ sample entity models used by tests and conformance
   tests/SimpleOrm.Tests/   integration tests against real SQLite databases
+                           (+ SQL Server LocalDB where installed; skip cleanly otherwise)
 docs/decisions.md          ADR log
 ```
 

@@ -220,19 +220,20 @@ public sealed partial class Db : IAsyncDisposable
 
         using var command = _connection.CreateCommand();
         command.Transaction = _transaction;
+        var dialect = Options.Dialect;
         var predicates = new string[keyValues.Length];
         for (var i = 0; i < keyValues.Length; i++)
         {
             var name = "@k" + i;
-            predicates[i] = map.KeyProperties[i].ColumnName + " = " + name;
+            predicates[i] = dialect.QuoteIdentifier(map.KeyProperties[i].ColumnName) + " = " + name;
             var parameter = command.CreateParameter();
             parameter.ParameterName = name;
             parameter.Value = _converter.ToDatabase(keyValues[i], $"{typeof(TEntity).Name} key[{i}]");
             command.Parameters.Add(parameter);
         }
 
-        command.CommandText = "select " + string.Join(", ", map.Properties.Select(p => p.ColumnName))
-            + " from " + map.RelationName
+        command.CommandText = "select " + string.Join(", ", map.Properties.Select(p => dialect.QuoteIdentifier(p.ColumnName)))
+            + " from " + dialect.QuoteIdentifier(map.RelationName!)
             + " where " + string.Join(" and ", predicates);
 
         var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
@@ -395,11 +396,12 @@ public sealed partial class Db : IAsyncDisposable
                 $"is {map.Kind}-backed; select-all needs a named relation (statements execute via the statement API)");
         }
 
-        var sql = "select " + string.Join(", ", map.Properties.Select(p => p.ColumnName))
-            + " from " + map.RelationName;
+        var dialect = Options.Dialect;
+        var sql = "select " + string.Join(", ", map.Properties.Select(p => dialect.QuoteIdentifier(p.ColumnName)))
+            + " from " + dialect.QuoteIdentifier(map.RelationName!);
         if (map.KeyProperties.Count > 0)
         {
-            sql += " order by " + string.Join(", ", map.KeyProperties.Select(k => k.ColumnName));
+            sql += " order by " + string.Join(", ", map.KeyProperties.Select(k => dialect.QuoteIdentifier(k.ColumnName)));
         }
 
         var command = _connection.CreateCommand();

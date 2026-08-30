@@ -23,6 +23,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "benchmarks", "benchmarks", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SimpleOrm.Benchmarks", "benchmarks\SimpleOrm.Benchmarks\SimpleOrm.Benchmarks.csproj", "{152C2142-72FC-47BC-A401-02B1CDC4F22B}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SimpleOrm.SqlServer", "src\SimpleOrm.SqlServer\SimpleOrm.SqlServer.csproj", "{AFB62DFE-312F-4886-8D56-C2EEDA020FC3}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -105,6 +107,18 @@ Global
 		{152C2142-72FC-47BC-A401-02B1CDC4F22B}.Release|x64.Build.0 = Release|Any CPU
 		{152C2142-72FC-47BC-A401-02B1CDC4F22B}.Release|x86.ActiveCfg = Release|Any CPU
 		{152C2142-72FC-47BC-A401-02B1CDC4F22B}.Release|x86.Build.0 = Release|Any CPU
+		{AFB62DFE-312F-4886-8D56-C2EEDA020FC3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AFB62DFE-312F-4886-8D56-C2EEDA020FC3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AFB62DFE-312F-4886-8D56-C2EEDA020FC3}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{AFB62DFE-312F-4886-8D56-C2EEDA020FC3}.Debug|x64.Build.0 = Debug|Any CPU
+		{AFB62DFE-312F-4886-8D56-C2EEDA020FC3}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{AFB62DFE-312F-4886-8D56-C2EEDA020FC3}.Debug|x86.Build.0 = Debug|Any CPU
+		{AFB62DFE-312F-4886-8D56-C2EEDA020FC3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AFB62DFE-312F-4886-8D56-C2EEDA020FC3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AFB62DFE-312F-4886-8D56-C2EEDA020FC3}.Release|x64.ActiveCfg = Release|Any CPU
+		{AFB62DFE-312F-4886-8D56-C2EEDA020FC3}.Release|x64.Build.0 = Release|Any CPU
+		{AFB62DFE-312F-4886-8D56-C2EEDA020FC3}.Release|x86.ActiveCfg = Release|Any CPU
+		{AFB62DFE-312F-4886-8D56-C2EEDA020FC3}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -116,5 +130,6 @@ Global
 		{0BEB3FBA-9F3B-4193-918C-21AAAF37CFBC} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{61E82830-95BC-455B-8BE4-496A6DEEE2D9} = {5D20AA90-6969-D8BD-9DCD-8634F4692FDA}
 		{152C2142-72FC-47BC-A401-02B1CDC4F22B} = {66320409-64EC-F7C5-3DEF-65E7510DAAD1}
+		{AFB62DFE-312F-4886-8D56-C2EEDA020FC3} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal

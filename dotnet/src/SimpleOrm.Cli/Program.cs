@@ -1,6 +1,7 @@
 using System.Reflection;
 using SimpleOrm;
 using SimpleOrm.Sqlite;
+using SimpleOrm.SqlServer;
 
 // simpleorm CLI (§7.24): migration is always an explicit act — the application
 // never migrates at startup. Migrations and entities are code, so the CLI loads
@@ -103,6 +104,8 @@ int Usage()
           --assembly <path>   the application assembly containing migrations/entities
           --db <value>        connection string, or a bare path to a SQLite file
           --namespace <ns>    migration namespace filter (default: whole assembly)
+          --dialect <name>    sqlite (default) or sqlserver (ADR-0024); shadow is
+                              sqlite-only — other dialects override Down() instead
         """);
     return 2;
 }
@@ -115,6 +118,15 @@ int Fail(string message)
 
 string? Option(string name)
     => options.TryGetValue(name, out var values) && values.Count > 0 ? values[^1] : null;
+
+// --dialect (ADR-0024): sqlite stays the default; unknown names refuse loudly.
+IDialect DialectFor() => (Option("dialect") ?? "sqlite").ToLowerInvariant() switch
+{
+    "sqlite" => (IDialect)new SqliteDialect(),
+    "sqlserver" => new SqlServerDialect(),
+    var name => throw new SimpleOrmException(
+        "CLI", "arguments", $"unknown --dialect '{name}' (sqlite, sqlserver)"),
+};
 
 bool Flag(string name) => options.ContainsKey(name);
 
@@ -141,7 +153,7 @@ async Task<(Db Db, MigrationRunner Runner)> OpenAsync()
 
     var connectionString = db.Contains('=') ? db : $"Data Source={db}";
     var session = await Db.OpenAsync(
-        connectionString, new DbOptions { Dialect = new SqliteDialect() }, CancellationToken.None);
+        connectionString, new DbOptions { Dialect = DialectFor() }, CancellationToken.None);
 
     // Rollbacks derive from the snapshots (ADR-0018): embedded in the assembly by
     // default, or read from the source Migrations dir via --snapshots.
@@ -334,7 +346,7 @@ int DiffCommand()
     }
 
     var assembly = LoadAssembly();
-    var dialect = new SqliteDialect();
+    var dialect = DialectFor();
     var loader = new EntityMapLoader();
 
     // Renames are declared, never inferred: --rename <table>.<old>=<new>, repeatable.
@@ -533,6 +545,11 @@ static List<(Type Type, EntityMap Map, MigrationGenerator.TableDiff Diff)> Topol
 
 async Task<int> ShadowAsync()
 {
+    if (Option("dialect") is { } dialectName && !string.Equals(dialectName, "sqlite", StringComparison.OrdinalIgnoreCase))
+    {
+        return Fail($"shadow replays into a throwaway SQLite database and supports only --dialect sqlite (ADR-0024); '{dialectName}' rollbacks need Down() overrides until snapshot tooling learns that dialect");
+    }
+
     if (Option("out") is not { } outDir)
     {
         return Fail("shadow requires --out <MigrationsDir>");

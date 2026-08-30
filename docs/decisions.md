@@ -1392,3 +1392,104 @@ Owner rulings closing this development stretch:
   CLAUDE.md §7b/§11/§12, and the git log are the state.
 
 **Status.** Accepted.
+
+## ADR-0024 — SQL Server dialect pulled forward from Level 4 (2026-08-30)
+
+Owner: "create dialect for the sqlserver". Additional dialects are §3 Level 4,
+but ADR-0023 already ruled SQL Server first *and* started the Fidelis field test
+on a SQL Server machine — a field test the dialect is a precondition for. So the
+first Level 4 dialect ships now, explicitly **runtime-first**: everything the
+session, criteria/loading pipeline, SchemaGuard introspection, and the migration
+runner need; the snapshot/diff tooling stays SQLite-only for the moment (below).
+`SimpleOrm.SqlServer` (netstandard2.0;net10.0) references Microsoft.Data.SqlClient
+— conditionally per TFM (5.1.6 on netstandard2.0, 6.1.1 on net10.0; SqlClient
+dropped netstandard after 5.x), the §4 escape hatch used for the first time.
+
+**The seam grew members** (§7.25's rule — add only when a second dialect needs
+them; every SQLite implementation returns today's strings byte-for-byte, so
+conformance pins and recorded checksums are untouched):
+
+- `QuoteIdentifier` — consulted by the reference renderer and the generated
+  select/CRUD SQL for every relation and column name. SQLite: unquoted (the
+  reference rendering *is* the SQLite rendering); SQL Server: always bracketed —
+  a legacy schema is full of reserved words (`transaction`, `order`, `desc`).
+- `PagingRequiresOrderBy` — OFFSET/FETCH is only legal after ORDER BY; a paged,
+  unordered select gains the constant `order by (select null)` (the page was
+  order-arbitrary anyway).
+- `SupportsRowValueIn` — `(a, b) in (select …)` doesn't parse on SQL Server; the
+  reference renderer rewrites a composite subquery membership as a correlated
+  EXISTS over the same subquery (root aliased `t`, derived table `s`, pairwise
+  correlation), same rows, same parameter order.
+- `VersionTableSql` — the runner's `schema_version` DDL was hard-coded SQLite
+  (`IF NOT EXISTS` + STRICT); now dialect-owned, same columns everywhere.
+- `RenameTableSql`/`RenameColumnSql`/`AddColumnSql`/`DropColumnSql`/
+  `DropTableSql`/`DropIndexSql` — the typed migration actions, the derived-down
+  deriver, and force-sync all render through these: SQL Server says `alter table
+  … add` (no `column`), renames via `sp_rename`, and scopes `drop index` to the
+  table. Checksums are per-database and a database lives on one dialect, so the
+  divergence is invisible to any recorded history.
+
+**ADR-0023's predicted stress points, resolved:**
+
+- *Generated keys*: `insert …; select cast(scope_identity() as bigint)`, not
+  `OUTPUT` — an OUTPUT clause without INTO fails on tables with triggers, and
+  legacy databases (Fidelis) have triggers; the generated-key strategy is
+  identity-only (ADR-0020), which scope_identity always covers.
+- *Run lock*: one transaction + `sp_getapplock @LockOwner='Transaction'`
+  (exclusive, 60s timeout, refusal raises). SQL Server DDL is transactional, so
+  the SQLite failure semantics (a failed run applies nothing) carry over.
+- *Strict-by-default*: needs no analog — SQL Server enforces declared types
+  natively; STRICT was only ever the SQLite realization of the principle.
+- *Storage types*: dates are **datetimeoffset** (the only marker-carrying
+  storage — see below); strings/blobs are `(max)`, except key columns
+  (`nvarchar(450)`/`varbinary(450)`, the indexable length); decimal defaults to
+  `decimal(38, 9)` (declare real precision in migrations); enums-as-text are
+  `nvarchar(100)`; booleans `bit`.
+- *Capabilities*: procedures yes (still dormant — no execution machinery until
+  Level 4), materialized views no (indexed views are a different mechanism),
+  array parameters no (TVPs are not simple array parameters; §7.12 IN-expansion
+  applies, well under the 2100-parameter cap at the 500 chunk size).
+
+**The §7.9 date rule on a database with real date types.** SQLite stores ISO-8601
+TEXT and the trailing `Z` is the UTC marker; the SQL Server analog of "a stored
+value without UTC marking is a lint error" is: `datetimeoffset` reads back marked
+(→ `DateTime` Kind=Utc via the offset), while `datetime`/`datetime2` values carry
+no marker and **refuse with `VAL-020` at read time**. The escape for legacy
+columns is the documented one — an `ITypeHandler<DateTime>` that declares the
+column's actual kind (handlers win over the fixed table). `TypeConverter` learned
+the provider-native temporal shapes (DateTimeOffset→DateTime via UTC,
+date→DateOnly, time→TimeOnly) — value conversions, not dialect hooks.
+
+**Conformance.** `conformance/ast/*.json` `expect` blocks now carry one entry
+per dialect and the runner renders every case through every dialect — a case
+missing a dialect's expectation fails the suite (error cases stay
+dialect-neutral). The cases pin the cross-dialect parameter contract: bind order
+is WHERE→limit→offset everywhere, even though OFFSET/FETCH renders `@c5` before
+`@c4`.
+
+**Testing.** Live tests run on SQL Server LocalDB — a per-fixture database,
+created and dropped like the temp-file SQLite databases (ADR-0003), no mocks —
+via `[SqlServerFact]`, which skips as a group where LocalDB is absent, so CI
+still needs only the .NET SDK. Covered live: identity write-back, paging with
+and without ORDER BY, reserved-word identifiers end-to-end, version-column
+concurrency, transaction scopes, explicit/batch/link loading, subselect includes
+over a paged root, the composite-key EXISTS rewrite, migrations up/down under
+the applock, and the VAL-020 refusal on markerless datetime2. (Caveat: this
+machine's LocalDB 2019 CU27 crashes on current Windows 11 — the known ntdll
+incompatibility — so the live suite's first green run happens on a machine with
+a working engine.)
+
+**CLI.** `--dialect sqlite|sqlserver` (default sqlite) selects the dialect for
+`migrate`/`status`/`baseline`/`validate`/`snapshot`/`diff`; `shadow` refuses
+non-sqlite by name.
+
+**Deferred, named** (not silently): `shadow`/snapshot regeneration for SQL
+Server (rollbacks there need `Down()` overrides until snapshot tooling learns
+the dialect — `MIG-020` says so); `diff`/force-sync against SQL Server compile
+but are untested; the `MIG-012` view-guard DDL normalization against
+`sys.sql_modules` output is untested; `migrations-cases/` and `cases/` fixtures
+for SQL Server; procedure execution (Level 4 as always). SQL Server's schema
+qualifier (`dbo.`) rides on the existing `[Table(Schema=…)]` metadata but got no
+special handling this pass.
+
+**Status.** Accepted.

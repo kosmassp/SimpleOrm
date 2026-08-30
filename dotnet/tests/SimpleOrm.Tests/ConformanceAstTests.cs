@@ -1,5 +1,6 @@
 using System.Text.Json;
 using SimpleOrm.Sqlite;
+using SimpleOrm.SqlServer;
 using Xunit;
 
 namespace SimpleOrm.Tests;
@@ -7,12 +8,21 @@ namespace SimpleOrm.Tests;
 /// <summary>
 /// The AST-case runner (§9, ADR-0020): each conformance/ast/*.json builds a
 /// criteria query as data — the JSON encoding of <see cref="SelectAst"/> — and
-/// renders it through the dialect, comparing the exact SQL text and the ordered
-/// parameter values (placeholder names are @c0… in render order by contract), or
-/// the error code. No database: rendering is pure.
+/// renders it through every dialect, comparing the exact SQL text per dialect
+/// (ADR-0024: the <c>expect</c> block carries one entry per dialect, all
+/// mandatory) and the ordered parameter values (placeholder names are @c0… in
+/// render order by contract — the same order on every dialect, even where the
+/// rendered clause reorders them, as OFFSET/FETCH does), or the error code, which
+/// is dialect-invariant. No database: rendering is pure.
 /// </summary>
 public sealed class ConformanceAstTests
 {
+    private static readonly IReadOnlyDictionary<string, Func<IDialect>> Dialects = new Dictionary<string, Func<IDialect>>
+    {
+        ["sqlite"] = () => new SqliteDialect(),
+        ["sqlserver"] = () => new SqlServerDialect(),
+    };
+
     public static TheoryData<string> CaseFiles
     {
         get
@@ -41,38 +51,43 @@ public sealed class ConformanceAstTests
             .Single(t => t.Name == entityName);
         var map = new EntityMapLoader().Load(entityType);
         var ast = ParseSelect(map, spec.GetProperty("select"));
-
-        var bound = new List<object?>();
-        string Bind(object? value, PropertyMap? property)
-        {
-            bound.Add(value);
-            return "@c" + (bound.Count - 1);
-        }
-
         var expect = spec.GetProperty("expect");
-        string? sql = null;
-        string? error = null;
-        try
-        {
-            sql = new SqliteDialect().SelectSql(ast, Bind);
-        }
-        catch (SimpleOrmException exception)
-        {
-            error = exception.Code;
-        }
 
-        if (expect.TryGetProperty("error", out var expectedError))
+        foreach (var (dialectName, dialect) in Dialects)
         {
-            Assert.Equal(expectedError.GetString(), error);
-            return;
-        }
+            var bound = new List<object?>();
+            string Bind(object? value, PropertyMap? property)
+            {
+                bound.Add(value);
+                return "@c" + (bound.Count - 1);
+            }
 
-        Assert.Null(error);
-        var sqlite = expect.GetProperty("sqlite");
-        Assert.Equal(sqlite.GetProperty("sql").GetString(), sql);
-        Assert.Equal(
-            sqlite.GetProperty("parameters").EnumerateArray().Select(Value).ToArray(),
-            bound.ToArray());
+            string? sql = null;
+            string? error = null;
+            try
+            {
+                sql = dialect().SelectSql(ast, Bind);
+            }
+            catch (SimpleOrmException exception)
+            {
+                error = exception.Code;
+            }
+
+            if (expect.TryGetProperty("error", out var expectedError))
+            {
+                Assert.Equal(expectedError.GetString(), error);
+                continue;   // error codes are the cross-dialect contract (§9)
+            }
+
+            Assert.Null(error);
+            Assert.True(
+                expect.TryGetProperty(dialectName, out var expected),
+                $"{fileName} lacks the '{dialectName}' expectation — every dialect pins every case (§9)");
+            Assert.Equal(expected.GetProperty("sql").GetString(), sql);
+            Assert.Equal(
+                expected.GetProperty("parameters").EnumerateArray().Select(Value).ToArray(),
+                bound.ToArray());
+        }
     }
 
     private static SelectAst ParseSelect(EntityMap map, JsonElement select)

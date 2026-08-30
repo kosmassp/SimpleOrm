@@ -9,6 +9,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\SimpleOrm\SimpleOrm.csproj" />
     <ProjectReference Include="..\..\src\SimpleOrm.Sqlite\SimpleOrm.Sqlite.csproj" />
+    <ProjectReference Include="..\..\src\SimpleOrm.SqlServer\SimpleOrm.SqlServer.csproj" />
     <ProjectReference Include="..\..\samples\SimpleOrm.Sample\SimpleOrm.Sample.csproj" />
   </ItemGroup>
 

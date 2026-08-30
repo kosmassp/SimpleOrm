@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.0;net10.0</TargetFrameworks>
+    <RootNamespace>SimpleOrm.SqlServer</RootNamespace>
+    <Description>SQL Server dialect for SimpleOrm (Microsoft.Data.SqlClient).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SimpleOrm\SimpleOrm.csproj" />
+  </ItemGroup>
+
+  <!-- Microsoft.Data.SqlClient dropped the netstandard2.0 target after 5.x — the
+       conditional references CLAUDE.md §4 anticipated for exactly this case. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.1.6" />
+    <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.1" />
+  </ItemGroup>
+
+</Project>

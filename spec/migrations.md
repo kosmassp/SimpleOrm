@@ -42,9 +42,18 @@ default) so an applied migration's rendered SQL never changes when the model
 evolves. Metadata-rendered DDL (`CreateTable()`/`CreateView()`) is legal for an
 object's initial creation, frozen thereafter by the checksum.
 
+The typed actions **render through the dialect** (ADR-0024): ALTER TABLE grammar
+diverges — SQLite says `add column` and `rename column`, SQL Server says `add`
+and `exec sp_rename`; dropping an index needs the table name on SQL Server. A
+database's history is applied, checksummed, and validated by one dialect, so
+checksums stay stable per database; the SQLite renderings are the frozen
+reference.
+
 ## Recording and integrity
 
-Table `schema_version` (STRICT on SQLite):
+Table `schema_version` — same columns and semantics on every dialect, dialect
+DDL (SQLite: `IF NOT EXISTS` + STRICT, `INTEGER`/`TEXT`; SQL Server:
+`if object_id(…) is null`, `bigint`/`nvarchar`):
 
 ```
 version INTEGER, object TEXT, description TEXT, checksum TEXT,
@@ -87,8 +96,11 @@ deployed; the CLI's `--snapshots <dir>` reads them from source instead.
 
 The dialect provides the run lock (§7.25). On SQLite the entire run executes inside
 one `BEGIN IMMEDIATE` transaction — exclusive writer, and with transactional DDL a
-failed run rolls back completely (no partially applied versions). Dialects with
-advisory locks (Level 4 Postgres) evolve this member.
+failed run rolls back completely (no partially applied versions). On SQL Server
+(ADR-0024) the run is one transaction holding an exclusive
+`sp_getapplock @LockOwner = 'Transaction'` (60s timeout, then refuse) — DDL is
+transactional there too, so failure semantics match. Dialects with advisory
+locks (Level 4 Postgres) evolve this member further.
 
 `baseline <N>` records versions ≤ N as applied without running them — the
 fresh-database path pairs it with metadata-generated schema

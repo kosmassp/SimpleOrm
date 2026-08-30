@@ -11,7 +11,11 @@
         { "op": "le", "property": "Id", "value": 8 } ] }
     ]
   },
-  "expect": { "sqlite": {
-    "sql": "select id, name, email, display_name, created_at, updated_at from users where (email <> @c0 and id > @c1 and id < @c2 and id <= @c3)",
-    "parameters": ["x@example.com", 1, 9, 8] } }
+  "expect": {
+    "sqlite": {
+      "sql": "select id, name, email, display_name, created_at, updated_at from users where (email <> @c0 and id > @c1 and id < @c2 and id <= @c3)",
+      "parameters": ["x@example.com", 1, 9, 8] },
+    "sqlserver": {
+      "sql": "select [id], [name], [email], [display_name], [created_at], [updated_at] from [users] where ([email] <> @c0 and [id] > @c1 and [id] < @c2 and [id] <= @c3)",
+      "parameters": ["x@example.com", 1, 9, 8] } }
 }

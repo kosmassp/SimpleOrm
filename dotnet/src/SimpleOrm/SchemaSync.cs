@@ -52,8 +52,9 @@ public static class SchemaSync
                 {
                     if (property.IsNullable)
                     {
-                        plan.Additive.Add(
-                            $"alter table {map.RelationName} add column {property.ColumnName} {dialect.StorageType(property)}");
+                        plan.Additive.Add(dialect.AddColumnSql(
+                            map.RelationName!, property.ColumnName, dialect.StorageType(property),
+                            nullable: true, defaultSql: null));
                     }
                     else
                     {
@@ -77,7 +78,7 @@ public static class SchemaSync
             foreach (var extra in live.Keys.Where(c =>
                 map.Properties.All(p => !string.Equals(p.ColumnName, c, StringComparison.OrdinalIgnoreCase))))
             {
-                plan.Deletions.Add($"alter table {map.RelationName} drop column {extra}");
+                plan.Deletions.Add(dialect.DropColumnSql(map.RelationName!, extra));
             }
 
             // Indexes match structurally (ADR-0017 add.2): what matters is the indexed
@@ -99,7 +100,7 @@ public static class SchemaSync
 
             foreach (var index in liveIndexes.Where(i => !modelSignatures.Contains(i.Signature)))
             {
-                plan.Deletions.Add("drop index " + index.Name);
+                plan.Deletions.Add(dialect.DropIndexSql(map.RelationName!, index.Name));
             }
         }
 

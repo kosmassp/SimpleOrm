@@ -33,7 +33,7 @@ C# on SQLite is the **reference implementation**. The long-term plan is a langua
 | Identity map, change tracking, unit of work, cascades, merge/detach | 3 |
 | Inheritance mapping, event hooks (audit, soft delete) | 3 |
 | Draft migrations generated from the metadata diff | 3 |
-| Additional dialects — order per ADR-0023: **SQL Server first** (owner field-tests with Fidelis), **PostgreSQL second**, then MySQL/Oracle | 4 (seam exists from Level 1) |
+| Additional dialects — order per ADR-0023: **SQL Server first** (owner field-tests with Fidelis), **PostgreSQL second**, then MySQL/Oracle | 4 (seam exists from Level 1) — **SQL Server pulled forward by ADR-0024**, runtime-first: session/CRUD/criteria/loading/SchemaGuard/migration-runner work; shadow/snapshot/diff tooling stays SQLite-only for now |
 | Read/write splitting and multi-database routing, incl. mixed engines (session-level, never per-entity — see decision log 2026-08-28) | 4 |
 | Caching, observability, resilience, analyzers, source generators | 4 |
 
@@ -43,7 +43,7 @@ C# on SQLite is the **reference implementation**. The long-term plan is a langua
 
 - **Core library:** multi-target `netstandard2.0;net10.0`. `netstandard2.0` is the compatibility floor (it is the only .NET Standard version worth targeting: 2.1 excludes .NET Framework and .NET Standard is frozen). `net10.0` (current LTS) is where modern APIs and performance work live.
 - **Core depends only on `System.Data.Common`** (`DbConnection`, `DbCommand`, `DbDataReader`, `DbTransaction`). Zero provider packages. This is what makes the core usable anywhere and makes dialects pluggable.
-- **Dialect packages** reference the provider and multi-target too. `SimpleOrm.Sqlite` references `Microsoft.Data.Sqlite`; it still ships a `netstandard2.0` target, so one unconditional `PackageReference` serves both TFMs (switch to conditional references if a future major drops it). The bundled native SQLite (SQLitePCLraw `e_sqlite3`) is ≥ 3.46, so `RETURNING` (3.35+) and STRICT tables (3.37+) are available.
+- **Dialect packages** reference the provider and multi-target too. `SimpleOrm.Sqlite` references `Microsoft.Data.Sqlite`; it still ships a `netstandard2.0` target, so one unconditional `PackageReference` serves both TFMs (switch to conditional references if a future major drops it). The bundled native SQLite (SQLitePCLraw `e_sqlite3`) is ≥ 3.46, so `RETURNING` (3.35+) and STRICT tables (3.37+) are available. `SimpleOrm.SqlServer` references `Microsoft.Data.SqlClient` **conditionally per TFM** (ADR-0024: 5.1.6 on `netstandard2.0`, 6.x on `net10.0` — SqlClient dropped netstandard after 5.x).
 - C# `LangVersion` latest on both targets. Nullable reference types enabled everywhere. `TreatWarningsAsErrors`.
 - CI must build the `netstandard2.0` target; tests run on `net10.0`. A `net48` test leg (Windows) is a later addition; until it exists, .NET Framework runtime bugs are best-effort.
 
@@ -85,6 +85,7 @@ dotnet/
   SimpleOrm.sln
   src/SimpleOrm/              core: metadata, mapping, parameters, session, rules, migration runner
   src/SimpleOrm.Sqlite/       SQLite dialect (Microsoft.Data.Sqlite)
+  src/SimpleOrm.SqlServer/    SQL Server dialect (Microsoft.Data.SqlClient, ADR-0024)
   src/SimpleOrm.Cli/          migrate / status / validate / baseline / export-metadata
   samples/SimpleOrm.Sample/   sample entity models (User, Role, UserRole, Transaction,
                               TransactionDetail) — the fixture entities for tests and conformance
@@ -205,7 +206,7 @@ The registry is what the validator enumerates. (The Level 4 source-generator ide
 
 ### Dialect seam (`IDialect`, minimal and capability-based)
 
-25. Members at Level 1, and no more: create connection; quote identifier; parameter prefix; render `RETURNING`/generated-key retrieval; render limit/offset; render CREATE TABLE/INDEX/VIEW and the generated INSERT from `EntityMap` (ADR-0011, ADR-0008 add.3); capability flags — array parameters, transactional DDL, materialized views, procedures; migration run-lock acquire/release; describe-statement implementation; declared-type → CLR type compatibility table; storage type per mapped property (ADR-0017 — what CREATE TABLE emits, used by snapshots/diff/sync); view-definition query (ADR-0017 add.1 — backs the `MIG-012` guard and shadow view snapshots). Add members only when a second dialect needs them. Do not speculate about Oracle.
+25. Members at Level 1, and no more: create connection; quote identifier; parameter prefix; render `RETURNING`/generated-key retrieval; render limit/offset; render CREATE TABLE/INDEX/VIEW and the generated INSERT from `EntityMap` (ADR-0011, ADR-0008 add.3); capability flags — array parameters, transactional DDL, materialized views, procedures; migration run-lock acquire/release; describe-statement implementation; declared-type → CLR type compatibility table; storage type per mapped property (ADR-0017 — what CREATE TABLE emits, used by snapshots/diff/sync); view-definition query (ADR-0017 add.1 — backs the `MIG-012` guard and shadow view snapshots). Add members only when a second dialect needs them — SQL Server (ADR-0024) added: identifier quoting realized (`QuoteIdentifier`, identity on SQLite), `PagingRequiresOrderBy`, `SupportsRowValueIn` (false → the renderer's EXISTS rewrite), `VersionTableSql`, and the migration-action renderings (`RenameTableSql`, `RenameColumnSql`, `AddColumnSql`, `DropColumnSql`, `DropTableSql`, `DropIndexSql`) — SQLite's implementations return the pre-ADR strings byte-for-byte, so checksums and conformance pins are untouched. Do not speculate about Oracle.
 
 ## 7b. Level 2 milestones (ADR-0019) — one at a time; stop and report; do not start the next unprompted
 
@@ -216,7 +217,7 @@ The registry is what the validator enumerates. (The Level 4 source-generator ide
 5. **Fluent front-end.** *(Skipped for now — ADR-0023: owner is field-testing basics first; starts on an owner sample.)* Typed lambda → AST; LINQ provider stays out. Owner-approved as an *addition*, explicitly per-language sugar (ADR-0021 add.2) — the portable contract stays the string/AST core.
 6. **Level 2 exit.** *(Pending.)* Spec + conformance completeness + benchmark refresh; reimplementable from `spec/` + `conformance/` alone.
 
-**Session state (2026-08-30, ADR-0023):** M1–M4 done; owner is field-testing SimpleOrm against Fidelis on a SQL Server machine. Level 4 dialect order: **SQL Server first, PostgreSQL second**. Port order: **PHP → Go → Rust** (supersedes the old Go-first §12).
+**Session state (2026-08-30, ADR-0023/0024):** M1–M4 done; owner is field-testing SimpleOrm against Fidelis on a SQL Server machine. Level 4 dialect order: **SQL Server first, PostgreSQL second**. Port order: **PHP → Go → Rust** (supersedes the old Go-first §12). The **SQL Server dialect exists** (ADR-0024, runtime-first): `SimpleOrm.SqlServer`, CLI `--dialect sqlserver`, LocalDB-backed live tests (`[SqlServerFact]`, skip when absent), per-dialect `conformance/ast/` expectations. Dates are `datetimeoffset`; markerless `datetime2` reads refuse `VAL-020` (ITypeHandler is the legacy-column escape). SQL Server rollbacks need `Down()` overrides until snapshot tooling learns the dialect; shadow/diff/force-sync stay SQLite-only/untested there.
 
 ## 8. Level 1 milestones — one at a time; stop and report; do not start the next unprompted
 

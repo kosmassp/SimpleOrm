@@ -13,6 +13,14 @@ public interface IDialect
     DbConnection CreateConnection(string connectionString);
 
     /// <summary>
+    /// Quotes one identifier for this dialect's SQL (ADR-0024). SQLite returns the
+    /// name unquoted — snake_case names need nothing, and the reference renderings
+    /// (conformance pins, migration checksums) stay byte-identical; SQL Server
+    /// brackets everything, because a legacy schema is full of reserved words.
+    /// </summary>
+    string QuoteIdentifier(string identifier);
+
+    /// <summary>
     /// Renders <c>CREATE TABLE IF NOT EXISTS</c> for a table-backed map (ADR-0011):
     /// column types from the metadata, NOT NULL from nullability, the key per its
     /// strategy, STRICT on SQLite.
@@ -27,6 +35,21 @@ public interface IDialect
 
     /// <summary>Renders the limit/offset clause from pre-bound parameter names (§7.25); either may be null.</summary>
     string LimitOffsetClause(string? limitParameter, string? offsetParameter);
+
+    /// <summary>
+    /// Whether the paging clause is only legal after ORDER BY (ADR-0024; SQL
+    /// Server's OFFSET/FETCH). When true, a paged select with no orderings gets the
+    /// dialect-neutral placeholder <c>order by (select null)</c> from the renderer.
+    /// </summary>
+    bool PagingRequiresOrderBy { get; }
+
+    /// <summary>
+    /// Whether <c>(a, b) in (select …)</c> row-value membership parses (ADR-0022
+    /// add.1 anticipated the override; SQLite: yes, SQL Server: no). When false the
+    /// renderer rewrites a composite membership as a correlated EXISTS over the
+    /// same subquery — identical semantics, identical parameter order.
+    /// </summary>
+    bool SupportsRowValueIn { get; }
 
     /// <summary>
     /// Renders the SELECT for a criteria query AST (§10.4, ADR-0020): front-ends
@@ -91,6 +114,37 @@ public interface IDialect
     /// dialect evolves this member (advisory lock + per-migration transactions).
     /// </summary>
     DbTransaction BeginMigrationRunLock(DbConnection connection);
+
+    /// <summary>
+    /// Idempotent DDL for the runner's <c>schema_version</c> table (§7.23,
+    /// ADR-0024): same columns and semantics everywhere, dialect-native types and
+    /// existence guard (SQLite: <c>IF NOT EXISTS</c> + STRICT; SQL Server:
+    /// <c>if object_id(…) is null</c>).
+    /// </summary>
+    string VersionTableSql { get; }
+
+    // --- migration-action DDL (ADR-0024): the typed actions (§7.22) and the
+    // derived rollback render through the dialect, because ALTER TABLE grammar
+    // diverges (SQLite: "add column"; SQL Server: "add", sp_rename). The SQLite
+    // renderings are frozen — recorded checksums hash them.
+
+    /// <summary>Renames a table.</summary>
+    string RenameTableSql(string fromName, string toName);
+
+    /// <summary>Renames a column, data-preservingly.</summary>
+    string RenameColumnSql(string table, string fromName, string toName);
+
+    /// <summary>Adds a column with a literal storage type; non-null additions carry the caller's default.</summary>
+    string AddColumnSql(string table, string column, string storageType, bool nullable, string? defaultSql);
+
+    /// <summary>Drops a column.</summary>
+    string DropColumnSql(string table, string column);
+
+    /// <summary>Drops a table.</summary>
+    string DropTableSql(string table);
+
+    /// <summary>Drops an index; dialects that scope index names to the table (SQL Server) need both.</summary>
+    string DropIndexSql(string table, string index);
 
     /// <summary>
     /// Renders the generated INSERT (§7.14): explicit column list, every

@@ -33,6 +33,33 @@ internal sealed class TypeConverter(TypeHandlerRegistry handlers)
             return handled;
         }
 
+        // Provider-native temporal values (ADR-0024): SQL Server returns DateTime
+        // and DateTimeOffset instances where SQLite returns TEXT. The §7.9 UTC rule
+        // applies to both shapes — a datetime that carries no UTC/offset marker
+        // (Kind=Unspecified; SQL Server's datetime/datetime2) refuses, exactly like
+        // markerless TEXT; datetimeoffset is the marked storage. An ITypeHandler
+        // that declares the column's actual kind is the per-application escape.
+        switch (value)
+        {
+            case DateTime { Kind: DateTimeKind.Unspecified }
+                when target == typeof(DateTime) || target == typeof(DateTimeOffset):
+                throw new SimpleOrmException(
+                    "VAL-020", context,
+                    "stored datetime carries no UTC/offset marker (Kind=Unspecified); store datetimeoffset, or register an ITypeHandler declaring the column's kind");
+            case DateTime dateTime when target == typeof(DateTime):
+                return dateTime.Kind == DateTimeKind.Utc ? dateTime : dateTime.ToUniversalTime();
+            case DateTime dateTime when target == typeof(DateTimeOffset):
+                return new DateTimeOffset(dateTime.ToUniversalTime());
+            case DateTimeOffset offset when target == typeof(DateTime):
+                return offset.UtcDateTime;
+#if NET
+            case DateTime date when target == typeof(DateOnly):
+                return DateOnly.FromDateTime(date);   // date columns carry no kind by design
+            case TimeSpan time when target == typeof(TimeOnly):
+                return TimeOnly.FromTimeSpan(time);
+#endif
+        }
+
         if (target.IsInstanceOfType(value))
         {
             return value;

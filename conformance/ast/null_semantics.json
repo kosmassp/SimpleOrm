@@ -16,5 +16,8 @@
       "parameters": [] },
     "sqlserver": {
       "sql": "select [id], [name], [email], [display_name], [created_at], [updated_at] from [users] where ([display_name] is null and [email] is not null and [updated_at] is null and [name] is not null)",
+      "parameters": [] },
+    "postgres": {
+      "sql": "select \"id\", \"name\", \"email\", \"display_name\", \"created_at\", \"updated_at\" from \"users\" where (\"display_name\" is null and \"email\" is not null and \"updated_at\" is null and \"name\" is not null)",
       "parameters": [] } }
 }

@@ -101,8 +101,12 @@ Every occurrence of the placeholder expands identically.
 
 Expansion is the no-array-parameters strategy (`SupportsArrayParameters`,
 §7.12, ADR-0003): SQLite has none, so the reference implementation always
-expands. A dialect with native array parameters binds the collection as a
-single parameter (`WHERE id = ANY(@ids)`) instead; the observable contract —
+expands. A dialect with native array parameters (ADR-0025 Postgres) binds the
+collection as a **single typed-array parameter** with the SQL untouched — the
+registry SQL is written dialect-natively (`WHERE id = ANY(@ids)`), every
+element passes through the same conversion pipeline, and an **empty**
+collection binds a typed empty array (the element's database type still
+matters: `bigint = any(text[])` refuses even empty). The observable contract —
 always parameterized, empty matches no rows — is identical either way.
 
 ## Transactions

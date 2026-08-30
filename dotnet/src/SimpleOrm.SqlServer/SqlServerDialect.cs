@@ -41,6 +41,9 @@ public sealed class SqlServerDialect : IDialect
 
     public bool SupportsArrayParameters => false;   // TVPs are not simple array parameters; IN-expansion applies (§7.12)
 
+    /// <summary>ISO strings convert implicitly to datetimeoffset — the ADR-0024 binding, kept as shipped (ADR-0025).</summary>
+    public bool BindsTemporalsNatively => false;
+
     public bool PagingRequiresOrderBy => true;   // OFFSET/FETCH is only legal after ORDER BY
 
     public bool SupportsRowValueIn => false;   // (a, b) in (select …) does not parse; the renderer rewrites as EXISTS

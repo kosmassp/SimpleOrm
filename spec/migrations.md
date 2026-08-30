@@ -98,9 +98,12 @@ The dialect provides the run lock (§7.25). On SQLite the entire run executes in
 one `BEGIN IMMEDIATE` transaction — exclusive writer, and with transactional DDL a
 failed run rolls back completely (no partially applied versions). On SQL Server
 (ADR-0024) the run is one transaction holding an exclusive
-`sp_getapplock @LockOwner = 'Transaction'` (60s timeout, then refuse) — DDL is
-transactional there too, so failure semantics match. Dialects with advisory
-locks (Level 4 Postgres) evolve this member further.
+`sp_getapplock @LockOwner = 'Transaction'` (60s timeout, then refuse). On
+Postgres (ADR-0025) it is one transaction holding `pg_advisory_xact_lock` under
+a 60s `lock_timeout` — transaction-scoped, so the lock can never leak past a
+rollback. DDL is transactional on all three, so the failure semantics are
+identical everywhere: a failed run applies nothing; the once-anticipated
+per-migration transactions proved unnecessary.
 
 `baseline <N>` records versions ≤ N as applied without running them — the
 fresh-database path pairs it with metadata-generated schema

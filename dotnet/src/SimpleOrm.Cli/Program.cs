@@ -1,5 +1,6 @@
 using System.Reflection;
 using SimpleOrm;
+using SimpleOrm.Postgres;
 using SimpleOrm.Sqlite;
 using SimpleOrm.SqlServer;
 
@@ -104,8 +105,9 @@ int Usage()
           --assembly <path>   the application assembly containing migrations/entities
           --db <value>        connection string, or a bare path to a SQLite file
           --namespace <ns>    migration namespace filter (default: whole assembly)
-          --dialect <name>    sqlite (default) or sqlserver (ADR-0024); shadow is
-                              sqlite-only — other dialects override Down() instead
+          --dialect <name>    sqlite (default), sqlserver, or postgres
+                              (ADR-0024/0025); shadow is sqlite-only — other
+                              dialects override Down() instead
         """);
     return 2;
 }
@@ -119,13 +121,14 @@ int Fail(string message)
 string? Option(string name)
     => options.TryGetValue(name, out var values) && values.Count > 0 ? values[^1] : null;
 
-// --dialect (ADR-0024): sqlite stays the default; unknown names refuse loudly.
+// --dialect (ADR-0024/0025): sqlite stays the default; unknown names refuse loudly.
 IDialect DialectFor() => (Option("dialect") ?? "sqlite").ToLowerInvariant() switch
 {
     "sqlite" => (IDialect)new SqliteDialect(),
     "sqlserver" => new SqlServerDialect(),
+    "postgres" => new PostgresDialect(),
     var name => throw new SimpleOrmException(
-        "CLI", "arguments", $"unknown --dialect '{name}' (sqlite, sqlserver)"),
+        "CLI", "arguments", $"unknown --dialect '{name}' (sqlite, sqlserver, postgres)"),
 };
 
 bool Flag(string name) => options.ContainsKey(name);

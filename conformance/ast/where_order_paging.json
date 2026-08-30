@@ -19,5 +19,8 @@
       "parameters": [1, "Ada", "Grace", "2026-01-01T00:00:00Z", 20, 5] },
     "sqlserver": {
       "sql": "select [id], [name], [email], [display_name], [created_at], [updated_at] from [users] where (([id] = @c0 or [name] in (@c1, @c2)) and [created_at] >= @c3) order by [name] desc, [id] offset @c5 rows fetch next @c4 rows only",
+      "parameters": [1, "Ada", "Grace", "2026-01-01T00:00:00Z", 20, 5] },
+    "postgres": {
+      "sql": "select \"id\", \"name\", \"email\", \"display_name\", \"created_at\", \"updated_at\" from \"users\" where ((\"id\" = @c0 or \"name\" in (@c1, @c2)) and \"created_at\" >= @c3) order by \"name\" desc, \"id\" limit @c4 offset @c5",
       "parameters": [1, "Ada", "Grace", "2026-01-01T00:00:00Z", 20, 5] } }
 }

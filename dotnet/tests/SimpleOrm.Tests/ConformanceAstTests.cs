@@ -1,4 +1,5 @@
 using System.Text.Json;
+using SimpleOrm.Postgres;
 using SimpleOrm.Sqlite;
 using SimpleOrm.SqlServer;
 using Xunit;
@@ -21,6 +22,7 @@ public sealed class ConformanceAstTests
     {
         ["sqlite"] = () => new SqliteDialect(),
         ["sqlserver"] = () => new SqlServerDialect(),
+        ["postgres"] = () => new PostgresDialect(),
     };
 
     public static TheoryData<string> CaseFiles

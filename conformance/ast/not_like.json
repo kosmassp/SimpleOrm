@@ -11,5 +11,8 @@
       "parameters": ["%@example.com"] },
     "sqlserver": {
       "sql": "select [id], [name], [email], [display_name], [created_at], [updated_at] from [users] where not [email] like @c0",
+      "parameters": ["%@example.com"] },
+    "postgres": {
+      "sql": "select \"id\", \"name\", \"email\", \"display_name\", \"created_at\", \"updated_at\" from \"users\" where not \"email\" like @c0",
       "parameters": ["%@example.com"] } }
 }

@@ -9,5 +9,8 @@
       "parameters": [] },
     "sqlserver": {
       "sql": "select [id], [role_name], [created_at], [updated_at] from [roles]",
+      "parameters": [] },
+    "postgres": {
+      "sql": "select \"id\", \"role_name\", \"created_at\", \"updated_at\" from \"roles\"",
       "parameters": [] } }
 }

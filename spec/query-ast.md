@@ -148,7 +148,10 @@ dialect knobs (ADR-0024 — SQL Server was the second dialect that forced them):
   Identical rows match; parameters keep their order (the subquery binds inline).
 
 This keeps a second dialect's rendering cost near zero while preserving the rule
-that matters: **front-ends never emit SQL text; only the dialect does.**
+that matters: **front-ends never emit SQL text; only the dialect does.** The
+claim held in practice: PostgreSQL (ADR-0025) needed no rendering divergence at
+all beyond its quoting and its plain `limit`/`offset` clause — it delegates to
+the reference rendering with every knob at its default.
 
 ## Deliberately absent
 

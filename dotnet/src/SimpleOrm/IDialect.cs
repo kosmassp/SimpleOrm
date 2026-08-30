@@ -64,10 +64,23 @@ public interface IDialect
 
     /// <summary>
     /// Whether the database has real array parameters (§7.12; SQLite: no). False
-    /// is the IN-expansion strategy (<c>@ids_0…</c>); a dialect returning true
-    /// (Level 4 Postgres: <c>= ANY(@ids)</c>) takes over list binding itself.
+    /// is the IN-expansion strategy (<c>@ids_0…</c>); true (ADR-0025 Postgres)
+    /// binds a collection-typed property as <b>one</b> parameter, SQL untouched —
+    /// the registry SQL is written dialect-natively (<c>= any(@ids)</c>), and the
+    /// observable contract (always parameterized, empty matches no rows) holds
+    /// either way (spec/session.md).
     /// </summary>
     bool SupportsArrayParameters { get; }
+
+    /// <summary>
+    /// Whether temporal values bind as native CLR values instead of the §7.9
+    /// ISO-8601 strings (ADR-0025). SQLite stores TEXT — strings are the storage;
+    /// SQL Server accepts strings via implicit conversion; Postgres does neither
+    /// (<c>timestamptz >= text</c> refuses), so its provider receives
+    /// DateTime/DateTimeOffset (UTC-normalized; Kind=Unspecified still refuses
+    /// with <c>VAL-020</c>) and DateOnly/TimeOnly directly.
+    /// </summary>
+    bool BindsTemporalsNatively { get; }
 
     /// <summary>
     /// Introspection query for a relation's columns (§7.25): parameter <c>@relation</c>,

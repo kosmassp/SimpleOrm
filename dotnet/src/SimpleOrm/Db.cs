@@ -20,7 +20,7 @@ public sealed partial class Db : IAsyncDisposable
         _connection = connection;
         Options = options;
         Maps = new EntityMapLoader(options.Mapping);
-        _converter = new TypeConverter(options.TypeHandlers);
+        _converter = new TypeConverter(options.TypeHandlers, options.Dialect.BindsTemporalsNatively);
         _mapper = new ResultMapper(Maps, _converter);
     }
 
@@ -738,7 +738,9 @@ public sealed partial class Db : IAsyncDisposable
 
         var command = _connection.CreateCommand();
         command.Transaction = _transaction;
-        ParameterBinder.Bind(command, map.DefiningSql!, args, StatementName<TResult>(), _converter);
+        ParameterBinder.Bind(
+            command, map.DefiningSql!, args, StatementName<TResult>(), _converter,
+            Options.Dialect.SupportsArrayParameters);
         return command;
     }
 
@@ -779,7 +781,9 @@ public sealed partial class Db : IAsyncDisposable
     {
         var command = _connection.CreateCommand();
         command.Transaction = _transaction;
-        ParameterBinder.Bind(command, source.Sql, args, source.Description, _converter);
+        ParameterBinder.Bind(
+            command, source.Sql, args, source.Description, _converter,
+            Options.Dialect.SupportsArrayParameters);
         return command;
     }
 

@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.0;net10.0</TargetFrameworks>
+    <RootNamespace>SimpleOrm.Postgres</RootNamespace>
+    <Description>PostgreSQL dialect for SimpleOrm (Npgsql).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SimpleOrm\SimpleOrm.csproj" />
+  </ItemGroup>
+
+  <!-- Npgsql dropped netstandard2.0 after 4.1 — the same conditional-reference
+       pattern as SimpleOrm.SqlServer (ADR-0024/0025). The 4.1 leg carries known
+       temporal caveats (legacy timestamp mapping); prefer net10.0 for Postgres. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="Npgsql" Version="4.1.14" />
+    <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <PackageReference Include="Npgsql" Version="9.0.3" />
+  </ItemGroup>
+
+</Project>

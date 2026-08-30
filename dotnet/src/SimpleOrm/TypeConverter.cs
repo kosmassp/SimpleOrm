@@ -10,7 +10,7 @@ namespace SimpleOrm;
 /// stored datetimes must carry a UTC/offset marker; bound DateTimes must not be
 /// Kind.Unspecified).
 /// </summary>
-internal sealed class TypeConverter(TypeHandlerRegistry handlers)
+internal sealed class TypeConverter(TypeHandlerRegistry handlers, bool bindsTemporalsNatively = false)
 {
     public bool HasHandler(Type type) => handlers.Contains(type);
 
@@ -179,22 +179,29 @@ internal sealed class TypeConverter(TypeHandlerRegistry handlers)
                 return enumAsInt
                     ? Convert.ToInt64(enumValue, CultureInfo.InvariantCulture)
                     : enumValue.ToString();
+            // Temporals bind as ISO-8601 strings (§7.9, the SQLite TEXT convention)
+            // or, on a dialect whose provider wants native CLR values (ADR-0025
+            // Postgres), UTC-normalized as-is; the Kind=Unspecified refusal is the
+            // same rule either way.
             case DateTime dateTime:
-                return dateTime.Kind switch
+                var utc = dateTime.Kind switch
                 {
-                    DateTimeKind.Utc => dateTime.ToString("o", CultureInfo.InvariantCulture),
-                    DateTimeKind.Local => dateTime.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture),
+                    DateTimeKind.Utc => dateTime,
+                    DateTimeKind.Local => dateTime.ToUniversalTime(),
                     _ => throw new SimpleOrmException(
                         "VAL-020", context,
                         "DateTime with Kind=Unspecified cannot be stored; use Kind=Utc (Local is converted)"),
                 };
+                return bindsTemporalsNatively ? utc : utc.ToString("o", CultureInfo.InvariantCulture);
             case DateTimeOffset offset:
-                return offset.ToString("o", CultureInfo.InvariantCulture);
+                return bindsTemporalsNatively
+                    ? offset.ToUniversalTime()   // providers require offset zero for timestamptz
+                    : offset.ToString("o", CultureInfo.InvariantCulture);
 #if NET
             case DateOnly date:
-                return date.ToString("O", CultureInfo.InvariantCulture);
+                return bindsTemporalsNatively ? date : date.ToString("O", CultureInfo.InvariantCulture);
             case TimeOnly time:
-                return time.ToString("O", CultureInfo.InvariantCulture);
+                return bindsTemporalsNatively ? time : time.ToString("O", CultureInfo.InvariantCulture);
 #endif
             case bool or byte or short or int or long or float or double or decimal or string or byte[] or Guid or char:
                 return value;
@@ -203,6 +210,41 @@ internal sealed class TypeConverter(TypeHandlerRegistry handlers)
                     "MAP-030", context,
                     $"no conversion or handler stores a {value.GetType().Name}; register an ITypeHandler (§7.9)");
         }
+    }
+
+    /// <summary>
+    /// The CLR type <see cref="ToDatabase"/> produces for an element of the given
+    /// declared type — what an array parameter's element type must be (ADR-0025:
+    /// an empty collection still binds as a <b>typed</b> empty array, because
+    /// <c>bigint = any(text[])</c> refuses even with no elements). Handler types
+    /// are unknowable statically and fall back to <see cref="object"/>.
+    /// </summary>
+    public Type ArrayElementStorageType(Type elementType)
+    {
+        var type = Nullable.GetUnderlyingType(elementType) ?? elementType;
+        if (handlers.Contains(type))
+        {
+            return typeof(object);
+        }
+
+        if (type.IsEnum)
+        {
+            return typeof(string);   // parameter binding always stores enum names (§7.9)
+        }
+
+        if (type == typeof(DateTime) || type == typeof(DateTimeOffset))
+        {
+            return bindsTemporalsNatively ? type : typeof(string);
+        }
+
+#if NET
+        if (type == typeof(DateOnly) || type == typeof(TimeOnly))
+        {
+            return bindsTemporalsNatively ? type : typeof(string);
+        }
+#endif
+
+        return type;
     }
 
     /// <summary>The §7.9 date rule: a stored datetime must carry a UTC marker ('Z') or an explicit offset.</summary>

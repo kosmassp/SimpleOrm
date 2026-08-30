@@ -26,6 +26,8 @@ public sealed class SqliteDialect : IDialect
 
     public bool SupportsArrayParameters => false;
 
+    public bool BindsTemporalsNatively => false;   // TEXT storage: the ISO-8601 string IS the value (§7.9)
+
     public bool PagingRequiresOrderBy => false;
 
     public bool SupportsRowValueIn => true;

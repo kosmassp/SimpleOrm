@@ -67,14 +67,14 @@ final class SampleProjectTest extends TestCase
     {
         $runner = $this->runner();
 
-        self::assertSame(9, $runner->migrate());
+        self::assertSame(10, $runner->migrate());
         self::assertSame(0, $runner->migrate());
         SchemaGuard::validate($this->db, self::classes(), $this->set(), $this->snapshots());
 
-        self::assertSame(9, $runner->migrateDown(0));
+        self::assertSame(10, $runner->migrateDown(0));
         self::assertSame([], $this->userObjects());
 
-        self::assertSame(9, $runner->migrate());
+        self::assertSame(10, $runner->migrate());
         $names = array_map(static fn (Role $role): string => $role->name, $this->db->queryAll(Role::class));
         self::assertSame(['admin', 'user'], $names);
     }
@@ -85,7 +85,7 @@ final class SampleProjectTest extends TestCase
         $runner = $this->runner();
         $runner->migrate();
 
-        self::assertSame(6, $runner->migrateDown(3));
+        self::assertSame(7, $runner->migrateDown(3));
 
         $statement = $this->db->connection()->query('select name from roles order by name');
         self::assertNotFalse($statement);

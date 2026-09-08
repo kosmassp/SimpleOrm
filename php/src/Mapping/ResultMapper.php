@@ -144,13 +144,51 @@ final class ResultMapper
         // constructor (§7.1); every mapped property assigns through
         // PropertyMap::setValue, which writes via reflection so
         // `private(set)`/readonly targets work the same as for navigations.
+        // Owned members (ADR-0030) regroup by navigation: construct the owned
+        // instance, assign its members, attach it. A nullable navigation whose
+        // member columns are all NULL stays null — the row said "no value".
         return function (array $row) use ($resultType, $columnNames, $byColumn, $queryName): object {
             $instance = new $resultType();
+            /** @var array<int, array{owner: \SimpleOrm\Metadata\OwnedMap, bindings: list<array{0: string, 1: PropertyMap}>}> $ownedGroups */
+            $ownedGroups = [];
             foreach ($columnNames as $i => $columnName) {
                 $property = $byColumn[$i];
+                if ($property->owner !== null) {
+                    $ownedGroups[spl_object_id($property->owner)] ??= ['owner' => $property->owner, 'bindings' => []];
+                    $ownedGroups[spl_object_id($property->owner)]['bindings'][] = [$columnName, $property];
+                    continue;
+                }
+
                 $context = "{$queryName} → {$property->target()}";
                 $value = $this->convert($row[$columnName] ?? null, $property->type, $property->phpType, $property->nullable, $context);
                 $property->setValue($instance, $value);
+            }
+
+            foreach ($ownedGroups as $group) {
+                $owner = $group['owner'];
+                if ($owner->nullable) {
+                    $allNull = true;
+                    foreach ($group['bindings'] as [$columnName]) {
+                        if (($row[$columnName] ?? null) !== null) {
+                            $allNull = false;
+                            break;
+                        }
+                    }
+
+                    if ($allNull) {
+                        continue;
+                    }
+                }
+
+                $ownedType = $owner->ownedType;
+                $owned = new $ownedType();
+                foreach ($group['bindings'] as [$columnName, $property]) {
+                    $context = "{$queryName} → {$property->target()}";
+                    $value = $this->convert($row[$columnName] ?? null, $property->type, $property->phpType, $property->nullable, $context);
+                    $property->property->setValue($owned, $value);
+                }
+
+                $owner->property->setValue($instance, $owned);
             }
 
             return $instance;

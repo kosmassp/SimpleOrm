@@ -93,7 +93,7 @@ final class SchemaGuard
                     continue;
                 }
 
-                if (EntityMapLoader::hasMappingAttributes($class)) {
+                if (EntityMapLoader::hasMappingAttributes($class) && !EntityMapLoader::isOwnedType($class)) {
                     self::validateEntity($db, $connection, $columnsCache, $class, $errors);
                 }
             }

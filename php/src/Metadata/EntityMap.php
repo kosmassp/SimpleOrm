@@ -20,6 +20,9 @@ final readonly class EntityMap
 
     public ?PropertyMap $versionProperty;
 
+    /** @var list<OwnedMap> the owned value types flattened into this entity (ADR-0030), in declaration order */
+    public array $ownedTypes;
+
     /**
      * @param class-string $entityType
      * @param string|null $relationName table/view/procedure name; null for statement-backed entities
@@ -44,6 +47,15 @@ final readonly class EntityMap
         $this->keyProperties = array_values(array_filter($properties, static fn (PropertyMap $p): bool => $p->key));
         $version = array_values(array_filter($properties, static fn (PropertyMap $p): bool => $p->version));
         $this->versionProperty = $version[0] ?? null;
+
+        $owned = [];
+        foreach ($properties as $property) {
+            if ($property->owner !== null && !in_array($property->owner, $owned, true)) {
+                $owned[] = $property->owner;
+            }
+        }
+
+        $this->ownedTypes = $owned;
     }
 
     /** The unqualified class name: the export's `entity` and the target of error messages. */

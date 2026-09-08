@@ -10,6 +10,7 @@ use SimpleOrm\Metadata\Attributes\Generated;
 use SimpleOrm\Metadata\Attributes\Index;
 use SimpleOrm\Metadata\Attributes\Key;
 use SimpleOrm\Metadata\Attributes\ManyToOne;
+use SimpleOrm\Metadata\Attributes\Owned;
 use SimpleOrm\Metadata\Attributes\Table;
 
 /** Table `user_profiles` — the one-to-one fixture (ADR-0019 add.1): this side holds the FK with a unique index. */
@@ -34,4 +35,8 @@ final class UserProfile extends BaseModel
 
     #[Column]
     public ?string $avatarUrl = null;
+
+    /** Owned value type (ADR-0030): `Address` stored as `address_*` columns of this table; nullable, so an all-NULL row reads back as no address. */
+    #[Owned]
+    public ?Address $address = null;
 }

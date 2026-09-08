@@ -26,12 +26,16 @@ final readonly class PropertyMap
         public bool $generated = false,
         public bool $version = false,
         public ?string $foreignKeyReferences = null,
+        public ?OwnedMap $owner = null,
     ) {
     }
 
+    /** The property path: a direct member's name, or `navigation.member` for an owned member (ADR-0030) — the name criteria and column lists use. */
     public function propertyName(): string
     {
-        return $this->property->getName();
+        return $this->owner === null
+            ? $this->property->getName()
+            : $this->owner->propertyName() . '.' . $this->property->getName();
     }
 
     /** `Type.property`, the target form error messages use. */
@@ -52,14 +56,42 @@ final readonly class PropertyMap
         return !$this->nullable && !$this->property->hasDefaultValue() && !$this->property->isPromoted();
     }
 
+    /** Reads the member through its path; an owned member of a null navigation reads as null. */
     public function getValue(object $entity): mixed
     {
-        return $this->property->isInitialized($entity) ? $this->property->getValue($entity) : null;
+        $holder = $this->owner === null ? $entity : self::read($this->owner->property, $entity);
+        if ($holder === null) {
+            return null;
+        }
+
+        return self::read($this->property, $holder);
     }
 
-    /** Writes through `private(set)` and `readonly` alike: the library is the only writer of navigations (MAP-011). */
+    /**
+     * Writes through `private(set)` and `readonly` alike: the library is the only
+     * writer of navigations (MAP-011). An owned member (ADR-0030) writes through
+     * its path, creating the owned instance on first write.
+     */
     public function setValue(object $entity, mixed $value): void
     {
-        $this->property->setValue($entity, $value);
+        if ($this->owner === null) {
+            $this->property->setValue($entity, $value);
+
+            return;
+        }
+
+        $owned = self::read($this->owner->property, $entity);
+        if ($owned === null) {
+            $ownedType = $this->owner->ownedType;
+            $owned = new $ownedType();
+            $this->owner->property->setValue($entity, $owned);
+        }
+
+        $this->property->setValue($owned, $value);
+    }
+
+    private static function read(ReflectionProperty $property, object $holder): mixed
+    {
+        return $property->isInitialized($holder) ? $property->getValue($holder) : null;
     }
 }

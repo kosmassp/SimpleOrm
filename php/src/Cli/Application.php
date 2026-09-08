@@ -481,7 +481,8 @@ final class Application
         return array_values(array_filter(
             self::classes($arguments),
             static fn (string $class): bool => !(new ReflectionClass($class))->isAbstract()
-                && EntityMapLoader::hasMappingAttributes($class),
+                && EntityMapLoader::hasMappingAttributes($class)
+                && !EntityMapLoader::isOwnedType($class),
         ));
     }
 

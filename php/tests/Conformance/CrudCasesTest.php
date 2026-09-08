@@ -19,6 +19,7 @@ use SimpleOrm\Session\Db;
 use SimpleOrm\Session\DbOptions;
 use SimpleOrm\Tests\Sample\Models\Transaction;
 use SimpleOrm\Tests\Sample\Models\User;
+use SimpleOrm\Tests\Sample\Models\UserProfile;
 use SimpleOrm\Tests\Support\ConformancePaths;
 use SimpleOrm\Tests\Support\TempDatabase;
 use SimpleOrm\Types\Decimal;
@@ -38,6 +39,7 @@ final class CrudCasesTest extends TestCase
     private const ENTITY_TYPES = [
         'User' => User::class,
         'Transaction' => Transaction::class,
+        'UserProfile' => UserProfile::class,
     ];
 
     /** @return array<string, list<string>> */
@@ -63,6 +65,7 @@ final class CrudCasesTest extends TestCase
             $db = Db::open($fixture->connectionString(), new DbOptions(new SqliteDialect()));
             $db->createTable(User::class);
             $db->createTable(Transaction::class);
+            $db->createTable(UserProfile::class);
 
             $lastKey = null;
             $snapshots = [];

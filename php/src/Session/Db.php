@@ -499,8 +499,27 @@ final class Db
         $seen = [];
         foreach ($properties as $propertyName) {
             $target = "{$entityName}.{$propertyName}";
-            $property = $map->property($propertyName)
-                ?? throw new SimpleOrmException('CRUD-005', $target, 'is not a mapped property; the list takes property names');
+            $property = $map->property($propertyName);
+            if ($property === null) {
+                foreach ($map->ownedTypes as $ownedNavigation) {
+                    if ($ownedNavigation->propertyName() === $propertyName) {
+                        // An owned navigation's name stands for all its members (ADR-0030).
+                        foreach ($ownedNavigation->members() as $member) {
+                            if (isset($seen[$member->propertyName()])) {
+                                throw new SimpleOrmException('CRUD-007', "{$entityName}.{$member->propertyName()}", 'is listed more than once');
+                            }
+
+                            $seen[$member->propertyName()] = true;
+                            $resolved[] = $member;
+                        }
+
+                        continue 2;
+                    }
+                }
+
+                throw new SimpleOrmException('CRUD-005', $target, 'is not a mapped property; the list takes property names');
+            }
+
             if ($property->key) {
                 throw new SimpleOrmException('CRUD-006', $target, 'is a key property; an update never writes the key');
             }

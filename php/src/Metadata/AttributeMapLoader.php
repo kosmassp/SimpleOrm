@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SimpleOrm\Metadata;
 
 use ReflectionClass;
+use ReflectionNamedType;
 use ReflectionProperty;
 use SimpleOrm\Errors\MappingError;
 use SimpleOrm\Errors\MappingException;
@@ -20,6 +21,7 @@ use SimpleOrm\Metadata\Attributes\ManyToOne;
 use SimpleOrm\Metadata\Attributes\MaterializedView;
 use SimpleOrm\Metadata\Attributes\OneToMany;
 use SimpleOrm\Metadata\Attributes\OneToOne;
+use SimpleOrm\Metadata\Attributes\Owned;
 use SimpleOrm\Metadata\Attributes\Procedure;
 use SimpleOrm\Metadata\Attributes\Statement;
 use SimpleOrm\Metadata\Attributes\Table;
@@ -46,6 +48,15 @@ final class AttributeMapLoader
     {
         $class = new ReflectionClass($entityType);
         $errors = [];
+        if (self::isOwnedType($class)) {
+            // An owned value type (ADR-0030) has no map of its own; it is read
+            // through its owner. Loading it directly is a caller error.
+            throw new MappingException($entityType, [new MappingError(
+                'MAP-024',
+                $class->getShortName(),
+                'is an #[Owned] value type, not an entity; it maps only as a member of its owner',
+            )]);
+        }
 
         [$kind, $relationName, $schema, $statementSql, $statementParameters] =
             self::readRelationSource($class, $convention, $errors);
@@ -226,9 +237,21 @@ final class AttributeMapLoader
             $version = self::attr($property, Version::class);
             $enumAsInt = self::attr($property, EnumAsInt::class);
             $foreignKey = self::attr($property, ForeignKey::class);
+            $owned = self::attr($property, Owned::class);
 
             $navigationCount = ($manyToOne !== null ? 1 : 0) + ($oneToOne !== null ? 1 : 0)
                 + ($oneToMany !== null ? 1 : 0) + ($manyToMany !== null ? 1 : 0);
+
+            if ($owned !== null) {
+                if ($column !== null || $ignore !== null || $key !== null || $generated !== null || $version !== null
+                    || $enumAsInt !== null || $foreignKey !== null || $navigationCount > 0) {
+                    $errors[] = new MappingError('MAP-019', $target, '#[Owned] cannot combine with any other mapping attribute');
+                } else {
+                    self::readOwnedType($property, $target, $owned, $specs, $errors);
+                }
+
+                continue;
+            }
 
             if ($navigationCount > 0) {
                 if ($navigationCount > 1) {
@@ -582,6 +605,155 @@ final class AttributeMapLoader
         return $specs;
     }
 
+    /**
+     * Reads an `#[Owned]` value type (ADR-0030): a class with a parameterless
+     * constructor, declared `#[Owned]` at class level, whose `#[Column]` members
+     * flatten into the owner under the navigation's prefix. The owned type is
+     * not an entity — a relation source, `#[Index]`, key, version, generated
+     * column, foreign key, relationship, or nested `#[Owned]` inside it is
+     * `MAP-024`; the opt-in rule (`MAP-010`) applies to its members exactly as to
+     * an entity's.
+     *
+     * @param list<MappedPropertySpec> $specs
+     * @param list<MappingError> $errors
+     */
+    private static function readOwnedType(
+        ReflectionProperty $navigation,
+        string $target,
+        Owned $owned,
+        array &$specs,
+        array &$errors,
+    ): void {
+        $navigationType = $navigation->getType();
+        if (!$navigationType instanceof ReflectionNamedType || $navigationType->isBuiltin()
+            || !class_exists($navigationType->getName())) {
+            $errors[] = new MappingError(
+                'MAP-024',
+                $target,
+                'an #[Owned] navigation must be a single class-typed value; collections and scalars cannot be owned',
+            );
+
+            return;
+        }
+
+        /** @var class-string $ownedType */
+        $ownedType = $navigationType->getName();
+        $ownedClass = new ReflectionClass($ownedType);
+        foreach ([Table::class, View::class, MaterializedView::class, Statement::class, Procedure::class, Index::class] as $attribute) {
+            if ($ownedClass->getAttributes($attribute) !== []) {
+                $errors[] = new MappingError(
+                    'MAP-024',
+                    $target,
+                    "'{$ownedClass->getShortName()}' is an entity (it carries a relation source or #[Index]); an owned type has no table of its own",
+                );
+
+                return;
+            }
+        }
+
+        if (!self::isOwnedType($ownedClass)) {
+            $errors[] = new MappingError(
+                'MAP-024',
+                $target,
+                "'{$ownedClass->getShortName()}' must itself be declared #[Owned] at class level — that is what keeps it out of the entity set",
+            );
+
+            return;
+        }
+
+        $constructor = $ownedClass->getConstructor();
+        if ($constructor !== null && $constructor->getNumberOfRequiredParameters() > 0) {
+            $errors[] = new MappingError(
+                'MAP-024',
+                $target,
+                "'{$ownedClass->getShortName()}' needs a parameterless constructor to be owned",
+            );
+
+            return;
+        }
+
+        $type = $navigation->getType();
+        $spec = new OwnedSpec($navigation, $ownedType, $type === null || $type->allowsNull(), $owned->prefix);
+        $mapped = 0;
+        foreach (PropertyDiscovery::propertiesInDeclarationOrder($ownedClass) as $member) {
+            $memberTarget = $ownedClass->getShortName() . '.' . $member->getName();
+            $column = self::attr($member, Column::class);
+            $ignore = self::attr($member, Ignore::class);
+            $enumAsInt = self::attr($member, EnumAsInt::class);
+            $forbidden = false;
+            foreach ([Key::class, Generated::class, Version::class, ForeignKey::class, Owned::class,
+                ManyToOne::class, OneToOne::class, OneToMany::class, ManyToMany::class] as $attribute) {
+                if ($member->getAttributes($attribute) !== []) {
+                    $forbidden = true;
+                }
+            }
+
+            if ($forbidden) {
+                $errors[] = new MappingError(
+                    'MAP-024',
+                    $memberTarget,
+                    "an owned type's members carry only #[Column], #[EnumAsInt], or #[Ignore]: no key, version, generated column, foreign key, relationship, or nested #[Owned]",
+                );
+                continue;
+            }
+
+            if ($ignore !== null) {
+                if ($column !== null) {
+                    $errors[] = new MappingError('MAP-019', $memberTarget, '#[Ignore] cannot combine with #[Column]');
+                }
+
+                continue;
+            }
+
+            if ($column === null) {
+                if ($enumAsInt !== null) {
+                    $errors[] = new MappingError('MAP-019', $memberTarget, 'mapping attributes require #[Column] on the same property');
+                } elseif (PropertyVisibility::isPubliclySettable($member)) {
+                    $errors[] = new MappingError(
+                        'MAP-010',
+                        $memberTarget,
+                        'a public settable property must carry #[Column] or #[Ignore] (ADR-0004)',
+                    );
+                }
+
+                continue;
+            }
+
+            if ($enumAsInt !== null && !PropertyTypes::isEnumType($member)) {
+                $errors[] = new MappingError('MAP-019', $memberTarget, '#[EnumAsInt] requires an enum property');
+            }
+
+            $resolved = PropertyTypes::resolve($member, $column->type, $enumAsInt !== null);
+            $specs[] = new MappedPropertySpec(
+                $member,
+                $resolved->type,
+                $resolved->phpType,
+                $resolved->nullable,
+                explicitColumn: $column->name,
+                owner: $spec,
+            );
+            $mapped++;
+        }
+
+        if ($mapped === 0) {
+            $errors[] = new MappingError(
+                'MAP-024',
+                $target,
+                "'{$ownedClass->getShortName()}' maps no columns; an owned type needs at least one #[Column] member",
+            );
+        }
+    }
+
+    /**
+     * An `#[Owned]` value type (ADR-0030): never an entity, so assembly scans skip it.
+     *
+     * @param ReflectionClass<object> $class
+     */
+    public static function isOwnedType(ReflectionClass $class): bool
+    {
+        return $class->getAttributes(Owned::class) !== [];
+    }
+
     /** @param ReflectionClass<object> $class */
     public static function hasMappingAttributes(ReflectionClass $class): bool
     {
@@ -593,7 +765,7 @@ final class AttributeMapLoader
 
         $propertyAttributes = [
             Column::class, Ignore::class, Key::class, Generated::class, Version::class, EnumAsInt::class,
-            ForeignKey::class, ManyToOne::class, OneToOne::class, OneToMany::class, ManyToMany::class,
+            ForeignKey::class, ManyToOne::class, OneToOne::class, OneToMany::class, ManyToMany::class, Owned::class,
         ];
         foreach (PropertyDiscovery::propertiesInDeclarationOrder($class) as $property) {
             foreach ($propertyAttributes as $attribute) {

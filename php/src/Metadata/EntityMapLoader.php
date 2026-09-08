@@ -38,6 +38,12 @@ final class EntityMapLoader
         return AttributeMapLoader::hasMappingAttributes(new ReflectionClass($entityType));
     }
 
+    /** An `#[Owned]` value type (ADR-0030): carries mapping attributes but is never an entity — assembly scans skip it. */
+    public static function isOwnedType(string $type): bool
+    {
+        return AttributeMapLoader::isOwnedType(new ReflectionClass($type));
+    }
+
     /** @param class-string $entityType */
     private function loadCore(string $entityType): EntityMap
     {

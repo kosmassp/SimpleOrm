@@ -51,16 +51,35 @@ final class MapAssembler
         /** @var array<string, string> $seenColumns column => property that claimed it */
         $seenColumns = [];
 
+        /** @var array<int, OwnedMap> $ownedMaps keyed by spl_object_id of the OwnedSpec */
+        $ownedMaps = [];
+
         foreach ($specs as $spec) {
-            $column = $spec->explicitColumn ?? $convention->toDatabase($spec->property->getName());
+            // An owned member (ADR-0030) flattens into the owner: its column
+            // carries the navigation's prefix, its name is the dotted path, and
+            // a nullable navigation makes every member column nullable.
+            $owner = null;
+            if ($spec->owner !== null) {
+                $owner = $ownedMaps[spl_object_id($spec->owner)] ??= new OwnedMap(
+                    $spec->owner->property,
+                    $spec->owner->ownedType,
+                    $spec->owner->explicitPrefix ?? $convention->toDatabase($spec->owner->property->getName()) . '_',
+                    $spec->owner->nullable,
+                );
+            }
+
+            $column = ($owner?->prefix ?? '') . ($spec->explicitColumn ?? $convention->toDatabase($spec->property->getName()));
+            $propertyName = $owner === null
+                ? $spec->property->getName()
+                : $owner->propertyName() . '.' . $spec->property->getName();
             if (isset($seenColumns[$column])) {
                 $errors[] = new MappingError(
                     'MAP-018',
-                    "{$shortName}.{$spec->property->getName()}",
+                    "{$shortName}.{$propertyName}",
                     "maps to column '{$column}' already used by '{$seenColumns[$column]}'",
                 );
             } else {
-                $seenColumns[$column] = $spec->property->getName();
+                $seenColumns[$column] = $propertyName;
             }
 
             $property = new PropertyMap(
@@ -68,14 +87,16 @@ final class MapAssembler
                 $column,
                 $spec->type,
                 $spec->phpType,
-                $spec->nullable,
+                ($owner?->nullable ?? false) || $spec->nullable,
                 key: $spec->isKey,
                 generated: $spec->isGenerated,
                 version: $spec->isVersion,
                 foreignKeyReferences: $spec->foreignKeyReferences,
+                owner: $owner,
             );
+            $owner?->addMember($property);
             $properties[] = $property;
-            $byProperty[$spec->property->getName()] = $property;
+            $byProperty[$propertyName] = $property;
         }
 
         self::validateVersion($shortName, $properties, $errors);

@@ -25,6 +25,7 @@ final readonly class MappedPropertySpec
         public bool $isGenerated = false,
         public bool $isVersion = false,
         public ?string $foreignKeyReferences = null,
+        public ?OwnedSpec $owner = null,
     ) {
     }
 }

@@ -2179,4 +2179,14 @@ class marker as a method or tag on the struct) and the same `MAP-024` rules.
 **Verification (C#).** 324 passed, 10 skipped; both TFMs build. Sample
 migration count moved 9 → 10 in the tests that pin it.
 
-**Status.** Accepted for the reference; PHP and Go ports pending in this item.
+**Ports (same day).** PHP: `#[Owned]` on class and property, `OwnedMap`,
+`PropertyMap::getValue/setValue` walk the path, mapper regroups, CLI and
+SchemaGuard scans skip owned classes — 326 tests OK. Go: `orm.OwnedType`
+marker interface (the idiom for a class attribute, like `orm.Enum`) plus the
+`owned` / `owned=<prefix>` tag option, `core.OwnedMap`, `Get`/`Set` walk the
+navigation and allocate a nil pointer on write, `Loader.Load` refuses an owned
+type, the mapper leaves a pointer navigation nil for an all-NULL segment —
+12 packages ok. Both carry `UserProfile.Address` and sample V0010 with the
+byte-identical snapshot; every conformance folder is green in all three.
+
+**Status.** Accepted; implemented in C#, PHP, and Go.

@@ -37,6 +37,11 @@ await db.UpdateAsync(user, ct);        // full row by key
 await db.UpdateOnlyAsync(user, [nameof(User.Name)], ct);   // only the listed properties (ADR-0028); same key/version rules
 await db.DeleteAsync<User>(user.Id, ct);
 
+// Owned value types (ADR-0030): [Owned] class + [Owned] navigation → address_* columns of user_profiles,
+// one flat EntityMap, dotted paths in criteria and column lists; an all-NULL row reads back as null
+var inParis = await db.Query<UserProfile>().Where(Criteria.Eq("Address.City", "Paris")).ToListAsync(ct);
+await db.UpdateOnlyAsync(profile, ["Address"], ct);        // the navigation name stands for all its members
+
 // Optimistic concurrency ([Version] column): stale writes throw CRUD-010
 tx.Amount = 12m;
 await db.UpdateAsync(tx, ct);          // SET ... version = version + 1 WHERE id = @id AND version = @old

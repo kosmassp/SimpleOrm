@@ -1,0 +1,10 @@
+# One line-ending policy on every platform: LF in the repository and in every
+# checkout. Rendered SQL is compared and checksummed byte-for-byte (CLAUDE.md
+# §7.23; "byte-identical to the C# reference", php/CODING-STANDARD.md §5), and
+# the DDL literals that produce it — C# raw strings, PHP nowdocs — carry the
+# source file's physical newlines. A CRLF checkout (core.autocrlf=true on
+# Windows, or a `git archive` taken from one) therefore changes migration
+# checksums and fails SqliteDialectTest::version_table_sql_matches_the_reference_ddl;
+# php/bin/simpleorm is a shell script whose shebang line must end in LF.
+# `eol=lf` overrides core.autocrlf; `text=auto` keeps any future binary out.
+* text=auto eol=lf

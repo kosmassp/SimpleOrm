@@ -15,6 +15,10 @@ reinvent them. Where PHP forces a different shape, the adaptation is listed in
 - PSR-12 formatting: 4-space indent, `{` on its own line for classes/methods,
   same line for control structures, one blank line between members, no trailing
   whitespace, LF line endings, 120-column soft limit.
+- LF line endings are pinned repo-wide by the root `.gitattributes`
+  (`* text=auto eol=lf`, overriding `core.autocrlf`): nowdoc DDL and migration
+  checksums are byte-exact, so a CRLF checkout changes checksums and fails
+  `version_table_sql_matches_the_reference_ddl`.
 - `use` imports sorted alphabetically, one per line, no unused imports, no group
   use, fully-qualified names only in attributes' string arguments.
 - No `require`/`include` outside `bin/` and test bootstrap; Composer autoload only.

@@ -248,8 +248,12 @@ func RegisterJSON[T any](registry *TypeHandlerRegistry) *TypeHandlerRegistry {
 // NewEntityMapBuilder starts a manual map for T; register it on MappingOptions to override tags and conventions.
 func NewEntityMapBuilder[T any]() *EntityMapBuilder[T] { return metadata.NewEntityMapBuilder[T]() }
 
-// ExportEntityMap is the conformance JSON of a map (spec/metadata-model.md), byte-identical across ports.
-func ExportEntityMap(m *EntityMap) string { return metadata.Export(m) }
+// ExportEntityMap is the conformance JSON of a map (spec/metadata-model.md),
+// byte-identical across ports; maps (db.Maps()) resolves the related entities
+// whose columns the export names (ADR-0029).
+func ExportEntityMap(m *EntityMap, maps *metadata.Loader) (string, error) {
+	return metadata.Export(m, maps)
+}
 
 // CodeOf returns the stable code an error carries ("" when none).
 func CodeOf(err error) string { return core.CodeOf(err) }

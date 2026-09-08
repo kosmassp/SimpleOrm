@@ -69,26 +69,26 @@
     {
       "kind": "one_to_many",
       "references": "Transaction",
-      "targetForeignKeyProperties": [
-        "UserId"
+      "targetForeignKeyColumns": [
+        "user_id"
       ]
     },
     {
       "kind": "many_to_many",
       "references": "Role",
       "through": "UserRole",
-      "linkForeignKeysToOwner": [
-        "UserId"
+      "linkForeignKeyColumnsToOwner": [
+        "user_id"
       ],
-      "linkForeignKeysToTarget": [
-        "RoleId"
+      "linkForeignKeyColumnsToTarget": [
+        "role_id"
       ]
     },
     {
       "kind": "one_to_one",
       "references": "UserProfile",
-      "targetForeignKeyProperties": [
-        "UserId"
+      "targetForeignKeyColumns": [
+        "user_id"
       ]
     }
   ]

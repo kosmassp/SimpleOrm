@@ -68,20 +68,3 @@ func ToSnakeCase(name string) string {
 	}
 	return b.String()
 }
-
-// ToPascalCase is the export's interim spelling of a Go field name
-// (CODING-STANDARD §10, ADR-0027): each snake_case word capitalized, so UserID
-// exports as UserId — the C# spelling the pinned entity files carry until the
-// spec switches targetForeignKeyProperties to column names.
-func ToPascalCase(name string) string {
-	var b strings.Builder
-	for _, word := range strings.Split(ToSnakeCase(name), "_") {
-		if word == "" {
-			continue
-		}
-		runes := []rune(word)
-		b.WriteRune(unicode.ToUpper(runes[0]))
-		b.WriteString(string(runes[1:]))
-	}
-	return b.String()
-}

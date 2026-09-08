@@ -250,7 +250,7 @@ try {
     ok('migrate down --to 3, then up', 'rename inverted, columns/indexes/view restored, seeds intact');
 
     // --- metadata export (§7.3): the conformance artifact ----------------------------
-    $json = EntityMapJson::export($db->maps()->load(User::class));
+    $json = EntityMapJson::export($db->maps()->load(User::class), $db->maps());
     $decoded = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
     expect($decoded['entity'] === 'User' && str_contains($json, '"users"'), 'export names the entity and its table');
     ok('export-metadata', 'User -> ' . strlen($json) . ' bytes of EntityMap JSON');

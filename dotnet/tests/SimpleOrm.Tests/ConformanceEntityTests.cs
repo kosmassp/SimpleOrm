@@ -28,7 +28,8 @@ public sealed class ConformanceEntityTests
     [MemberData(nameof(Entities))]
     public void Export_matches_conformance_file(Type entityType)
     {
-        var json = EntityMapJson.Export(new EntityMapLoader().Load(entityType));
+        var loader = new EntityMapLoader();
+        var json = EntityMapJson.Export(loader.Load(entityType), loader);
         var file = Path.Combine(
             ConformanceDirectory(),
             "entities",

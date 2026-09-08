@@ -347,7 +347,7 @@ final class Application
         }
 
         foreach (self::mappedTypes($arguments) as $type) {
-            $json = EntityMapJson::export($loader->load($type));
+            $json = EntityMapJson::export($loader->load($type), $loader);
             if ($outDir === null) {
                 echo $json . PHP_EOL;
             } else {

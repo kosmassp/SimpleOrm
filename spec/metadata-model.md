@@ -49,8 +49,9 @@ Explicit (manual builder registration) → annotation loader → convention load
 - **Annotation loader**: used when the type carries any mapping annotation. Mapping
   is opt-in: a property is mapped iff explicitly marked (C#: `[Column]`); a public
   settable property with no marking at all is an error (`MAP-010`); non-column
-  properties must say so (`[Ignore]`) or be relationship declarations. Navigation
-  properties must not be publicly settable (`MAP-011`).
+  properties must say so (`[Ignore]`) or be relationship declarations. The
+  library is a navigation's only writer (`MAP-011`, an intent: enforced where
+  the language can express it, documented where it cannot — ADR-0029).
 - **Convention loader**: used when the type has no mapping annotations. Every public
   settable property maps by convention; a property named `Id` is the key
   (database-generated for integer types, client GUID for GUIDs); the type maps to a
@@ -123,10 +124,10 @@ byte-equality):
   ],
   "relationships": [
     { "kind": "many_to_one", "foreignKeyColumns": ["user_id"], "references": "User" },
-    { "kind": "one_to_one", "references": "UserProfile", "targetForeignKeyProperties": ["UserId"] },
-    { "kind": "one_to_many", "references": "Transaction", "targetForeignKeyProperties": ["UserId"] },
+    { "kind": "one_to_one", "references": "UserProfile", "targetForeignKeyColumns": ["user_id"] },
+    { "kind": "one_to_many", "references": "Transaction", "targetForeignKeyColumns": ["user_id"] },
     { "kind": "many_to_many", "references": "Role", "through": "UserRole",
-      "linkForeignKeysToOwner": ["UserId"], "linkForeignKeysToTarget": ["RoleId"] }
+      "linkForeignKeyColumnsToOwner": ["user_id"], "linkForeignKeyColumnsToTarget": ["role_id"] }
   ]
 }
 ```
@@ -138,26 +139,33 @@ loads on access (ADR-0019 add.1). The four classic cardinalities are the whole
 taxonomy: polymorphic relations and "through" traversals are ruled out
 permanently (no foreign-key integrity / plain SQL says it better). Rules:
 
-- A navigation is transient — never a column, never written — and must not be
-  publicly settable (`MAP-011`): the library is its only writer, so it can never
-  disagree with the foreign key.
+- A navigation is transient — never a column, never written — and **the library
+  is its only writer** (`MAP-011`), so it can never disagree with the foreign
+  key. The rule is an intent (ADR-0029): where the language can express it the
+  loader enforces it (C#: no public setter; PHP: `private(set)`), where it
+  cannot (Go: exported fields, which the library must be able to fill) the port
+  documents it and `MAP-011` is unreachable.
 - **Foreign keys are lists**: one entry per part of the referenced side's key,
   **in that key's order** — composite keys declare several (ADR-0019 add.1), and
   the count must match the key's arity wherever the key shape is declared.
 - `many_to_one`: the FK properties are mapped properties of this entity
   (`MAP-016` when unknown, or on an arity mismatch with the target key); the
   export carries their **column** names.
-- `one_to_one` / `one_to_many`: the FK lives on the target entity, named by
-  **property** (its column names belong to the target's own export); the named
-  properties must exist there, and their count must match this entity's key
-  arity (`MAP-021`). `one_to_many` is a collection — the element type comes from
+- `one_to_one` / `one_to_many`: the FK lives on the target entity; the
+  declaration names it by property in the implementation's own vocabulary, the
+  named properties must exist there, and their count must match this entity's
+  key arity (`MAP-021`). The export carries their **column** names, resolved
+  through the target's map (`targetForeignKeyColumns`, ADR-0029) — the export
+  never carries language-side names. `one_to_many` is a collection — the element type comes from
   the property's `IEnumerable<T>`, anything else is `MAP-020`; `one_to_one` is a
   single entity reference — a collection is `MAP-020`. True 1:1 integrity is the
   database's (a unique index on the target FK).
 - `many_to_many`: the link entity is **declared, never inferred**; its
   `[ForeignKey]` declarations identify which link properties reference each
   side, in declaration order, and each side's count must match that side's key
-  arity (`MAP-022` — missing, surplus, or short).
+  arity (`MAP-022` — missing, surplus, or short). The export carries the link's
+  **column** names for both sides (`linkForeignKeyColumnsToOwner`,
+  `linkForeignKeyColumnsToTarget`), resolved through the link's map.
 - A property carries at most one relationship declaration, and none of
   `[Column]`/`[Ignore]` beside it (`MAP-019`).
 

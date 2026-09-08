@@ -381,7 +381,10 @@ func runExportMetadata(registry orm.Registry, a arguments, stdout, stderr io.Wri
 		if err != nil {
 			return fail(stderr, err.Error())
 		}
-		document := orm.ExportEntityMap(m)
+		document, err := orm.ExportEntityMap(m, maps)
+		if err != nil {
+			return fail(stderr, err.Error())
+		}
 		if !hasOut {
 			fmt.Fprintln(stdout, document)
 			continue

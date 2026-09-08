@@ -53,7 +53,7 @@ final class EntitiesTest extends TestCase
     public function export_matches_the_pinned_conformance_file(string $fileName, string $entityType): void
     {
         $loader = new EntityMapLoader();
-        $json = self::normalizeNewlines(EntityMapJson::export($loader->load($entityType)));
+        $json = self::normalizeNewlines(EntityMapJson::export($loader->load($entityType), $loader));
 
         $path = ConformancePaths::dir('entities') . DIRECTORY_SEPARATOR . $fileName . '.json';
         self::assertFileExists($path, "missing conformance file {$path}");

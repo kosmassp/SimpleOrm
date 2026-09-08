@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/metadata"
 	"github.com/kosmassp/SimpleOrm/go/orm/sample"
 )
@@ -18,7 +19,7 @@ func TestExport_OmitsVersionWhenUnmapped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	json := metadata.Export(m)
+	json := mustExport(t, m)
 	if strings.Contains(json, `"version"`) {
 		t.Errorf("User export must not carry a version field:\n%s", json)
 	}
@@ -29,7 +30,7 @@ func TestExport_IncludesVersionWhenMapped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	json := metadata.Export(m)
+	json := mustExport(t, m)
 	if !strings.Contains(json, `"version": "version"`) {
 		t.Errorf("Transaction export must carry the version column:\n%s", json)
 	}
@@ -40,7 +41,7 @@ func TestExport_OmitsIndexesAndRelationshipsWhenEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	json := metadata.Export(m)
+	json := mustExport(t, m)
 	if strings.Contains(json, `"indexes"`) {
 		t.Errorf("keyless statement export must not carry indexes:\n%s", json)
 	}
@@ -54,7 +55,7 @@ func TestExport_KeyColumnAndGeneratedFlagsOnlyWhenTrue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	json := metadata.Export(m)
+	json := mustExport(t, m)
 	if !strings.Contains(json, `"key": true`) || !strings.Contains(json, `"generated": true`) {
 		t.Errorf("id column must carry key and generated flags:\n%s", json)
 	}
@@ -68,7 +69,7 @@ func TestExport_NormalizesSQLWhitespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	json := metadata.Export(m)
+	json := mustExport(t, m)
 
 	// CanonicalJSON always escapes an embedded double quote as a unicode
 	// escape sequence, never a backslash-quote, so the next raw double quote
@@ -90,7 +91,7 @@ func TestExport_EscapesHTMLSensitiveCharactersAsUppercaseUnicode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	json := metadata.Export(m)
+	json := mustExport(t, m)
 	if !strings.Contains(json, `\u003E`) {
 		t.Errorf("the '>' in 'created_at >= @since' must escape as \\u003E:\n%s", json)
 	}
@@ -104,8 +105,18 @@ func TestExport_NoTrailingNewline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	json := metadata.Export(m)
+	json := mustExport(t, m)
 	if strings.HasSuffix(json, "\n") {
 		t.Error("Export must not end with a trailing newline")
 	}
+}
+
+// mustExport renders m with a fresh loader for the related entities (ADR-0029).
+func mustExport(t *testing.T, m *core.EntityMap) string {
+	t.Helper()
+	json, err := metadata.Export(m, metadata.NewLoader(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return json
 }

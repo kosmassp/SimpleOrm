@@ -90,8 +90,8 @@
     {
       "kind": "one_to_many",
       "references": "TransactionDetail",
-      "targetForeignKeyProperties": [
-        "TransactionId"
+      "targetForeignKeyColumns": [
+        "transaction_id"
       ]
     }
   ]

@@ -12,8 +12,17 @@ namespace SimpleOrm;
 /// </summary>
 public static class EntityMapJson
 {
-    public static string Export(EntityMap map)
+    /// <summary>
+    /// The conformance JSON of a map (spec/metadata-model.md), byte-identical
+    /// across ports. <paramref name="maps"/> resolves the related entities whose
+    /// columns the export names (ADR-0029: every foreign-key reference exports
+    /// by column, never by property).
+    /// </summary>
+    public static string Export(EntityMap map, EntityMapLoader maps)
     {
+        static IEnumerable<string> Columns(EntityMap owner, IEnumerable<string> propertyNames)
+            => propertyNames.Select(n => owner.Properties.First(p => p.PropertyName == n).ColumnName);
+
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
         {
@@ -103,26 +112,26 @@ public static class EntityMapJson
                     {
                         case RelationshipKind.ManyToOne:
                             writer.WriteString("kind", "many_to_one");
-                            WriteNames(writer, "foreignKeyColumns", relationship.ForeignKeyProperties
-                                .Select(n => map.Properties.First(p => p.PropertyName == n).ColumnName));
+                            WriteNames(writer, "foreignKeyColumns", Columns(map, relationship.ForeignKeyProperties));
                             writer.WriteString("references", relationship.TargetType.Name);
                             break;
                         case RelationshipKind.OneToMany:
                         case RelationshipKind.OneToOne:
-                            // The FKs live on the target; their column names belong to
-                            // the target's own export, so property names are the
-                            // cross-language contract here (ADR-0019).
+                            // The FKs live on the target; resolve their columns through
+                            // the target's own map (ADR-0029: column names everywhere).
                             writer.WriteString(
                                 "kind", relationship.Kind == RelationshipKind.OneToOne ? "one_to_one" : "one_to_many");
                             writer.WriteString("references", relationship.TargetType.Name);
-                            WriteNames(writer, "targetForeignKeyProperties", relationship.ForeignKeyProperties);
+                            WriteNames(writer, "targetForeignKeyColumns",
+                                Columns(maps.Load(relationship.TargetType), relationship.ForeignKeyProperties));
                             break;
                         default:
+                            var link = maps.Load(relationship.LinkType!);
                             writer.WriteString("kind", "many_to_many");
                             writer.WriteString("references", relationship.TargetType.Name);
                             writer.WriteString("through", relationship.LinkType!.Name);
-                            WriteNames(writer, "linkForeignKeysToOwner", relationship.LinkForeignKeysToOwner);
-                            WriteNames(writer, "linkForeignKeysToTarget", relationship.LinkForeignKeysToTarget);
+                            WriteNames(writer, "linkForeignKeyColumnsToOwner", Columns(link, relationship.LinkForeignKeysToOwner));
+                            WriteNames(writer, "linkForeignKeyColumnsToTarget", Columns(link, relationship.LinkForeignKeysToTarget));
                             break;
                     }
 

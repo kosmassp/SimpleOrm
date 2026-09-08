@@ -34,12 +34,3 @@ func TestSnakeCase_DerivesTableAndIndexNames(t *testing.T) {
 		t.Errorf("index name: got %q", got)
 	}
 }
-
-func TestToPascalCase_SpellsGoInitialismsTheReferenceWay(t *testing.T) {
-	vectors := map[string]string{"UserID": "UserId", "TransactionID": "TransactionId", "RoleId": "RoleId", "Name": "Name"}
-	for input, expected := range vectors {
-		if got := ToPascalCase(input); got != expected {
-			t.Errorf("ToPascalCase(%q) = %q, want %q", input, got, expected)
-		}
-	}
-}

@@ -467,7 +467,7 @@ int ExportMetadata()
 
     foreach (var type in MappedTypes(assembly))
     {
-        var json = EntityMapJson.Export(loader.Load(type));
+        var json = EntityMapJson.Export(loader.Load(type), loader);
         if (outDir is null)
         {
             Console.WriteLine(json);

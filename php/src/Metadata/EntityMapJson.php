@@ -21,7 +21,7 @@ final class EntityMapJson
     {
     }
 
-    public static function export(EntityMap $map): string
+    public static function export(EntityMap $map, EntityMapLoader $maps): string
     {
         $document = [
             'entity' => $map->entityName(),
@@ -43,7 +43,7 @@ final class EntityMapJson
         }
 
         if ($map->relationships !== []) {
-            $document['relationships'] = self::relationships($map);
+            $document['relationships'] = self::relationships($map, $maps);
         }
 
         return CanonicalWriter::write($document);
@@ -152,49 +152,51 @@ final class EntityMapJson
     }
 
     /** @return list<array<string, mixed>> */
-    private static function relationships(EntityMap $map): array
+    private static function relationships(EntityMap $map, EntityMapLoader $maps): array
     {
-        return array_map(static function (RelationshipMap $relationship) use ($map): array {
+        return array_map(static function (RelationshipMap $relationship) use ($map, $maps): array {
             /** @var array<string, mixed> */
             return match ($relationship->kind) {
                 RelationshipKind::ManyToOne => [
                     'kind' => 'many_to_one',
-                    'foreignKeyColumns' => array_map(
-                        static function (string $n) use ($map): string {
-                            $property = $map->property($n);
-                            assert($property !== null, "many_to_one FK property '{$n}' must be mapped");
-
-                            return $property->columnName;
-                        },
-                        $relationship->foreignKeyProperties,
-                    ),
+                    'foreignKeyColumns' => self::columnNames($map, $relationship->foreignKeyProperties),
                     'references' => self::shortName($relationship->targetType),
                 ],
+                // The FKs live on the target; resolve their columns through the
+                // target's own map (ADR-0029: column names everywhere).
                 RelationshipKind::OneToOne, RelationshipKind::OneToMany => [
                     'kind' => $relationship->kind === RelationshipKind::OneToOne ? 'one_to_one' : 'one_to_many',
                     'references' => self::shortName($relationship->targetType),
-                    'targetForeignKeyProperties' => array_map(self::pascalCase(...), $relationship->foreignKeyProperties),
+                    'targetForeignKeyColumns' => self::columnNames($maps->load($relationship->targetType), $relationship->foreignKeyProperties),
                 ],
                 RelationshipKind::ManyToMany => [
                     'kind' => 'many_to_many',
                     'references' => self::shortName($relationship->targetType),
                     'through' => self::shortName((string) $relationship->linkType),
-                    'linkForeignKeysToOwner' => array_map(self::pascalCase(...), $relationship->linkForeignKeysToOwner),
-                    'linkForeignKeysToTarget' => array_map(self::pascalCase(...), $relationship->linkForeignKeysToTarget),
+                    'linkForeignKeyColumnsToOwner' => self::columnNames($maps->load((string) $relationship->linkType), $relationship->linkForeignKeysToOwner),
+                    'linkForeignKeyColumnsToTarget' => self::columnNames($maps->load((string) $relationship->linkType), $relationship->linkForeignKeysToTarget),
                 ],
             };
         }, $map->relationships);
     }
 
     /**
-     * PascalCases a PHP property name for the cross-language `targetForeignKeyProperties` /
-     * `linkForeignKeys*` export fields (CODING-STANDARD §10: an interim rule — the spec
-     * should switch these fields to columns, ADR-0026 — that keeps the export byte-identical
-     * to the C# reference's own property names).
+     * Resolves property names to their column names on the map that owns them.
+     *
+     * @param list<string> $propertyNames
+     * @return list<string>
      */
-    private static function pascalCase(string $propertyName): string
+    private static function columnNames(EntityMap $owner, array $propertyNames): array
     {
-        return ucfirst($propertyName);
+        return array_map(
+            static function (string $n) use ($owner): string {
+                $property = $owner->property($n);
+                assert($property !== null, "FK property '{$n}' must be mapped on {$owner->entityName()}");
+
+                return $property->columnName;
+            },
+            $propertyNames,
+        );
     }
 
     /** Collapses whitespace so the exported SQL is layout-independent across implementations. */

@@ -50,7 +50,11 @@ func TestEntities_MatchConformanceFiles(t *testing.T) {
 				t.Fatalf("load %s: %v", entityType.Name(), err)
 			}
 
-			actual := testsupport.NormalizeNewlines(metadata.Export(m))
+			document, err := metadata.Export(m, loader)
+			if err != nil {
+				t.Fatalf("export %s: %v", entityType.Name(), err)
+			}
+			actual := testsupport.NormalizeNewlines(document)
 			expectedBytes, err := os.ReadFile(filepath.Join(dir, fileName))
 			if err != nil {
 				t.Fatalf("read conformance/entities/%s: %v", fileName, err)

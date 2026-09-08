@@ -10,11 +10,10 @@ import (
 // exact port of EntityMapJson.cs, using core.CanonicalJSON so the byte output
 // matches the C# reference's System.Text.Json encoding. Column-centric and
 // language-neutral: column names, neutral type tokens, and SQL-side parameter
-// names only — never Go field names, except in the interim
-// targetForeignKeyProperties/linkForeignKeysTo* fields (CODING-STANDARD §10,
-// ADR-0027), which carry core.ToPascalCase(fieldName) until the spec switches
-// them to column names.
-func Export(m *core.EntityMap) string {
+// names only — never Go field names. maps resolves the related entities whose
+// columns a relationship names (ADR-0029: every foreign-key reference exports
+// by column); loading one of them is the only way Export can fail.
+func Export(m *core.EntityMap, maps *Loader) (string, error) {
 	root := core.JSONObject{}
 	root = root.Set("entity", m.EntityName())
 	root = root.Set("source", buildSource(m))
@@ -31,10 +30,14 @@ func Export(m *core.EntityMap) string {
 	}
 
 	if len(m.Relationships) > 0 {
-		root = root.Set("relationships", buildRelationships(m))
+		relationships, err := buildRelationships(m, maps)
+		if err != nil {
+			return "", err
+		}
+		root = root.Set("relationships", relationships)
 	}
 
-	return core.CanonicalJSON(root)
+	return core.CanonicalJSON(root), nil
 }
 
 func buildSource(m *core.EntityMap) core.JSONObject {
@@ -125,7 +128,7 @@ func buildIndexes(m *core.EntityMap) []any {
 	return result
 }
 
-func buildRelationships(m *core.EntityMap) []any {
+func buildRelationships(m *core.EntityMap, maps *Loader) ([]any, error) {
 	result := make([]any, len(m.Relationships))
 	for i, r := range m.Relationships {
 		obj := core.JSONObject{}
@@ -136,43 +139,45 @@ func buildRelationships(m *core.EntityMap) []any {
 			obj = obj.Set("references", r.TargetType.Name())
 
 		case core.RelationshipOneToMany, core.RelationshipOneToOne:
+			// The FKs live on the target; resolve their columns through the
+			// target's own map (ADR-0029: column names everywhere).
 			kindToken := "one_to_many"
 			if r.Kind == core.RelationshipOneToOne {
 				kindToken = "one_to_one"
 			}
+			targetMap, err := maps.Load(r.TargetType)
+			if err != nil {
+				return nil, err
+			}
 			obj = obj.Set("kind", kindToken)
 			obj = obj.Set("references", r.TargetType.Name())
-			obj = obj.Set("targetForeignKeyProperties", pascalCaseNames(r.ForeignKeyProperties))
+			obj = obj.Set("targetForeignKeyColumns", foreignKeyColumns(targetMap, r.ForeignKeyProperties))
 
 		default: // core.RelationshipManyToMany
+			linkMap, err := maps.Load(r.LinkType)
+			if err != nil {
+				return nil, err
+			}
 			obj = obj.Set("kind", "many_to_many")
 			obj = obj.Set("references", r.TargetType.Name())
 			obj = obj.Set("through", r.LinkType.Name())
-			obj = obj.Set("linkForeignKeysToOwner", pascalCaseNames(r.LinkForeignKeysToOwner))
-			obj = obj.Set("linkForeignKeysToTarget", pascalCaseNames(r.LinkForeignKeysToTarget))
+			obj = obj.Set("linkForeignKeyColumnsToOwner", foreignKeyColumns(linkMap, r.LinkForeignKeysToOwner))
+			obj = obj.Set("linkForeignKeyColumnsToTarget", foreignKeyColumns(linkMap, r.LinkForeignKeysToTarget))
 		}
 		result[i] = obj
 	}
-	return result
+	return result, nil
 }
 
-// foreignKeyColumns resolves many_to_one's FK property names (properties of
-// this entity) to their column names — this side's own export, so column
-// names are the language-neutral contract (spec/metadata-model.md).
-func foreignKeyColumns(m *core.EntityMap, propertyNames []string) []any {
+// foreignKeyColumns resolves FK property names to their column names on the
+// map that owns them — column names are the language-neutral contract
+// (spec/metadata-model.md, ADR-0029).
+func foreignKeyColumns(owner *core.EntityMap, propertyNames []string) []any {
 	result := make([]any, len(propertyNames))
 	for i, name := range propertyNames {
-		if p := m.Property(name); p != nil {
+		if p := owner.Property(name); p != nil {
 			result[i] = p.ColumnName
 		}
-	}
-	return result
-}
-
-func pascalCaseNames(names []string) []any {
-	result := make([]any, len(names))
-	for i, name := range names {
-		result[i] = core.ToPascalCase(name)
 	}
 	return result
 }

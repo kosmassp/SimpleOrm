@@ -51,11 +51,11 @@
       "kind": "many_to_many",
       "references": "User",
       "through": "UserRole",
-      "linkForeignKeysToOwner": [
-        "RoleId"
+      "linkForeignKeyColumnsToOwner": [
+        "role_id"
       ],
-      "linkForeignKeysToTarget": [
-        "UserId"
+      "linkForeignKeyColumnsToTarget": [
+        "user_id"
       ]
     }
   ]

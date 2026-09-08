@@ -27,13 +27,13 @@ these codes.
 | `MAP-002` | required property has no matching result column | §7.7 | milestone 4/6 |
 | `MAP-003` | ambiguous construction (competing constructors) | §7.8 | milestone 4 |
 | `MAP-010` | public settable property carries none of `[Column]`, `[Ignore]`, or a relationship attribute | ADR-0004/0005 | milestone 2 |
-| `MAP-011` | `[ManyToOne]` navigation property exposes a public setter | ADR-0005 add.2 | milestone 2 |
+| `MAP-011` | a navigation is writable by user code — the library must be its only writer (an intent: enforced where the language can express it, e.g. a public setter in C#, `private(set)` in PHP; unreachable and documented where it cannot, e.g. Go) | ADR-0005 add.2, ADR-0029 | milestone 2 |
 | `MAP-012` | class carries more than one relation source (`[Table]`/`[View]`/`[MaterializedView]`/`[Statement]`/`[Procedure]`) | ADR-0008 | milestone 2 |
 | `MAP-013` | attribute illegal for the relation source (`[Generated]`/`[Version]` on any non-table; `[Key]` on statement/procedure) | ADR-0008 | milestone 2 |
 | `MAP-014` | `[Index]` on a relation source that cannot carry one (view, statement, procedure) | ADR-0007/0008 | milestone 2 |
 | `MAP-015` | invalid `[Index]` column stream (empty; leading/doubled `SortOrder`; token neither string nor `SortOrder`; unknown or unmapped property) | ADR-0007 add.3 | milestone 2 |
 | `MAP-016` | `[ManyToOne]` foreign-key properties unknown/unmapped, empty, or their count mismatches the target key's arity | ADR-0005, ADR-0019 add.1 | milestone 2 |
-| `MAP-017` | invalid `[Statement]` parameter declaration (odd token count; token neither name string nor `Type`; duplicate name) | ADR-0008 add.2 | milestone 2 |
+| `MAP-017` | a statement/procedure parameter declaration is not a name→type mapping without repeats (a repeated name; where the declaration is spelled as a token list, an odd count or a token that is neither a name nor a type) | ADR-0008 add.2, ADR-0029 | milestone 2 |
 | `MAP-018` | two properties map to the same column name | ADR-0004 | milestone 2 |
 | `MAP-019` | no key defined where one is required; `[Generated]`/`[Version]` on a property without `[Column]`; `[Generated]` on a composite key; a database-generated key that is not an integer type | §7.1, ADR-0020 add.1 | milestone 2 |
 | `MAP-020` | a navigation property has the wrong shape: `[OneToMany]`/`[ManyToMany]` need a generic collection (`IEnumerable<T>`) of an entity type; `[OneToOne]` needs a single entity reference | ADR-0019 (+add.1) | L2 milestone 1 |

@@ -1837,3 +1837,154 @@ environment seeds, no seed file format, no `seed` command. The generator's
 
 **Status.** Accepted; reopen only if a port or Fidelis shows the raw-SQL data
 step is insufficient.
+
+## ADR-0027 — The Go port: Levels 0–1 by the ADR-0026 method; the spec meets a language without attributes, exceptions, or async (2026-09-08)
+
+Owner: "Build the Go port of SimpleOrm under `go/`, Levels 0–1 only, replicating
+the method that produced the PHP port." Go is second in the ADR-0023 port
+order because it is the spec-neutrality stress test §12 predicted: struct tags
+instead of attributes, errors as values, `context.Context` instead of
+cancellation tokens, no inheritance, no constructors, no assemblies. The port
+changing the spec is the point.
+
+**Scope** (§12: the first ports cover Levels 0–1) — the same as ADR-0026:
+metadata (the declaration, convention, and builder loaders; the byte-identical
+`EntityMap` export including relationship metadata), mapping with the fixed
+conversion table and the handler registry, parameters (IN-expansion), the
+session with generated CRUD and explicit transactions, the ADR-0012 criteria
+core with the reference renderer, SchemaGuard, code migrations with the
+runner, derived rollbacks, snapshots (format v2), the diff generator with
+`--amend`, force-sync, the shadow replayer, and the CLI. Out: relationship
+loading, fetch modes, joins (Level 2); non-SQLite dialects (the `Dialect`
+seam mirrors `IDialect` member for member so they slot in later). Lives in
+`go/` beside `dotnet/` and `php/`; shares no code; consumes `spec/` and
+`conformance/` unchanged — not one case file needed editing this time.
+
+**Method: foundation first, then fan-out** — the ADR-0026 method, repeated.
+Before any agent started, the tree held (1) `go/CODING-STANDARD.md`: Go 1.25+,
+`gofmt`/`vet`, packages mirroring the C# assemblies (`orm`, `orm/sqlite`,
+`orm/cli`) with the areas under `orm/internal/*`, file names mirroring the C#
+file names, names under Go's initialism rule, errors as `*core.Error` values
+with `errors.As`, real-database tests only, one implementation per concept,
+and a §10 table that is the **only** place a Go divergence may live; (2) the
+contracts as code — `internal/core` (errors, `EntityMap` and friends, the
+neutral tokens, `Decimal`/`GUID`/`Enum`, snake_case with the normative
+vectors, the type-handler registry, the canonical JSON writer reproducing
+System.Text.Json's escaping, the placeholder scanner, the `Dialect` seam, the
+AST and criteria factories, the descriptor types), the `orm` façade (aliases,
+the registry entry types), the metadata loader shell, the full SQLite dialect
+port verified against a real database, test support, and the ten fixture
+entities. Then three Sonnet agents in parallel (metadata + `entities` runner;
+renderer + converter + JSON handler + binder + `ast` runner; migrations model
++ snapshots + generator + sample tree + amend fixture + `diff-cases`/
+`snapshot-cases` runners), then two (session/CRUD/criteria/result mapper +
+`cases`/`crud-cases`; runner + derived downs + force sync + diff/amend +
+`migrations-cases`/`amend-cases`), then one (SchemaGuard + CLI + shadow), then
+a uniformity review over the whole tree. Every agent owned whole packages, so
+a colleague's half-written file never broke another's build; each reported
+the divergences it needed instead of coding around them.
+
+**The Go shape** (the §10 table, in one paragraph): per-field facts in the
+`orm` struct tag (`column`, `column=name`, `key`, `generated`, `version`,
+`enum_int`, `type=<token>`, `ignore`, `many_to_one=`, `one_to_many=`,
+`one_to_one=`, `many_to_many`) and everything a tag cannot carry — the
+relation source with its SQL, indexes, typed references — in a small
+descriptor: `func (User) Entity() orm.EntityDef { return orm.EntityDef{Source:
+orm.Table("users"), Indexes: …, ForeignKeys: []orm.ForeignKeyDef{orm.ForeignKey[User]("UserID")},
+ManyToMany: …} }`, generics standing in for `typeof(T)`; enums as named types
+implementing `orm.Enum` (`EnumNames()`), `orm.Decimal` string-backed,
+`orm.GUID`, `time.Time` always bound as UTC (Go has no Kind=Unspecified);
+nullability is a pointer; a DTO's non-pointer field is `required`; no
+constructors, so `MAP-003` cannot occur; embedded structs are inheritance
+(own fields first, then the embedded ones — the reference's order); every
+I/O function takes a `context.Context` and `Stream` is an `iter.Seq2[T,
+error]`; generic methods become package functions — `orm.Query(ctx, db,
+entry, args)`, `orm.Get[User](ctx, db, 7)`, `orm.Insert(ctx, db, &user)`,
+`orm.Delete[T]`/`orm.DeleteEntity`, `orm.From[User](db).Where(…).List(ctx)` —
+with the registry entry types named `QueryEntry`/`CommandEntry` because a Go
+type and a function cannot share the name `Query`; `orm.In[T](property,
+values ...T)` replaces the three C# overloads and dissolves the
+string-is-IEnumerable<char> trap; explicit `orm.Registry{Entities, Entries,
+Migrations, Snapshots}` replaces assembly scanning, `embed.FS` replaces
+embedded resources, and the CLI is a library (`cli.Run(ctx, registry, args,
+stdout, stderr)`) the application's own `main` embeds — a Go binary cannot
+load another binary's values; migration versions and steps are types with the
+reference's exact names (`V0002_AddDisplayName`, underscores included, parsed
+by `MIG-001`), a step embedding `orm.TableMigration[models.User]` and
+implementing `Action`, the optional `Down`/`PreDown`/`PostDown` as optional
+interfaces, one Go package per object directory (`Table/User` → `package
+user`) so the generator emits gofmt-clean sources and `DiffOptions` takes
+`Set`, `OutDir`, and the migrations `Package` import path; the session pins
+one `*sql.Conn` from the driver's pool and every transaction is `BEGIN
+IMMEDIATE` (`_txlock=immediate`), exactly what Microsoft.Data.Sqlite's
+`BeginTransaction()` does; SchemaGuard describes statements without executing
+them through modernc's column-origin API, exposed as the optional
+`StatementDescriber` capability beside the mirrored `Dialect` seam, because
+`database/sql` has no schema-only describe.
+
+**What the port changed in the spec** (§12):
+
+1. `spec/errors.md` gained **`MAP-023`** — malformed mapping declaration: a
+   language whose annotations are not type-checked at compile time needs a
+   code for an unparseable tag, an unknown token, an embedded pointer, a
+   builder naming a missing field. Unreachable in C# and PHP, where the
+   attributes are typed.
+2. **`MAP-011` is unenforceable in Go**: fields have no setters, and a
+   navigation must be exported for the library to populate it at Level 2.
+   The spec should state the rule as an intent — "the library is the only
+   writer of a navigation" — enforced where the language can express it
+   (C# setters, PHP `private(set)`), documented where it cannot.
+3. Typed declarations make three C# codes unreachable: `MAP-003` (no
+   constructors), `MAP-012` (one `Source` value), and the odd-count/wrong-token
+   sub-cases of `MAP-017` (typed `orm.Param[T]`) — which sharpens ADR-0026's
+   finding 3: `MAP-017` should read "the parameter declaration is a name→type
+   mapping without repeats".
+4. The `targetForeignKeyProperties`/`linkForeignKeysTo*` interim of ADR-0026
+   recurs: Go exports `ToPascalCase(field)` (`UserID` → `UserId`) to stay
+   byte-identical. Two ports now carry the same workaround; the column-name
+   proposal is ready for the owner's ruling.
+5. Two reference behaviors worth a spec line, found the way ADR-0026 found
+   PDO's text binding: the session's SQLite transactions are `BEGIN IMMEDIATE`
+   (spec/session.md says nothing about the mode; Microsoft.Data.Sqlite's
+   default is what the reference actually does), and SchemaGuard's
+   "describe without executing" needs a driver-level column-origin API — a
+   port pitfall on any platform whose standard database layer hides it.
+6. `conformance/` proved language-neutral: every folder ran unchanged; the
+   ADR-0026 neutralization of `amend-cases/` (extension-less source paths,
+   token fragments) is what made `.go` appending trivial. The one remaining
+   flavor is the pinned directory layout `Table/<Object>/` — mixed-case
+   directories are legal but unidiomatic Go package paths; tolerated rather
+   than changed.
+
+**Dependencies.** `modernc.org/sqlite` v1.58.0 — the pure-Go, cgo-free SQLite
+driver, the Go analog of `Microsoft.Data.Sqlite`/`pdo_sqlite`, and the port's
+only runtime dependency (recorded here per §4's "ask first"; the owner's brief
+pre-approved it). Tests use the standard `testing` package only.
+
+**Verification.** Every Level 0–1 conformance folder runs through a Go runner
+— `entities` (10/10 byte-identical), `cases` (7/7), `crud-cases` (2/2), `ast`
+(15/15 `sqlite` pins byte-identical), `diff-cases` (9/9), `snapshot-cases`
+(3/3 byte-identical), `migrations-cases` (9/9), `amend-cases` (11/11) — with
+no case file changed; `load-cases/` is Level 2 and excluded. The shadow
+replayer reproduces every committed sample snapshot byte-for-byte modulo
+`generatedAt` — the model-vs-history integrity check of spec/migrations.md,
+passing on a second implementation. Go suite before the review pass: **331
+tests, all green** (`go vet ./... && go test ./...`, Go 1.26.5, real temp-file
+SQLite databases). The C# and PHP suites are untouched by the port (no shared
+file they read changed; `spec/errors.md` only gained a row).
+The review pass consolidated four duplicated implementations (the scalar/DTO
+member classification SchemaGuard had copied from the result mapper — now
+`mapping.IsScalarType`/`NamesMatch`; the live column/index introspection that
+force-sync, SchemaGuard, and the shadow replayer each queried their own way —
+now one reader in `migrations`; the snapshot-directory lookups of the diff
+command and the shadow replayer; the conformance runners' JSON-number
+normalization), added the missing doc comments on the criteria factories,
+removed five construction-log comments, aligned four runner test names, and
+added the one §10 row the code had documented only in a comment (SchemaGuard
+names a registry entry by its SQL source description — Go values carry no
+field names). Every SQL-composition site was swept: identifiers come from the
+metadata or literal DDL, values always bind. No Go-only emission the reference
+never makes, no behavioral bug. Suite after the review: **331 tests, all
+green**; `gofmt`/`go vet` clean.
+
+**Status.** Accepted; uncommitted pending the owner's review.

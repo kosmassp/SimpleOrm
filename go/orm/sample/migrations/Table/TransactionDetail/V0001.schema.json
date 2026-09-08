@@ -1,0 +1,55 @@
+{
+  "object": "transaction_details",
+  "asOfVersion": 1,
+  "generatedAt": "2026-08-29T11:03:02.9656298Z",
+  "columns": [
+    {
+      "column": "created_at",
+      "type": "TEXT",
+      "nullable": false
+    },
+    {
+      "column": "description",
+      "type": "TEXT",
+      "nullable": false
+    },
+    {
+      "column": "id",
+      "type": "INTEGER",
+      "nullable": false,
+      "key": true,
+      "generated": true
+    },
+    {
+      "column": "quantity",
+      "type": "INTEGER",
+      "nullable": false
+    },
+    {
+      "column": "transaction_id",
+      "type": "INTEGER",
+      "nullable": false
+    },
+    {
+      "column": "unit_price",
+      "type": "TEXT",
+      "nullable": false
+    },
+    {
+      "column": "updated_at",
+      "type": "TEXT",
+      "nullable": true
+    }
+  ],
+  "indexes": [
+    {
+      "name": "ix_transaction_details_transaction_id",
+      "columns": [
+        {
+          "column": "transaction_id",
+          "direction": "asc"
+        }
+      ]
+    }
+  ]
+}

@@ -39,6 +39,7 @@ these codes.
 | `MAP-020` | a navigation property has the wrong shape: `[OneToMany]`/`[ManyToMany]` need a generic collection (`IEnumerable<T>`) of an entity type; `[OneToOne]` needs a single entity reference | ADR-0019 (+add.1) | L2 milestone 1 |
 | `MAP-021` | `[OneToMany]`/`[OneToOne]` target foreign-key properties missing on the target, empty, or their count mismatches this entity's key arity | ADR-0019 (+add.1) | L2 milestone 1 |
 | `MAP-022` | `[ManyToMany]` link entity's `[ForeignKey]` references to a side are missing or their count mismatches that side's key arity | ADR-0019 (+add.1) | L2 milestone 1 |
+| `MAP-023` | malformed mapping declaration: an annotation the language cannot type-check at compile time is unparseable or names an unknown option, token, or member (Go: a malformed `orm` struct tag, an unknown `type=` token, an embedded pointer, a builder naming a field that does not exist); unreachable where annotations are typed (C#, PHP) | ADR-0027 | Go port |
 | `MAP-030` | no conversion or handler between the CLR type and the database value (either direction) | §7.9 | milestone 4 |
 | `MAP-031` | value conversion failed (format, overflow, unknown enum name) | §7.9 | milestone 4 |
 

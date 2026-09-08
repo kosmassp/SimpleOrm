@@ -352,6 +352,18 @@ in place of an assembly). Its coding standard — `php/CODING-STANDARD.md` — l
 the only permitted divergences (synchronous methods, `Decimal`, `private(set)`
 navigations, …). `cd php && composer install && composer test`.
 
+## Go port (ADR-0027)
+
+The second port, Levels 0–1, lives in [`go/`](go/README.md): same spec, same
+conformance files, no shared code, one runtime dependency (`modernc.org/sqlite`,
+pure Go). Same API in Go shape — struct tags plus a small `Entity()` descriptor,
+`orm.Open`, `orm.Query(ctx, db, entry, args)`, `orm.Get[User]`,
+`orm.From[User](db).Where(…)`, errors as `*orm.Error` values, `context.Context`
+everywhere, explicit `orm.Registry` instead of assembly scanning, `embed.FS`
+snapshots, and the CLI as a library the application's `main` embeds. Its coding
+standard — `go/CODING-STANDARD.md` — lists the only permitted divergences.
+`cd go && go vet ./... && go test ./...`.
+
 ## Performance
 
 Compiled expression-tree mappers with typed-getter fast paths. BenchmarkDotNet vs

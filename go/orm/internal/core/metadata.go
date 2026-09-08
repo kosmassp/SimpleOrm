@@ -176,6 +176,11 @@ type PropertyMap struct {
 	IsVersion   bool
 	// ForeignKeyReferences is the entity this FK column references (the descriptor's ForeignKey), or nil.
 	ForeignKeyReferences reflect.Type
+	// Owner is the owned navigation this member is flattened through
+	// (ADR-0030), or nil for a direct field. For an owned member, Index is the
+	// member's path inside the owned struct and PropertyName the dotted path
+	// "Navigation.Member" — the name criteria and column lists use.
+	Owner *OwnedMap
 }
 
 // EnumAsInt is the §7.9 enum storage flag, carried by the token.
@@ -202,6 +207,15 @@ func (p *PropertyMap) ValueType() reflect.Type {
 // pointer field reads as nil; a non-nil pointer reads as the pointed-to value.
 func (p *PropertyMap) Get(entity any) any {
 	v := reflect.Indirect(reflect.ValueOf(entity))
+	if p.Owner != nil {
+		// An owned member (ADR-0030) reads through its navigation; a nil
+		// navigation reads as nil.
+		owned, ok := p.Owner.navigation(v, false)
+		if !ok {
+			return nil
+		}
+		v = owned
+	}
 	field := v.FieldByIndex(p.Index)
 	if field.Kind() == reflect.Pointer {
 		if field.IsNil() {
@@ -221,7 +235,13 @@ func (p *PropertyMap) Set(entity any, value any) error {
 	if target.Kind() != reflect.Pointer || target.IsNil() {
 		return Errorf("MAP-030", p.Target(), "Set needs a non-nil pointer to the entity, got %T", entity)
 	}
-	field := target.Elem().FieldByIndex(p.Index)
+	holder := target.Elem()
+	if p.Owner != nil {
+		// An owned member (ADR-0030) writes through its navigation, allocating
+		// a nil pointer navigation on first write.
+		holder, _ = p.Owner.navigation(holder, true)
+	}
+	field := holder.FieldByIndex(p.Index)
 	if value == nil {
 		field.Set(reflect.Zero(field.Type()))
 		return nil
@@ -264,6 +284,8 @@ type EntityMap struct {
 	// KeyProperties are the key properties in declaration order (composite keys are ordered).
 	KeyProperties   []*PropertyMap
 	VersionProperty *PropertyMap
+	// OwnedTypes are the owned value types flattened into this entity (ADR-0030), in declaration order.
+	OwnedTypes []*OwnedMap
 }
 
 // NewEntityMap assembles a map and derives its key and version properties.
@@ -291,12 +313,17 @@ func NewEntityMap(
 		Indexes:             indexes,
 		Relationships:       relationships,
 	}
+	seenOwners := map[*OwnedMap]bool{}
 	for _, p := range properties {
 		if p.IsKey {
 			m.KeyProperties = append(m.KeyProperties, p)
 		}
 		if p.IsVersion && m.VersionProperty == nil {
 			m.VersionProperty = p
+		}
+		if p.Owner != nil && !seenOwners[p.Owner] {
+			seenOwners[p.Owner] = true
+			m.OwnedTypes = append(m.OwnedTypes, p.Owner)
 		}
 	}
 	return m

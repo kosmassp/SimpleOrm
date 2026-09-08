@@ -243,6 +243,7 @@ Mirror the C# member names when porting, then apply the initialism rule:
 | nullable value types (`int?`, `DateTime?`) and nullable references | pointer fields (`*int64`, `*time.Time`, `*string`); `sql.Null*` unsupported | one nullability idiom |
 | `required` members (DTO strictness, `MAP-002`) | for a raw-result DTO, an exported **non-pointer** field is required and a pointer field optional; entity results are exact both ways regardless | Go has no `required`; a pointer is the field that can legitimately stay unset |
 | constructor mapping (§7.8, `MAP-003`) | Go has no constructors: rows assign exported fields (case- and underscore-insensitive for DTOs); `MAP-003` is unreachable; unexported fields are never mapped and never an error | Go's own visibility rule |
+| class-level `[Owned]` marking a value type (ADR-0030) | the type implements `orm.OwnedType` with an empty method (`func (Address) OwnedType() {}`), the way `orm.Enum` marks enums; the navigation opts in with the `owned` tag option (`owned=<prefix>` overrides, `owned=` disables); a pointer navigation is nullable, a struct value required | Go has no class attributes; a marker method is the idiom |
 | `MAP-011` (a navigation exposes a public setter) | not enforced: Go fields have no setters and a navigation must be exported for the library to populate it; navigations are library-written by convention (documented on each) | the spec states MAP-011 as an intent — "the library is a navigation's only writer" — enforced where expressible, documented here (ADR-0029) |
 | inherited properties, ordered most-derived first | **embedded structs (by value)**: the struct's own fields first in declaration order, then each embedded struct's fields | Go's inheritance analog |
 | generic methods (`db.GetAsync<T>`, `db.Query<T>()`, `db.CreateTableAsync<T>`) | package-level generic functions: `orm.Get[T](ctx, db, key)`, `orm.GetOrDefault[T]`, `orm.QueryAll[T]`, `orm.From[T](db)`, `orm.CreateTable[T]`, `orm.CreateView[T]`, `orm.Insert(ctx, db, &e)`, `orm.Update`, `orm.Query/QuerySingle/QuerySingleOrDefault/Stream/Execute(ctx, db, entry, args)` | methods cannot have type parameters |
@@ -280,6 +281,8 @@ orm:"column,key,generated"        database-generated key (integer kinds only, MA
 orm:"column,version"              the version column (tables only)
 orm:"column,enum_int"             an orm.Enum stored by position
 orm:"column,type=date"            neutral type override: date, time, datetimeoffset, guid, int16, int32, …
+orm:"owned"                       owned value type (ADR-0030): a struct (or pointer) implementing orm.OwnedType, its column fields flattened as <field>_<column>
+orm:"owned=addr_"                 owned with an explicit prefix; orm:"owned=" disables the prefix
 orm:"ignore"                      exported field deliberately unmapped
 orm:"many_to_one=UserID"          navigation; FK fields on this struct, in the target's key order (A+B)
 orm:"one_to_many=UserID"          navigation; FK fields on the target (the slice's element type)

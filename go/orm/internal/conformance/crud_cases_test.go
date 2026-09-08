@@ -99,6 +99,8 @@ func opsForEntity(name string) (crudOps, error) {
 		return opsFor[sample.User](), nil
 	case "Transaction":
 		return opsFor[sample.Transaction](), nil
+	case "UserProfile":
+		return opsFor[sample.UserProfile](), nil
 	}
 	return crudOps{}, fmt.Errorf("crud_cases_test: unknown entity %q", name)
 }
@@ -111,6 +113,8 @@ func opsForEntityValue(entity any) (crudOps, error) {
 		return opsFor[sample.User](), nil
 	case *sample.Transaction:
 		return opsFor[sample.Transaction](), nil
+	case *sample.UserProfile:
+		return opsFor[sample.UserProfile](), nil
 	}
 	return crudOps{}, fmt.Errorf("crud_cases_test: unknown snapshot type %T", entity)
 }
@@ -138,6 +142,9 @@ func TestCrudCases_BehaveAsSpecified(t *testing.T) {
 			}
 			if err := orm.CreateTable[sample.Transaction](ctx, db); err != nil {
 				t.Fatalf("create Transaction table: %v", err)
+			}
+			if err := orm.CreateTable[sample.UserProfile](ctx, db); err != nil {
+				t.Fatalf("create UserProfile table: %v", err)
 			}
 
 			var lastKey any

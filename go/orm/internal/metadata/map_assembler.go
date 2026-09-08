@@ -78,16 +78,41 @@ func buildProperties(
 	properties := make([]*core.PropertyMap, 0, len(specs))
 	byProperty := map[string]*core.PropertyMap{}
 	seenColumns := map[string]string{}
+	ownedMaps := map[*OwnedSpec]*core.OwnedMap{}
 
 	for _, spec := range specs {
+		// An owned member (ADR-0030) flattens into the owner: its column
+		// carries the navigation's prefix, its name is the dotted path, and a
+		// nullable navigation makes every member column nullable.
+		var owner *core.OwnedMap
+		propertyName := spec.PropertyName
+		if spec.Owner != nil {
+			owner = ownedMaps[spec.Owner]
+			if owner == nil {
+				prefix := convention.ColumnName(spec.Owner.Field.Name) + "_"
+				if spec.Owner.ExplicitPrefix != nil {
+					prefix = *spec.Owner.ExplicitPrefix
+				}
+				owner = &core.OwnedMap{
+					Field: spec.Owner.Field, Index: spec.Owner.Index, OwnedType: spec.Owner.OwnedType,
+					Prefix: prefix, IsNullable: spec.Owner.IsNullable,
+				}
+				ownedMaps[spec.Owner] = owner
+			}
+			propertyName = owner.PropertyName() + "." + spec.PropertyName
+		}
+
 		columnName := convention.ColumnName(spec.PropertyName)
 		if spec.ExplicitColumn != nil {
 			columnName = *spec.ExplicitColumn
 		}
+		if owner != nil {
+			columnName = owner.Prefix + columnName
+		}
 		if other, exists := seenColumns[columnName]; exists {
-			errs.add("MAP-018", target(entityType, spec.PropertyName), "maps to column '%s' already used by '%s'", columnName, other)
+			errs.add("MAP-018", target(entityType, propertyName), "maps to column '%s' already used by '%s'", columnName, other)
 		} else {
-			seenColumns[columnName] = spec.PropertyName
+			seenColumns[columnName] = propertyName
 		}
 
 		columnType := core.ColumnTypeOf(spec.Field.Type)
@@ -102,18 +127,22 @@ func buildProperties(
 			Field:                spec.Field,
 			Index:                spec.Index,
 			DeclaringType:        spec.DeclaringType,
-			PropertyName:         spec.PropertyName,
+			PropertyName:         propertyName,
 			ColumnName:           columnName,
 			Type:                 spec.Field.Type,
 			ColumnType:           columnType,
-			IsNullable:           spec.Field.Type.Kind() == reflect.Pointer,
+			IsNullable:           spec.Field.Type.Kind() == reflect.Pointer || (owner != nil && owner.IsNullable),
 			IsKey:                spec.IsKey,
 			IsGenerated:          spec.IsGenerated,
 			IsVersion:            spec.IsVersion,
 			ForeignKeyReferences: spec.ForeignKeyReferences,
+			Owner:                owner,
+		}
+		if owner != nil {
+			owner.Members = append(owner.Members, property)
 		}
 		properties = append(properties, property)
-		byProperty[spec.PropertyName] = property
+		byProperty[propertyName] = property
 	}
 
 	return properties, byProperty

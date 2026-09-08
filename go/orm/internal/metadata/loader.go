@@ -66,6 +66,12 @@ func Load[T any](l *Loader) (*core.EntityMap, error) {
 }
 
 func (l *Loader) load(t reflect.Type) (*core.EntityMap, error) {
+	if core.IsOwnedType(t) {
+		// An owned value type (ADR-0030) has no map of its own; it is read
+		// through its owner. Loading it directly is a caller error.
+		return nil, &core.MappingErrors{EntityType: t, Errors: []*core.Error{core.NewError("MAP-024", t.Name(),
+			"is an owned value type (orm.OwnedType), not an entity; it maps only as a member of its owner")}}
+	}
 	if explicit, ok := l.options.explicitFor(t); ok {
 		return explicit.Build(l.options.Convention())
 	}

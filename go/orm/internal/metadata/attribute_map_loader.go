@@ -10,6 +10,7 @@ package metadata
 import (
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
 )
@@ -305,6 +306,11 @@ type fieldDeclaration struct {
 	isEnumInt    bool
 	typeOverride *core.ColumnType
 
+	// isOwned is the `owned` option (ADR-0030); ownedPrefix its `owned=<prefix>`
+	// value when given (an empty value disables prefixing), nil for the default.
+	isOwned     bool
+	ownedPrefix *string
+
 	relationships []parsedRelationship
 }
 
@@ -340,6 +346,12 @@ func parseFieldTag(tagValue string, fieldTarget string, errs *errorCollector) fi
 				continue
 			}
 			decl.typeOverride = &columnType
+		case token == "owned":
+			decl.isOwned = true
+		case strings.HasPrefix(token, "owned="):
+			prefix := token[len("owned="):]
+			decl.isOwned = true
+			decl.ownedPrefix = &prefix
 		case token == "many_to_many":
 			decl.relationships = append(decl.relationships, parsedRelationship{kind: core.RelationshipManyToMany})
 		case strings.HasPrefix(token, "many_to_one="):
@@ -397,6 +409,16 @@ func readField(
 
 	decl := parseFieldTag(tagValue, fieldTarget, errs)
 
+	if decl.isOwned {
+		if decl.isColumn || decl.isIgnore || decl.isKey || decl.isGenerated || decl.isVersion ||
+			decl.isEnumInt || decl.typeOverride != nil || len(decl.relationships) > 0 {
+			errs.add("MAP-019", fieldTarget, "owned cannot combine with any other mapping option")
+			return
+		}
+		readOwnedType(df, fieldTarget, decl.ownedPrefix, errs, specs)
+		return
+	}
+
 	if len(decl.relationships) > 1 {
 		errs.add("MAP-019", fieldTarget, "a property carries at most one relationship declaration")
 		return
@@ -453,6 +475,90 @@ func readField(
 		EnumAsInt:          decl.isEnumInt,
 	})
 }
+
+// readOwnedType reads an `owned` value type (ADR-0030): a struct (or pointer
+// to one) implementing core.OwnedType, whose `column` fields flatten into the
+// owner under the navigation's prefix. The owned type is not an entity — an
+// Entity() descriptor, key, version, generated column, relationship, or
+// nested owned inside it is MAP-024; the tag rule (MAP-010) applies to its
+// fields exactly as to an entity's. Go structs need no constructor.
+func readOwnedType(
+	df discoveredField, fieldTarget string, explicitPrefix *string,
+	errs *errorCollector, specs *[]*MappedPropertySpec,
+) {
+	ownedType := df.Field.Type
+	isNullable := ownedType.Kind() == reflect.Pointer
+	if isNullable {
+		ownedType = ownedType.Elem()
+	}
+	if ownedType.Kind() != reflect.Struct || ownedType == timeStructType {
+		errs.add("MAP-024", fieldTarget, "an owned navigation must be a struct or a pointer to one; collections and scalars cannot be owned")
+		return
+	}
+	if _, isEntity := Descriptor(ownedType); isEntity {
+		errs.add("MAP-024", fieldTarget, "'%s' is an entity (it declares Entity()); an owned type has no table of its own", ownedType.Name())
+		return
+	}
+	if !core.IsOwnedType(ownedType) {
+		errs.add("MAP-024", fieldTarget, "'%s' must itself implement orm.OwnedType — that is what keeps it out of the entity set", ownedType.Name())
+		return
+	}
+
+	spec := &OwnedSpec{Field: df.Field, Index: df.Index, OwnedType: ownedType, IsNullable: isNullable, ExplicitPrefix: explicitPrefix}
+	members, discErrs := discoverFields(ownedType)
+	errs.errors = append(errs.errors, discErrs...)
+	mapped := 0
+	for _, member := range members {
+		memberTarget := target(ownedType, member.Field.Name)
+		tagValue, hasTag := member.Field.Tag.Lookup(TagName)
+		if !hasTag {
+			errs.add("MAP-010", memberTarget, "an exported field of an owned type must carry an orm tag (column or ignore)")
+			continue
+		}
+		decl := parseFieldTag(tagValue, memberTarget, errs)
+		if decl.isKey || decl.isGenerated || decl.isVersion || decl.isOwned || len(decl.relationships) > 0 {
+			errs.add("MAP-024", memberTarget, "an owned type's fields carry only column, enum_int, type=, or ignore: no key, version, generated column, relationship, or nested owned")
+			continue
+		}
+		if decl.isIgnore {
+			if decl.isColumn {
+				errs.add("MAP-019", memberTarget, "ignore cannot combine with column")
+			}
+			continue
+		}
+		if !decl.isColumn {
+			if decl.isEnumInt || decl.typeOverride != nil {
+				errs.add("MAP-019", memberTarget, "mapping options require 'column' on the same field")
+			}
+			continue
+		}
+		if decl.isEnumInt {
+			valueType := member.Field.Type
+			if valueType.Kind() == reflect.Pointer {
+				valueType = valueType.Elem()
+			}
+			if !core.IsEnumType(valueType) {
+				errs.add("MAP-023", memberTarget, "enum_int requires an orm.Enum type, found %s", valueType)
+			}
+		}
+		*specs = append(*specs, &MappedPropertySpec{
+			Field:              member.Field,
+			Index:              member.Index,
+			DeclaringType:      member.DeclaringType,
+			PropertyName:       member.Field.Name,
+			ExplicitColumn:     decl.columnName,
+			ColumnTypeOverride: decl.typeOverride,
+			EnumAsInt:          decl.isEnumInt,
+			Owner:              spec,
+		})
+		mapped++
+	}
+	if mapped == 0 {
+		errs.add("MAP-024", fieldTarget, "'%s' maps no columns; an owned type needs at least one column field", ownedType.Name())
+	}
+}
+
+var timeStructType = reflect.TypeFor[time.Time]()
 
 // readRelationshipField resolves one navigation's shape (MAP-020) and its
 // foreign-key declaration; arity checks against the other side's key run at

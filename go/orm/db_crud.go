@@ -437,6 +437,19 @@ func resolveUpdateList(m *core.EntityMap, properties []string) ([]*core.Property
 	for _, propertyName := range properties {
 		target := entityName + "." + propertyName
 		property := m.Property(propertyName)
+		if property == nil {
+			if owned := ownedNavigation(m, propertyName); owned != nil {
+				// An owned navigation's name stands for all its members (ADR-0030).
+				for _, member := range owned.Members {
+					if seen[member.PropertyName] {
+						return nil, core.NewError("CRUD-007", entityName+"."+member.PropertyName, "is listed more than once")
+					}
+					seen[member.PropertyName] = true
+					resolved = append(resolved, member)
+				}
+				continue
+			}
+		}
 		switch {
 		case property == nil:
 			return nil, core.NewError("CRUD-005", target, "is not a mapped property; the list takes field names")
@@ -453,6 +466,16 @@ func resolveUpdateList(m *core.EntityMap, properties []string) ([]*core.Property
 		resolved = append(resolved, property)
 	}
 	return resolved, nil
+}
+
+// ownedNavigation finds an owned navigation (ADR-0030) by its field name, or nil.
+func ownedNavigation(m *core.EntityMap, name string) *core.OwnedMap {
+	for _, owned := range m.OwnedTypes {
+		if owned.PropertyName() == name {
+			return owned
+		}
+	}
+	return nil
 }
 
 // executeUpdate is the shared tail of both updates (§7.15–16): bind, execute,

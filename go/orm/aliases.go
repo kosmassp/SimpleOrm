@@ -28,6 +28,10 @@ type (
 
 	// EntityMap is the single source of truth about a mapped type (§7.1).
 	EntityMap = core.EntityMap
+	// OwnedType marks a value object stored as columns of its owner (ADR-0030): `func (Address) OwnedType() {}`.
+	OwnedType = core.OwnedType
+	// OwnedMap is an owned value type flattened into its owner's table (ADR-0030).
+	OwnedMap = core.OwnedMap
 	// PropertyMap is one mapped field ↔ column pair.
 	PropertyMap = core.PropertyMap
 	// EntityIndex is a declared index in the metadata.

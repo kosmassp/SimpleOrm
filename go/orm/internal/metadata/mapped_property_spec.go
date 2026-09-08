@@ -30,6 +30,21 @@ type MappedPropertySpec struct {
 	// ForeignKeyReferences is set from the descriptor's EntityDef.ForeignKeys,
 	// after every spec's PropertyName is known (ADR-0027, CODING-STANDARD §10).
 	ForeignKeyReferences reflect.Type
+	// Owner is set when the field is a member of an owned type flattened into
+	// the entity (ADR-0030); Field/Index then describe the member inside the
+	// owned struct and PropertyName is the member's own name.
+	Owner *OwnedSpec
+}
+
+// OwnedSpec is the loader-internal working shape of an `owned` navigation
+// whose members flatten into the owner (ADR-0030; the C# OwnedSpec); the
+// prefix resolves at assembly.
+type OwnedSpec struct {
+	Field          reflect.StructField
+	Index          []int
+	OwnedType      reflect.Type
+	IsNullable     bool
+	ExplicitPrefix *string
 }
 
 // IndexColumnSpec is one column of a declared index before its property resolves

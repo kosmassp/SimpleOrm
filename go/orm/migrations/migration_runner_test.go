@@ -399,8 +399,8 @@ func TestRunner_SampleTreeRoundTripsThroughZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if applied != 9 {
-		t.Fatalf("expected 9 applied versions (V0001..V0009), got %d", applied)
+	if applied != 10 {
+		t.Fatalf("expected 10 applied versions (V0001..V0010), got %d", applied)
 	}
 	if again, err := runner.Migrate(ctx, migrations.RunOptions{}); err != nil || again != 0 {
 		t.Fatalf("expected idempotent re-migrate, got %d, %v", again, err)
@@ -418,8 +418,8 @@ func TestRunner_SampleTreeRoundTripsThroughZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(status) != 15 {
-		t.Fatalf("expected one row per (version, object) = 15, got %d: %+v", len(status), status)
+	if len(status) != 16 {
+		t.Fatalf("expected one row per (version, object) = 16, got %d: %+v", len(status), status)
 	}
 	for _, e := range status {
 		if e.State != migrations.Applied {
@@ -432,8 +432,8 @@ func TestRunner_SampleTreeRoundTripsThroughZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reverted != 9 {
-		t.Fatalf("expected 9 reverted versions, got %d", reverted)
+	if reverted != 10 {
+		t.Fatalf("expected 10 reverted versions, got %d", reverted)
 	}
 
 	var objectCount int64
@@ -450,8 +450,8 @@ func TestRunner_SampleTreeRoundTripsThroughZero(t *testing.T) {
 	if applied, err = runner.Migrate(ctx, migrations.RunOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if applied != 9 {
-		t.Fatalf("expected 9 re-applied versions, got %d", applied)
+	if applied != 10 {
+		t.Fatalf("expected 10 re-applied versions, got %d", applied)
 	}
 	roleNames, err = readRoleNames(ctx, pool)
 	if err != nil {

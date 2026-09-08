@@ -255,7 +255,19 @@ func (p *Plan) Read(rows *sql.Rows) (any, error) {
 	}
 
 	instance := reflect.New(p.structType)
+	// Owned members (ADR-0030): a nullable navigation whose member columns are
+	// all NULL stays nil — the row said "no value"; Set allocates it otherwise.
+	skipOwner := map[*core.OwnedMap]bool{}
 	for i, b := range p.bindings {
+		owner := b.property.Owner
+		if owner != nil && owner.IsNullable {
+			if _, decided := skipOwner[owner]; !decided {
+				skipOwner[owner] = allNull(p.bindings, raw, owner)
+			}
+			if skipOwner[owner] {
+				continue
+			}
+		}
 		converted, err := p.converter.FromDatabase(raw[i], b.property.Type, b.property.ColumnType, b.context)
 		if err != nil {
 			return nil, err
@@ -268,6 +280,16 @@ func (p *Plan) Read(rows *sql.Rows) (any, error) {
 		return instance.Interface(), nil
 	}
 	return instance.Elem().Interface(), nil
+}
+
+// allNull reports whether every column bound to owner's members is NULL in raw.
+func allNull(bindings []binding, raw []any, owner *core.OwnedMap) bool {
+	for i, b := range bindings {
+		if b.property.Owner == owner && raw[i] != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // wrapPointer turns FromDatabase's element-typed result into target's exact

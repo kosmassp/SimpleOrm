@@ -14,6 +14,9 @@ type UserProfile struct {
 	User      *User   `orm:"many_to_one=UserID"`
 	Bio       *string `orm:"column"`
 	AvatarURL *string `orm:"column"`
+	// Address is the owned value type (ADR-0030): stored as address_* columns
+	// of this table; a pointer, so an all-NULL row reads back as no address.
+	Address *Address `orm:"owned"`
 }
 
 func (UserProfile) Entity() orm.EntityDef {

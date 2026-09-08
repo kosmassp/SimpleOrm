@@ -1765,3 +1765,75 @@ the reference never makes, and found one real bug (acronym runs mis-split by a
 private snake_case regex — now pinned by a test).
 
 **Status.** Accepted.
+
+## Design seed — partial updates: an opt-in column list on `UpdateAsync` (2026-09-08)
+
+**Itch.** §7.15 makes `UpdateAsync` a full-row write: every mapped non-key,
+non-version, non-generated column, no dirty checking. On wide rows (a large
+`TEXT`/JSON column beside a handful of flags) changing one flag rewrites the
+whole row, and two users editing disjoint columns of an unversioned row
+silently overwrite each other. Hand SQL is the Level 1 answer; it works but
+loses the generated-CRUD guarantees (explicit column list from `EntityMap`,
+version check, `CRUD-001`/`CRUD-010`).
+
+**Seed.** A **separately named method** (owner ruling 2026-09-08: no overload — PHP, Go, and Rust have no overloading, and the spec must name one operation per concept) that keeps every §7.15–16 guarantee
+and narrows only the SET list:
+
+```csharp
+await db.UpdateAsync(user, ct);                                                   // full row, unchanged
+await db.UpdateOnlyAsync(user, [nameof(User.DisplayName), nameof(User.Email)], ct); // named columns
+```
+
+- **Property names, not column names** — same vocabulary as criteria
+  (ADR-0012/0020); the dialect renders columns from `EntityMap`.
+- **Validation, each a named error:** unknown property; a key, version, or
+  generated property in the list; an empty list. Codes to be registered in
+  `spec/errors.md` before any message exists (§13) — next free block is
+  `CRUD-005..` (`CRUD-001..004` and `CRUD-010` are taken).
+- **Version semantics unchanged:** `SET …, version = version + 1 WHERE key AND
+  version = @version`; zero rows is still `CRUD-010`. Row-level optimistic
+  concurrency stays row-level — a column list does not make disjoint edits
+  merge, and that is deliberate.
+- **Navigation consistency check (ADR-0005 add.1)** runs only for FK
+  properties in the list.
+- **No new metadata.** No `[Column(WriteMode…)]`, no per-property "large"
+  flags; the caller says what changed because at Level 1–2 the caller is the
+  only one who knows.
+- **Name.** `UpdateOnlyAsync` proposed (PHP `updateOnly`); `UpdateColumnsAsync` /
+  `PatchAsync` were the alternatives — "Patch" rejected for its HTTP
+  connotation. Final name is the owner's call; the spec section is titled by
+  the operation ("update by column list"), not the C# name.
+
+**Explicitly not this seed:** snapshot-based dirty tracking (Level 3 — needs a
+loaded-state snapshot per entity, which is the identity map's job); an
+AST-rendered `UPDATE … WHERE <criteria>` without loading the entity (a
+plausible later Level 2 item on top of ADR-0020's renderer, but a different
+feature — set-by-criteria has no version to check).
+
+**Where it lands.** `spec/crud.md` update section + `conformance/crud-cases/`
+(an `"op": "update"` variant carrying `"columns"`), the PHP port's `update()`
+under the same rule. TODO marker sits on `Db.UpdateAsync`.
+
+**Status.** Seed, shape agreed (full-row `UpdateAsync` unchanged + a named
+column-list method). **Timing ruling (2026-09-08): not before the Go port is
+done** — the port order (ADR-0023) comes first; the TODO marker on
+`Db.UpdateAsync` holds the place.
+
+## Decision — seeding stays with the developer (2026-09-08)
+
+Asked what the project says about seeding: nothing beyond migration data steps
+(`.Sql(insert …)` + `PreDown` delete, sample V0005), the `diff --amend`
+`--force` exception for such steps (ADR-0017 add.3), and the test-only
+`conformance/fixtures/seed.json`. Two directions were sketched — typed,
+diffable reference-data steps in migrations; and a separate
+environment-seed CLI command using the fixtures JSON shape.
+
+**Ruling.** Neither. "It should be up to the developer how to seed, [and]
+whether it has a specific environment or not." The library provides the
+mechanism it already has — a data step is a migration step like any other,
+with hooks for its removal — and takes no position on reference vs.
+environment seeds, no seed file format, no `seed` command. The generator's
+`--force` exception for data steps stands as documented.
+
+**Status.** Accepted; reopen only if a port or Fidelis shows the raw-SQL data
+step is insufficient.

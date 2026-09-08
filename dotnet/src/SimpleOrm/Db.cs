@@ -473,6 +473,13 @@ public sealed partial class Db : IAsyncDisposable
     /// (<c>CRUD-010</c>) on zero rows, and bumps the entity's version on success.
     /// Without one, zero rows is <c>CRUD-001</c>. Partial updates are hand SQL.
     /// </summary>
+    // TODO(L2): opt-in column list as a *separately named* method (no overload — the
+    // ports have no overloading): UpdateOnlyAsync(entity, [nameof(T.Prop), ...], ct),
+    // so wide rows (large TEXT/JSON columns) are not rewritten to change one flag.
+    // Still generated from EntityMap, still version-checked; names validated
+    // (unknown / key / version / generated property => named CRUD-0xx errors).
+    // See docs/decisions.md "Design seed — partial updates" (2026-09-08). Dirty
+    // tracking stays Level 3.
     public async Task UpdateAsync<TEntity>(TEntity entity, CancellationToken ct)
         where TEntity : class
     {

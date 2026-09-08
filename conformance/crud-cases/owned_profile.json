@@ -1,0 +1,22 @@
+{
+  "name": "owned_profile",
+  "comment": "An owned value type (ADR-0030) reads and writes through its owner's columns: a full update writes every owned column, a column-list update writes only the listed one, and an owner inserted without the value reads back with every owned column null.",
+  "steps": [
+    { "op": "insert", "entity": "UserProfile",
+      "values": { "user_id": 1, "bio": "Owner", "address_street": "1 Main St", "address_city": "Paris",
+                  "created_at": "2026-08-28T09:30:00.0000000Z" } },
+    { "op": "get", "entity": "UserProfile", "key": "$last", "as": "a",
+      "expect": { "values": { "address_street": "1 Main St", "address_city": "Paris", "address_postal_code": null } } },
+    { "op": "update", "from": "a", "columns": ["address_city"],
+      "values": { "address_city": "Lyon", "address_street": "not written" } },
+    { "op": "get", "entity": "UserProfile", "key": "$last",
+      "expect": { "values": { "address_city": "Lyon", "address_street": "1 Main St" } } },
+    { "op": "update", "from": "a", "values": { "address_postal_code": "69001" } },
+    { "op": "get", "entity": "UserProfile", "key": "$last",
+      "expect": { "values": { "address_city": "Lyon", "address_street": "not written", "address_postal_code": "69001" } } },
+    { "op": "insert", "entity": "UserProfile",
+      "values": { "user_id": 2, "created_at": "2026-08-28T09:30:00.0000000Z" } },
+    { "op": "get", "entity": "UserProfile", "key": "$last",
+      "expect": { "values": { "bio": null, "address_street": null, "address_city": null, "address_postal_code": null } } }
+  ]
+}

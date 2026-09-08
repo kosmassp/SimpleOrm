@@ -97,7 +97,7 @@ internal static class ConformanceDatabase
         var row = new JsonObject();
         foreach (var property in map.Properties)
         {
-            row[property.ColumnName] = Encode(property.Property.GetValue(entity));
+            row[property.ColumnName] = Encode(property.GetValue(entity));
         }
 
         return row;

@@ -2114,3 +2114,69 @@ port) → owned types (2) → benchmark refresh → the Go Level 2 port (6) as t
 exit audit → declare Level 2 closed.
 
 **Status.** Accepted. CLAUDE.md §3/§7b updated to match.
+
+## ADR-0030 — Owned types: value objects as columns of the owner, with a flat EntityMap (2026-09-08)
+
+ADR-0029 ruling 2 built. An **owned type** is a value object stored as columns
+of its owner's table — `UserProfile.Address` → `address_street`,
+`address_city`, `address_postal_code` — with no table, key, version, generated
+column, relationship, index, or nested owned type of its own.
+
+**Declaration — two markers, both required.** The type carries `[Owned]` at
+class level (that is what keeps it out of the entity set: the CLI, SchemaGuard,
+and the shadow rebuild skip such classes, and loading one as an entity is
+`MAP-024`). The owner's navigation carries `[Owned]` too, optionally with a
+`Prefix` — mapping stays opt-in per property (ADR-0004), and a property whose
+type merely happens to be owned does not map by itself. The members follow the
+entity rules for `[Column]`/`[Ignore]`/`[EnumAsInt]`/`MAP-010`; anything else
+inside is `MAP-024` (one code, each sub-case its own message).
+
+**The load-bearing decision: the `EntityMap` stays flat.** Each member becomes
+an ordinary `PropertyMap` of the owner — column `<prefix><member column>`,
+property name the dotted path `Address.City`, placed at the navigation's
+declaration position — carrying an `Owner` link to an `OwnedMap` (navigation,
+prefix, nullability, members). Consequences, all deliberate:
+
+- CRUD, criteria (`Criteria.Eq("Address.City", …)`, orderings, indexes), DDL,
+  snapshots, diff, force-sync, SchemaGuard, and the export needed **no
+  changes** — they read `map.Properties` and see columns. The export records
+  no owned structure: it is column-centric, and two implementations that
+  flatten the same declaration must export identically.
+- Only the result mapper regroups: after the owner's constructor algorithm
+  (which never sees owned members — dotted names match no parameter), each
+  owned navigation is constructed through its parameterless constructor and
+  attached; a **nullable navigation whose member columns are all NULL stays
+  null**, a required one is always constructed.
+- **Nullability:** a nullable navigation forces every member column nullable
+  (a null value stores as all-NULL); a required navigation keeps each
+  member's own nullability. A NULL into a non-nullable member of a present
+  segment is `MAP-031`, as for an entity.
+- `PropertyMap` gained `GetValue`/`SetValue` accessors that walk the path
+  (creating the owned instance on first write); the session, loading, and
+  the conformance runners use them instead of `PropertyInfo` directly — the
+  shape PHP (`getValue`/`setValue`) and Go (`Get`/`Set`) already had.
+- `UpdateOnlyAsync` accepts the navigation's name as shorthand for all its
+  members (ADR-0028's list semantics unchanged; a repeat is still `CRUD-007`).
+
+**Not in this ADR.** Nesting (an owned type inside an owned type — `MAP-024`;
+one level covers the value-object case and keeps paths two segments deep).
+Collections of owned types (that is a one-to-many table). Owned declarations
+in the manual `EntityMapBuilder` and the convention loader (attribute loader
+only; the others refuse nothing new — a class-typed property there is what it
+always was). Constructor-parameter construction for owned types
+(parameterless + setters; records with positional parameters are `MAP-024`).
+
+**Fixture and conformance.** `UserProfile.Address` (sample V0010 adds the three
+nullable columns, snapshot embedded); `conformance/entities/user_profile.json`
+regenerated (flat); `conformance/cases/owned_read.json` (the seeded profile
+now carries an address); `conformance/crud-cases/owned_profile.json` (full
+update writes owned columns, column-list update writes one, an owner inserted
+without the value reads back all-null). The runners' `UserProfile` entry and
+accessor use are the only runner changes. Ports follow with their native
+declaration (PHP attribute on class + property; Go `orm:"owned"` tag with the
+class marker as a method or tag on the struct) and the same `MAP-024` rules.
+
+**Verification (C#).** 324 passed, 10 skipped; both TFMs build. Sample
+migration count moved 9 → 10 in the tests that pin it.
+
+**Status.** Accepted for the reference; PHP and Go ports pending in this item.

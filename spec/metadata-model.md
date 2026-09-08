@@ -90,6 +90,55 @@ match):
 Derived table names are the snake_case type name, **never pluralized**. Derived
 index names are `ix_<table>_<column>[_<column>…]`.
 
+## Owned types (ADR-0030)
+
+An **owned type** is a value object stored as columns of its owner's table: it
+has no table, key, version, generated column, relationship, index, or nested
+owned type of its own, and it is never an entity — assembly scans (the CLI,
+SchemaGuard, snapshot tooling) skip it. Two declarations, both required: the
+**type** is marked owned at class level (that is what keeps it out of the entity
+set), and the owner's **navigation property** is marked owned too (mapping stays
+opt-in per property; the navigation may set a column prefix).
+
+```csharp
+[Owned] public sealed class Address { [Column] public string Street { get; set; } … }
+[Table("user_profiles")] public sealed class UserProfile { …  [Owned] public Address? Address { get; set; } }
+```
+
+Rules:
+
+- The owned type's members follow the entity rules for `[Column]`, `[Ignore]`,
+  `[EnumAsInt]`, and the opt-in check (`MAP-010`); anything else on a member —
+  key, version, generated, foreign key, relationship, nested owned — is
+  `MAP-024`. So are: a navigation that is a collection or a scalar, a
+  navigation without a setter, an owned type that is an entity, that lacks the
+  class-level declaration, that has no parameterless constructor, or that maps
+  no columns; and loading an owned type as if it were an entity.
+- **Flattening.** Each member becomes an ordinary column of the owner:
+  `<prefix><member column>`, where the member column follows the usual rule
+  (bare `[Column]` → convention name; explicit name kept) and the prefix
+  defaults to the convention name of the navigation plus `_` (`Address` →
+  `address_`), overridable per navigation (including to the empty string). A
+  prefixed column colliding with another column is `MAP-018`. The members sit
+  in the owner's property list at the navigation's declaration position, in
+  the owned type's declaration order. **The `EntityMap` is therefore flat**:
+  every subsystem — CRUD, criteria, DDL, snapshots, diff, validation, the
+  export — sees only columns; only the mapper regroups them.
+- **Naming.** A member's property name is the dotted path `Navigation.Member`
+  (`Address.City`) — the name criteria, orderings, indexes, and column lists
+  use, resolved like any other property (`QRY-006` when unknown). An update by
+  column list also accepts the navigation's own name, which stands for all its
+  members.
+- **Nullability.** A nullable navigation makes every member column nullable,
+  whatever the member's own type: a null value stores as all-NULL. A required
+  (non-nullable) navigation keeps each member's own nullability.
+- **Export.** Column-centric like everything else: the flattened columns
+  appear as ordinary columns and nothing records the owned structure — two
+  implementations that flatten the same declaration produce identical exports.
+
+Reading and writing rules are in `mapping-rules.md`; the fixture is
+`UserProfile.Address` (`address_street`, `address_city`, `address_postal_code`).
+
 ## Entity identity
 
 An entity's identity is its ordered key values, extracted from an instance.

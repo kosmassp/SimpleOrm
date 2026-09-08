@@ -58,6 +58,7 @@ internal sealed class ResultMapper(EntityMapLoader loader, TypeConverter convert
         public Type TargetType = typeof(object);
         public string TargetName = string.Empty;
         public PropertyInfo? Property;          // null when consumed by the constructor
+        public OwnedMap? Owner;                 // set for an owned member (ADR-0030): Property lives on the owned type
     }
 
     private sealed class Plan
@@ -97,6 +98,7 @@ internal sealed class ResultMapper(EntityMapLoader loader, TypeConverter convert
                 TargetName = byColumn[i].PropertyName,
                 TargetType = byColumn[i].ClrType,
                 Property = byColumn[i].Property,
+                Owner = byColumn[i].Owner,
             }).ToList(),
             requiredCheck: false,
             queryName);
@@ -234,27 +236,55 @@ internal sealed class ResultMapper(EntityMapLoader loader, TypeConverter convert
                 Expression.New(plan.Constructor, plan.ConstructorBindings.Select(Read))),
         };
 
-        foreach (var binding in plan.MemberBindings)
+        foreach (var binding in plan.MemberBindings.Where(b => b.Owner is null))
         {
-            var property = binding.Property!;
-            if (IsInitOnly(property))
+            body.Add(AssignMember(instance, binding.Property!, Read(binding)));
+        }
+
+        // Owned members (ADR-0030) regroup by navigation: construct the owned
+        // instance, assign its members, attach it. A nullable navigation whose
+        // member columns are all NULL stays null — the row said "no value".
+        foreach (var group in plan.MemberBindings.Where(b => b.Owner is not null).GroupBy(b => b.Owner!))
+        {
+            var owner = group.Key;
+            var owned = Expression.Variable(owner.OwnedType, "owned");
+            var assignments = new List<Expression> { Expression.Assign(owned, Expression.New(owner.OwnedType)) };
+            foreach (var binding in group)
             {
-                // init-only setters carry a modreq; assign via reflection instead.
-                var setValue = typeof(PropertyInfo).GetMethod(nameof(PropertyInfo.SetValue), [typeof(object), typeof(object)])!;
-                body.Add(Expression.Call(
-                    Expression.Constant(property), setValue,
-                    Expression.Convert(instance, typeof(object)),
-                    Expression.Convert(Read(binding), typeof(object))));
+                assignments.Add(AssignMember(owned, binding.Property!, Read(binding)));
             }
-            else
+
+            assignments.Add(AssignMember(instance, owner.Property, owned));
+            Expression attach = Expression.Block([owned], assignments);
+            if (owner.IsNullable)
             {
-                body.Add(Expression.Assign(Expression.Property(instance, property), Read(binding)));
+                var allNull = group
+                    .Select(b => (Expression)Expression.Call(reader, IsDbNullMethod, Expression.Constant(b.Ordinal)))
+                    .Aggregate(Expression.AndAlso);
+                attach = Expression.IfThen(Expression.Not(allNull), attach);
             }
+
+            body.Add(attach);
         }
 
         body.Add(instance);
         return Expression.Lambda<Func<DbDataReader, T>>(
             Expression.Block([instance], body), reader).Compile();
+    }
+
+    /// <summary>Assigns a property on a target instance; init-only setters carry a modreq, so those assign via reflection.</summary>
+    private static Expression AssignMember(Expression target, PropertyInfo property, Expression value)
+    {
+        if (IsInitOnly(property))
+        {
+            var setValue = typeof(PropertyInfo).GetMethod(nameof(PropertyInfo.SetValue), [typeof(object), typeof(object)])!;
+            return Expression.Call(
+                Expression.Constant(property), setValue,
+                Expression.Convert(target, typeof(object)),
+                Expression.Convert(value, typeof(object)));
+        }
+
+        return Expression.Assign(Expression.Property(target, property), value);
     }
 
     /// <summary>

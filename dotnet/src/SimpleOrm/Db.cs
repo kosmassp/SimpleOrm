@@ -432,7 +432,7 @@ public sealed partial class Db : IAsyncDisposable
 
         if (map.KeyStrategy == KeyStrategy.ClientGuid)
         {
-            var keyProperty = map.KeyProperties[0].Property;
+            var keyProperty = map.KeyProperties[0];
             if (Equals(keyProperty.GetValue(entity), Guid.Empty))
             {
                 keyProperty.SetValue(entity, Guid.NewGuid());
@@ -447,7 +447,7 @@ public sealed partial class Db : IAsyncDisposable
             var parameter = command.CreateParameter();
             parameter.ParameterName = "@" + property.ColumnName;
             parameter.Value = _converter.ToDatabase(
-                property.Property.GetValue(entity),
+                property.GetValue(entity),
                 $"{typeof(TEntity).Name}.{property.PropertyName}",
                 property.EnumAsInt);
             command.Parameters.Add(parameter);
@@ -457,7 +457,7 @@ public sealed partial class Db : IAsyncDisposable
         {
             var key = map.KeyProperties[0];
             var generated = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
-            key.Property.SetValue(entity, _converter.FromDatabase(
+            key.SetValue(entity, _converter.FromDatabase(
                 generated, key.ClrType, $"{typeof(TEntity).Name}.{key.PropertyName}"));
         }
         else
@@ -528,8 +528,28 @@ public sealed partial class Db : IAsyncDisposable
         foreach (var propertyName in properties)
         {
             var target = $"{entityName}.{propertyName}";
-            var property = map.Properties.FirstOrDefault(p => p.PropertyName == propertyName)
-                ?? throw new SimpleOrmException("CRUD-005", target, "is not a mapped property; the list takes property names");
+            var property = map.Properties.FirstOrDefault(p => p.PropertyName == propertyName);
+            if (property is null && map.OwnedTypes.FirstOrDefault(o => o.PropertyName == propertyName) is { } ownedNavigation)
+            {
+                // An owned navigation's name stands for all its members (ADR-0030).
+                foreach (var member in ownedNavigation.Members)
+                {
+                    if (!seen.Add(member.PropertyName))
+                    {
+                        throw new SimpleOrmException("CRUD-007", $"{entityName}.{member.PropertyName}", "is listed more than once");
+                    }
+
+                    resolved.Add(member);
+                }
+
+                continue;
+            }
+
+            if (property is null)
+            {
+                throw new SimpleOrmException("CRUD-005", target, "is not a mapped property; the list takes property names");
+            }
+
             if (property.IsKey)
             {
                 throw new SimpleOrmException("CRUD-006", target, "is a key property; an update never writes the key");
@@ -576,7 +596,7 @@ public sealed partial class Db : IAsyncDisposable
             {
                 throw new ConcurrencyException(
                     typeof(TEntity).Name,
-                    $"update affected no rows: version {version.Property.GetValue(entity)} is stale or the row is gone");
+                    $"update affected no rows: version {version.GetValue(entity)} is stale or the row is gone");
             }
 
             throw new SimpleOrmException(
@@ -585,8 +605,8 @@ public sealed partial class Db : IAsyncDisposable
 
         if (map.VersionProperty is { } bump)
         {
-            var current = Convert.ToInt64(bump.Property.GetValue(entity), System.Globalization.CultureInfo.InvariantCulture);
-            bump.Property.SetValue(entity, Convert.ChangeType(
+            var current = Convert.ToInt64(bump.GetValue(entity), System.Globalization.CultureInfo.InvariantCulture);
+            bump.SetValue(entity, Convert.ChangeType(
                 current + 1, bump.ClrType, System.Globalization.CultureInfo.InvariantCulture));
         }
     }
@@ -672,7 +692,7 @@ public sealed partial class Db : IAsyncDisposable
         var parameter = command.CreateParameter();
         parameter.ParameterName = "@" + property.ColumnName;
         parameter.Value = _converter.ToDatabase(
-            property.Property.GetValue(entity),
+            property.GetValue(entity),
             $"{entity.GetType().Name}.{property.PropertyName}",
             property.EnumAsInt);
         command.Parameters.Add(parameter);
@@ -680,7 +700,7 @@ public sealed partial class Db : IAsyncDisposable
 
     private static object KeyOf(EntityMap map, object entity)
         => map.KeyProperties.Count == 1
-            ? map.KeyProperties[0].Property.GetValue(entity)!
+            ? map.KeyProperties[0].GetValue(entity)!
             : string.Join(", ", map.GetKeyValues(entity));
 
     private void CheckNavigationConsistency(EntityMap map, object entity, Func<string, bool>? isWritten = null)
@@ -710,10 +730,10 @@ public sealed partial class Db : IAsyncDisposable
                     continue;
                 }
 
-                var navigationKey = targetMap.KeyProperties[i].Property.GetValue(navigation);
+                var navigationKey = targetMap.KeyProperties[i].GetValue(navigation);
                 var foreignKey = map.Properties
                     .First(p => p.PropertyName == relationship.ForeignKeyProperties[i])
-                    .Property.GetValue(entity);
+                    .GetValue(entity);
                 if (!Equals(navigationKey, foreignKey))
                 {
                     throw new SimpleOrmException(

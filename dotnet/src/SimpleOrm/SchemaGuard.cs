@@ -62,7 +62,8 @@ public static class SchemaGuard
             }
 
             foreach (var entity in types.Where(t =>
-                t is { IsClass: true, IsAbstract: false } && EntityMapLoader.HasMappingAttributes(t)))
+                t is { IsClass: true, IsAbstract: false } && EntityMapLoader.HasMappingAttributes(t)
+                && !EntityMapLoader.IsOwnedType(t)))
             {
                 await ValidateEntityAsync(db, shield, cache, entity, errors, ct).ConfigureAwait(false);
             }

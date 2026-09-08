@@ -11,6 +11,14 @@ internal static class AttributeMapLoader
     public static EntityMap Load(Type entityType, INamingConvention convention)
     {
         var errors = new List<MappingError>();
+        if (IsOwnedType(entityType))
+        {
+            // An owned value type (ADR-0030) has no map of its own; it is read
+            // through its owner. Loading it directly is a caller error.
+            throw new MappingException(entityType, [new MappingError(
+                "MAP-024", entityType.Name,
+                "is an [Owned] value type, not an entity; it maps only as a member of its owner")]);
+        }
 
         var (kind, relationName, schema, statementSql, statementParameters) =
             ReadRelationSource(entityType, convention, errors);
@@ -176,6 +184,24 @@ internal static class AttributeMapLoader
             var version = property.GetCustomAttribute<VersionAttribute>();
             var enumAsInt = property.GetCustomAttribute<EnumAsIntAttribute>();
             var foreignKey = property.GetCustomAttribute<ForeignKeyAttribute>();
+            var owned = property.GetCustomAttribute<OwnedAttribute>();
+
+            if (owned is not null)
+            {
+                if (column is not null || ignore is not null || key is not null || generated is not null
+                    || version is not null || enumAsInt is not null || foreignKey is not null
+                    || manyToOne is not null || oneToOne is not null || oneToMany is not null || manyToMany is not null)
+                {
+                    errors.Add(new MappingError(
+                        "MAP-019", target, "[Owned] cannot combine with any other mapping attribute"));
+                }
+                else
+                {
+                    ReadOwnedType(property, target, owned, specs, errors);
+                }
+
+                continue;
+            }
 
             if (manyToOne is not null || oneToOne is not null || oneToMany is not null || manyToMany is not null)
             {
@@ -285,6 +311,129 @@ internal static class AttributeMapLoader
         }
     }
 
+    /// <summary>
+    /// Reads an [Owned] value type (ADR-0030): a class with a public parameterless
+    /// constructor and a settable navigation, whose [Column] members flatten into
+    /// the owner under the navigation's prefix. The owned type is not an entity —
+    /// a relation source, [Index], key, version, generated column, foreign key,
+    /// relationship, or nested [Owned] inside it is <c>MAP-024</c>; the opt-in
+    /// rule (<c>MAP-010</c>) applies to its members exactly as to an entity's.
+    /// </summary>
+    private static void ReadOwnedType(
+        PropertyInfo navigation,
+        string target,
+        OwnedAttribute owned,
+        List<MappedPropertySpec> specs,
+        List<MappingError> errors)
+    {
+        var ownedType = navigation.PropertyType;
+        if (!ownedType.IsClass || ownedType == typeof(string) || ownedType == typeof(byte[])
+            || typeof(System.Collections.IEnumerable).IsAssignableFrom(ownedType))
+        {
+            errors.Add(new MappingError(
+                "MAP-024", target,
+                "an [Owned] navigation must be a single class-typed value; collections and scalars cannot be owned"));
+            return;
+        }
+
+        if (navigation.SetMethod is null)
+        {
+            errors.Add(new MappingError(
+                "MAP-024", target, "an [Owned] navigation needs a setter (public or init) so the mapper can assign it"));
+            return;
+        }
+
+        if (ownedType.GetCustomAttributes().Any(a => a is TableAttribute or ViewAttribute or MaterializedViewAttribute
+                or StatementAttribute or ProcedureAttribute or IndexAttribute))
+        {
+            errors.Add(new MappingError(
+                "MAP-024", target,
+                $"'{ownedType.Name}' is an entity (it carries a relation source or [Index]); an owned type has no table of its own"));
+            return;
+        }
+
+        if (!IsOwnedType(ownedType))
+        {
+            errors.Add(new MappingError(
+                "MAP-024", target,
+                $"'{ownedType.Name}' must itself be declared [Owned] at class level — that is what keeps it out of the entity set"));
+            return;
+        }
+
+        if (ownedType.GetConstructor(Type.EmptyTypes) is null)
+        {
+            errors.Add(new MappingError(
+                "MAP-024", target, $"'{ownedType.Name}' needs a public parameterless constructor to be owned"));
+            return;
+        }
+
+        var spec = new OwnedSpec(navigation, owned.Prefix);
+        var mapped = 0;
+        foreach (var member in PropertiesInDeclarationOrder(ownedType))
+        {
+            var memberTarget = $"{ownedType.Name}.{member.Name}";
+            var column = member.GetCustomAttribute<ColumnAttribute>();
+            var ignore = member.GetCustomAttribute<IgnoreAttribute>();
+            var enumAsInt = member.GetCustomAttribute<EnumAsIntAttribute>();
+            if (member.GetCustomAttributes().Any(a => a is KeyAttribute or GeneratedAttribute or VersionAttribute
+                    or ForeignKeyAttribute or OwnedAttribute or ManyToOneAttribute or OneToOneAttribute
+                    or OneToManyAttribute or ManyToManyAttribute))
+            {
+                errors.Add(new MappingError(
+                    "MAP-024", memberTarget,
+                    "an owned type's members carry only [Column], [EnumAsInt], or [Ignore]: no key, version, generated column, foreign key, relationship, or nested [Owned]"));
+                continue;
+            }
+
+            if (ignore is not null)
+            {
+                if (column is not null)
+                {
+                    errors.Add(new MappingError("MAP-019", memberTarget, "[Ignore] cannot combine with [Column]"));
+                }
+
+                continue;
+            }
+
+            if (column is null)
+            {
+                if (enumAsInt is not null)
+                {
+                    errors.Add(new MappingError(
+                        "MAP-019", memberTarget, "mapping attributes require [Column] on the same property"));
+                }
+                else if (member.GetMethod is { IsPublic: true } && member.SetMethod is { IsPublic: true })
+                {
+                    errors.Add(new MappingError(
+                        "MAP-010", memberTarget,
+                        "a public settable property must carry [Column] or [Ignore] (ADR-0004)"));
+                }
+
+                continue;
+            }
+
+            if (enumAsInt is not null && !member.PropertyType.IsEnum
+                && Nullable.GetUnderlyingType(member.PropertyType)?.IsEnum != true)
+            {
+                errors.Add(new MappingError("MAP-019", memberTarget, "[EnumAsInt] requires an enum property"));
+            }
+
+            specs.Add(new MappedPropertySpec(member)
+            {
+                ExplicitColumn = column.Name,
+                EnumAsInt = enumAsInt is not null,
+                Owner = spec,
+            });
+            mapped++;
+        }
+
+        if (mapped == 0)
+        {
+            errors.Add(new MappingError(
+                "MAP-024", target, $"'{ownedType.Name}' maps no columns; an owned type needs at least one [Column] member"));
+        }
+    }
+
     private static IReadOnlyList<IndexSpec> ReadIndexes(Type entityType, RelationKind kind, List<MappingError> errors)
     {
         var attributes = entityType.GetCustomAttributes<IndexAttribute>().ToArray();
@@ -379,6 +528,9 @@ internal static class AttributeMapLoader
         }
     }
 
+    /// <summary>An [Owned] value type (ADR-0030): never an entity, so assembly scans skip it.</summary>
+    internal static bool IsOwnedType(Type type) => type.GetCustomAttribute<OwnedAttribute>() is not null;
+
     internal static bool HasMappingAttributes(Type entityType)
     {
         if (entityType.GetCustomAttributes()
@@ -391,7 +543,7 @@ internal static class AttributeMapLoader
         return PropertiesInDeclarationOrder(entityType).Any(p => p.GetCustomAttributes()
             .Any(a => a is ColumnAttribute or IgnoreAttribute or KeyAttribute or GeneratedAttribute
                 or VersionAttribute or EnumAsIntAttribute or ForeignKeyAttribute or ManyToOneAttribute
-                or OneToOneAttribute or OneToManyAttribute or ManyToManyAttribute));
+                or OneToOneAttribute or OneToManyAttribute or ManyToManyAttribute or OwnedAttribute));
     }
 
     /// <summary>

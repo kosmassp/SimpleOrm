@@ -147,7 +147,8 @@ public sealed class PropertyMap
         bool isGenerated,
         bool isVersion,
         bool enumAsInt,
-        Type? foreignKeyReferences)
+        Type? foreignKeyReferences,
+        OwnedMap? owner = null)
     {
         Property = property;
         ColumnName = columnName;
@@ -157,11 +158,48 @@ public sealed class PropertyMap
         IsVersion = isVersion;
         EnumAsInt = enumAsInt;
         ForeignKeyReferences = foreignKeyReferences;
+        Owner = owner;
     }
 
+    /// <summary>The member itself — on the entity, or on the owned type when <see cref="Owner"/> is set.</summary>
     public PropertyInfo Property { get; }
 
-    public string PropertyName => Property.Name;
+    /// <summary>The owned navigation this member is flattened through (ADR-0030); null for a direct property.</summary>
+    public OwnedMap? Owner { get; }
+
+    /// <summary>The property path: a direct member's name, or <c>Navigation.Member</c> for an owned member — the name criteria and column lists use.</summary>
+    public string PropertyName => Owner is null ? Property.Name : Owner.PropertyName + "." + Property.Name;
+
+    /// <summary>Reads the member through its path; an owned member of a null navigation reads as null.</summary>
+    public object? GetValue(object entity)
+    {
+        if (Owner is null)
+        {
+            return Property.GetValue(entity);
+        }
+
+        var owned = Owner.Property.GetValue(entity);
+        return owned is null ? null : Property.GetValue(owned);
+    }
+
+    /// <summary>Writes the member through its path, creating the owned instance on first write.</summary>
+    public void SetValue(object entity, object? value)
+    {
+        if (Owner is null)
+        {
+            Property.SetValue(entity, value);
+            return;
+        }
+
+        var owned = Owner.Property.GetValue(entity);
+        if (owned is null)
+        {
+            owned = Activator.CreateInstance(Owner.OwnedType)!;
+            Owner.Property.SetValue(entity, owned);
+        }
+
+        Property.SetValue(owned, value);
+    }
 
     public string ColumnName { get; }
 
@@ -179,6 +217,45 @@ public sealed class PropertyMap
 
     /// <summary>Entity type this FK column references (<c>[ForeignKey]</c>), if declared.</summary>
     public Type? ForeignKeyReferences { get; }
+}
+
+/// <summary>
+/// An owned value type flattened into its owner's table (ADR-0030): the
+/// navigation property, the column prefix its members carry, and the members.
+/// An owned type is not an entity — no table, key, version, generated column,
+/// relationship, or nested owned type — so every subsystem sees only the
+/// flattened <see cref="PropertyMap"/>s; this is how the mapper regroups them.
+/// </summary>
+public sealed class OwnedMap
+{
+    private readonly List<PropertyMap> _members = [];
+
+    public OwnedMap(PropertyInfo property, string prefix, bool isNullable)
+    {
+        Property = property;
+        Prefix = prefix;
+        IsNullable = isNullable;
+    }
+
+    public PropertyInfo Property { get; }
+
+    public string PropertyName => Property.Name;
+
+    public Type OwnedType => Property.PropertyType;
+
+    /// <summary>Prepended to every member's column name; may be empty.</summary>
+    public string Prefix { get; }
+
+    /// <summary>
+    /// Whether the navigation may be null: then every member column is nullable
+    /// and a row whose member columns are all NULL leaves the navigation null.
+    /// </summary>
+    public bool IsNullable { get; }
+
+    /// <summary>The flattened members, in declaration order; the same instances appear in the owner's property list.</summary>
+    public IReadOnlyList<PropertyMap> Members => _members;
+
+    internal void AddMember(PropertyMap member) => _members.Add(member);
 }
 
 /// <summary>
@@ -211,7 +288,11 @@ public sealed class EntityMap
         Relationships = relationships;
         KeyProperties = properties.Where(p => p.IsKey).ToArray();
         VersionProperty = properties.FirstOrDefault(p => p.IsVersion);
+        OwnedTypes = properties.Where(p => p.Owner is not null).Select(p => p.Owner!).Distinct().ToArray();
     }
+
+    /// <summary>The owned value types flattened into this entity (ADR-0030), in declaration order.</summary>
+    public IReadOnlyList<OwnedMap> OwnedTypes { get; }
 
     public Type EntityType { get; }
 
@@ -251,7 +332,7 @@ public sealed class EntityMap
         var values = new object?[KeyProperties.Count];
         for (var i = 0; i < KeyProperties.Count; i++)
         {
-            values[i] = KeyProperties[i].Property.GetValue(entity);
+            values[i] = KeyProperties[i].GetValue(entity);
         }
 
         return values;

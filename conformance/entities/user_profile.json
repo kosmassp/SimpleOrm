@@ -34,6 +34,21 @@
       "nullable": true
     },
     {
+      "column": "address_street",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "column": "address_city",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "column": "address_postal_code",
+      "type": "string",
+      "nullable": true
+    },
+    {
       "column": "created_at",
       "type": "datetime",
       "nullable": false

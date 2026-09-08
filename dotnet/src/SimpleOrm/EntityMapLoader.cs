@@ -25,6 +25,9 @@ public sealed class EntityMapLoader
     /// <summary>Whether the type carries any mapping attributes (used by tooling such as export-metadata).</summary>
     public static bool HasMappingAttributes(Type entityType) => AttributeMapLoader.HasMappingAttributes(entityType);
 
+    /// <summary>An <c>[Owned]</c> value type (ADR-0030): carries mapping attributes but is never an entity — assembly scans skip it.</summary>
+    public static bool IsOwnedType(Type type) => AttributeMapLoader.IsOwnedType(type);
+
     private EntityMap LoadCore(Type entityType)
     {
         if (_options.ExplicitMaps.TryGetValue(entityType, out var factory))

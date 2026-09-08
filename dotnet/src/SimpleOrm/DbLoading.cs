@@ -87,7 +87,7 @@ public sealed partial class Db
         var wanted = new Dictionary<object?[], object?[]>(KeyTupleComparer.Instance);
         foreach (var entity in entities)
         {
-            var tuple = foreignKeys.Select(p => p.Property.GetValue(entity)).ToArray();
+            var tuple = foreignKeys.Select(p => p.GetValue(entity)).ToArray();
             if (tuple.All(v => v is not null))
             {
                 wanted[tuple] = tuple;
@@ -108,7 +108,7 @@ public sealed partial class Db
 
         foreach (var entity in entities)
         {
-            var tuple = foreignKeys.Select(p => p.Property.GetValue(entity)).ToArray();
+            var tuple = foreignKeys.Select(p => p.GetValue(entity)).ToArray();
             navigation.SetValue(
                 entity,
                 tuple.All(v => v is not null) && loaded.TryGetValue(tuple, out var target)
@@ -142,7 +142,7 @@ public sealed partial class Db
                 relationship.TargetType, [filter], targetMap.KeyProperties, ct).ConfigureAwait(false);
             foreach (var row in rows)
             {
-                var owner = targetForeignKeys.Select(p => p!.Property.GetValue(row)).ToArray();
+                var owner = targetForeignKeys.Select(p => p!.GetValue(row)).ToArray();
                 if (!byOwner.TryGetValue(owner, out var list))
                 {
                     byOwner[owner] = list = [];
@@ -210,13 +210,13 @@ public sealed partial class Db
                 relationship.LinkType!, [filter], linkMap.KeyProperties, ct).ConfigureAwait(false);
             foreach (var link in links)
             {
-                var owner = toOwner.Select(p => p!.Property.GetValue(link)).ToArray();
+                var owner = toOwner.Select(p => p!.GetValue(link)).ToArray();
                 if (!targetKeysByOwner.TryGetValue(owner, out var keys))
                 {
                     targetKeysByOwner[owner] = keys = [];
                 }
 
-                keys.Add(toTarget.Select(p => p!.Property.GetValue(link)).ToArray());
+                keys.Add(toTarget.Select(p => p!.GetValue(link)).ToArray());
             }
         }
 

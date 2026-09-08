@@ -106,7 +106,7 @@ public sealed class ConformanceLoadTests
                     foreach (var entity in eager)
                     {
                         var map = db.Maps.Load(entityType);
-                        var token = map.KeyProperties[0].Property.GetValue(entity)!.ToString()!;
+                        var token = map.KeyProperties[0].GetValue(entity)!.ToString()!;
                         Assert.True(seen.Add(token), $"{mode}: key {token} returned twice");
                         AssertLoaded(
                             db, loadedExpectations.GetProperty(token),

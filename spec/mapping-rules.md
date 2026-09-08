@@ -34,6 +34,29 @@ underscore-insensitive (`created_at` matches `CreatedAt`).
    equivalent or treat all constructor parameters as required) that end up unbound
    → `MAP-002`.
 
+## Owned types (ADR-0030)
+
+An owned type's members (`metadata-model.md`, "Owned types") are ordinary
+columns of the owner for every strictness rule above: a missing owned column is
+`MAP-002`, an unexpected one `MAP-001`. What differs is construction:
+
+- **Reading.** The owner constructs as usual (its constructor algorithm never
+  sees owned members — their dotted names match no parameter). Then, per owned
+  navigation: when the navigation is **nullable** and every one of its member
+  columns is NULL in the row, the navigation stays null; otherwise the owned
+  type is constructed through its parameterless constructor, its members
+  assigned from their columns (a NULL into a non-nullable member is `MAP-031`,
+  exactly as for an entity), and the instance attached. A **required**
+  navigation is always constructed.
+- **Writing.** Insert and the full-row update bind every owned column; a null
+  nullable navigation binds NULL for each member. The column-list update binds
+  the listed members, or all of them when the navigation itself is listed.
+- **Identity and concurrency** are the owner's: an owned type has no key and
+  no version.
+
+`conformance/cases/owned_read.json` pins the read; `conformance/crud-cases/owned_profile.json`
+the write paths and the all-NULL rule.
+
 ## Conversion
 
 Two mechanisms only — the fixed table below and registered type handlers; handlers

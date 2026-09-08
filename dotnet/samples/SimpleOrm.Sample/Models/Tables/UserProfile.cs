@@ -28,4 +28,12 @@ public sealed class UserProfile : BaseModel
 
     [Column]
     public string? AvatarUrl { get; set; }
+
+    /// <summary>
+    /// Owned value type (ADR-0030): <see cref="Models.Address"/> stored as
+    /// <c>address_*</c> columns of this table. Nullable, so every member column
+    /// is nullable and an all-NULL row reads back as no address.
+    /// </summary>
+    [Owned]
+    public Address? Address { get; set; }
 }

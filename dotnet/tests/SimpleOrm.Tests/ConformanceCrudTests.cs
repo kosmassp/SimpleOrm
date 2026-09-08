@@ -20,6 +20,7 @@ public sealed class ConformanceCrudTests
     {
         ["User"] = typeof(User),
         ["Transaction"] = typeof(Transaction),
+        ["UserProfile"] = typeof(UserProfile),
     };
 
     public static TheoryData<string> CaseFiles
@@ -165,7 +166,7 @@ public sealed class ConformanceCrudTests
         foreach (var value in values.EnumerateObject())
         {
             var property = map.Properties.Single(p => p.ColumnName == value.Name);
-            property.Property.SetValue(entity, ConvertTo(value.Value, property.ClrType));
+            property.SetValue(entity, ConvertTo(value.Value, property.ClrType));
         }
     }
 
@@ -175,7 +176,7 @@ public sealed class ConformanceCrudTests
         foreach (var value in expected.EnumerateObject())
         {
             var property = map.Properties.Single(p => p.ColumnName == value.Name);
-            var actual = Encode(property.Property.GetValue(entity));
+            var actual = Encode(property.GetValue(entity));
             var expectedText = value.Value.ValueKind switch
             {
                 JsonValueKind.Null => null,

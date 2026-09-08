@@ -27,33 +27,50 @@ internal static class MapAssembler
         var properties = new List<PropertyMap>(specs.Count);
         var byProperty = new Dictionary<string, PropertyMap>();
         var seenColumns = new Dictionary<string, string>();
+        var ownedMaps = new Dictionary<OwnedSpec, OwnedMap>();
 
         foreach (var spec in specs)
         {
-            var column = spec.ExplicitColumn ?? convention.ColumnName(spec.Property.Name);
+            // An owned member (ADR-0030) flattens into the owner: its column
+            // carries the navigation's prefix, its name is the dotted path, and
+            // a nullable navigation makes every member column nullable.
+            OwnedMap? owner = null;
+            if (spec.Owner is { } ownedSpec && !ownedMaps.TryGetValue(ownedSpec, out owner))
+            {
+                owner = new OwnedMap(
+                    ownedSpec.Property,
+                    ownedSpec.ExplicitPrefix ?? convention.ColumnName(ownedSpec.Property.Name) + "_",
+                    NullabilityReader.IsNullable(ownedSpec.Property));
+                ownedMaps.Add(ownedSpec, owner);
+            }
+
+            var column = (owner?.Prefix ?? string.Empty) + (spec.ExplicitColumn ?? convention.ColumnName(spec.Property.Name));
+            var propertyName = owner is null ? spec.Property.Name : owner.PropertyName + "." + spec.Property.Name;
             if (seenColumns.TryGetValue(column, out var other))
             {
                 errors.Add(new MappingError(
                     "MAP-018",
-                    $"{entityType.Name}.{spec.Property.Name}",
+                    $"{entityType.Name}.{propertyName}",
                     $"maps to column '{column}' already used by '{other}'"));
             }
             else
             {
-                seenColumns.Add(column, spec.Property.Name);
+                seenColumns.Add(column, propertyName);
             }
 
             var map = new PropertyMap(
                 spec.Property,
                 column,
-                NullabilityReader.IsNullable(spec.Property),
+                owner?.IsNullable == true || NullabilityReader.IsNullable(spec.Property),
                 spec.IsKey,
                 spec.IsGenerated,
                 spec.IsVersion,
                 spec.EnumAsInt,
-                spec.ForeignKeyReferences);
+                spec.ForeignKeyReferences,
+                owner);
+            owner?.AddMember(map);
             properties.Add(map);
-            byProperty[spec.Property.Name] = map;
+            byProperty[propertyName] = map;
         }
 
         ValidateVersion(entityType, properties, errors);

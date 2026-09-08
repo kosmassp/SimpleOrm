@@ -154,7 +154,8 @@ Assembly LoadAssembly()
 
 IEnumerable<Type> MappedTypes(Assembly assembly)
     => assembly.GetExportedTypes()
-        .Where(t => t is { IsClass: true, IsAbstract: false } && EntityMapLoader.HasMappingAttributes(t));
+        .Where(t => t is { IsClass: true, IsAbstract: false } && EntityMapLoader.HasMappingAttributes(t)
+            && !EntityMapLoader.IsOwnedType(t));
 
 async Task<(Db Db, MigrationRunner Runner)> OpenAsync()
 {

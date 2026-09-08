@@ -20,6 +20,23 @@ internal sealed class MappedPropertySpec
     public bool EnumAsInt { get; set; }
 
     public Type? ForeignKeyReferences { get; set; }
+
+    /// <summary>Set when the property is a member of an <c>[Owned]</c> type flattened into the entity (ADR-0030).</summary>
+    public OwnedSpec? Owner { get; set; }
+}
+
+/// <summary>Loader-internal: an <c>[Owned]</c> navigation whose members flatten into the owner (ADR-0030); the prefix resolves at assembly.</summary>
+internal sealed class OwnedSpec
+{
+    public OwnedSpec(PropertyInfo property, string? explicitPrefix)
+    {
+        Property = property;
+        ExplicitPrefix = explicitPrefix;
+    }
+
+    public PropertyInfo Property { get; }
+
+    public string? ExplicitPrefix { get; }
 }
 
 /// <summary>Loader-internal working shape of a declared index before column resolution.</summary>

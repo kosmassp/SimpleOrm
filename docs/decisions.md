@@ -2058,3 +2058,59 @@ ADR-0027-era merge — `composer dump-autoload` fixed them, no code change). Go:
 
 **Status.** Accepted. The `Repository` surfaces (C# `Repository<T>`, the PHP
 sample's `Repository`, Go `Repository[T]`) forward it under the same name.
+
+## ADR-0029 — Level 2 exit rulings: what closes the level and how it is proven (2026-09-08)
+
+Asked "what is left for Level 2 exit", the tree was checked and six open
+items were put to the owner one at a time. Findings that prompted them:
+`spec/query-ast.md` still lists joins under "Deliberately absent" although
+ADR-0022 add.1 gave `SelectAst` joins and projection for the Join fetch mode,
+and no `conformance/ast/` case contains a join; `load-cases/` pin the three
+fetch modes only through the runner's `viaQuery` replay; the benchmarks
+predate criteria and loading (last touched 2026-08-29); M5 was skipped
+(ADR-0023); owned types were scheduled "later in Level 2" (ADR-0019) and never
+built; and two ports carry the same three spec deviations (ADR-0026/0027).
+
+**Rulings.**
+
+1. **Fluent front-end (M5) moves out of Level 2.** Typed lambdas remain
+   approved per-language sugar over the string/AST core (ADR-0021 add.2),
+   built on demand on an owner sample. Not an exit criterion; the portable
+   contract is what the ports pass today.
+2. **Owned types are built before exit.** A value object stored as columns of
+   its owner's table (no table of its own) becomes a Level 2 milestone: a
+   metadata kind, mapping rules, an export-format change, spec + conformance,
+   and both ports follow. This is the one ruling that adds work rather than
+   removing it.
+3. **The entity export names FK references by column.**
+   `targetForeignKeyProperties` / `linkForeignKeysTo*` become column-name
+   lists (`targetForeignKeyColumns: ["user_id"]`), consistent with the export's
+   own "column-centric and language-neutral" rule. C# changes, the
+   `conformance/entities/*.json` regenerate, PHP and Go drop their PascalCase
+   workarounds (ADR-0026 finding 2, ADR-0027 finding 4).
+4. **`MAP-017` is rephrased neutrally**: "the parameter declaration is a
+   name→type mapping without repeats"; how a language spells it is its own
+   business. Code and C# behaviour unchanged (ADR-0026 finding 3, ADR-0027
+   finding 3).
+5. **`MAP-011` becomes an intent**: "the library is the only writer of a
+   navigation", enforced where the language can express it (C# setters, PHP
+   `private(set)`), documented where it cannot (Go exported fields). Code
+   kept (ADR-0027 finding 2).
+6. **Exit is proven by extending the Go port to Level 2** — relationships,
+   AST joins, explicit/batch/eager loading in all three fetch modes — from
+   `spec/` and `conformance/` only, the way ADR-0026/0027 proved Level 1. Go
+   was chosen over PHP because no setters and no proxies is the hardest test
+   of the loading design; the places it gets stuck are the remaining spec
+   debt, and the places it changes the spec are the point (§12).
+
+**Owed work, not rulings** (surfaced by the same check): the join/projection
+node vocabulary in `spec/query-ast.md` with join cases in `conformance/ast/`;
+a spec sweep for "future" wording that later work has overtaken; the M6
+benchmark refresh covering criteria and at least one loading path.
+
+**Proposed order** (owner picks the first item next session): spec debt on
+joins → the three export/wording fixes (3–5, small, and they unblock the Go
+port) → owned types (2) → benchmark refresh → the Go Level 2 port (6) as the
+exit audit → declare Level 2 closed.
+
+**Status.** Accepted. CLAUDE.md §3/§7b updated to match.

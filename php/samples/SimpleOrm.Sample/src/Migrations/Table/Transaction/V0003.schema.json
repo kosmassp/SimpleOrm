@@ -1,0 +1,73 @@
+{
+  "object": "transactions",
+  "asOfVersion": 3,
+  "generatedAt": "2026-08-29T11:03:02.9656298Z",
+  "columns": [
+    {
+      "column": "amount",
+      "type": "TEXT",
+      "nullable": false
+    },
+    {
+      "column": "created_at",
+      "type": "TEXT",
+      "nullable": false
+    },
+    {
+      "column": "id",
+      "type": "INTEGER",
+      "nullable": false,
+      "key": true,
+      "generated": true
+    },
+    {
+      "column": "note",
+      "type": "TEXT",
+      "nullable": true
+    },
+    {
+      "column": "status",
+      "type": "TEXT",
+      "nullable": false
+    },
+    {
+      "column": "updated_at",
+      "type": "TEXT",
+      "nullable": true
+    },
+    {
+      "column": "user_id",
+      "type": "INTEGER",
+      "nullable": false
+    },
+    {
+      "column": "version",
+      "type": "INTEGER",
+      "nullable": false
+    }
+  ],
+  "indexes": [
+    {
+      "name": "ix_transactions_status_created",
+      "columns": [
+        {
+          "column": "status",
+          "direction": "asc"
+        },
+        {
+          "column": "created_at",
+          "direction": "desc"
+        }
+      ]
+    },
+    {
+      "name": "ix_transactions_user_id",
+      "columns": [
+        {
+          "column": "user_id",
+          "direction": "asc"
+        }
+      ]
+    }
+  ]
+}

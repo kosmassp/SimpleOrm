@@ -1,0 +1,7 @@
+/vendor/
+/composer.lock
+/build/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

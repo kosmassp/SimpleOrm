@@ -73,6 +73,8 @@ final class ApplicationTest extends TestCase
         self::assertSame(0, $exit);
         self::assertFileExists($exportDir . '/widget.json');
         self::assertFileExists($exportDir . '/gadget.json');
+        // The abstract `AuditedModel` carries a #[Column] but is no entity: skipped, never MAP-019.
+        self::assertFileDoesNotExist($exportDir . '/audited_model.json');
 
         [$exit, $out] = $this->exec(['snapshot']);
         self::assertSame(0, $exit);

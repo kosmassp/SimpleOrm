@@ -1,0 +1,51 @@
+{
+  "object": "user_profiles",
+  "asOfVersion": 9,
+  "generatedAt": "2026-08-29T13:37:02.4190119Z",
+  "columns": [
+    {
+      "column": "avatar_url",
+      "type": "TEXT",
+      "nullable": true
+    },
+    {
+      "column": "bio",
+      "type": "TEXT",
+      "nullable": true
+    },
+    {
+      "column": "created_at",
+      "type": "TEXT",
+      "nullable": false
+    },
+    {
+      "column": "id",
+      "type": "INTEGER",
+      "nullable": false,
+      "key": true,
+      "generated": true
+    },
+    {
+      "column": "updated_at",
+      "type": "TEXT",
+      "nullable": true
+    },
+    {
+      "column": "user_id",
+      "type": "INTEGER",
+      "nullable": false
+    }
+  ],
+  "indexes": [
+    {
+      "name": "ix_user_profiles_user_id",
+      "columns": [
+        {
+          "column": "user_id",
+          "direction": "asc"
+        }
+      ],
+      "unique": true
+    }
+  ]
+}

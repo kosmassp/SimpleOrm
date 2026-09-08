@@ -98,7 +98,10 @@ docs/decisions.md             ADR-style log; append whenever a decision below ch
 ```
 php/                          the PHP port, Levels 0–1 (ADR-0026): src/ mirrors the C# areas; tests/ holds the
                               fixture entities (tests/Sample) and one conformance runner per folder;
-                              CODING-STANDARD.md is its uniformity contract, §10 the only list of PHP divergences
+                              CODING-STANDARD.md is its uniformity contract, §10 the only list of PHP divergences;
+                              samples/SimpleOrm.Sample is the standalone consumer project mirroring dotnet/samples
+                              (own composer.json via a path repository; models, V0001–V0009 migrations + snapshots,
+                              repositories, registry, bin/demo.php) — driven by tests/Samples like the C# sample
 ```
 
 Future ports live beside `dotnet/` (`go/`, `rust/`) and consume `spec/` and `conformance/` unchanged.

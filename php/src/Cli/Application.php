@@ -6,6 +6,7 @@ namespace SimpleOrm\Cli;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use ReflectionClass;
 use SimpleOrm\Dialect\Dialect;
 use SimpleOrm\Dialect\SqliteDialect;
 use SimpleOrm\Dialect\SqliteShadow;
@@ -467,10 +468,21 @@ final class Application
         return ClassScanner::classes(self::srcDir($arguments), self::rootNamespace($arguments));
     }
 
-    /** @return list<class-string> */
+    /**
+     * Concrete mapped entities only, like the reference's `MappedTypes()`
+     * (`IsClass && !IsAbstract`): an abstract base carrying `#[Column]`s (a
+     * sample-style `BaseModel`) contributes columns to its subclasses but is
+     * no entity itself, so loading it would refuse with `MAP-019`.
+     *
+     * @return list<class-string>
+     */
     private static function mappedTypes(Arguments $arguments): array
     {
-        return array_values(array_filter(self::classes($arguments), EntityMapLoader::hasMappingAttributes(...)));
+        return array_values(array_filter(
+            self::classes($arguments),
+            static fn (string $class): bool => !(new ReflectionClass($class))->isAbstract()
+                && EntityMapLoader::hasMappingAttributes($class),
+        ));
     }
 
     private static function openDb(Arguments $arguments): Db

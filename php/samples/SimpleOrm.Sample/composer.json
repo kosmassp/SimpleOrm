@@ -1,0 +1,30 @@
+{
+  "name": "simpleorm/sample",
+  "description": "SimpleOrm PHP sample project: the fixture entity model, its migration history, repositories, a registry, and a runnable demo (mirrors dotnet/samples/SimpleOrm.Sample).",
+  "type": "project",
+  "license": "MIT",
+  "require": {
+    "php": ">=8.4",
+    "ext-pdo": "*",
+    "simpleorm/simpleorm": "@dev"
+  },
+  "repositories": [
+    {
+      "type": "path",
+      "url": "../.."
+    }
+  ],
+  "autoload": {
+    "psr-4": {
+      "SimpleOrm\\Sample\\": "src/"
+    }
+  },
+  "scripts": {
+    "demo": "php -d extension=pdo_sqlite -d extension=sqlite3 bin/demo.php",
+    "simpleorm": "php -d extension=pdo_sqlite -d extension=sqlite3 vendor/bin/simpleorm"
+  },
+  "config": {
+    "sort-packages": true,
+    "platform-check": false
+  }
+}

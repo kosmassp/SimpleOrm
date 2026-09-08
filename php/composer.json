@@ -19,7 +19,8 @@
   },
   "autoload-dev": {
     "psr-4": {
-      "SimpleOrm\\Tests\\": "tests/"
+      "SimpleOrm\\Tests\\": "tests/",
+      "SimpleOrm\\Sample\\": "samples/SimpleOrm.Sample/src/"
     }
   },
   "bin": [

@@ -34,6 +34,11 @@ src/Validation    SchemaGuard
 src/Cli           the simpleorm command
 tests/Sample      the fixture entities (mirror dotnet/samples)
 tests/Conformance one data-driven runner per conformance folder
+tests/Samples     drives samples/SimpleOrm.Sample the way dotnet/tests drive the C# sample
+samples/SimpleOrm.Sample
+                  a standalone consumer project (own composer.json, path repository to ../..):
+                  the sample model, its V0001–V0009 migrations + snapshots, repositories, a
+                  registry, and bin/demo.php — see its README
 ```
 
 How PHP differs from the reference — and only there — is the table in

@@ -2,8 +2,8 @@
   "name": "amend_removes_version_when_nothing_remains",
   "comment": "The model changed back: it now matches the recorded past below V0002, so the amended version has no content — its files are removed and the run says so. Git holds the old files; the tool never consults it.",
   "files": [
-    { "path": "V0002.cs", "generated": true, "dialect": "sqlite" },
-    { "path": "Table/AmendWidget/V0002_AddNote.cs", "generated": true } ],
+    { "path": "V0002", "generated": true, "dialect": "sqlite" },
+    { "path": "Table/AmendWidget/V0002_AddNote", "generated": true } ],
   "snapshots": [
     { "path": "Table/AmendWidget/V0001.schema.json", "snapshot": { "object": "amend_widgets", "asOfVersion": 1,
       "columns": [
@@ -13,6 +13,6 @@
       "indexes": [] } } ],
   "command": { "amend": true, "name": "AddRemark" },
   "expect": { "exit": 0,
-    "deleted": [ "V0002.cs", "Table/AmendWidget/V0002_AddNote.cs" ],
+    "deleted": [ "V0002", "Table/AmendWidget/V0002_AddNote" ],
     "output": [ "V0002 removed" ] }
 }

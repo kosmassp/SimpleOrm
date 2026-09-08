@@ -341,6 +341,17 @@ Same deferrals as SQL Server (`shadow`/snapshot/`diff` are SQLite-only —
 skip cleanly without one. On `netstandard2.0` the dialect rides Npgsql 4.1 with
 known legacy-temporal caveats — prefer `net10.0` for Postgres.
 
+## PHP port (ADR-0026)
+
+The first port, Levels 0–1, lives in [`php/`](php/README.md): same spec, same
+conformance files, no shared code. Same API in PHP shape — `Db::open`, registries
+as static methods returning `Query`/`Command`, `$db->from(User::class)->where(…)`,
+`get`/`insert`/`update`/`delete`, `SchemaGuard::validate`, code migrations with
+the runner, snapshots, `diff --amend`, and the `simpleorm` CLI (`--src`/`--namespace`
+in place of an assembly). Its coding standard — `php/CODING-STANDARD.md` — lists
+the only permitted divergences (synchronous methods, `Decimal`, `private(set)`
+navigations, …). `cd php && composer install && composer test`.
+
 ## Performance
 
 Compiled expression-tree mappers with typed-getter fast paths. BenchmarkDotNet vs

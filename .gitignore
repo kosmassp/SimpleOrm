@@ -16,3 +16,9 @@ BenchmarkDotNet.Artifacts/
 ## OS
 Thumbs.db
 .DS_Store
+
+# PHP port (ADR-0026)
+php/vendor/
+php/.phpunit.cache/
+php/.phpunit.result.cache
+!php/bin/

@@ -2,8 +2,8 @@
   "name": "amend_refuses_hand_written_without_force",
   "comment": "A file without the generator's header is hand-written: its raw SQL, hooks, data steps, and Down() are not computable from a diff, so replacing it takes --force. Without it the run refuses, names the file, points at --force — and touches nothing.",
   "files": [
-    { "path": "V0002.cs", "generated": false },
-    { "path": "Table/AmendWidget/V0002_AddNote.cs", "generated": true } ],
+    { "path": "V0002", "generated": false },
+    { "path": "Table/AmendWidget/V0002_AddNote", "generated": true } ],
   "snapshots": [
     { "path": "Table/AmendWidget/V0001.schema.json", "snapshot": { "object": "amend_widgets", "asOfVersion": 1,
       "columns": [
@@ -13,5 +13,5 @@
   "command": { "amend": true, "name": "AddRemark" },
   "expect": { "exit": 1,
     "error": [ "hand-written", "--force" ],
-    "kept": [ "V0002.cs", "Table/AmendWidget/V0002_AddNote.cs" ] }
+    "kept": [ "V0002", "Table/AmendWidget/V0002_AddNote" ] }
 }

@@ -95,7 +95,13 @@ dotnet/
 docs/decisions.md             ADR-style log; append whenever a decision below changes
 ```
 
-Future ports live beside `dotnet/` (`go/`, `java/`, `php/`) and consume `spec/` and `conformance/` unchanged.
+```
+php/                          the PHP port, Levels 0–1 (ADR-0026): src/ mirrors the C# areas; tests/ holds the
+                              fixture entities (tests/Sample) and one conformance runner per folder;
+                              CODING-STANDARD.md is its uniformity contract, §10 the only list of PHP divergences
+```
+
+Future ports live beside `dotnet/` (`go/`, `rust/`) and consume `spec/` and `conformance/` unchanged.
 
 ## 6. Target public API (Level 1) — refine it, don't expand it
 
@@ -220,6 +226,8 @@ The registry is what the validator enumerates. (The Level 4 source-generator ide
 6. **Level 2 exit.** *(Pending.)* Spec + conformance completeness + benchmark refresh; reimplementable from `spec/` + `conformance/` alone.
 
 **Session state (2026-08-30, ADR-0023/0024/0025):** M1–M4 done; owner is field-testing SimpleOrm against Fidelis on a SQL Server machine. Level 4 dialect order: **SQL Server first, PostgreSQL second**. Port order: **PHP → Go → Rust** (supersedes the old Go-first §12). The **SQL Server dialect exists** (ADR-0024, runtime-first): `SimpleOrm.SqlServer`, CLI `--dialect sqlserver`, LocalDB-backed live tests (`[SqlServerFact]`, skip when absent — this dev machine's LocalDB 2019 is broken by a Windows update, so its live suite first runs elsewhere), per-dialect `conformance/ast/` expectations. Dates are `datetimeoffset`; markerless `datetime2` reads refuse `VAL-020` (ITypeHandler is the legacy-column escape). The **PostgreSQL dialect exists and is live-verified** (ADR-0025) against local PostgreSQL 16.4: `SimpleOrm.Postgres`, CLI `--dialect postgres`, `[PostgresFact]` tests (env `SIMPLEORM_POSTGRES` or localhost:5432); array parameters (`= any(@ids)`), native temporal binding (`BindsTemporalsNatively`), advisory-lock migrations, and materialized views are realized there. Non-SQLite rollbacks need `Down()` overrides until snapshot tooling learns those dialects; shadow/diff/force-sync stay SQLite-only/untested there.
+
+**Session state (2026-09-08, ADR-0026):** the **PHP port exists** under `php/` — Levels 0–1 complete (metadata + export, mapping, parameters, session/CRUD, criteria core, SchemaGuard, migrations runner/derived downs/snapshots/diff+amend/force-sync/shadow, CLI), built by parallel Sonnet agents against `php/CODING-STANDARD.md` and foundation contracts laid down first; every Level 0–1 conformance folder runs through a PHP runner. Two spec findings await an owner ruling (ADR-0026): `targetForeignKeyProperties` in the entity export carries language-side names (interim PascalCase mapping in PHP; proposal: export columns), and `MAP-017`'s duplicate-name sub-case should be phrased language-neutrally. `amend-cases/` were neutralized (extension-less source paths, token fragments). PHP dialects for SQL Server/Postgres are not ported yet (the `Dialect` seam mirrors `IDialect` exactly). Run: `cd php && composer install && composer test`.
 
 ## 8. Level 1 milestones — one at a time; stop and report; do not start the next unprompted
 

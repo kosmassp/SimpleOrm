@@ -2,8 +2,8 @@
   "name": "amend_refuses_dialect_switch",
   "comment": "Storage types are dialect-specific, so the generated root remembers its dialect. Amending a postgres-generated version under sqlite refuses, naming the dialect to use — nothing is touched.",
   "files": [
-    { "path": "V0002.cs", "generated": true, "dialect": "postgres" },
-    { "path": "Table/AmendWidget/V0002_AddNote.cs", "generated": true } ],
+    { "path": "V0002", "generated": true, "dialect": "postgres" },
+    { "path": "Table/AmendWidget/V0002_AddNote", "generated": true } ],
   "snapshots": [
     { "path": "Table/AmendWidget/V0001.schema.json", "snapshot": { "object": "amend_widgets", "asOfVersion": 1,
       "columns": [
@@ -13,5 +13,5 @@
   "command": { "amend": true, "name": "AddRemark", "dialect": "sqlite" },
   "expect": { "exit": 1,
     "error": [ "dialect postgres" ],
-    "kept": [ "V0002.cs", "Table/AmendWidget/V0002_AddNote.cs" ] }
+    "kept": [ "V0002", "Table/AmendWidget/V0002_AddNote" ] }
 }

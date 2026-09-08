@@ -1,0 +1,35 @@
+{
+  "object": "app_gadgets",
+  "asOfVersion": 2,
+  "generatedAt": "2026-01-01T00:00:00.0000000Z",
+  "columns": [
+    {
+      "column": "id",
+      "type": "INTEGER",
+      "nullable": false,
+      "key": true,
+      "generated": true
+    },
+    {
+      "column": "label",
+      "type": "TEXT",
+      "nullable": false
+    },
+    {
+      "column": "widget_id",
+      "type": "INTEGER",
+      "nullable": false
+    }
+  ],
+  "indexes": [
+    {
+      "name": "ix_app_gadgets_widget_id",
+      "columns": [
+        {
+          "column": "widget_id",
+          "direction": "asc"
+        }
+      ]
+    }
+  ]
+}

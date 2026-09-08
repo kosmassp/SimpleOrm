@@ -2,8 +2,8 @@
   "name": "diff_refuses_unrecorded_history",
   "comment": "The same guard in plain diff (the hole it always had): V0001/V0002 migrate amend_widgets, no snapshot records it, so V0003 would recreate the table. Refuses rather than generating a bogus create.",
   "files": [
-    { "path": "V0002.cs", "generated": true, "dialect": "sqlite" },
-    { "path": "Table/AmendWidget/V0002_AddNote.cs", "generated": true } ],
+    { "path": "V0002", "generated": true, "dialect": "sqlite" },
+    { "path": "Table/AmendWidget/V0002_AddNote", "generated": true } ],
   "snapshots": [],
   "command": { "amend": false, "name": "AddRemark" },
   "expect": { "exit": 1, "error": [ "no recorded schema below V0003" ] }

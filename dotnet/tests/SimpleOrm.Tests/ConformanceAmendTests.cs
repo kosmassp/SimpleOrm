@@ -69,7 +69,7 @@ public sealed class ConformanceAmendTests
         var stepRefs = files
             .Select(f => f.GetProperty("path").GetString()!)
             .Where(p => p.Contains('/'))
-            .Select(p => p.Replace('/', '.')[..^".cs".Length])   // Table/AmendWidget/V0002_AddNote.cs → Table.AmendWidget.V0002_AddNote
+            .Select(p => p.Replace('/', '.'))   // Table/AmendWidget/V0002_AddNote → Table.AmendWidget.V0002_AddNote
             .ToArray();
 
         foreach (var file in files)
@@ -178,8 +178,9 @@ public sealed class ConformanceAmendTests
             ? value.EnumerateArray().Select(v => v.GetString()!).ToArray()
             : [];
 
+    /// <summary>Source paths in the cases carry no extension (amend-cases/README): this implementation lays out and checks <c>.cs</c> files; snapshot paths are literal.</summary>
     private static string At(string dir, string relative)
-        => Path.Combine(dir, relative.Replace('/', Path.DirectorySeparatorChar));
+        => Path.Combine(dir, (Path.HasExtension(relative) ? relative : relative + ".cs").Replace('/', Path.DirectorySeparatorChar));
 
     private static void Write(string dir, string relative, string content)
     {

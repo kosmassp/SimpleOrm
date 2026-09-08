@@ -1,0 +1,16 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+// simpleorm CLI (CLAUDE.md §7.24): migration is always an explicit act — the
+// application never migrates at startup. Runs from a Composer-installed vendor
+// tree or from this repository's own checkout.
+foreach ([__DIR__ . '/../vendor/autoload.php', __DIR__ . '/../../../autoload.php'] as $autoload) {
+    if (is_file($autoload)) {
+        require $autoload;
+        break;
+    }
+}
+
+exit(SimpleOrm\Cli\Application::main(array_slice($argv, 1)));

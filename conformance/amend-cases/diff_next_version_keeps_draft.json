@@ -2,8 +2,8 @@
   "name": "diff_next_version_keeps_draft",
   "comment": "Plain diff is unchanged by amend's existence: it emits the NEXT version (V0003) from the newest snapshot and leaves the V0002 draft exactly as it was.",
   "files": [
-    { "path": "V0002.cs", "generated": true, "dialect": "sqlite" },
-    { "path": "Table/AmendWidget/V0002_AddNote.cs", "generated": true } ],
+    { "path": "V0002", "generated": true, "dialect": "sqlite" },
+    { "path": "Table/AmendWidget/V0002_AddNote", "generated": true } ],
   "snapshots": [
     { "path": "Table/AmendWidget/V0001.schema.json", "snapshot": { "object": "amend_widgets", "asOfVersion": 1,
       "columns": [
@@ -12,6 +12,6 @@
       "indexes": [] } } ],
   "command": { "amend": false, "name": "AddRemark" },
   "expect": { "exit": 0,
-    "kept": [ "V0002.cs", "Table/AmendWidget/V0002_AddNote.cs" ],
-    "written": [ "Table/AmendWidget/V0003_AddRemark.cs", "V0003.cs" ] }
+    "kept": [ "V0002", "Table/AmendWidget/V0002_AddNote" ],
+    "written": [ "Table/AmendWidget/V0003_AddRemark", "V0003" ] }
 }

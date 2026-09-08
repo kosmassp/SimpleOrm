@@ -1663,3 +1663,94 @@ and plain `diff` unchanged. The C# runner (`ConformanceAmendTests`) is the only
 amend test; the shape-vs-shape `diff-cases/` are untouched.
 
 **Status.** Accepted.
+
+## ADR-0026 — The PHP port: Levels 0–1, built to one standard by parallel agents (2026-09-08)
+
+Owner: "Generate the PHP version, summon several sonnet 5 agents, make sure all
+agents follow the same standard so the code generated seems uniform. Don't forget
+to keep maintainability, extensibility and reusability." PHP is first in the
+ADR-0023 port order because it doubles as field validation against Fidelis.
+
+**Scope** (§12: the first port covers Levels 0–1). Metadata (all three loaders,
+the naming convention, the byte-identical `EntityMap` export — including
+relationship *metadata*, because the pinned entity exports carry it), mapping
+and the fixed conversion table, parameters (IN-expansion), the session with
+generated CRUD, the ADR-0012 criteria core with the reference renderer,
+SchemaGuard, code migrations with the runner, derived rollbacks, snapshots, the
+diff generator with `--amend`, force-sync, the shadow replayer, and the CLI.
+Out: relationship loading, fetch modes, joins (Level 2); non-SQLite dialects
+(the `Dialect` seam is mirrored member-for-member so they slot in later).
+Lives in `php/` beside `dotnet/`; shares no code; consumes `spec/` and
+`conformance/` unchanged — with the two exceptions the port exposed, below.
+
+**Method: foundation first, then fan-out.** Uniformity across independently
+working agents cannot come from prompts alone, so before any agent started the
+tree already held (1) `php/CODING-STANDARD.md` — the contract: PHP 8.4,
+`strict_types`, PSR-12/PSR-4, `final`/`readonly` by default, enums for closed
+sets, no static state, errors as `SimpleOrmException(code, target, message)`,
+byte-identical SQLite SQL, real-database tests only, one implementation per
+concept, and a §10 table that is the **only** place a PHP divergence from the
+spec may live; (2) the shared contracts as code — `EntityMap` and friends, the
+attributes, the `Dialect` interface (exactly the C# `IDialect` member set), the
+AST nodes, `Decimal`, `TypeHandler`, `CanonicalWriter` (the one JSON writer,
+reproducing System.Text.Json's escaping); (3) the ten fixture entities
+mirroring `dotnet/samples`. Then three Sonnet agents in parallel (metadata;
+dialect + renderer + binding + conversion; migrations model + generator +
+snapshots), then two (session/CRUD/criteria; runner + sync + diff command),
+then one (SchemaGuard + CLI + shadow + class discovery), each told which C#
+files to mirror and which pinned artifacts to hit byte-for-byte, then a
+uniformity review over the whole tree. Where an agent needed a divergence it
+added a §10 row rather than coding around it — the table gained five rows that
+way, each with its reason.
+
+**The PHP shape** (the §10 table, in one paragraph): synchronous methods and a
+`Generator` for streaming; PHP 8 attributes with the same names; the neutral
+`ColumnType` token resolved once on `PropertyMap` (explicit
+`#[Column(type: ColumnType::Int32)]` where PHP's `int` cannot say `int32`,
+`date`, `guid`…); `Types\Decimal` as a string-backed value object;
+`DateTimeImmutable` in UTC under the §7.9 rule; "required" = a typed property
+without a default; navigations `public private(set)` (PHP 8.4 asymmetric
+visibility) with the target class explicit on collection navigations;
+statement parameters as a name→token map; `#[Index([...], name:, unique:)]`
+with `SortOrder` tokens; registries as public static methods returning
+`Query`/`Command`; `$db->from(User::class)` for criteria; `get(User::class, 7)`
+/ `get(UserRole::class, [$a, $b])`; migrations and entities discovered from a
+PSR-4 directory (`--src/--namespace`, `--migrations`) with snapshots as files
+beside them; SchemaGuard describing statements inside a shield transaction
+that is always rolled back (PDO exposes column metadata only after execute);
+handler types exporting as `php:<class>`.
+
+**What the port changed in the spec** (§12: "the port changing the spec is the
+point"):
+
+1. `conformance/amend-cases/` were C#-flavored: `.cs` paths and call-syntax
+   fragments (`AddColumn("remark", "TEXT")`). Now source paths carry no
+   extension (each implementation appends its own) and fragments are tokens
+   (`remark`, `TEXT`, `V0002_AddRemark`, the generator header); both runners
+   updated and green.
+2. The entity export's `targetForeignKeyProperties` / `linkForeignKeysTo*`
+   carry **language-side property names** (`UserId`), contradicting the
+   export's own rule ("column-centric and language-neutral"). Interim: the PHP
+   exporter maps `userId` → `UserId` (documented in §10). Proposed fix, for an
+   owner ruling: export column names there too — a C# + `conformance/entities`
+   change.
+3. `MAP-017`'s duplicate-parameter sub-case is unreachable where parameters
+   are a map; the spec should state it as "the declaration must be a
+   name→type mapping without repeats", which every language can express.
+4. Port pitfall worth a line in the spec's session section: PDO binds every
+   `execute($array)` value as text, which silently breaks numeric comparisons
+   on expression columns; the port binds typed. "Values bind with their
+   database type" is a spec-level statement, not a C# accident.
+
+**Dependencies.** `php >= 8.4`, `ext-pdo` (+ the SQLite driver, loaded with
+`-d extension=pdo_sqlite` by the Composer scripts so no `php.ini` changes);
+dev: `phpunit/phpunit ^11.5` — the xUnit analog, the one dev dependency
+(recorded here per §4's "ask first").
+
+**Verification.** See the numbers paragraph at the end of this entry; every
+Level 0–1 conformance folder runs through a PHP runner — `entities`, `cases`,
+`crud-cases`, `ast`, `diff-cases`, `snapshot-cases`, `migrations-cases`,
+`amend-cases` — unchanged except as listed above; `load-cases/` is Level 2 and
+excluded.
+
+**Status.** Accepted.

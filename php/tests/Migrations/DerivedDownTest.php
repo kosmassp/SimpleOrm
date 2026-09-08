@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Tests\Migrations;
 
+use DateTimeImmutable;
 use PDO;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
@@ -83,7 +84,7 @@ final class DerivedDownTest extends TestCase
             SchemaSnapshot::export(
                 new TableSchema('widgets', [$idColumn, new TableSchemaColumn('name', 'TEXT', false)], []),
                 1,
-                new \DateTimeImmutable(),
+                new DateTimeImmutable(),
             ),
             SchemaSnapshot::export(
                 new TableSchema('widgets', [
@@ -92,7 +93,7 @@ final class DerivedDownTest extends TestCase
                     new TableSchemaColumn('note', 'TEXT', true),
                 ], []),
                 2,
-                new \DateTimeImmutable(),
+                new DateTimeImmutable(),
             ),
             SchemaSnapshot::export(
                 new TableSchema('widgets', [
@@ -101,7 +102,7 @@ final class DerivedDownTest extends TestCase
                     new TableSchemaColumn('note', 'TEXT', true),
                 ], []),
                 3,
-                new \DateTimeImmutable(),
+                new DateTimeImmutable(),
             ),
         ];
 
@@ -168,9 +169,9 @@ final class DerivedDownTest extends TestCase
             SchemaSnapshot::export(
                 new TableSchema('derived_widgets', [$idColumn, new TableSchemaColumn('label', 'TEXT', false)], []),
                 1,
-                new \DateTimeImmutable(),
+                new DateTimeImmutable(),
             ),
-            SchemaSnapshot::export(new TableSchema('derived_widgets', [$idColumn], []), 2, new \DateTimeImmutable()),
+            SchemaSnapshot::export(new TableSchema('derived_widgets', [$idColumn], []), 2, new DateTimeImmutable()),
         ]);
 
         $withSnapshots = new MigrationRunner($this->connection, $this->dialect, $this->maps, MigrationSet::of(...$versions), $snapshots);

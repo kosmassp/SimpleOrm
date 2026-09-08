@@ -7,7 +7,7 @@ namespace SimpleOrm\Migrations;
 use SimpleOrm\Dialect\Dialect;
 use SimpleOrm\Metadata\EntityMapLoader;
 
-/** @internal used only by SqlVersion::compose() — a raw-SQL step built from data, not from a class name. */
+/** @internal used only by SqlVersion::compose() (§7.22) — a raw-SQL step built from data, not from a class name. */
 final class SqlVersionRawStep extends MigrationStep
 {
     public function __construct(

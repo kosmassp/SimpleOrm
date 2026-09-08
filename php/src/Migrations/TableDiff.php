@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace SimpleOrm\Migrations;
 
 /**
- * The result of `MigrationGenerator::diff()`: what changed between the current
- * model and the latest committed snapshot. The generator's emitters turn this
- * into migration source; a CLI (later phase) gates `$removed` behind
- * `--allow-remove` (`DDL-003`) and presents `$unsupported` as `DDL-004` —
- * `diff()` itself only reports.
+ * The result of `MigrationGenerator::diff()` (ADR-0017): what changed between
+ * the current model and the latest committed snapshot. The generator's
+ * emitters turn this into migration source; `Diff\DiffCommand` gates `$removed`
+ * behind `--allow-remove` (`DDL-003`) and presents `$unsupported` as `DDL-004`
+ * — `diff()` itself only reports.
  */
 final readonly class TableDiff
 {

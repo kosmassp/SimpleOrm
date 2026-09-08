@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Session;
 
+use Generator;
+use LogicException;
 use PDO;
 use PDOStatement;
 use ReflectionClass;
@@ -24,6 +26,7 @@ use SimpleOrm\Parameters\ParameterBinder;
 use SimpleOrm\Parameters\PdoBinder;
 use SimpleOrm\Parameters\SqlPlaceholders;
 use SimpleOrm\Query\CriteriaQuery;
+use Stringable;
 
 /**
  * The session (§7.17): owns one PDO connection obtained from the dialect and,
@@ -62,7 +65,7 @@ final class Db
 
     public function connection(): PDO
     {
-        return $this->connection ?? throw new \LogicException('the session is closed');
+        return $this->connection ?? throw new LogicException('the session is closed');
     }
 
     public function options(): DbOptions
@@ -137,7 +140,7 @@ final class Db
      * starts, before the first row is produced, exactly like the registry's list
      * form.
      */
-    public function stream(Query $query, object $args): \Generator
+    public function stream(Query $query, object $args): Generator
     {
         $statement = $this->createStatement($query->source, $args);
         $plan = $this->planFor($statement, $query->resultType, $query->source->description);
@@ -657,7 +660,7 @@ final class Db
         };
     }
 
-    public function streamStatement(string $resultType, object $args): \Generator
+    public function streamStatement(string $resultType, object $args): Generator
     {
         $statement = $this->createStatementStatement($resultType, $args);
         $plan = $this->planFor($statement, $resultType, self::statementName($resultType));
@@ -790,7 +793,7 @@ final class Db
     {
         return match (true) {
             is_scalar($value) => (string) $value,
-            $value instanceof \Stringable => (string) $value,
+            $value instanceof Stringable => (string) $value,
             default => get_debug_type($value),
         };
     }

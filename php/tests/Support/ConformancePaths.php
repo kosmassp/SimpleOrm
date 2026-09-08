@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Tests\Support;
 
+use RuntimeException;
+
 /** Locates the shared `conformance/` tree (§9): the executable definition every implementation runs unchanged. */
 final class ConformancePaths
 {
@@ -11,7 +13,7 @@ final class ConformancePaths
     {
         $root = realpath(__DIR__ . '/../../../conformance');
         if ($root === false) {
-            throw new \RuntimeException('conformance/ not found beside php/ — run from the repository checkout');
+            throw new RuntimeException('conformance/ not found beside php/ — run from the repository checkout');
         }
 
         return $root;

@@ -6,6 +6,8 @@ namespace SimpleOrm\Tests\Metadata;
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use SimpleOrm\Metadata\EntityIndex;
+use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\EntityMapBuilder;
 use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Metadata\KeyStrategy;
@@ -13,6 +15,7 @@ use SimpleOrm\Metadata\MappingOptions;
 use SimpleOrm\Metadata\PropertyMap;
 use SimpleOrm\Metadata\RelationKind;
 use SimpleOrm\Metadata\RelationshipKind;
+use SimpleOrm\Metadata\RelationshipMap;
 use SimpleOrm\Tests\Sample\Models\DailySales;
 use SimpleOrm\Tests\Sample\Models\MonthlySalesTotal;
 use SimpleOrm\Tests\Sample\Models\Role;
@@ -196,7 +199,7 @@ final class EntityMapLoaderTest extends TestCase
         return $property->columnName;
     }
 
-    private static function indexNamed(\SimpleOrm\Metadata\EntityMap $map, string $name): \SimpleOrm\Metadata\EntityIndex
+    private static function indexNamed(EntityMap $map, string $name): EntityIndex
     {
         foreach ($map->indexes as $index) {
             if ($index->name === $name) {
@@ -208,9 +211,9 @@ final class EntityMapLoaderTest extends TestCase
     }
 
     private static function relationshipNamed(
-        \SimpleOrm\Metadata\EntityMap $map,
+        EntityMap $map,
         string $propertyName,
-    ): \SimpleOrm\Metadata\RelationshipMap {
+    ): RelationshipMap {
         foreach ($map->relationships as $relationship) {
             if ($relationship->propertyName === $propertyName) {
                 return $relationship;

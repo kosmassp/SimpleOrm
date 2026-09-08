@@ -12,6 +12,7 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
+use RuntimeException;
 use SimpleOrm\Dialect\SqliteDialect;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Metadata\EntityMapLoader;
@@ -77,7 +78,7 @@ final class MigrationsCasesTest extends TestCase
                         'baseline' => $runner->baseline((int) $step['version']),
                         // The urgency hotfix: statements applied outside migrations.
                         'sql' => SchemaSync::apply($connection, $step['statements']),
-                        default => throw new \RuntimeException('unknown command'),
+                        default => throw new RuntimeException('unknown command'),
                     };
                 } catch (SimpleOrmException $exception) {
                     $error = $exception->errorCode;

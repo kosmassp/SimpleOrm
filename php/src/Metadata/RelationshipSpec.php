@@ -6,7 +6,7 @@ namespace SimpleOrm\Metadata;
 
 /**
  * Loader-internal working shape of one declared navigation before its foreign
- * keys are validated against the related key's arity (mirrors the C#
+ * keys are validated against the related key's arity (ADR-0019; mirrors the C#
  * reference's `RelationshipSpec`); {@see MapAssembler} turns a valid one into a
  * {@see RelationshipMap}.
  */

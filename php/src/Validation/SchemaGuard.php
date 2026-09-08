@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Validation;
 
+use DateTimeImmutable;
 use PDO;
 use PDOException;
 use PDOStatement;
@@ -27,6 +28,7 @@ use SimpleOrm\Parameters\SqlPlaceholders;
 use SimpleOrm\Session\Command;
 use SimpleOrm\Session\Db;
 use SimpleOrm\Session\Query;
+use SimpleOrm\Types\Decimal;
 
 /**
  * The rules (§7.18-21), mirroring `dotnet/src/SimpleOrm/SchemaGuard.cs`:
@@ -393,8 +395,8 @@ final class SchemaGuard
         $bare = ltrim($type, '?');
 
         return in_array($bare, ['int', 'float', 'bool', 'string'], true)
-            || $bare === \SimpleOrm\Types\Decimal::class
-            || $bare === \DateTimeImmutable::class
+            || $bare === Decimal::class
+            || $bare === DateTimeImmutable::class
             || enum_exists($bare);
     }
 
@@ -437,7 +439,6 @@ final class SchemaGuard
                 resultType: $entityType,
                 errors: $errors,
             );
-            self::validateStatementParameters($map, $entityName . ' [Statement]', $errors);
 
             return;
         }
@@ -481,46 +482,6 @@ final class SchemaGuard
                     'VAL-010',
                     $entityName,
                     "nullable column '{$property->columnName}' maps to non-nullable {$property->propertyName()}",
-                );
-            }
-        }
-    }
-
-    /**
-     * Re-verifies a `#[Statement]` entity's own placeholder/declaration
-     * consistency at runtime, against the real `EntityMap` rather than the
-     * attribute the loader already checked (`PRM-010`/`PRM-011`). There is no
-     * PHP args *class* for a statement entity (CODING-STANDARD §10: args are
-     * supplied ad hoc at call time), so a mismatch here is reported as
-     * `PRM-012` — "the statement's declared parameter" being what disagrees —
-     * rather than `PRM-001`/`PRM-002`, which name an args type this entity
-     * does not have. This is defense in depth: an entity built through
-     * `MappingOptions::$explicitMaps` (an already-assembled `EntityMap`,
-     * bypassing the attribute loader entirely) could otherwise reach
-     * SchemaGuard with SQL and declared parameters out of sync.
-     */
-    private static function validateStatementParameters(EntityMap $map, string $source, array &$errors): void
-    {
-        $sql = (string) $map->definingSql;
-        $placeholders = SqlPlaceholders::find($sql);
-        $declaredNames = array_map(static fn ($parameter): string => $parameter->name, $map->statementParameters);
-
-        foreach ($placeholders as $placeholder) {
-            if (!self::containsCaseInsensitive($declaredNames, $placeholder)) {
-                $errors[] = new ValidationError(
-                    'PRM-012',
-                    $source,
-                    "SQL parameter @{$placeholder} has no declared #[Statement] parameter",
-                );
-            }
-        }
-
-        foreach ($declaredNames as $declared) {
-            if (!self::containsCaseInsensitive($placeholders, $declared)) {
-                $errors[] = new ValidationError(
-                    'PRM-012',
-                    $source,
-                    "declared parameter '{$declared}' is never used by the SQL",
                 );
             }
         }

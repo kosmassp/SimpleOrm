@@ -6,8 +6,8 @@ namespace SimpleOrm\Migrations;
 
 /**
  * A table's shape, provider-agnostic but in **storage types** (what CREATE
- * TABLE emits). Both snapshot producers build this: the metadata exporter
- * (`SchemaSnapshot::fromMap()`, the future `snapshot` command) and the future
+ * TABLE emits, ADR-0017). Both snapshot producers build this: the metadata
+ * exporter (`SchemaSnapshot::fromMap()`, the `snapshot` command) and the
  * `shadow` replayer's introspection — which is what makes the two comparable.
  * `SchemaSnapshot::export()` name-sorts columns and indexes for determinism;
  * this value carries them as declared/introspected.

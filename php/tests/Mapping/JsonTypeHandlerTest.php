@@ -75,6 +75,24 @@ final class JsonTypeHandlerTest extends TestCase
         self::assertSame(3, $hydrated->count);
     }
 
+    /**
+     * Regression: `dehydrate()` used to snake_case with its own regex
+     * (an underscore before every uppercase letter), which mis-split an
+     * acronym run — `orderID` became `order_i_d`. It now delegates to the
+     * canonical {@see \SimpleOrm\Naming\SnakeCaseNamingConvention}, matching
+     * how every other database name is derived (CODING-STANDARD §8).
+     */
+    #[Test]
+    public function a_property_name_with_an_acronym_run_snake_cases_like_the_naming_convention(): void
+    {
+        $dto = new class {
+            public string $orderID = 'A1';
+        };
+        $handler = new JsonTypeHandler($dto::class);
+
+        self::assertSame('{"order_id":"A1"}', $handler->format($dto));
+    }
+
     /** @return class-string */
     private static function detailLineClass(): string
     {

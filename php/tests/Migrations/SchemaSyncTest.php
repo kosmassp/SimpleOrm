@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Tests\Migrations;
 
+use PDO;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use SimpleOrm\Dialect\SqliteDialect;
@@ -28,7 +29,7 @@ final class SchemaSyncTest extends TestCase
 
     private SqliteDialect $dialect;
 
-    private \PDO $connection;
+    private PDO $connection;
 
     private EntityMapLoader $maps;
 

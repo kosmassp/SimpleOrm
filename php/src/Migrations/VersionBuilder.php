@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Migrations;
 
-/** Collects a version's object steps in explicit order. */
+/** Collects a version's composing steps in the explicit order `compose()` applies them (§7.22) — each step's own action ordering (rename → add → remove → raw SQL) is `TableActions`'/`ViewActions`' concern, not this class's. */
 final class VersionBuilder
 {
     /** @var list<MigrationStep> */

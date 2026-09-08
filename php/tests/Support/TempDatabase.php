@@ -27,12 +27,18 @@ final class TempDatabase
         return $this->path;
     }
 
+    /** Best-effort: Windows can briefly hold a delete lock after SQLite closes its handle, so a failure here is not reported (never `@` — the warning is caught and discarded explicitly, scoped to this one call). */
     public function delete(): void
     {
-        foreach ([$this->path, $this->path . '-wal', $this->path . '-shm', $this->path . '-journal'] as $file) {
-            if (is_file($file)) {
-                @unlink($file);
+        set_error_handler(static fn (): bool => true);
+        try {
+            foreach ([$this->path, $this->path . '-wal', $this->path . '-shm', $this->path . '-journal'] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
             }
+        } finally {
+            restore_error_handler();
         }
     }
 }

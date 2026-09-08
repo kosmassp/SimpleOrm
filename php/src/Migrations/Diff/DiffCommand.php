@@ -13,6 +13,7 @@ use SimpleOrm\Migrations\MigrationSet;
 use SimpleOrm\Migrations\MigrationStep;
 use SimpleOrm\Migrations\MigrationVersion;
 use SimpleOrm\Migrations\SchemaSnapshot;
+use SimpleOrm\Migrations\SnapshotSet;
 use SimpleOrm\Migrations\TableDiff;
 use SimpleOrm\Migrations\TableMigration;
 use SimpleOrm\Migrations\TableSchema;
@@ -321,7 +322,7 @@ final class DiffCommand
         foreach (self::KIND_FOLDERS as $kind) {
             $kindDir = "{$options->outDir}/{$kind}";
             if (is_dir($kindDir)) {
-                foreach (self::subdirectories($kindDir) as $dir) {
+                foreach (SnapshotSet::subdirectories($kindDir) as $dir) {
                     $objectDirs[] = $dir;
                 }
             }
@@ -524,24 +525,6 @@ final class DiffCommand
         }
 
         return false;
-    }
-
-    /** @return list<string> */
-    private static function subdirectories(string $dir): array
-    {
-        $result = [];
-        foreach (scandir($dir) ?: [] as $entry) {
-            if ($entry === '.' || $entry === '..') {
-                continue;
-            }
-
-            $path = "{$dir}/{$entry}";
-            if (is_dir($path)) {
-                $result[] = $path;
-            }
-        }
-
-        return $result;
     }
 
     private static function ensureDirectory(string $dir): void

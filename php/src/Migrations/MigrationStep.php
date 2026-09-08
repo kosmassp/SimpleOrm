@@ -10,10 +10,10 @@ use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Metadata\EntityMapLoader;
 
 /**
- * One object's change within a version: a class named `V<version>_<Description>`
- * in the object's folder (`Table/User/…`). Its version must match the composing
- * root (`MIG-003`); a step no root composes is an error (`MIG-004`) — nothing is
- * silently skipped.
+ * One object's change within a version (§7.22, ADR-0013): a class named
+ * `V<version>_<Description>` in the object's folder (`Table/User/…`). Its
+ * version must match the composing root (`MIG-003`); a step no root composes is
+ * an error (`MIG-004`) — nothing is silently skipped.
  */
 abstract class MigrationStep
 {

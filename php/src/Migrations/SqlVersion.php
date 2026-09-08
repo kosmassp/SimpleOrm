@@ -5,8 +5,9 @@ declare(strict_types=1);
 namespace SimpleOrm\Migrations;
 
 /**
- * A data-driven version — raw SQL steps constructed programmatically (used by
- * the conformance suite; also the shape a future generator can target).
+ * A data-driven version (§7.22/§7.23) — raw SQL steps constructed
+ * programmatically (used by the conformance suite; also the shape a future
+ * generator can target).
  */
 final class SqlVersion extends MigrationVersion
 {

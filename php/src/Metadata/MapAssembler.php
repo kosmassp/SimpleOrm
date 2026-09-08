@@ -10,7 +10,7 @@ use SimpleOrm\Metadata\Attributes\Key;
 use SimpleOrm\Naming\NamingConvention;
 
 /**
- * Shared final stage of every loader path (attribute, convention, manual
+ * Shared final stage of every loader path (§7.2: attribute, convention, manual
  * builder): resolves column names through the naming convention, runs the
  * source-independent validations (duplicate columns, key shape, version shape,
  * relationship FK resolution, index column resolution), and produces the

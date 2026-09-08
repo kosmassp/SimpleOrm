@@ -6,17 +6,10 @@ namespace SimpleOrm\Tests\Validation;
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
-use ReflectionProperty;
 use SimpleOrm\Dialect\SqliteDialect;
 use SimpleOrm\Discovery\ClassScanner;
 use SimpleOrm\Errors\SchemaValidationException;
-use SimpleOrm\Metadata\ColumnType;
-use SimpleOrm\Metadata\EntityMap;
-use SimpleOrm\Metadata\KeyStrategy;
 use SimpleOrm\Metadata\MappingOptions;
-use SimpleOrm\Metadata\PropertyMap;
-use SimpleOrm\Metadata\RelationKind;
-use SimpleOrm\Metadata\StatementParameter;
 use SimpleOrm\Migrations\MigrationSet;
 use SimpleOrm\Migrations\SqlVersion;
 use SimpleOrm\Migrations\SqlVersionStep;
@@ -26,7 +19,6 @@ use SimpleOrm\Tests\Sample\Models\User;
 use SimpleOrm\Tests\Support\SampleDatabase;
 use SimpleOrm\Tests\Support\TempDatabase;
 use SimpleOrm\Tests\Validation\Fixtures\BadRegistry;
-use SimpleOrm\Tests\Validation\Fixtures\BadStatementEntity;
 use SimpleOrm\Tests\Validation\Fixtures\GhostColumnEntity;
 use SimpleOrm\Tests\Validation\Fixtures\MissingRelationEntity;
 use SimpleOrm\Validation\SchemaGuard;
@@ -121,37 +113,6 @@ final class SchemaGuardTest extends TestCase
 
         $reloaded = $db->get(User::class, $user->id);
         self::assertNull($reloaded->updatedAtUtc);
-    }
-
-    #[Test]
-    public function statement_entity_declared_parameter_mismatch_is_prm_012(): void
-    {
-        $property = new PropertyMap(new ReflectionProperty(BadStatementEntity::class, 'one'), 'one', ColumnType::Int64, 'int', nullable: false);
-        $brokenMap = new EntityMap(
-            BadStatementEntity::class,
-            RelationKind::Statement,
-            relationName: null,
-            schema: null,
-            definingSql: 'select 1 as one where 1 = @used',
-            statementParameters: [new StatementParameter('unused', ColumnType::Int64)],
-            properties: [$property],
-            keyStrategy: KeyStrategy::None,
-            indexes: [],
-            relationships: [],
-        );
-
-        $db = Db::open($this->database->connectionString(), new DbOptions(
-            new SqliteDialect(),
-            new MappingOptions(explicitMaps: [BadStatementEntity::class => $brokenMap]),
-        ));
-
-        $errors = SchemaGuard::report($db, [BadStatementEntity::class]);
-
-        $prm012 = array_values(array_filter($errors, static fn ($e) => $e->code === 'PRM-012'));
-        self::assertCount(2, $prm012);
-        foreach ($prm012 as $error) {
-            self::assertSame('BadStatementEntity [Statement]', $error->target);
-        }
     }
 
     /** @param list<\SimpleOrm\Errors\ValidationError> $errors */

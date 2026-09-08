@@ -14,6 +14,7 @@ use SimpleOrm\Migrations\MigrationSet;
 use SimpleOrm\Migrations\MigrationStep;
 use SimpleOrm\Migrations\SchemaSnapshot;
 use SimpleOrm\Migrations\SnapshotDdl;
+use SimpleOrm\Migrations\SnapshotSet;
 use SimpleOrm\Migrations\TableMigration;
 use SimpleOrm\Migrations\TableSchema;
 use SimpleOrm\Migrations\TableSchemaColumn;
@@ -168,7 +169,7 @@ final class SqliteShadow
     {
         $tableRoot = "{$migrationsDir}/Table";
         if (is_dir($tableRoot)) {
-            foreach (self::subdirectories($tableRoot) as $objectDir) {
+            foreach (SnapshotSet::subdirectories($tableRoot) as $objectDir) {
                 $latest = self::latestTableSnapshotAtOrBelow($objectDir, $fromVersion);
                 if ($latest === null) {
                     continue;   // table born after the trusted version
@@ -193,7 +194,7 @@ final class SqliteShadow
                 continue;
             }
 
-            foreach (self::subdirectories($kindRoot) as $objectDir) {
+            foreach (SnapshotSet::subdirectories($kindRoot) as $objectDir) {
                 $latest = self::latestDdlSnapshotAtOrBelow($objectDir, $fromVersion);
                 if ($latest === null) {
                     continue;
@@ -333,24 +334,6 @@ final class SqliteShadow
         $connection->exec($sql);
     }
 
-    /** @return list<string> */
-    private static function subdirectories(string $dir): array
-    {
-        $result = [];
-        foreach (scandir($dir) ?: [] as $entry) {
-            if ($entry === '.' || $entry === '..') {
-                continue;
-            }
-
-            $path = "{$dir}/{$entry}";
-            if (is_dir($path)) {
-                $result[] = $path;
-            }
-        }
-
-        return $result;
-    }
-
     private static function shortName(string $fqcn): string
     {
         $slash = strrpos($fqcn, '\\');
@@ -358,10 +341,18 @@ final class SqliteShadow
         return $slash === false ? $fqcn : substr($fqcn, $slash + 1);
     }
 
+    /** Best-effort cleanup of the throwaway shadow database: Windows can briefly hold a delete lock after SQLite closes its handle, so a failure here is not reported (never `@` — the warning is caught and discarded explicitly, scoped to this one call). */
     private static function tryDelete(string $path): void
     {
-        if (is_file($path)) {
-            @unlink($path);
+        if (!is_file($path)) {
+            return;
+        }
+
+        set_error_handler(static fn (): bool => true);
+        try {
+            unlink($path);
+        } finally {
+            restore_error_handler();
         }
     }
 }

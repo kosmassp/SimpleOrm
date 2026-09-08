@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Query;
 
+use PDO;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\PropertyMap;
@@ -146,7 +147,7 @@ final class CriteriaQuery
         $plan = $this->db->mapper()->createPlan($this->entityType, $columns, $queryName);
 
         $results = [];
-        while (($row = $statement->fetch(\PDO::FETCH_ASSOC)) !== false) {
+        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
             $results[] = $plan($row);
         }
 

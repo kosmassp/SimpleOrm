@@ -6,7 +6,7 @@ namespace SimpleOrm\Metadata;
 
 /**
  * Loader-internal working shape of one declared `#[Index]` before its property
- * names resolve to column names (mirrors the C# reference's `IndexSpec`).
+ * names resolve to column names (§7.2; mirrors the C# reference's `IndexSpec`).
  */
 final readonly class IndexSpec
 {

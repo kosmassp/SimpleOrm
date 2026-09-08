@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace SimpleOrm\Migrations;
 
 /**
- * One object step of a data-driven `SqlVersion` (used by the conformance suite;
- * also the shape a future generator can target): literal up/down SQL, declared
- * renames, and the optional view apply guard, all as data.
+ * One object step of a data-driven `SqlVersion` (§7.22/§7.23; used by the
+ * conformance suite; also the shape a future generator can target): literal
+ * up/down SQL, declared renames, and the optional view apply guard, all as data.
  */
 final readonly class SqlVersionStep
 {

@@ -6,7 +6,7 @@ namespace SimpleOrm\Migrations;
 
 /**
  * A rendered statement paired with the action it came from, for error reporting
- * (mirrors `dotnet/src/SimpleOrm/Migration.cs`'s `MigrationStatement`). A
+ * (§7.22; mirrors `dotnet/src/SimpleOrm/Migration.cs`'s `MigrationStatement`). A
  * statement carrying `$guardView` is a **precondition**, not SQL to execute: the
  * runner phase compares the view's live definition against `$sql`
  * (whitespace-normalized) before continuing (`MIG-012` on mismatch — views get

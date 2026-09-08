@@ -1747,10 +1747,21 @@ point"):
 dev: `phpunit/phpunit ^11.5` — the xUnit analog, the one dev dependency
 (recorded here per §4's "ask first").
 
-**Verification.** See the numbers paragraph at the end of this entry; every
-Level 0–1 conformance folder runs through a PHP runner — `entities`, `cases`,
-`crud-cases`, `ast`, `diff-cases`, `snapshot-cases`, `migrations-cases`,
-`amend-cases` — unchanged except as listed above; `load-cases/` is Level 2 and
-excluded.
+**Verification.** Every Level 0–1 conformance folder runs through a PHP
+runner — `entities` (10/10 byte-identical), `cases` (7/7), `crud-cases` (2/2),
+`ast` (15/15 `sqlite` pins byte-identical), `diff-cases` (9/9),
+`snapshot-cases` (3/3 byte-identical), `migrations-cases` (9/9), `amend-cases`
+(11/11) — unchanged except as listed above; `load-cases/` is Level 2 and
+excluded. PHP suite after the review pass: **310 tests, 880 assertions, all
+green** (`composer test`, PHP 8.4.23, real temp-file SQLite databases). The C#
+suite is unchanged by the port apart from the amend runner's extension rule:
+304 passed, 10 skipped (the SQL Server LocalDB suite — no working engine on
+this machine; the PostgreSQL suite ran live). The
+review pass consolidated four duplicated implementations (ISO-8601 formatting
+into `Types\Iso8601`, snake_case into the naming convention, directory listing,
+typed PDO binding into `Parameters\PdoBinder`), aligned 22 class docblocks to
+the citation rule, removed a PHP-only `PRM-012` emission from SchemaGuard that
+the reference never makes, and found one real bug (acronym runs mis-split by a
+private snake_case regex — now pinned by a test).
 
 **Status.** Accepted.

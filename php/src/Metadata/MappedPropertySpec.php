@@ -8,7 +8,7 @@ use ReflectionProperty;
 
 /**
  * Loader-internal working shape of one mapped property before assembly
- * (mirrors the C# reference's `MappedPropertySpec`): the loaders (attribute,
+ * (§7.2; mirrors the C# reference's `MappedPropertySpec`): the loaders (attribute,
  * convention, manual builder) each resolve a property's neutral type and
  * declared flags into one of these; {@see MapAssembler} resolves the column
  * name and turns it into a {@see PropertyMap}.

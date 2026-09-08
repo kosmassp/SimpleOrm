@@ -1,0 +1,9 @@
+{
+  "name": "amend_refuses_nothing_to_amend",
+  "comment": "No migration versions in the namespace: there is no newest version to regenerate.",
+  "fixture": "none",
+  "files": [],
+  "snapshots": [],
+  "command": { "amend": true, "name": "AddRemark" },
+  "expect": { "exit": 1, "error": [ "nothing to amend" ] }
+}

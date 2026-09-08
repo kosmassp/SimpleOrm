@@ -1,0 +1,12 @@
+{
+  "name": "amend_refuses_unrecorded_history",
+  "comment": "'The one in migration' must exist: V0001 migrates amend_widgets but no snapshot describes it, so the diff would create the table anew. Refuses, names the object, points at shadow/snapshot — nothing is touched.",
+  "files": [
+    { "path": "V0002.cs", "generated": true, "dialect": "sqlite" },
+    { "path": "Table/AmendWidget/V0002_AddNote.cs", "generated": true } ],
+  "snapshots": [],
+  "command": { "amend": true, "name": "AddRemark" },
+  "expect": { "exit": 1,
+    "error": [ "no recorded schema below V0002 for amend_widgets", "shadow --to V0001" ],
+    "kept": [ "V0002.cs", "Table/AmendWidget/V0002_AddNote.cs" ] }
+}

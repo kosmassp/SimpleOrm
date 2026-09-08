@@ -1,0 +1,28 @@
+{
+  "name": "amend_regenerates_against_history_below",
+  "comment": "The core contract: amend targets the newest version (V0002, not V0003) and diffs the model against the snapshot history BELOW it. The developer had run snapshot on the draft — that V0002 snapshot is ignored as baseline (it would hide the change) and deleted (it describes the discarded draft). The old step goes, the new one adds remark and never 'removes' note, the root is re-composed.",
+  "files": [
+    { "path": "V0002.cs", "generated": true, "dialect": "sqlite" },
+    { "path": "Table/AmendWidget/V0002_AddNote.cs", "generated": true } ],
+  "snapshots": [
+    { "path": "Table/AmendWidget/V0001.schema.json", "snapshot": { "object": "amend_widgets", "asOfVersion": 1,
+      "columns": [
+        { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "TEXT", "nullable": false } ],
+      "indexes": [] } },
+    { "path": "Table/AmendWidget/V0002.schema.json", "snapshot": { "object": "amend_widgets", "asOfVersion": 2,
+      "columns": [
+        { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "TEXT", "nullable": false },
+        { "column": "note", "type": "TEXT", "nullable": true } ],
+      "indexes": [] } } ],
+  "command": { "amend": true, "name": "AddRemark" },
+  "expect": { "exit": 0,
+    "deleted": [ "Table/AmendWidget/V0002_AddNote.cs", "Table/AmendWidget/V0002.schema.json" ],
+    "kept": [ "Table/AmendWidget/V0001.schema.json" ],
+    "written": [ "Table/AmendWidget/V0002_AddRemark.cs", "V0002.cs" ],
+    "files": [
+      { "path": "Table/AmendWidget/V0002_AddRemark.cs", "contains": [ "AddColumn(\"remark\", \"TEXT\")" ], "omits": [ "note" ] },
+      { "path": "V0002.cs", "contains": [ ".Apply<Table.AmendWidget.V0002_AddRemark>();" ], "omits": [ "V0002_AddNote" ] } ],
+    "output": [ "deleted ", "wrote " ] }
+}

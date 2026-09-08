@@ -212,6 +212,27 @@ are refused as `DDL-004` — write those by hand with
 1. change the model → `diff` → review the generated `V000N` → build → `migrate`
 2. `snapshot --out App/Migrations` to record the new shape (commit it)
 
+While a version is still being shaped, **`diff --amend`** regenerates it in place
+instead of stacking a new one (ADR-0017 add.3): the target is the newest version
+in the assembly, the baseline is the snapshot history *below* it (a snapshot you
+took of the draft is ignored and removed), and the previously generated files are
+replaced — an empty diff removes the version. A hand-written version is replaced
+only with `--force`: its raw SQL, hooks, and data steps (seeders) can't be
+computed from a diff, so the run names each such file for you to re-add what
+still applies; a dialect switch refuses. Whether a version may be amended is your
+team's call (unpushed, or agreed) — the tool never looks at git. The boundary is
+the databases: one that applied the old draft reports `MIG-010` on its next
+`migrate`, so run `migrate down --to N-1` there first or recreate it; add `--db`
+to get that warning up front. Re-declare `--rename`s, and re-apply any hand edits
+you had made inside the generated files. In both modes, `diff` needs the recorded
+past to exist: an object that earlier versions migrate but no snapshot describes
+refuses (run `shadow`, or `snapshot` on a migrated database, first) rather than
+being created anew:
+
+```bash
+dotnet run --project dotnet/src/SimpleOrm.Cli -- diff --amend --assembly App.dll --out App/Migrations --namespace App.Migrations --name AddNote --db app.db
+```
+
 `shadow` rebuilds the snapshots from history instead — it replays every version
 into a throwaway database and introspects after each one, which both regenerates
 lost files and proves the snapshots match the migrations. When history is too long

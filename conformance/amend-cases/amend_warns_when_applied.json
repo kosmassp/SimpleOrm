@@ -1,0 +1,17 @@
+{
+  "name": "amend_warns_when_applied",
+  "comment": "The databases' recorded checksums are the boundary: a database that applied the draft will report MIG-010 after the amend. With --db the run says so up front — a warning naming the rollback to run first, never a refusal (other databases exist the tool can't see).",
+  "files": [
+    { "path": "V0002.cs", "generated": true, "dialect": "sqlite" },
+    { "path": "Table/AmendWidget/V0002_AddNote.cs", "generated": true } ],
+  "snapshots": [
+    { "path": "Table/AmendWidget/V0001.schema.json", "snapshot": { "object": "amend_widgets", "asOfVersion": 1,
+      "columns": [
+        { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "TEXT", "nullable": false } ],
+      "indexes": [] } } ],
+  "command": { "amend": true, "name": "AddRemark", "applied": true },
+  "expect": { "exit": 0,
+    "written": [ "Table/AmendWidget/V0002_AddRemark.cs" ],
+    "output": [ "MIG-010", "migrate down --to 1" ] }
+}

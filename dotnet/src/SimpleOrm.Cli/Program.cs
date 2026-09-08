@@ -1,5 +1,6 @@
 using System.Reflection;
 using SimpleOrm;
+using SimpleOrm.Cli;
 using SimpleOrm.Postgres;
 using SimpleOrm.Sqlite;
 using SimpleOrm.SqlServer;
@@ -8,7 +9,7 @@ using SimpleOrm.SqlServer;
 // never migrates at startup. Migrations and entities are code, so the CLI loads
 // the application assembly and works from its types.
 
-var boolFlags = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "force", "allow-delete", "allow-remove" };
+var boolFlags = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "force", "allow-delete", "allow-remove", "amend" };
 var positional = new List<string>();
 var options = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 for (var i = 0; i < args.Length; i++)
@@ -48,7 +49,7 @@ try
         "export-metadata" => ExportMetadata(),
         "validate" => await ValidateAsync(),
         "snapshot" => await SnapshotAsync(),
-        "diff" => DiffCommand(),
+        "diff" => await DiffAsync(),
         "shadow" => await ShadowAsync(),
         _ => Usage(),
     };
@@ -90,11 +91,19 @@ int Usage()
                                       columns; views by DDL), versioned and timestamped
           diff --out <MigrationsDir> --namespace <ns>
                [--name <Description>] [--rename table.old=new]... [--allow-remove]
+               [--amend [--force] [--db <value>]]
                                       generate the next migration version from the model vs
                                       the latest snapshots (tables by columns, views by
                                       DDL); no database needed; removals need
                                       --allow-remove (DDL-003); inexpressible changes are
-                                      DDL-004 (write by hand)
+                                      DDL-004 (write by hand); a migrated object with no
+                                      snapshot refuses (run shadow/snapshot first).
+                                      --amend regenerates the newest version in place
+                                      instead (baseline: the snapshots below it); a
+                                      hand-written version is replaced only with --force
+                                      (its raw SQL/hooks/data are not reproducible — re-add
+                                      by hand); with --db, an applied draft gets a MIG-010
+                                      heads-up (migrate down first, or recreate)
           shadow --out <MigrationsDir> [--from V000N] [--to V000M]
                                       rebuild snapshots by replaying migrations in a
                                       throwaway database; --from trusts version N as
@@ -336,7 +345,7 @@ static (string Folder, string? Content) SnapshotContent(
     }
 }
 
-int DiffCommand()
+async Task<int> DiffAsync()
 {
     if (Option("out") is not { } outDir)
     {
@@ -347,10 +356,6 @@ int DiffCommand()
     {
         return Fail("diff requires --namespace <Migrations root namespace> (used for the emitted code)");
     }
-
-    var assembly = LoadAssembly();
-    var dialect = DialectFor();
-    var loader = new EntityMapLoader();
 
     // Renames are declared, never inferred: --rename <table>.<old>=<new>, repeatable.
     var renames = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
@@ -371,179 +376,37 @@ int DiffCommand()
         perTable[raw[(dot + 1)..eq]] = raw[(eq + 1)..];
     }
 
-    var nextVersion = 1L + assembly.GetTypes()
-        .Where(t => !t.IsAbstract && typeof(MigrationVersion).IsAssignableFrom(t)
-            && t.GetConstructor(Type.EmptyTypes) is not null
-            && (t.Namespace ?? string.Empty).StartsWith(rootNamespace, StringComparison.Ordinal))
-        .Select(t => ((MigrationVersion)Activator.CreateInstance(t)!).Version)
-        .DefaultIfEmpty(0)
-        .Max();
-
-    var changed = new List<(Type Type, EntityMap Map, MigrationGenerator.TableDiff Diff)>();
-    var viewChanges = new List<(Type Type, string Folder, string ObjectName, string Ddl, string? PreviousDdl)>();
-    var problems = new List<string>();
-    var removals = new List<string>();
-    foreach (var type in MappedTypes(assembly).OrderBy(t => t.Name, StringComparer.Ordinal))
-    {
-        var map = loader.Load(type);
-        if (map.Kind == RelationKind.Table)
+    var assembly = LoadAssembly();
+    return await DiffCommand.ExecuteAsync(
+        new DiffOptions
         {
-            var snapshotDir = Path.Combine(outDir, "Table", type.Name);
-            var latest = Directory.Exists(snapshotDir)
-                ? Directory.GetFiles(snapshotDir, "V*.schema.json")
-                    .Select(f => SchemaSnapshot.Parse(File.ReadAllText(f)))
-                    .OrderByDescending(s => s.AsOfVersion)
-                    .Select(s => s.Schema)
-                    .FirstOrDefault()
-                : null;
-
-            renames.TryGetValue(map.RelationName!, out var tableRenames);
-            var diff = MigrationGenerator.Diff(map, dialect, latest, tableRenames ?? new Dictionary<string, string>());
-            problems.AddRange(diff.Unsupported.Select(m => $"{map.RelationName}: {m}"));
-            removals.AddRange(diff.Removed.Select(c => $"{map.RelationName}.{c.Name}")
-                .Concat(diff.RemovedIndexNames.Select(n => $"index {n}")));
-            if (diff.HasChanges)
-            {
-                changed.Add((type, map, diff));
-            }
-        }
-        else if (map.Kind == RelationKind.View
-            || (map.Kind == RelationKind.MaterializedView && dialect.SupportsMaterializedViews))
-        {
-            // Views diff by DDL (ADR-0017 add.1): the definition is the schema.
-            var folder = map.Kind == RelationKind.View ? "View" : "MaterializedView";
-            var current = SchemaSnapshot.NormalizeDdl(dialect.CreateViewSql(map));
-            var snapshotDir = Path.Combine(outDir, folder, type.Name);
-            var previous = Directory.Exists(snapshotDir)
-                ? Directory.GetFiles(snapshotDir, "V*.schema.json")
-                    .Select(f => SchemaSnapshot.ParseDdl(File.ReadAllText(f)))
-                    .OrderByDescending(s => s.AsOfVersion)
-                    .Select(s => (string?)s.Ddl)
-                    .FirstOrDefault()
-                : null;
-            if (previous != current)
-            {
-                viewChanges.Add((type, folder, map.RelationName!, current, previous));
-            }
-        }
-    }
-
-    if (problems.Count > 0)
-    {
-        foreach (var problem in problems)
-        {
-            Console.Error.WriteLine("DDL-004 " + problem);
-        }
-
-        return 1;
-    }
-
-    if (removals.Count > 0 && !Flag("allow-remove"))
-    {
-        return Fail("DDL-003 destructive changes need --allow-remove: " + string.Join(", ", removals));
-    }
-
-    if (changed.Count == 0 && viewChanges.Count == 0)
-    {
-        Console.WriteLine("no schema changes: the model matches the snapshots");
-        return 0;
-    }
-
-    // New tables first, FK-referenced before referencing; then modified tables by name.
-    var newSet = changed.Where(c => c.Diff.IsNew).Select(c => c.Type).ToHashSet();
-    var ordered = TopologicalByForeignKey(changed.Where(c => c.Diff.IsNew).ToList(), newSet)
-        .Concat(changed.Where(c => !c.Diff.IsNew))
-        .ToList();
-
-    var description = Option("name") ?? "Auto";
-    var written = new List<string>();
-    var stepRefs = new List<string>();
-    foreach (var (type, map, diff) in ordered)
-    {
-        var directory = Path.Combine(outDir, "Table", type.Name);
-        Directory.CreateDirectory(directory);
-        var file = Path.Combine(directory, $"V{nextVersion:0000}_{description}.cs");
-        if (File.Exists(file))
-        {
-            return Fail($"refusing to overwrite {file}");
-        }
-
-        File.WriteAllText(file, MigrationGenerator.EmitTableStep(
-            rootNamespace, type, map, dialect, nextVersion, description, diff));
-        written.Add(file);
-        stepRefs.Add($"Table.{type.Name}.V{nextVersion:0000}_{description}");
-    }
-
-    // Views compose after tables (§7.22 ordering) — literal DDL with the
-    // expected-previous-definition guard (MIG-012 on outside drift).
-    foreach (var (type, folder, objectName, ddl, previousDdl) in viewChanges)
-    {
-        var directory = Path.Combine(outDir, folder, type.Name);
-        Directory.CreateDirectory(directory);
-        var file = Path.Combine(directory, $"V{nextVersion:0000}_{description}.cs");
-        if (File.Exists(file))
-        {
-            return Fail($"refusing to overwrite {file}");
-        }
-
-        File.WriteAllText(file, MigrationGenerator.EmitViewStep(
-            rootNamespace, type, folder, objectName, nextVersion, description, ddl, previousDdl));
-        written.Add(file);
-        stepRefs.Add($"{folder}.{type.Name}.V{nextVersion:0000}_{description}");
-    }
-
-    var rootFile = Path.Combine(outDir, $"V{nextVersion:0000}.cs");
-    if (File.Exists(rootFile))
-    {
-        return Fail($"refusing to overwrite {rootFile}");
-    }
-
-    File.WriteAllText(rootFile, MigrationGenerator.EmitRoot(rootNamespace, nextVersion, stepRefs));
-    written.Add(rootFile);
-
-    foreach (var file in written)
-    {
-        Console.WriteLine("wrote " + file);
-    }
-
-    Console.WriteLine(
-        $"review the generated V{nextVersion:0000}, build, migrate, then refresh snapshots: simpleorm snapshot --out <MigrationsDir>");
-    return 0;
+            Assembly = assembly,
+            EntityTypes = MappedTypes(assembly).ToArray(),
+            OutDir = outDir,
+            RootNamespace = rootNamespace,
+            Dialect = DialectFor(),
+            DialectLabel = (Option("dialect") ?? "sqlite").ToLowerInvariant(),
+            Name = Option("name"),
+            Renames = renames.ToDictionary(
+                p => p.Key, p => (IReadOnlyDictionary<string, string>)p.Value, StringComparer.OrdinalIgnoreCase),
+            AllowRemove = Flag("allow-remove"),
+            Amend = Flag("amend"),
+            Force = Flag("force"),
+            // --db is optional when amending: an applied draft gets a MIG-010 heads-up.
+            IsApplied = Flag("amend") && Option("db") is not null ? IsAppliedAsync : null,
+        },
+        Console.Out,
+        Console.Error);
 }
 
-static List<(Type Type, EntityMap Map, MigrationGenerator.TableDiff Diff)> TopologicalByForeignKey(
-    List<(Type Type, EntityMap Map, MigrationGenerator.TableDiff Diff)> newTables, HashSet<Type> newSet)
+async Task<bool> IsAppliedAsync(long version)
 {
-    var ordered = new List<(Type, EntityMap, MigrationGenerator.TableDiff)>();
-    var visited = new HashSet<Type>();
-
-    void Visit((Type Type, EntityMap Map, MigrationGenerator.TableDiff Diff) node)
+    var (db, runner) = await OpenAsync();
+    await using (db)
     {
-        if (!visited.Add(node.Type))
-        {
-            return;
-        }
-
-        foreach (var target in node.Map.Properties
-            .Where(p => p.ForeignKeyReferences is not null && newSet.Contains(p.ForeignKeyReferences))
-            .Select(p => p.ForeignKeyReferences!))
-        {
-            var dependency = newTables.FirstOrDefault(c => c.Type == target);
-            if (dependency.Type is not null)
-            {
-                Visit(dependency);
-            }
-        }
-
-        ordered.Add(node);
+        return (await runner.StatusAsync(CancellationToken.None))
+            .Any(e => e.Version == version && e.State is MigrationState.Applied or MigrationState.Drifted);
     }
-
-    foreach (var node in newTables)
-    {
-        Visit(node);
-    }
-
-    return ordered;
 }
 
 async Task<int> ShadowAsync()

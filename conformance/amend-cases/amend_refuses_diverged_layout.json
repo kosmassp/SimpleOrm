@@ -1,0 +1,18 @@
+{
+  "name": "amend_refuses_diverged_layout",
+  "comment": "The compiled V0002 composes one step but two V0002_*.cs files exist under the generator's layout: the tree diverged from what the tool wrote, and the tool does not guess which file is which — it refuses and touches nothing.",
+  "files": [
+    { "path": "V0002.cs", "generated": true, "dialect": "sqlite" },
+    { "path": "Table/AmendWidget/V0002_AddNote.cs", "generated": true },
+    { "path": "Table/AmendWidget/V0002_Extra.cs", "generated": true } ],
+  "snapshots": [
+    { "path": "Table/AmendWidget/V0001.schema.json", "snapshot": { "object": "amend_widgets", "asOfVersion": 1,
+      "columns": [
+        { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "TEXT", "nullable": false } ],
+      "indexes": [] } } ],
+  "command": { "amend": true, "name": "AddRemark" },
+  "expect": { "exit": 1,
+    "error": [ "compiles 1 step(s) but 2" ],
+    "kept": [ "Table/AmendWidget/V0002_AddNote.cs", "Table/AmendWidget/V0002_Extra.cs" ] }
+}

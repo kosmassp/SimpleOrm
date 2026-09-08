@@ -28,6 +28,11 @@ func (r *Repository[T]) Update(ctx context.Context, entity *T) error {
 	return Update(ctx, r.db, entity)
 }
 
+// UpdateOnly is the update by column list (ADR-0028): only the named properties are written; version rules unchanged.
+func (r *Repository[T]) UpdateOnly(ctx context.Context, entity *T, properties ...string) error {
+	return UpdateOnly(ctx, r.db, entity, properties...)
+}
+
 // Delete deletes by key; DeleteEntity gives the version-checked form (§7.16).
 func (r *Repository[T]) Delete(ctx context.Context, key any) error {
 	return Delete[T](ctx, r.db, key)

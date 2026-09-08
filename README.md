@@ -34,6 +34,7 @@ var users = await db.Query<User>()                                 // criteria: 
 await db.InsertAsync(user, ct);        // generated; key written back
 user.Name = "Ada Lovelace";
 await db.UpdateAsync(user, ct);        // full row by key
+await db.UpdateOnlyAsync(user, [nameof(User.Name)], ct);   // only the listed properties (ADR-0028); same key/version rules
 await db.DeleteAsync<User>(user.Id, ct);
 
 // Optimistic concurrency ([Version] column): stale writes throw CRUD-010

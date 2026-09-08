@@ -440,25 +440,106 @@ final class Db
      * With a version column (§7.16): `version = version + 1`, requires the
      * entity's version in the WHERE, throws {@see ConcurrencyException}
      * (`CRUD-010`) on zero rows, and bumps the entity's version on success.
-     * Without one, zero rows is `CRUD-001`.
+     * Without one, zero rows is `CRUD-001`. For a narrower SET see {@see updateOnly()}.
      */
     public function update(object $entity): void
     {
         $map = $this->requireWritableKeyed($entity::class);
         $this->checkNavigationConsistency($map, $entity);
 
-        $sql = SqlPlaceholders::toPdo($this->options->dialect->updateSql($map));
-        $statement = $this->connection()->prepare($sql);
+        // Bind SET values, key values, and the current version for the WHERE;
+        // database-generated non-key columns are never written.
+        $this->executeUpdate($map, $entity, $this->options->dialect->updateSql($map), array_values(array_filter(
+            $map->properties,
+            static fn (PropertyMap $p): bool => $p->key || $p->version || !$p->generated,
+        )));
+    }
+
+    /**
+     * Update by column list (ADR-0028): writes only the named properties — the
+     * caller says what changed — with every other rule of {@see update()}
+     * intact: keyed WHERE, version bump and check (`CRUD-010`), `CRUD-001`
+     * without a version column. Names are property names (the criteria
+     * vocabulary). An unmapped name is `CRUD-005`; a key, version, or generated
+     * property is `CRUD-006`; an empty or repeating list is `CRUD-007`. A
+     * separate method, not an optional argument: the spec names one operation
+     * per concept.
+     *
+     * @param list<string> $properties
+     */
+    public function updateOnly(object $entity, array $properties): void
+    {
+        $map = $this->requireWritableKeyed($entity::class);
+        $set = self::resolveUpdateList($map, $properties);
+        $listed = array_map(static fn (PropertyMap $p): string => $p->propertyName(), $set);
+        $this->checkNavigationConsistency($map, $entity, $listed);
+
+        $bound = array_merge($set, $map->keyProperties);
+        if ($map->versionProperty !== null) {
+            $bound[] = $map->versionProperty;
+        }
+
+        $this->executeUpdate($map, $entity, $this->options->dialect->updateOnlySql($map, $set), $bound);
+    }
+
+    /**
+     * Validates an update-by-column-list (ADR-0028) and resolves it to property maps, in the caller's order.
+     *
+     * @param list<string> $properties
+     * @return list<PropertyMap>
+     */
+    private static function resolveUpdateList(EntityMap $map, array $properties): array
+    {
+        $entityName = $map->entityName();
+        if ($properties === []) {
+            throw new SimpleOrmException('CRUD-007', $entityName, 'update by column list needs at least one property');
+        }
+
+        $resolved = [];
+        $seen = [];
+        foreach ($properties as $propertyName) {
+            $target = "{$entityName}.{$propertyName}";
+            $property = $map->property($propertyName)
+                ?? throw new SimpleOrmException('CRUD-005', $target, 'is not a mapped property; the list takes property names');
+            if ($property->key) {
+                throw new SimpleOrmException('CRUD-006', $target, 'is a key property; an update never writes the key');
+            }
+
+            if ($property->version) {
+                throw new SimpleOrmException('CRUD-006', $target, 'is the version column; the database computes it');
+            }
+
+            if ($property->generated) {
+                throw new SimpleOrmException('CRUD-006', $target, 'is database-generated and never written');
+            }
+
+            if (isset($seen[$propertyName])) {
+                throw new SimpleOrmException('CRUD-007', $target, 'is listed more than once');
+            }
+
+            $seen[$propertyName] = true;
+            $resolved[] = $property;
+        }
+
+        return $resolved;
+    }
+
+    /**
+     * The shared tail of both updates (§7.15–16): bind, execute, judge the row count, bump the version.
+     *
+     * @param list<PropertyMap> $bound
+     */
+    private function executeUpdate(EntityMap $map, object $entity, string $sql, array $bound): void
+    {
+        $statement = $this->connection()->prepare(SqlPlaceholders::toPdo($sql));
 
         $parameters = [];
-        foreach ($map->properties as $property) {
-            if ($property->key || $property->version || !$property->generated) {
-                $parameters[$property->columnName] = $this->converter->toDatabase(
-                    $property->getValue($entity),
-                    "{$map->entityName()}.{$property->propertyName()}",
-                    $property->enumAsInt(),
-                );
-            }
+        foreach ($bound as $property) {
+            $parameters[$property->columnName] = $this->converter->toDatabase(
+                $property->getValue($entity),
+                "{$map->entityName()}.{$property->propertyName()}",
+                $property->enumAsInt(),
+            );
         }
 
         PdoBinder::bindAndExecute($statement, $parameters);
@@ -568,9 +649,12 @@ final class Db
     /**
      * The FK property is what is written; a non-null `[ManyToOne]` navigation
      * must agree with it (ADR-0005 add.1) — composite-aware, pairwise in key
-     * order (ADR-0019 add.1).
+     * order (ADR-0019 add.1). An update by column list (ADR-0028) passes the
+     * written property names and checks only those FK parts.
+     *
+     * @param list<string>|null $written
      */
-    private function checkNavigationConsistency(EntityMap $map, object $entity): void
+    private function checkNavigationConsistency(EntityMap $map, object $entity, ?array $written = null): void
     {
         foreach ($map->relationships as $relationship) {
             if ($relationship->kind !== RelationshipKind::ManyToOne) {
@@ -589,8 +673,12 @@ final class Db
             }
 
             foreach ($targetMap->keyProperties as $i => $targetKey) {
-                $navigationKey = $targetKey->getValue($navigation);
                 $fkPropertyName = $relationship->foreignKeyProperties[$i];
+                if ($written !== null && !in_array($fkPropertyName, $written, true)) {
+                    continue;
+                }
+
+                $navigationKey = $targetKey->getValue($navigation);
                 $foreignKey = $map->property($fkPropertyName)?->getValue($entity);
                 if ($navigationKey !== $foreignKey) {
                     throw new SimpleOrmException(

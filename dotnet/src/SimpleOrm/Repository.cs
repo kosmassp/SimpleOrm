@@ -18,6 +18,10 @@ public class Repository<TEntity>(Db db)
 
     public Task UpdateAsync(TEntity entity, CancellationToken ct) => Db.UpdateAsync(entity, ct);
 
+    /// <summary>Update by column list (ADR-0028): writes only the named properties; version rules unchanged.</summary>
+    public Task UpdateOnlyAsync(TEntity entity, IReadOnlyList<string> properties, CancellationToken ct)
+        => Db.UpdateOnlyAsync(entity, properties, ct);
+
     /// <summary>A key (or tuple) deletes by key; passing the entity gives the version-checked delete (§7.16).</summary>
     public Task DeleteAsync(object keyOrEntity, CancellationToken ct) => Db.DeleteAsync<TEntity>(keyOrEntity, ct);
 

@@ -118,6 +118,19 @@ final class CrudCasesTest extends TestCase
             case 'update':
                 $entity = $snapshots[$step['from']];
                 self::applyValues($db, $entity, $step['values']);
+                if (array_key_exists('columns', $step)) {
+                    // Update by column list (ADR-0028): columns resolve to property
+                    // names; an unknown column passes through so CRUD-005 is reachable.
+                    $map = $db->maps()->load($entity::class);
+                    $properties = [];
+                    foreach ($step['columns'] as $columnName) {
+                        $properties[] = self::propertyNameByColumn($map, $columnName);
+                    }
+
+                    $db->updateOnly($entity, $properties);
+                    break;
+                }
+
                 $db->update($entity);
                 break;
 
@@ -165,6 +178,17 @@ final class CrudCasesTest extends TestCase
             $actual = self::encodeForCompare($property->getValue($entity));
             self::assertSame(self::expectedText($expectedValue), $actual, "{$fileName}: column {$columnName}");
         }
+    }
+
+    private static function propertyNameByColumn(EntityMap $map, string $columnName): string
+    {
+        foreach ($map->properties as $property) {
+            if ($property->columnName === $columnName) {
+                return $property->propertyName();
+            }
+        }
+
+        return $columnName;
     }
 
     private static function propertyByColumn(EntityMap $map, string $columnName): PropertyMap

@@ -40,6 +40,17 @@ abstract class Repository
         $this->db->update($entity);
     }
 
+    /**
+     * Update by column list (ADR-0028): writes only the named properties; version rules unchanged.
+     *
+     * @param TEntity $entity
+     * @param list<string> $properties
+     */
+    public function updateOnly(object $entity, array $properties): void
+    {
+        $this->db->updateOnly($entity, $properties);
+    }
+
     /** A key (or key-part list) deletes by key; passing the entity gives the version-checked delete (§7.16). */
     public function delete(mixed $keyOrEntity): void
     {

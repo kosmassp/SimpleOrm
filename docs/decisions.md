@@ -1816,8 +1816,8 @@ under the same rule. TODO marker sits on `Db.UpdateAsync`.
 
 **Status.** Seed, shape agreed (full-row `UpdateAsync` unchanged + a named
 column-list method). **Timing ruling (2026-09-08): not before the Go port is
-done** — the port order (ADR-0023) comes first; the TODO marker on
-`Db.UpdateAsync` holds the place.
+done** — the port order (ADR-0023) comes first. Realized the same day by
+ADR-0028 once ADR-0027 landed the Go port.
 
 ## Decision — seeding stays with the developer (2026-09-08)
 
@@ -1988,3 +1988,73 @@ never makes, no behavioral bug. Suite after the review: **331 tests, all
 green**; `gofmt`/`go vet` clean.
 
 **Status.** Accepted; uncommitted pending the owner's review.
+
+## ADR-0028 — Update by column list: a separately named operation in all three implementations (2026-09-08)
+
+The 2026-09-08 design seed, built once ADR-0027 satisfied its timing ruling
+("not before the Go port is done"). Owner: "work on the TODO".
+
+**Decision.** Beside the full-row update (§7.15, unchanged byte-for-byte) each
+implementation gains one **separately named** operation that writes only the
+properties the caller lists:
+
+```csharp
+await db.UpdateOnlyAsync(user, [nameof(User.Name), nameof(User.Email)], ct);
+```
+```php
+$db->updateOnly($user, ['name', 'email']);
+```
+```go
+err := orm.UpdateOnly(ctx, db, &user, "Name", "Email")
+```
+
+Never an overload or an optional argument: PHP and Go have no overloading, and
+the spec names one operation per concept ("update by column list",
+`spec/crud.md`). The rules, identical everywhere:
+
+- **Property names**, the criteria vocabulary — never column names; the dialect
+  renders columns from `EntityMap`. Go takes field names, variadic (idiomatic;
+  an empty call is the empty-list error, not a compile error).
+- **Validation before any write**, each a named code registered in
+  `spec/errors.md`: `CRUD-005` unmapped name; `CRUD-006` a key, version, or
+  database-generated property (an update never writes them); `CRUD-007` empty
+  list or repeated name. `CRUD-003`/`CRUD-002` from the shared writable-keyed
+  guard precede them.
+- **Everything else is the full-row update**: keyed WHERE, `version = version
+  + 1` in the SET with the entity's version in the WHERE, `CRUD-010` on zero
+  rows, in-memory bump on success, `CRUD-001` without a version column. The
+  navigation/FK consistency check (ADR-0005 add.1) runs only for the FK parts
+  in the list.
+- **Concurrency stays row-level** — deliberately. Two callers updating disjoint
+  columns of the same versioned row still conflict; the list narrows what is
+  written, never what is checked. Pinned by
+  `conformance/crud-cases/partial_update_concurrency.json`.
+
+**Dialect seam.** One new member, `UpdateOnlySql(map, properties)` (PHP
+`updateOnlySql`, Go `UpdateOnlySQL`), rendered by the same private function as
+the full-row form in every dialect (SQLite, SQL Server, PostgreSQL) — a test in
+each implementation pins that listing every writable column reproduces
+`UpdateSql` byte-for-byte, so no checksum or conformance pin moved.
+
+**Not this ADR.** Snapshot-based dirty tracking (Level 3: needs a loaded-state
+snapshot per entity, the identity map's job). An AST-rendered `UPDATE … WHERE
+<criteria>` that never loads the entity (a different operation — no version to
+check). Any metadata such as `[Column(WriteMode…)]` — at Levels 1–2 the caller
+is the only party who knows what changed.
+
+**Conformance.** `crud-cases/` gained `partial_update.json` (the unlisted value
+proves untouched; every validation code) and `partial_update_concurrency.json`
+(disjoint-column conflict, version bump, `version` refused as `CRUD-006`).
+The case format: an `update` step with `"columns"` (column names, like
+`values`); the runners resolve columns to property names and pass an unknown
+column through unchanged so `CRUD-005` is expressible. All three runners
+updated; no existing case changed.
+
+**Verification.** C#: 310 passed, 10 skipped (SQL Server LocalDB, no engine on
+this machine), both TFMs build. PHP: 319 tests, 949 assertions (the two
+sample-project failures seen first were a stale Composer autoloader after the
+ADR-0027-era merge — `composer dump-autoload` fixed them, no code change). Go:
+12 packages ok, `gofmt`/`vet` clean.
+
+**Status.** Accepted. The `Repository` surfaces (C# `Repository<T>`, the PHP
+sample's `Repository`, Go `Repository[T]`) forward it under the same name.

@@ -471,27 +471,100 @@ public sealed partial class Db : IAsyncDisposable
     /// With a version column (§7.16): sets <c>version = version + 1</c>, requires the
     /// entity's version in the WHERE, throws <see cref="ConcurrencyException"/>
     /// (<c>CRUD-010</c>) on zero rows, and bumps the entity's version on success.
-    /// Without one, zero rows is <c>CRUD-001</c>. Partial updates are hand SQL.
+    /// Without one, zero rows is <c>CRUD-001</c>. For a narrower SET see
+    /// <see cref="UpdateOnlyAsync{TEntity}"/>.
     /// </summary>
-    // TODO(L2): opt-in column list as a *separately named* method (no overload — the
-    // ports have no overloading): UpdateOnlyAsync(entity, [nameof(T.Prop), ...], ct),
-    // so wide rows (large TEXT/JSON columns) are not rewritten to change one flag.
-    // Still generated from EntityMap, still version-checked; names validated
-    // (unknown / key / version / generated property => named CRUD-0xx errors).
-    // See docs/decisions.md "Design seed — partial updates" (2026-09-08). Dirty
-    // tracking stays Level 3.
-    public async Task UpdateAsync<TEntity>(TEntity entity, CancellationToken ct)
+    public Task UpdateAsync<TEntity>(TEntity entity, CancellationToken ct)
         where TEntity : class
     {
         var map = RequireWritableKeyed<TEntity>();
         CheckNavigationConsistency(map, entity);
 
-        using var command = _connection.CreateCommand();
-        command.Transaction = _transaction;
-        command.CommandText = Options.Dialect.UpdateSql(map);
         // Bind SET values, key values, and the current version for the WHERE;
         // database-generated non-key columns are never written.
-        foreach (var property in map.Properties.Where(p => p.IsKey || p.IsVersion || !p.IsGenerated))
+        return ExecuteUpdateAsync(
+            map, entity, Options.Dialect.UpdateSql(map),
+            map.Properties.Where(p => p.IsKey || p.IsVersion || !p.IsGenerated), ct);
+    }
+
+    /// <summary>
+    /// Update by column list (ADR-0028): writes only the named properties — the
+    /// caller says what changed — with every other rule of
+    /// <see cref="UpdateAsync{TEntity}"/> intact: keyed WHERE, version bump and
+    /// check (<c>CRUD-010</c>), <c>CRUD-001</c> without a version column. Names are
+    /// property names (the criteria vocabulary). An unmapped name is <c>CRUD-005</c>;
+    /// a key, version, or generated property is <c>CRUD-006</c>; an empty or
+    /// repeating list is <c>CRUD-007</c>. Deliberately not an overload: the ports
+    /// have no overloading, and the spec names one operation per concept.
+    /// </summary>
+    public Task UpdateOnlyAsync<TEntity>(TEntity entity, IReadOnlyList<string> properties, CancellationToken ct)
+        where TEntity : class
+    {
+        var map = RequireWritableKeyed<TEntity>();
+        var set = ResolveUpdateList(map, properties);
+        var listed = new HashSet<string>(set.Select(p => p.PropertyName), StringComparer.Ordinal);
+        CheckNavigationConsistency(map, entity, listed.Contains);
+
+        var bound = set.Concat(map.KeyProperties);
+        if (map.VersionProperty is { } version)
+        {
+            bound = bound.Concat(new[] { version });
+        }
+
+        return ExecuteUpdateAsync(map, entity, Options.Dialect.UpdateOnlySql(map, set), bound, ct);
+    }
+
+    /// <summary>Validates an update-by-column-list (ADR-0028) and resolves it to property maps, in the caller's order.</summary>
+    private static IReadOnlyList<PropertyMap> ResolveUpdateList(EntityMap map, IReadOnlyList<string> properties)
+    {
+        var entityName = map.EntityType.Name;
+        if (properties is null || properties.Count == 0)
+        {
+            throw new SimpleOrmException("CRUD-007", entityName, "update by column list needs at least one property");
+        }
+
+        var resolved = new List<PropertyMap>(properties.Count);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var propertyName in properties)
+        {
+            var target = $"{entityName}.{propertyName}";
+            var property = map.Properties.FirstOrDefault(p => p.PropertyName == propertyName)
+                ?? throw new SimpleOrmException("CRUD-005", target, "is not a mapped property; the list takes property names");
+            if (property.IsKey)
+            {
+                throw new SimpleOrmException("CRUD-006", target, "is a key property; an update never writes the key");
+            }
+
+            if (property.IsVersion)
+            {
+                throw new SimpleOrmException("CRUD-006", target, "is the version column; the database computes it");
+            }
+
+            if (property.IsGenerated)
+            {
+                throw new SimpleOrmException("CRUD-006", target, "is database-generated and never written");
+            }
+
+            if (!seen.Add(propertyName))
+            {
+                throw new SimpleOrmException("CRUD-007", target, "is listed more than once");
+            }
+
+            resolved.Add(property);
+        }
+
+        return resolved;
+    }
+
+    /// <summary>The shared tail of both updates (§7.15–16): bind, execute, judge the row count, bump the version.</summary>
+    private async Task ExecuteUpdateAsync<TEntity>(
+        EntityMap map, TEntity entity, string sql, IEnumerable<PropertyMap> bound, CancellationToken ct)
+        where TEntity : class
+    {
+        using var command = _connection.CreateCommand();
+        command.Transaction = _transaction;
+        command.CommandText = sql;
+        foreach (var property in bound)
         {
             AddEntityParameter(command, property, entity);
         }
@@ -610,11 +683,12 @@ public sealed partial class Db : IAsyncDisposable
             ? map.KeyProperties[0].Property.GetValue(entity)!
             : string.Join(", ", map.GetKeyValues(entity));
 
-    private void CheckNavigationConsistency(EntityMap map, object entity)
+    private void CheckNavigationConsistency(EntityMap map, object entity, Func<string, bool>? isWritten = null)
     {
         // Only a many-to-one can disagree with its FK columns; collection
         // navigations carry no FK on this row (ADR-0019). Composite keys check
-        // pairwise, FK list against key parts in key order (ADR-0019 add.1).
+        // pairwise, FK list against key parts in key order (ADR-0019 add.1). An
+        // update by column list (ADR-0028) checks only the FK parts it writes.
         foreach (var relationship in map.Relationships.Where(r => r.Kind == RelationshipKind.ManyToOne))
         {
             var navigation = map.EntityType.GetProperty(relationship.PropertyName)?.GetValue(entity);
@@ -631,6 +705,11 @@ public sealed partial class Db : IAsyncDisposable
 
             for (var i = 0; i < targetMap.KeyProperties.Count; i++)
             {
+                if (isWritten is not null && !isWritten(relationship.ForeignKeyProperties[i]))
+                {
+                    continue;
+                }
+
                 var navigationKey = targetMap.KeyProperties[i].Property.GetValue(navigation);
                 var foreignKey = map.Properties
                     .First(p => p.PropertyName == relationship.ForeignKeyProperties[i])

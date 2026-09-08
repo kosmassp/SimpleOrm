@@ -103,6 +103,22 @@ public sealed class CriteriaHardeningTests(SqliteFixture fixture)
     }
 
     [Fact]
+    public void UpdateOnly_renders_exactly_the_listed_columns_with_the_version_rules()
+    {
+        var map = new EntityMapLoader().Load<Transaction>();
+        var sql = new SqliteDialect().UpdateOnlySql(map, [map.Properties.Single(p => p.PropertyName == nameof(Transaction.Amount))]);
+        Assert.Equal(
+            "update transactions set amount = @amount, version = version + 1 where id = @id and version = @version",
+            sql);
+
+        var users = new EntityMapLoader().Load<User>();
+        var full = new SqliteDialect().UpdateSql(users);
+        var listedAll = new SqliteDialect().UpdateOnlySql(
+            users, users.Properties.Where(p => !p.IsKey && !p.IsVersion && !p.IsGenerated).ToList());
+        Assert.Equal(full, listedAll);                               // one renderer, byte-identical
+    }
+
+    [Fact]
     public void Database_generated_key_must_be_an_integer()
     {
         var exception = Assert.Throws<MappingException>(() => new EntityMapLoader().Load<GuidGenerated>());

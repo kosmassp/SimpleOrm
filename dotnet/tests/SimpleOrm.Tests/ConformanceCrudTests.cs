@@ -88,6 +88,19 @@ public sealed class ConformanceCrudTests
                         {
                             var entity = snapshots[step.GetProperty("from").GetString()!];
                             ApplyValues(db, entity, step.GetProperty("values"));
+                            if (step.TryGetProperty("columns", out var columns))
+                            {
+                                // Update by column list (ADR-0028): columns resolve to property
+                                // names; an unknown column passes through so CRUD-005 is reachable.
+                                var map = db.Maps.Load(entity.GetType());
+                                var properties = columns.EnumerateArray()
+                                    .Select(c => c.GetString()!)
+                                    .Select(c => map.Properties.FirstOrDefault(p => p.ColumnName == c)?.PropertyName ?? c)
+                                    .ToList();
+                                await InvokeUpdateOnlyAsync(db, entity, properties);
+                                break;
+                            }
+
                             await InvokeAsync(db, nameof(Db.UpdateAsync), entity.GetType(), entity);
                             break;
                         }
@@ -238,6 +251,20 @@ public sealed class ConformanceCrudTests
                 .Single(m => m.Name == method && m.GetGenericArguments().Length == 1 && m.GetParameters().Length == 2)
                 .MakeGenericMethod(entityType)
                 .Invoke(db, [argument, CancellationToken.None])!;
+        }
+        catch (TargetInvocationException exception) when (exception.InnerException is not null)
+        {
+            throw exception.InnerException;
+        }
+    }
+
+    private static async Task InvokeUpdateOnlyAsync(Db db, object entity, IReadOnlyList<string> properties)
+    {
+        try
+        {
+            await (Task)typeof(Db).GetMethod(nameof(Db.UpdateOnlyAsync))!
+                .MakeGenericMethod(entity.GetType())
+                .Invoke(db, [entity, properties, CancellationToken.None])!;
         }
         catch (TargetInvocationException exception) when (exception.InnerException is not null)
         {

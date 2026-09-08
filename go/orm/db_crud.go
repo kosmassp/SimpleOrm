@@ -296,7 +296,7 @@ func Insert[T any](ctx context.Context, db *Db, entity *T) error {
 		return core.Errorf("CRUD-003", entityType.Name(), "is %s-backed and read-only; writes need a table", m.Kind)
 	}
 
-	if err := checkNavigationConsistency(db, m, entity); err != nil {
+	if err := checkNavigationConsistency(db, m, entity, nil); err != nil {
 		return err
 	}
 
@@ -372,28 +372,102 @@ func requireWritableKeyed[T any](db *Db) (*core.EntityMap, error) {
 // column: SET version = version + 1, WHERE also requires the entity's current
 // version, zero rows is a *core.ConcurrencyError (CRUD-010), and the entity's
 // in-memory version is bumped on success. Without one, zero rows is CRUD-001.
+// For a narrower SET see UpdateOnly.
 func Update[T any](ctx context.Context, db *Db, entity *T) error {
-	entityType := reflect.TypeFor[T]()
 	m, err := requireWritableKeyed[T](db)
 	if err != nil {
 		return err
 	}
-	if err := checkNavigationConsistency(db, m, entity); err != nil {
+	if err := checkNavigationConsistency(db, m, entity, nil); err != nil {
 		return err
 	}
 
-	args := make([]any, 0, len(m.Properties)+1)
+	// Bind SET values, key values, and the current version for the WHERE;
+	// database-generated non-key columns are never written.
+	var bound []*core.PropertyMap
 	for _, p := range m.Properties {
 		if p.IsKey || p.IsVersion || !p.IsGenerated {
-			converted, err := db.converter.ToDatabase(p.Get(entity), p.ColumnType, entityType.Name()+"."+p.PropertyName)
-			if err != nil {
-				return err
-			}
-			args = append(args, sql.Named(p.ColumnName, converted))
+			bound = append(bound, p)
 		}
 	}
+	return executeUpdate(ctx, db, reflect.TypeFor[T](), m, entity, db.options.Dialect.UpdateSQL(m), bound)
+}
 
-	result, err := db.exec().ExecContext(ctx, db.options.Dialect.UpdateSQL(m), args...)
+// UpdateOnly is the update by column list (ADR-0028): it writes only the named
+// properties — the caller says what changed — with every other rule of Update
+// intact: keyed WHERE, version bump and check (CRUD-010), CRUD-001 without a
+// version column. Names are field names (the criteria vocabulary). An unmapped
+// name is CRUD-005; a key, version, or generated property is CRUD-006; an empty
+// or repeating list is CRUD-007. A separate function, not an option on Update:
+// the spec names one operation per concept.
+func UpdateOnly[T any](ctx context.Context, db *Db, entity *T, properties ...string) error {
+	m, err := requireWritableKeyed[T](db)
+	if err != nil {
+		return err
+	}
+	set, err := resolveUpdateList(m, properties)
+	if err != nil {
+		return err
+	}
+	written := make(map[string]bool, len(set))
+	for _, p := range set {
+		written[p.PropertyName] = true
+	}
+	if err := checkNavigationConsistency(db, m, entity, written); err != nil {
+		return err
+	}
+
+	bound := append(append([]*core.PropertyMap{}, set...), m.KeyProperties...)
+	if version := m.VersionProperty; version != nil {
+		bound = append(bound, version)
+	}
+	return executeUpdate(ctx, db, reflect.TypeFor[T](), m, entity, db.options.Dialect.UpdateOnlySQL(m, set), bound)
+}
+
+// resolveUpdateList validates an update-by-column-list (ADR-0028) and resolves
+// it to property maps, in the caller's order.
+func resolveUpdateList(m *core.EntityMap, properties []string) ([]*core.PropertyMap, error) {
+	entityName := m.EntityName()
+	if len(properties) == 0 {
+		return nil, core.NewError("CRUD-007", entityName, "update by column list needs at least one property")
+	}
+
+	resolved := make([]*core.PropertyMap, 0, len(properties))
+	seen := make(map[string]bool, len(properties))
+	for _, propertyName := range properties {
+		target := entityName + "." + propertyName
+		property := m.Property(propertyName)
+		switch {
+		case property == nil:
+			return nil, core.NewError("CRUD-005", target, "is not a mapped property; the list takes field names")
+		case property.IsKey:
+			return nil, core.NewError("CRUD-006", target, "is a key property; an update never writes the key")
+		case property.IsVersion:
+			return nil, core.NewError("CRUD-006", target, "is the version column; the database computes it")
+		case property.IsGenerated:
+			return nil, core.NewError("CRUD-006", target, "is database-generated and never written")
+		case seen[propertyName]:
+			return nil, core.NewError("CRUD-007", target, "is listed more than once")
+		}
+		seen[propertyName] = true
+		resolved = append(resolved, property)
+	}
+	return resolved, nil
+}
+
+// executeUpdate is the shared tail of both updates (§7.15–16): bind, execute,
+// judge the row count, bump the version.
+func executeUpdate(ctx context.Context, db *Db, entityType reflect.Type, m *core.EntityMap, entity any, sqlText string, bound []*core.PropertyMap) error {
+	args := make([]any, 0, len(bound))
+	for _, p := range bound {
+		converted, err := db.converter.ToDatabase(p.Get(entity), p.ColumnType, entityType.Name()+"."+p.PropertyName)
+		if err != nil {
+			return err
+		}
+		args = append(args, sql.Named(p.ColumnName, converted))
+	}
+
+	result, err := db.exec().ExecContext(ctx, sqlText, args...)
 	if err != nil {
 		return err
 	}
@@ -510,8 +584,9 @@ func DeleteEntity[T any](ctx context.Context, db *Db, entity *T) error {
 // checkNavigationConsistency is ADR-0005 add.1: the FK property is what is
 // written; a non-null many-to-one navigation must agree with it pairwise, in
 // key order (composite-aware). Arity mismatches are loader errors, not
-// write-time ones.
-func checkNavigationConsistency(db *Db, m *core.EntityMap, entity any) error {
+// write-time ones. An update by column list (ADR-0028) passes the written
+// property names and checks only those FK parts; nil checks every part.
+func checkNavigationConsistency(db *Db, m *core.EntityMap, entity any, written map[string]bool) error {
 	entityValue := reflect.ValueOf(entity).Elem()
 	for _, relationship := range m.Relationships {
 		if relationship.Kind != core.RelationshipManyToOne {
@@ -532,6 +607,9 @@ func checkNavigationConsistency(db *Db, m *core.EntityMap, entity any) error {
 		}
 
 		for i, targetKey := range targetMap.KeyProperties {
+			if written != nil && !written[relationship.ForeignKeyProperties[i]] {
+				continue
+			}
 			navigationKey := targetKey.Get(navigation)
 			fkProperty := m.Property(relationship.ForeignKeyProperties[i])
 			foreignKey := fkProperty.Get(entity)

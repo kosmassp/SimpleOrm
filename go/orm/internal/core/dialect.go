@@ -48,6 +48,11 @@ type Dialect interface {
 	// version set to version + 1 and required in the WHERE when mapped.
 	UpdateSQL(m *EntityMap) string
 
+	// UpdateOnlySQL renders the update-by-column-list UPDATE (ADR-0028): the SET
+	// holds exactly properties (validated by the session: mapped, non-key,
+	// non-version, non-generated, no repeats); version and WHERE rules as UpdateSQL.
+	UpdateOnlySQL(m *EntityMap, properties []*PropertyMap) string
+
 	// DeleteSQL renders the generated DELETE by key; with checkVersion the WHERE also requires the version (§7.16).
 	DeleteSQL(m *EntityMap, checkVersion bool) string
 

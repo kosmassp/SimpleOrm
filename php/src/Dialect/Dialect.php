@@ -47,6 +47,14 @@ interface Dialect
     /** The generated full-row UPDATE by key (§7.15/§7.16): version set to `version + 1` and required in the WHERE when mapped. */
     public function updateSql(EntityMap $map): string;
 
+    /**
+     * The update-by-column-list UPDATE (ADR-0028): the SET holds exactly `$properties` (validated by the
+     * session: mapped, non-key, non-version, non-generated, no repeats); version and WHERE rules as `updateSql`.
+     *
+     * @param list<PropertyMap> $properties
+     */
+    public function updateOnlySql(EntityMap $map, array $properties): string;
+
     /** The generated DELETE by key; with `$checkVersion`, the WHERE also requires the version (§7.16). */
     public function deleteSql(EntityMap $map, bool $checkVersion): string;
 

@@ -259,11 +259,23 @@ func (*Dialect) InsertSQL(m *core.EntityMap) string {
 func (*Dialect) UpdateSQL(m *core.EntityMap) string {
 	// Generated non-key columns are database-owned: never in SET (mirrors the
 	// insert exclusion and Update's binding filter).
-	var assignments []string
+	var set []*core.PropertyMap
 	for _, p := range m.Properties {
 		if !p.IsKey && !p.IsVersion && !p.IsGenerated {
-			assignments = append(assignments, p.ColumnName+" = @"+p.ColumnName)
+			set = append(set, p)
 		}
+	}
+	return renderUpdate(m, set)
+}
+
+func (*Dialect) UpdateOnlySQL(m *core.EntityMap, properties []*core.PropertyMap) string {
+	return renderUpdate(m, properties)
+}
+
+func renderUpdate(m *core.EntityMap, set []*core.PropertyMap) string {
+	var assignments []string
+	for _, p := range set {
+		assignments = append(assignments, p.ColumnName+" = @"+p.ColumnName)
 	}
 	sql := "update " + m.RelationName
 	if version := m.VersionProperty; version != nil {

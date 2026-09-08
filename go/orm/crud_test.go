@@ -2,6 +2,7 @@ package orm_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/kosmassp/SimpleOrm/go/orm"
@@ -179,6 +180,122 @@ func TestDelete_CompositeKeyByList(t *testing.T) {
 	}
 	if missing, err := orm.GetOrDefault[sample.UserRole](ctx, db, key); err != nil || missing != nil {
 		t.Fatalf("expected nil, nil, got %v, %v", missing, err)
+	}
+}
+
+func TestUpdateOnly_WritesTheListedColumnsAndNothingElse(t *testing.T) {
+	ctx := context.Background()
+	db := testsupport.OpenSample(t)
+	ada := testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+
+	ada.Name = "Ada Lovelace"
+	ada.Email = "changed@example.com" // set in memory, not listed
+	if err := orm.UpdateOnly(ctx, db, ada, "Name"); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := orm.Get[sample.User](ctx, db, ada.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Name != "Ada Lovelace" {
+		t.Errorf("expected the listed column written, got %s", loaded.Name)
+	}
+	if loaded.Email != "ada@example.com" {
+		t.Errorf("expected the unlisted column untouched, got %s", loaded.Email)
+	}
+}
+
+func TestUpdateOnly_KeepsRowLevelConcurrencyAndBumpsTheVersion(t *testing.T) {
+	ctx := context.Background()
+	db := testsupport.OpenSample(t)
+	ada := testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+	if err := orm.Insert(ctx, db, newTransaction(ada.ID)); err != nil {
+		t.Fatal(err)
+	}
+	first, err := orm.From[sample.Transaction](db).Where(orm.Eq("UserID", ada.ID)).Single(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := orm.Get[sample.Transaction](ctx, db, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first.Amount = orm.MustDecimal("12")
+	if err := orm.UpdateOnly(ctx, db, &first, "Amount"); err != nil {
+		t.Fatal(err)
+	}
+	if first.Version != 1 {
+		t.Fatalf("expected version bumped to 1, got %d", first.Version)
+	}
+
+	stale.Status = sample.Completed // a disjoint column, still version 0
+	if err := orm.UpdateOnly(ctx, db, &stale, "Status"); orm.CodeOf(err) != "CRUD-010" {
+		t.Fatalf("expected CRUD-010, got %v", err)
+	}
+
+	current, err := orm.Get[sample.Transaction](ctx, db, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !current.Amount.Equal(orm.MustDecimal("12")) || current.Status != sample.Pending || current.Version != 1 {
+		t.Errorf("stale write changed the row: %+v", current)
+	}
+
+	ghost := &sample.User{ID: 999_999, Name: "Ghost", Email: "ghost@example.com"}
+	ghost.CreatedAtUtc = testsupport.SeedTime
+	if err := orm.UpdateOnly(ctx, db, ghost, "Name"); orm.CodeOf(err) != "CRUD-001" {
+		t.Fatalf("expected CRUD-001, got %v", err)
+	}
+}
+
+func TestUpdateOnly_ValidatesTheListBeforeWriting(t *testing.T) {
+	ctx := context.Background()
+	db := testsupport.OpenSample(t)
+	ada := testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+	if err := orm.Insert(ctx, db, newTransaction(ada.ID)); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := orm.From[sample.Transaction](db).Where(orm.Eq("UserID", ada.ID)).Single(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name       string
+		call       func() error
+		wantCode   string
+		wantTarget string
+	}{
+		{"unknown", func() error { return orm.UpdateOnly(ctx, db, ada, "Nope") }, "CRUD-005", "User.Nope"},
+		{"column name", func() error { return orm.UpdateOnly(ctx, db, ada, "name") }, "CRUD-005", "User.name"},
+		{"key", func() error { return orm.UpdateOnly(ctx, db, ada, "ID") }, "CRUD-006", "User.ID"},
+		{"version", func() error { return orm.UpdateOnly(ctx, db, &tx, "Version") }, "CRUD-006", "Transaction.Version"},
+		{"empty", func() error { return orm.UpdateOnly(ctx, db, ada) }, "CRUD-007", "User"},
+		{"repeat", func() error { return orm.UpdateOnly(ctx, db, ada, "Name", "Name") }, "CRUD-007", "User.Name"},
+		{"read-only", func() error {
+			return orm.UpdateOnly(ctx, db, &sample.UserTransactionTotal{UserName: "x"}, "UserName")
+		}, "CRUD-003", "UserTransactionTotal"},
+	}
+	for _, tc := range cases {
+		err := tc.call()
+		if orm.CodeOf(err) != tc.wantCode {
+			t.Errorf("%s: expected %s, got %v", tc.name, tc.wantCode, err)
+			continue
+		}
+		var ormErr *orm.Error
+		if errors.As(err, &ormErr) && ormErr.Target != tc.wantTarget {
+			t.Errorf("%s: expected target %q, got %q", tc.name, tc.wantTarget, ormErr.Target)
+		}
+	}
+
+	untouched, err := orm.Get[sample.User](ctx, db, ada.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if untouched.Name != "Ada" {
+		t.Errorf("a refused list must write nothing, got %s", untouched.Name)
 	}
 }
 

@@ -71,6 +71,80 @@ public sealed class CrudTests(SqliteFixture fixture)
     }
 
     [Fact]
+    public async Task UpdateOnly_writes_the_listed_columns_and_nothing_else()
+    {
+        await using var db = await TestDb.OpenAsync(fixture);
+        var ada = await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
+
+        ada.Name = "Ada Lovelace";
+        ada.Email = "changed@example.com";                           // set in memory, not listed
+        await db.UpdateOnlyAsync(ada, [nameof(User.Name)], CancellationToken.None);
+
+        var loaded = await db.GetAsync<User>(ada.Id, CancellationToken.None);
+        Assert.Equal("Ada Lovelace", loaded.Name);
+        Assert.Equal("ada@example.com", loaded.Email);               // the unlisted column was not written
+    }
+
+    [Fact]
+    public async Task UpdateOnly_keeps_row_level_concurrency_and_bumps_the_version()
+    {
+        await using var db = await TestDb.OpenAsync(fixture);
+        var ada = await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
+        await db.InsertAsync(NewTransaction(ada.Id), CancellationToken.None);
+        var first = await db.Query<Transaction>().Where(Criteria.Eq("UserId", ada.Id)).SingleAsync(CancellationToken.None);
+        var stale = await db.GetAsync<Transaction>(first.Id, CancellationToken.None);
+
+        first.Amount = 12m;
+        await db.UpdateOnlyAsync(first, [nameof(Transaction.Amount)], CancellationToken.None);
+        Assert.Equal(1L, first.Version);
+
+        stale.Status = TransactionStatus.Completed;                  // a disjoint column, still version 0
+        var conflict = await Assert.ThrowsAsync<ConcurrencyException>(
+            () => db.UpdateOnlyAsync(stale, [nameof(Transaction.Status)], CancellationToken.None));
+        Assert.Equal("CRUD-010", conflict.Code);
+
+        var current = await db.GetAsync<Transaction>(first.Id, CancellationToken.None);
+        Assert.Equal(12m, current.Amount);
+        Assert.Equal(TransactionStatus.Pending, current.Status);
+        Assert.Equal(1L, current.Version);
+
+        var ghost = new User { Id = 999_999, Name = "Ghost", Email = "ghost@example.com", CreatedAtUtc = TestDb.SeedTime };
+        var missing = await Assert.ThrowsAsync<SimpleOrmException>(
+            () => db.UpdateOnlyAsync(ghost, [nameof(User.Name)], CancellationToken.None));
+        Assert.Equal("CRUD-001", missing.Code);
+    }
+
+    [Fact]
+    public async Task UpdateOnly_validates_the_list_before_writing()
+    {
+        await using var db = await TestDb.OpenAsync(fixture);
+        var ada = await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
+        await db.InsertAsync(NewTransaction(ada.Id), CancellationToken.None);
+        var tx = await db.Query<Transaction>().Where(Criteria.Eq("UserId", ada.Id)).SingleAsync(CancellationToken.None);
+
+        async Task<string> CodeOf<T>(T entity, params string[] properties) where T : class
+        {
+            var exception = await Assert.ThrowsAsync<SimpleOrmException>(
+                () => db.UpdateOnlyAsync(entity, properties, CancellationToken.None));
+            return exception.Code;
+        }
+
+        Assert.Equal("CRUD-005", await CodeOf(ada, "Nope"));
+        Assert.Equal("CRUD-005", await CodeOf(ada, "name"));         // property names, not column names
+        Assert.Equal("CRUD-006", await CodeOf(ada, nameof(User.Id)));
+        Assert.Equal("CRUD-006", await CodeOf(tx, nameof(Transaction.Version)));
+        Assert.Equal("CRUD-007", await CodeOf(ada));
+        Assert.Equal("CRUD-007", await CodeOf(ada, nameof(User.Name), nameof(User.Name)));
+
+        var readOnly = await Assert.ThrowsAsync<SimpleOrmException>(
+            () => db.UpdateOnlyAsync(new UserTransactionTotal { UserName = "x" }, [nameof(UserTransactionTotal.UserName)], CancellationToken.None));
+        Assert.Equal("CRUD-003", readOnly.Code);
+
+        var untouched = await db.GetAsync<User>(ada.Id, CancellationToken.None);
+        Assert.Equal("Ada", untouched.Name);
+    }
+
+    [Fact]
     public async Task Delete_by_key_and_versioned_delete_by_entity()
     {
         await using var db = await TestDb.OpenAsync(fixture);

@@ -264,9 +264,14 @@ public sealed class PostgresDialect : IDialect
     }
 
     public string UpdateSql(EntityMap map)
+        => RenderUpdate(map, map.Properties.Where(p => !p.IsKey && !p.IsVersion && !p.IsGenerated));
+
+    public string UpdateOnlySql(EntityMap map, IReadOnlyList<PropertyMap> properties)
+        => RenderUpdate(map, properties);
+
+    private string RenderUpdate(EntityMap map, IEnumerable<PropertyMap> set)
     {
-        var assignments = map.Properties
-            .Where(p => !p.IsKey && !p.IsVersion && !p.IsGenerated)
+        var assignments = set
             .Select(p => QuoteIdentifier(p.ColumnName) + " = @" + p.ColumnName)
             .ToList();
         if (map.VersionProperty is { } version)

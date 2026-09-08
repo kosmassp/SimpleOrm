@@ -1,0 +1,18 @@
+{
+  "name": "partial_update",
+  "steps": [
+    { "op": "insert", "entity": "User",
+      "values": { "name": "Ada", "email": "ada@example.com", "created_at": "2026-08-28T09:30:00.0000000Z" } },
+    { "op": "get", "entity": "User", "key": "$last", "as": "a" },
+    { "op": "update", "from": "a", "columns": ["name"],
+      "values": { "name": "Ada Lovelace", "email": "changed@example.com" } },
+    { "op": "get", "entity": "User", "key": "$last",
+      "expect": { "values": { "name": "Ada Lovelace", "email": "ada@example.com", "updated_at": null } } },
+    { "op": "update", "from": "a", "columns": ["id"], "values": {}, "expect": { "error": "CRUD-006" } },
+    { "op": "update", "from": "a", "columns": ["nope"], "values": {}, "expect": { "error": "CRUD-005" } },
+    { "op": "update", "from": "a", "columns": [], "values": {}, "expect": { "error": "CRUD-007" } },
+    { "op": "update", "from": "a", "columns": ["name", "name"], "values": {}, "expect": { "error": "CRUD-007" } },
+    { "op": "get", "entity": "User", "key": "$last",
+      "expect": { "values": { "name": "Ada Lovelace", "email": "ada@example.com" } } }
+  ]
+}

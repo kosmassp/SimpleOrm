@@ -180,6 +180,25 @@ final class SqliteDialectTest extends TestCase
     }
 
     #[Test]
+    public function update_only_sql_renders_exactly_the_listed_columns_with_the_version_rules(): void
+    {
+        $map = self::transactionMap();
+        $amount = $map->property('amount');
+        self::assertNotNull($amount);
+        self::assertSame(
+            'update transactions set amount = @amount, version = version + 1 where id = @id and version = @version',
+            $this->dialect->updateOnlySql($map, [$amount]),
+        );
+
+        $users = self::userMap();
+        $all = array_values(array_filter(
+            $users->properties,
+            static fn ($p): bool => !$p->key && !$p->version && !$p->generated,
+        ));
+        self::assertSame($this->dialect->updateSql($users), $this->dialect->updateOnlySql($users, $all));   // one renderer
+    }
+
+    #[Test]
     public function update_sql_without_a_version_column_has_a_plain_key_where(): void
     {
         self::assertSame(

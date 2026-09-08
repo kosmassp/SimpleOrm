@@ -76,6 +76,32 @@ With a mapped **version column** (integer-valued):
 Without a version column, zero rows affected is `CRUD-001` — silently updating
 nothing is a bug, not a no-op.
 
+## Update by column list (ADR-0028)
+
+A second, **separately named** operation (C# `UpdateOnlyAsync`, PHP `updateOnly`,
+Go `orm.UpdateOnly` — never an overload: the ports have no overloading, and the
+spec names one operation per concept) writes only the properties the caller
+lists. Everything else about the statement is the full-row update: generated
+from `EntityMap`, explicit column list, keyed WHERE, the version rules above
+(`version = version + 1` in the SET, the entity's version in the WHERE, `CRUD-010`
+on zero rows, in-memory bump on success), `CRUD-001` without a version column.
+
+- The list holds **property names** — the criteria vocabulary — not column
+  names; the dialect renders columns.
+- Validation happens before anything is written, each a named error: a name that
+  is not a mapped property is `CRUD-005`; a key, version, or database-generated
+  property is `CRUD-006` (an update never writes them); an empty list or a
+  repeated name is `CRUD-007`.
+- The navigation/FK consistency check (below) runs only for FK properties in the
+  list — the others are not being written.
+- Optimistic concurrency stays **row-level**: two callers updating disjoint
+  columns of the same versioned row still conflict; the second gets `CRUD-010`.
+  A column list narrows what is written, never what is checked.
+
+This is the caller saying what changed. Dirty tracking (deriving the list from
+a loaded snapshot) is Level 3; an `UPDATE … WHERE <criteria>` that never loads
+the entity is a different operation and not this one.
+
 ## Delete
 
 One operation, dispatched on the argument (ADR-0014):
@@ -141,3 +167,8 @@ a fresh migrated fixture database:
   conflicts (`CRUD-010`) expressible as data.
 - `expect` is either `values` checked on a get result or an error code; a step
   without an expected error must succeed.
+- an `update` step with `"columns"` (column names, like `values`) replays the
+  update-by-column-list operation: the runner resolves each column to its
+  property name (an unknown column passes through unchanged, so `CRUD-005` is
+  expressible); `values` are still applied to the captured instance first, so a
+  value outside the list proves the column was not written.

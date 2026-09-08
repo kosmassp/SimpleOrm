@@ -122,6 +122,9 @@ these codes.
 | `CRUD-002` | key shape mismatch (arity, order, or types vs. `EntityMap` key), or the entity defines no key | ADR-0006 (enforced early, ADR-0012) |
 | `CRUD-003` | write attempted on a read-only relation source | ADR-0008 |
 | `CRUD-004` | `[ManyToOne]` navigation key disagrees with FK property on write | ADR-0005 add.1 |
+| `CRUD-005` | update by column list names a property that is not mapped on the entity | ADR-0028 |
+| `CRUD-006` | update by column list names a key, version, or database-generated property (never written by an update) | ADR-0028 |
+| `CRUD-007` | update by column list is empty or repeats a property | ADR-0028 |
 | `CRUD-010` | optimistic concurrency conflict (zero rows affected with version column) | §7.16 |
 
 Codes are append-only: a retired rule keeps its code (marked retired), never reuses it.

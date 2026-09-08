@@ -124,12 +124,23 @@ final class SqliteDialect implements Dialect
     {
         // Generated non-key columns are database-owned: never in SET (mirrors
         // the insert exclusion).
+        return self::renderUpdate($map, array_values(array_filter(
+            $map->properties,
+            static fn (PropertyMap $p): bool => !$p->key && !$p->version && !$p->generated,
+        )));
+    }
+
+    public function updateOnlySql(EntityMap $map, array $properties): string
+    {
+        return self::renderUpdate($map, $properties);
+    }
+
+    /** @param list<PropertyMap> $set */
+    private static function renderUpdate(EntityMap $map, array $set): string
+    {
         $assignments = array_map(
             static fn (PropertyMap $p): string => $p->columnName . ' = @' . $p->columnName,
-            array_values(array_filter(
-                $map->properties,
-                static fn (PropertyMap $p): bool => !$p->key && !$p->version && !$p->generated,
-            )),
+            $set,
         );
         if ($map->versionProperty !== null) {
             $assignments[] = $map->versionProperty->columnName . ' = ' . $map->versionProperty->columnName . ' + 1';

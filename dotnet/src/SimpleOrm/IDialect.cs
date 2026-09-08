@@ -173,6 +173,14 @@ public interface IDialect
     /// </summary>
     string UpdateSql(EntityMap map);
 
+    /// <summary>
+    /// Renders the update-by-column-list UPDATE (ADR-0028): the SET holds exactly
+    /// <paramref name="properties"/> (already validated by the session: mapped,
+    /// non-key, non-version, non-generated, no repeats); the version and WHERE
+    /// rules are those of <see cref="UpdateSql"/>.
+    /// </summary>
+    string UpdateOnlySql(EntityMap map, IReadOnlyList<PropertyMap> properties);
+
     /// <summary>Renders the generated DELETE by key; with <paramref name="checkVersion"/>, the WHERE also requires the version (§7.16).</summary>
     string DeleteSql(EntityMap map, bool checkVersion);
 }

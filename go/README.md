@@ -82,6 +82,7 @@ err = orm.Insert(ctx, db, &order)                 // the generated key lands on 
 order, err := orm.Get[Order](ctx, db, 7)          // CRUD-001 when missing
 link, err := orm.Get[UserRole](ctx, db, []any{userID, roleID})
 err = orm.Update(ctx, db, &order)                 // optimistic concurrency when a version column is mapped
+err = orm.UpdateOnly(ctx, db, &order, "Status")   // only the listed fields (ADR-0028); same key/version rules
 err = orm.Delete[Order](ctx, db, 7)               // by key; orm.DeleteEntity(ctx, db, &order) checks the version
 
 recent, err := orm.From[Order](db).

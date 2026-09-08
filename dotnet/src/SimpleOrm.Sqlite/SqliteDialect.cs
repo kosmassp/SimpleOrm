@@ -182,11 +182,16 @@ public sealed class SqliteDialect : IDialect
     }
 
     public string UpdateSql(EntityMap map)
-    {
         // Generated non-key columns are database-owned: never in SET (mirrors the
         // insert exclusion and Db.UpdateAsync's binding filter).
-        var assignments = map.Properties
-            .Where(p => !p.IsKey && !p.IsVersion && !p.IsGenerated)
+        => RenderUpdate(map, map.Properties.Where(p => !p.IsKey && !p.IsVersion && !p.IsGenerated));
+
+    public string UpdateOnlySql(EntityMap map, IReadOnlyList<PropertyMap> properties)
+        => RenderUpdate(map, properties);
+
+    private static string RenderUpdate(EntityMap map, IEnumerable<PropertyMap> set)
+    {
+        var assignments = set
             .Select(p => p.ColumnName + " = @" + p.ColumnName)
             .ToList();
         if (map.VersionProperty is { } version)

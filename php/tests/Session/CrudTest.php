@@ -123,6 +123,88 @@ final class CrudTest extends TestCase
     }
 
     #[Test]
+    public function update_only_writes_the_listed_columns_and_nothing_else(): void
+    {
+        $ada = SampleDatabase::insertUser($this->db, 'Ada', 'ada@example.com');
+
+        $ada->name = 'Ada Lovelace';
+        $ada->email = 'changed@example.com';   // set in memory, not listed
+        $this->db->updateOnly($ada, ['name']);
+
+        $loaded = $this->db->get(User::class, $ada->id);
+        self::assertSame('Ada Lovelace', $loaded->name);
+        self::assertSame('ada@example.com', $loaded->email);   // the unlisted column was not written
+    }
+
+    #[Test]
+    public function update_only_keeps_row_level_concurrency_and_bumps_the_version(): void
+    {
+        $ada = SampleDatabase::insertUser($this->db, 'Ada', 'ada@example.com');
+        $this->db->insert(self::newTransaction($ada->id));
+        $first = $this->db->from(Transaction::class)->where(Criteria::eq('userId', $ada->id))->single();
+        $stale = $this->db->get(Transaction::class, $first->id);
+
+        $first->amount = Decimal::of('12');
+        $this->db->updateOnly($first, ['amount']);
+        self::assertSame(1, $first->version);
+
+        $stale->status = TransactionStatus::Completed;   // a disjoint column, still version 0
+        try {
+            $this->db->updateOnly($stale, ['status']);
+            self::fail('expected CRUD-010');
+        } catch (ConcurrencyException $e) {
+            self::assertSame('CRUD-010', $e->errorCode);
+        }
+
+        $current = $this->db->get(Transaction::class, $first->id);
+        self::assertTrue($current->amount->equals(Decimal::of('12')));
+        self::assertSame(TransactionStatus::Pending, $current->status);
+        self::assertSame(1, $current->version);
+
+        $ghost = new User();
+        $ghost->id = 999_999;
+        $ghost->name = 'Ghost';
+        $ghost->email = 'ghost@example.com';
+        $ghost->createdAtUtc = SampleDatabase::seedTime();
+        try {
+            $this->db->updateOnly($ghost, ['name']);
+            self::fail('expected CRUD-001');
+        } catch (SimpleOrmException $e) {
+            self::assertSame('CRUD-001', $e->errorCode);
+        }
+    }
+
+    #[Test]
+    public function update_only_validates_the_list_before_writing(): void
+    {
+        $ada = SampleDatabase::insertUser($this->db, 'Ada', 'ada@example.com');
+        $this->db->insert(self::newTransaction($ada->id));
+        $tx = $this->db->from(Transaction::class)->where(Criteria::eq('userId', $ada->id))->single();
+
+        $codeOf = function (object $entity, array $properties): string {
+            try {
+                $this->db->updateOnly($entity, $properties);
+            } catch (SimpleOrmException $e) {
+                return $e->errorCode;
+            }
+
+            return 'no error';
+        };
+
+        self::assertSame('CRUD-005', $codeOf($ada, ['nope']));
+        self::assertSame('CRUD-005', $codeOf($ada, ['created_at']));   // property names, not column names
+        self::assertSame('CRUD-006', $codeOf($ada, ['id']));
+        self::assertSame('CRUD-006', $codeOf($tx, ['version']));
+        self::assertSame('CRUD-007', $codeOf($ada, []));
+        self::assertSame('CRUD-007', $codeOf($ada, ['name', 'name']));
+
+        $readOnly = new UserTransactionTotal();
+        self::assertSame('CRUD-003', $codeOf($readOnly, ['userName']));
+
+        self::assertSame('Ada', $this->db->get(User::class, $ada->id)->name);
+    }
+
+    #[Test]
     public function delete_by_key_and_versioned_delete_by_entity(): void
     {
         $ada = SampleDatabase::insertUser($this->db, 'Ada', 'ada@example.com');

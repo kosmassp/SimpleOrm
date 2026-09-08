@@ -188,6 +188,27 @@ func TestUpdateSQL_VersionIncrementsAndGuardsTheWhereClause(t *testing.T) {
 	}
 }
 
+func TestUpdateOnlySQL_RendersExactlyTheListedColumnsWithTheVersionRules(t *testing.T) {
+	d := sqlite.New()
+	transactions := transactionsMap()
+	got := d.UpdateOnlySQL(transactions, []*core.PropertyMap{transactions.Property("UserID")})
+	want := "update transactions set user_id = @user_id, version = version + 1 where id = @id and version = @version"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	users := usersMap()
+	var all []*core.PropertyMap
+	for _, p := range users.Properties {
+		if !p.IsKey && !p.IsVersion && !p.IsGenerated {
+			all = append(all, p)
+		}
+	}
+	if full, listed := d.UpdateSQL(users), d.UpdateOnlySQL(users, all); full != listed { // one renderer
+		t.Errorf("full %q, listed %q", full, listed)
+	}
+}
+
 func TestUpdateSQL_ExcludesKeyVersionAndGeneratedColumns(t *testing.T) {
 	got := sqlite.New().UpdateSQL(usersMap())
 	want := "update users set name = @name, display_name = @display_name where id = @id"

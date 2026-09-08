@@ -29,7 +29,10 @@ type crudStep struct {
 	Key    json.RawMessage            `json:"key"`
 	As     string                     `json:"as"`
 	From   string                     `json:"from"`
-	Expect struct {
+	// Columns marks an update-by-column-list step (ADR-0028); nil when absent,
+	// empty (not nil) for "columns": [] so CRUD-007 stays expressible.
+	Columns []string `json:"columns"`
+	Expect  struct {
 		Error  string                     `json:"error"`
 		Values map[string]json.RawMessage `json:"values"`
 	} `json:"expect"`
@@ -43,6 +46,7 @@ type crudOps struct {
 	insert func(ctx context.Context, db *orm.Db, entity any) error
 	get    func(ctx context.Context, db *orm.Db, key any) (any, error)
 	update func(ctx context.Context, db *orm.Db, entity any) error
+	updOnl func(ctx context.Context, db *orm.Db, entity any, properties []string) error
 	delKey func(ctx context.Context, db *orm.Db, key any) error
 	delEnt func(ctx context.Context, db *orm.Db, entity any) error
 	keyOf  func(db *orm.Db, entity any) (any, error)
@@ -65,6 +69,9 @@ func opsFor[T any]() crudOps {
 		},
 		update: func(ctx context.Context, db *orm.Db, entity any) error {
 			return orm.Update(ctx, db, entity.(*T))
+		},
+		updOnl: func(ctx context.Context, db *orm.Db, entity any, properties []string) error {
+			return orm.UpdateOnly(ctx, db, entity.(*T), properties...)
 		},
 		delKey: func(ctx context.Context, db *orm.Db, key any) error {
 			return orm.Delete[T](ctx, db, key)
@@ -204,6 +211,22 @@ func runCrudStep(ctx context.Context, db *orm.Db, step crudStep, lastKey *any, s
 		ops, err := opsForEntityValue(entity)
 		if err != nil {
 			return nil, err
+		}
+		if step.Columns != nil {
+			// Update by column list (ADR-0028): columns resolve to field names;
+			// an unknown column passes through so CRUD-005 is reachable.
+			m, err := db.Maps().Load(reflect.TypeOf(entity).Elem())
+			if err != nil {
+				return nil, err
+			}
+			properties := make([]string, len(step.Columns))
+			for i, column := range step.Columns {
+				properties[i] = column
+				if property := m.PropertyByColumn(column); property != nil {
+					properties[i] = property.PropertyName
+				}
+			}
+			return nil, ops.updOnl(ctx, db, entity, properties)
 		}
 		return nil, ops.update(ctx, db, entity)
 

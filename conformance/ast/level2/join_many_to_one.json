@@ -1,0 +1,14 @@
+{
+  "name": "join_many_to_one",
+  "comment": "Join-mode eager loading of a many-to-one: the root aliases t and every column re-aliases <alias>_<column> so segment readers partition the row; the join aliases j0 and its ON pairs target = parent; root predicates and orderings qualify with t.",
+  "entity": "Transaction",
+  "select": {
+    "joins": [ { "entity": "User", "alias": "j0", "on": [ ["UserId", "Id"] ], "project": true } ],
+    "where": [ { "op": "eq", "property": "Status", "value": "Pending" } ],
+    "orderBy": [ { "property": "Id" } ]
+  },
+  "expect": {
+    "sqlite": { "sql": "select t.id as t_id, t.user_id as t_user_id, t.status as t_status, t.amount as t_amount, t.version as t_version, t.note as t_note, t.created_at as t_created_at, t.updated_at as t_updated_at, j0.id as j0_id, j0.name as j0_name, j0.email as j0_email, j0.display_name as j0_display_name, j0.created_at as j0_created_at, j0.updated_at as j0_updated_at from transactions t left join users j0 on j0.id = t.user_id where t.status = @c0 order by t.id", "parameters": ["Pending"] },
+    "sqlserver": { "sql": "select t.[id] as [t_id], t.[user_id] as [t_user_id], t.[status] as [t_status], t.[amount] as [t_amount], t.[version] as [t_version], t.[note] as [t_note], t.[created_at] as [t_created_at], t.[updated_at] as [t_updated_at], j0.[id] as [j0_id], j0.[name] as [j0_name], j0.[email] as [j0_email], j0.[display_name] as [j0_display_name], j0.[created_at] as [j0_created_at], j0.[updated_at] as [j0_updated_at] from [transactions] t left join [users] j0 on j0.[id] = t.[user_id] where t.[status] = @c0 order by t.[id]", "parameters": ["Pending"] },
+    "postgres": { "sql": "select t.\"id\" as \"t_id\", t.\"user_id\" as \"t_user_id\", t.\"status\" as \"t_status\", t.\"amount\" as \"t_amount\", t.\"version\" as \"t_version\", t.\"note\" as \"t_note\", t.\"created_at\" as \"t_created_at\", t.\"updated_at\" as \"t_updated_at\", j0.\"id\" as \"j0_id\", j0.\"name\" as \"j0_name\", j0.\"email\" as \"j0_email\", j0.\"display_name\" as \"j0_display_name\", j0.\"created_at\" as \"j0_created_at\", j0.\"updated_at\" as \"j0_updated_at\" from \"transactions\" t left join \"users\" j0 on j0.\"id\" = t.\"user_id\" where t.\"status\" = @c0 order by t.\"id\"", "parameters": ["Pending"] } }
+}

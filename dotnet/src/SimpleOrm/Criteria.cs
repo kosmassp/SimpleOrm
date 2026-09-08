@@ -59,7 +59,14 @@ public abstract class Criteria
     /// conformance encoding exposes it yet; the subquery's projection must match
     /// the property count.
     /// </summary>
-    internal static Criteria InSelect(IReadOnlyList<string> properties, SelectAst subquery)
+    /// <summary>
+    /// Subquery membership (ADR-0022 add.1, SubSelect eager loading): the listed
+    /// properties of the root, as a row value when more than one, <c>in (select …)</c>
+    /// over <paramref name="subquery"/>, whose projection must have the same arity.
+    /// Part of the Level 2 AST (<c>spec/query-ast.md</c>); the criteria chain does
+    /// not expose it — loading builds it, and the conformance runner replays it.
+    /// </summary>
+    public static Criteria InSelect(IReadOnlyList<string> properties, SelectAst subquery)
         => new SubqueryMembership(properties, subquery);
 
     public static Criteria And(params Criteria[] criteria) => new Composite("and", criteria);

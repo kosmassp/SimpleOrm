@@ -30,10 +30,17 @@ public sealed class ConformanceAstTests
         get
         {
             var data = new TheoryData<string>();
-            foreach (var file in Directory.GetFiles(
-                Path.Combine(ConformanceMigrationTests.ConformanceDirectory(), "ast"), "*.json"))
+            var root = Path.Combine(ConformanceMigrationTests.ConformanceDirectory(), "ast");
+            foreach (var file in Directory.GetFiles(root, "*.json"))
             {
                 data.Add(Path.GetFileName(file));
+            }
+
+            // Level 2 extensions (projection, joins, subquery membership) live in
+            // ast/level2/ so Level 0–1 ports enumerate only the top level.
+            foreach (var file in Directory.GetFiles(Path.Combine(root, "level2"), "*.json"))
+            {
+                data.Add("level2/" + Path.GetFileName(file));
             }
 
             return data;
@@ -48,11 +55,7 @@ public sealed class ConformanceAstTests
             Path.Combine(ConformanceMigrationTests.ConformanceDirectory(), "ast", fileName)));
         var spec = document.RootElement;
 
-        var entityName = spec.GetProperty("entity").GetString()!;
-        var entityType = typeof(SimpleOrm.Sample.Models.User).Assembly.GetExportedTypes()
-            .Single(t => t.Name == entityName);
-        var map = new EntityMapLoader().Load(entityType);
-        var ast = ParseSelect(map, spec.GetProperty("select"));
+        var ast = ParseSelect(LoadMap(spec.GetProperty("entity").GetString()!), spec.GetProperty("select"));
         var expect = spec.GetProperty("expect");
 
         foreach (var (dialectName, dialect) in Dialects)
@@ -92,8 +95,40 @@ public sealed class ConformanceAstTests
         }
     }
 
-    private static SelectAst ParseSelect(EntityMap map, JsonElement select)
-        => new(
+    internal static EntityMap LoadMap(string entityName)
+    {
+        var entityType = typeof(SimpleOrm.Sample.Models.User).Assembly.GetExportedTypes()
+            .Single(t => t.Name == entityName);
+        return new EntityMapLoader().Load(entityType);
+    }
+
+    /// <summary>
+    /// The select encoding of spec/query-ast.md — the Level 1 fields plus the
+    /// Level 2 extensions: <c>projection</c> (root property names), <c>joins</c>
+    /// (entity, alias, optional parent alias, ON pairs [parent, target], project),
+    /// and the <c>in_select</c> predicate whose nested select names its own entity.
+    /// </summary>
+    internal static SelectAst ParseSelect(EntityMap map, JsonElement select)
+    {
+        var projection = select.TryGetProperty("projection", out var projected)
+            ? projected.EnumerateArray()
+                .Select(name => map.Properties.Single(p => p.PropertyName == name.GetString()))
+                .ToArray()
+            : null;
+        var joins = select.TryGetProperty("joins", out var joined)
+            ? joined.EnumerateArray()
+                .Select(j => new SelectJoin(
+                    LoadMap(j.GetProperty("entity").GetString()!),
+                    j.GetProperty("alias").GetString()!,
+                    j.TryGetProperty("parent", out var parent) && parent.ValueKind == JsonValueKind.String ? parent.GetString() : null,
+                    j.GetProperty("on").EnumerateArray()
+                        .Select(pair => (pair[0].GetString()!, pair[1].GetString()!))
+                        .ToArray(),
+                    j.GetProperty("project").GetBoolean()))
+                .ToArray()
+            : null;
+
+        return new SelectAst(
             map,
             select.TryGetProperty("where", out var where)
                 ? where.EnumerateArray().Select(ParseCriteria).ToArray()
@@ -111,13 +146,21 @@ public sealed class ConformanceAstTests
                     .ToArray()
                 : [],
             select.TryGetProperty("limit", out var limit) ? limit.GetInt64() : null,
-            select.TryGetProperty("offset", out var offset) ? offset.GetInt64() : null);
+            select.TryGetProperty("offset", out var offset) ? offset.GetInt64() : null,
+            projection,
+            joins);
+    }
 
     private static Criteria ParseCriteria(JsonElement node)
     {
         var property = node.TryGetProperty("property", out var p) ? p.GetString()! : string.Empty;
         return node.GetProperty("op").GetString() switch
         {
+            "in_select" => Criteria.InSelect(
+                node.GetProperty("properties").EnumerateArray().Select(n => n.GetString()!).ToArray(),
+                ParseSelect(
+                    LoadMap(node.GetProperty("select").GetProperty("entity").GetString()!),
+                    node.GetProperty("select"))),
             "eq" => Criteria.Eq(property, Value(node.GetProperty("value"))!),
             "ne" => Criteria.Ne(property, Value(node.GetProperty("value"))!),
             "gt" => Criteria.Gt(property, Value(node.GetProperty("value"))!),

@@ -1,0 +1,9 @@
+{
+  "name": "join_unknown_property_refused",
+  "comment": "A join ON pair names properties, resolved through the respective maps exactly like predicates; an unknown one is QRY-006 on every dialect.",
+  "entity": "Transaction",
+  "select": {
+    "joins": [ { "entity": "User", "alias": "j0", "on": [ ["UserId", "Nope"] ], "project": true } ]
+  },
+  "expect": { "error": "QRY-006" }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "join_one_to_many",
+  "comment": "A collection join (FK on the target): ON pairs are parent key = target FK. No paging — a paged collection join is refused by the session (REL-005) before rendering, so the AST case renders the unpaged form only.",
+  "entity": "User",
+  "select": {
+    "joins": [ { "entity": "Transaction", "alias": "j0", "on": [ ["Id", "UserId"] ], "project": true } ],
+    "where": [ { "op": "like", "property": "Name", "value": "A%" } ]
+  },
+  "expect": {
+    "sqlite": { "sql": "select t.id as t_id, t.name as t_name, t.email as t_email, t.display_name as t_display_name, t.created_at as t_created_at, t.updated_at as t_updated_at, j0.id as j0_id, j0.user_id as j0_user_id, j0.status as j0_status, j0.amount as j0_amount, j0.version as j0_version, j0.note as j0_note, j0.created_at as j0_created_at, j0.updated_at as j0_updated_at from users t left join transactions j0 on j0.user_id = t.id where t.name like @c0", "parameters": ["A%"] },
+    "sqlserver": { "sql": "select t.[id] as [t_id], t.[name] as [t_name], t.[email] as [t_email], t.[display_name] as [t_display_name], t.[created_at] as [t_created_at], t.[updated_at] as [t_updated_at], j0.[id] as [j0_id], j0.[user_id] as [j0_user_id], j0.[status] as [j0_status], j0.[amount] as [j0_amount], j0.[version] as [j0_version], j0.[note] as [j0_note], j0.[created_at] as [j0_created_at], j0.[updated_at] as [j0_updated_at] from [users] t left join [transactions] j0 on j0.[user_id] = t.[id] where t.[name] like @c0", "parameters": ["A%"] },
+    "postgres": { "sql": "select t.\"id\" as \"t_id\", t.\"name\" as \"t_name\", t.\"email\" as \"t_email\", t.\"display_name\" as \"t_display_name\", t.\"created_at\" as \"t_created_at\", t.\"updated_at\" as \"t_updated_at\", j0.\"id\" as \"j0_id\", j0.\"user_id\" as \"j0_user_id\", j0.\"status\" as \"j0_status\", j0.\"amount\" as \"j0_amount\", j0.\"version\" as \"j0_version\", j0.\"note\" as \"j0_note\", j0.\"created_at\" as \"j0_created_at\", j0.\"updated_at\" as \"j0_updated_at\" from \"users\" t left join \"transactions\" j0 on j0.\"user_id\" = t.\"id\" where t.\"name\" like @c0", "parameters": ["A%"] } }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "subselect_composite_membership",
+  "comment": "Composite membership: a row value (a, b) in (select a, b …) where the dialect supports row-value IN (SQLite, PostgreSQL); where it does not (SQL Server) the same subquery becomes a correlated EXISTS over derived table s, and the root gains alias t for the correlation — without re-aliasing its columns. Parameters keep one order on every dialect.",
+  "entity": "UserRole",
+  "select": {
+    "where": [ { "op": "in_select", "properties": ["UserId", "RoleId"],
+                 "select": { "entity": "UserRole", "projection": ["UserId", "RoleId"],
+                             "where": [ { "op": "is_null", "property": "GrantedBy" } ] } },
+               { "op": "gt", "property": "UserId", "value": 0 } ]
+  },
+  "expect": {
+    "sqlite": { "sql": "select user_id, role_id, granted_by, created_at, updated_at from user_roles where ((user_id, role_id) in (select user_id, role_id from user_roles where granted_by is null) and user_id > @c0)", "parameters": [0] },
+    "sqlserver": { "sql": "select t.[user_id], t.[role_id], t.[granted_by], t.[created_at], t.[updated_at] from [user_roles] t where (exists (select 1 from (select [user_id], [role_id] from [user_roles] where [granted_by] is null) s where s.[user_id] = t.[user_id] and s.[role_id] = t.[role_id]) and t.[user_id] > @c0)", "parameters": [0] },
+    "postgres": { "sql": "select \"user_id\", \"role_id\", \"granted_by\", \"created_at\", \"updated_at\" from \"user_roles\" where ((\"user_id\", \"role_id\") in (select \"user_id\", \"role_id\" from \"user_roles\" where \"granted_by\" is null) and \"user_id\" > @c0)", "parameters": [0] } }
+}

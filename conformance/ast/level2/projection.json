@@ -1,0 +1,10 @@
+{
+  "name": "projection",
+  "comment": "A projection selects only the listed root properties (in the listed order) and changes nothing else — the shape a SubSelect subquery takes.",
+  "entity": "User",
+  "select": { "projection": ["Id", "Name"], "orderBy": [ { "property": "Name", "order": "desc" } ] },
+  "expect": {
+    "sqlite": { "sql": "select id, name from users order by name desc", "parameters": [] },
+    "sqlserver": { "sql": "select [id], [name] from [users] order by [name] desc", "parameters": [] },
+    "postgres": { "sql": "select \"id\", \"name\" from \"users\" order by \"name\" desc", "parameters": [] } }
+}

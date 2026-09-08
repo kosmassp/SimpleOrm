@@ -1,0 +1,14 @@
+{
+  "name": "join_many_to_many_link",
+  "comment": "A many-to-many joins twice: the link (alias l0) is NOT projected and hangs off the root; the target (j0) hangs off the link via 'parent' and is projected. Join order is declaration order.",
+  "entity": "User",
+  "select": {
+    "joins": [
+      { "entity": "UserRole", "alias": "l0", "on": [ ["Id", "UserId"] ], "project": false },
+      { "entity": "Role", "alias": "j0", "parent": "l0", "on": [ ["RoleId", "Id"] ], "project": true } ]
+  },
+  "expect": {
+    "sqlite": { "sql": "select t.id as t_id, t.name as t_name, t.email as t_email, t.display_name as t_display_name, t.created_at as t_created_at, t.updated_at as t_updated_at, j0.id as j0_id, j0.role_name as j0_role_name, j0.created_at as j0_created_at, j0.updated_at as j0_updated_at from users t left join user_roles l0 on l0.user_id = t.id left join roles j0 on j0.id = l0.role_id", "parameters": [] },
+    "sqlserver": { "sql": "select t.[id] as [t_id], t.[name] as [t_name], t.[email] as [t_email], t.[display_name] as [t_display_name], t.[created_at] as [t_created_at], t.[updated_at] as [t_updated_at], j0.[id] as [j0_id], j0.[role_name] as [j0_role_name], j0.[created_at] as [j0_created_at], j0.[updated_at] as [j0_updated_at] from [users] t left join [user_roles] l0 on l0.[user_id] = t.[id] left join [roles] j0 on j0.[id] = l0.[role_id]", "parameters": [] },
+    "postgres": { "sql": "select t.\"id\" as \"t_id\", t.\"name\" as \"t_name\", t.\"email\" as \"t_email\", t.\"display_name\" as \"t_display_name\", t.\"created_at\" as \"t_created_at\", t.\"updated_at\" as \"t_updated_at\", j0.\"id\" as \"j0_id\", j0.\"role_name\" as \"j0_role_name\", j0.\"created_at\" as \"j0_created_at\", j0.\"updated_at\" as \"j0_updated_at\" from \"users\" t left join \"user_roles\" l0 on l0.\"user_id\" = t.\"id\" left join \"roles\" j0 on j0.\"id\" = l0.\"role_id\"", "parameters": [] } }
+}

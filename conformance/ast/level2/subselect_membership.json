@@ -1,0 +1,16 @@
+{
+  "name": "subselect_membership",
+  "comment": "SubSelect eager loading: the target filters by membership in the root query, projected to the correlating property. The subquery renders through the same renderer, binds inline (@c0, @c1 continue the outer order), and keeps its paging; the outer select is unaliased on every dialect because the membership is single-property.",
+  "entity": "Transaction",
+  "select": {
+    "where": [ { "op": "in_select", "properties": ["UserId"],
+                 "select": { "entity": "User", "projection": ["Id"],
+                             "where": [ { "op": "eq", "property": "Name", "value": "Ada" } ],
+                             "orderBy": [ { "property": "Name" } ], "limit": 5 } } ],
+    "orderBy": [ { "property": "Id" } ]
+  },
+  "expect": {
+    "sqlite": { "sql": "select id, user_id, status, amount, version, note, created_at, updated_at from transactions where user_id in (select id from users where name = @c0 order by name limit @c1) order by id", "parameters": ["Ada", 5] },
+    "sqlserver": { "sql": "select [id], [user_id], [status], [amount], [version], [note], [created_at], [updated_at] from [transactions] where [user_id] in (select [id] from [users] where [name] = @c0 order by [name] offset 0 rows fetch next @c1 rows only) order by [id]", "parameters": ["Ada", 5] },
+    "postgres": { "sql": "select \"id\", \"user_id\", \"status\", \"amount\", \"version\", \"note\", \"created_at\", \"updated_at\" from \"transactions\" where \"user_id\" in (select \"id\" from \"users\" where \"name\" = @c0 order by \"name\" limit @c1) order by \"id\"", "parameters": ["Ada", 5] } }
+}

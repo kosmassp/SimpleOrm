@@ -25,6 +25,7 @@ tests.
 | `is_null`, `is_not_null` | `is [not] null` | `property` | explicit null check |
 | `and`, `or` | `and`, `or` | `args` (array of nodes) | composite, parenthesized when rendered; **empty renders its identity truth-value** — `1 = 1` for `and`, `1 = 0` for `or` (dynamic composition legitimately produces empty lists; invalid SQL names nothing) |
 | `not` | `not` | `arg` (one node) | negation |
+| `in_select` | `in (select …)` | `properties` (array), `select` (a nested select with its own `entity`) | subquery membership — Level 2, see below; a row value when more than one property |
 
 The SQL tokens are part of the contract — `ne` renders `<>`, never `!=` — and
 `conformance/ast/comparison_operators.json` pins them exactly.
@@ -153,12 +154,88 @@ claim held in practice: PostgreSQL (ADR-0025) needed no rendering divergence at
 all beyond its quoting and its plain `limit`/`offset` clause — it delegates to
 the reference rendering with every knob at its default.
 
+## Level 2 extensions: projection, joins, subquery membership (ADR-0022 add.1)
+
+Eager loading extends the same tree; no front-end exposes these directly (the
+criteria chain builds Level 1 selects; loading builds these), but every
+implementation renders them, and `conformance/ast/level2/` pins the rendering.
+A Level 0–1 port enumerates only the top-level `conformance/ast/*.json`; a
+Level 2 port adds the `level2/` folder.
+
+**Projection.** An optional list of the root's property names; when present,
+only those columns are selected, in the listed order. Nothing else changes.
+This is the shape a SubSelect subquery takes (it selects only what it feeds).
+
+```json
+{ "projection": ["Id", "Name"], "orderBy": [ { "property": "Name", "order": "desc" } ] }
+```
+```
+select id, name from users order by name desc
+```
+
+**Joins.** An ordered list of LEFT JOINs. Each names its target entity, its
+alias, an optional `parent` alias (absent: hangs off the root), its ON pairs
+as `[parentProperty, targetProperty]` — property names, resolved through the
+parent's and the target's maps exactly like predicates (`QRY-006` when
+unknown), rendered `target.col = parent.col` and ANDed — and `project`: whether
+its columns are selected.
+
+```json
+{ "joins": [
+    { "entity": "UserRole", "alias": "l0", "on": [ ["Id", "UserId"] ], "project": false },
+    { "entity": "Role", "alias": "j0", "parent": "l0", "on": [ ["RoleId", "Id"] ], "project": true } ] }
+```
+
+Rendering with joins present:
+
+- the root aliases `t`; every root column and every projected join column is
+  re-aliased `<alias>_<column>` (`t.id as t_id`, `j0.id as j0_id`) so the
+  session's segment readers can partition one row into root and navigation
+  segments without positional guessing;
+- joins render in declaration order, each `left join <relation> <alias> on …`;
+  an unprojected join contributes no columns (a many-to-many's link);
+- root predicates and orderings qualify their columns with `t.`;
+- the aliases are part of the AST, not chosen by the renderer. The reference
+  eager loader names projected joins `j0…` in include order and link joins
+  `l<n>`; ports may choose their own names, so the cases spell them out.
+
+Eager loading's own refusals (a paged collection join `REL-005`, more than one
+collection join `REL-006`, keyless ends `REL-003`) happen in the session before
+rendering, so the AST cases render unpaged, single-collection shapes only.
+
+**Subquery membership** (`in_select`). A predicate: the listed root properties,
+as a row value when more than one, `in (select …)` over a nested select that
+names its own entity and whose projection has the same arity. The subquery
+renders through the same renderer with the same bind function — its
+placeholders continue the outer numbering in render order — and keeps its
+own predicates, orderings, and paging.
+
+```json
+{ "op": "in_select", "properties": ["UserId"],
+  "select": { "entity": "User", "projection": ["Id"],
+              "where": [ { "op": "eq", "property": "Name", "value": "Ada" } ], "limit": 5 } }
+```
+```
+… where user_id in (select id from users where name = @c0 limit @c1)
+```
+
+A composite membership `(a, b) in (select a, b …)` renders as a row value where
+the dialect supports row-value IN (SQLite, PostgreSQL). Where it does not (SQL
+Server, `SupportsRowValueIn` false), the same subquery becomes a correlated
+EXISTS: the root gains alias `t` for the correlation — **without** re-aliasing
+its columns, which only joins do — the subquery becomes derived table `s`, and
+each compared column correlates `s.<projected> = t.<property>`. Identical rows
+match; parameters keep their order. `conformance/ast/level2/subselect_composite_membership.json`
+pins both renderings side by side.
+
 ## Deliberately absent
 
 **GROUP BY does not exist in the AST** and is not planned: aggregations are
 written as real SQL in `[Statement]` entities (ADR-0011/0012). Criteria stay a
-row-filter/sort/page language, never a full SQL replacement. Joins arrive with
-Level 2 eager loading and extend this AST rather than replace it.
+row-filter/sort/page language, never a full SQL replacement. Joins exist only
+as the eager loader's tool (above); **filtering on related data** through the
+criteria chain is not part of Level 2 (ADR-0022) and would arrive as its own
+extension of this AST, never as SQL text.
 
 ## Dynamic composition
 
@@ -190,9 +267,11 @@ database:
     "sqlserver": { "sql": "…", "parameters": [1, "Ada", "Grace"] } } }
 ```
 
-The runner builds the AST from `select` (the encodings above), renders it through
-**every dialect**, and compares the **exact SQL text** and the **ordered
-parameter values** — or, for `"expect": { "error": "QRY-007" }`, the error code.
+The Level 2 extensions (projection, joins, `in_select`) are pinned by the same
+format under `conformance/ast/level2/` — a nested `select` inside `in_select`
+carries its own `entity`. The runner builds the AST from `select` (the encodings
+above), renders it through **every dialect**, and compares the **exact SQL
+text** and the **ordered parameter values** — or, for `"expect": { "error": "QRY-007" }`, the error code.
 `expect` carries one entry per dialect and every entry is mandatory (ADR-0024): a
 case missing a dialect's expectation fails the suite. Error expectations are
 dialect-neutral (refusal happens in the shared rendering, before any dialect

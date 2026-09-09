@@ -78,7 +78,11 @@ public static class AnsiSelectRenderer
                 var parent = join.ParentAlias ?? "t";
                 var parentMap = join.ParentAlias is null
                     ? map
-                    : select.Joins.First(j => j.Alias == join.ParentAlias).Target;
+                    : (select.Joins.FirstOrDefault(j => j.Alias == join.ParentAlias)
+                        ?? throw new SimpleOrmException(
+                            "QRY-006", queryName,
+                            $"join '{join.Alias}' hangs off alias '{join.ParentAlias}', which no earlier join declares"))
+                        .Target;
                 sql.Append(" left join ").Append(dialect.QuoteIdentifier(join.Target.RelationName!))
                     .Append(' ').Append(join.Alias)
                     .Append(" on ").Append(string.Join(" and ", join.On.Select(pair =>
@@ -170,6 +174,14 @@ public static class AnsiSelectRenderer
                 foreach (var property in c.Properties)
                 {
                     Resolve(map, property, queryName);
+                }
+
+                var subqueryWidth = (c.Subquery.Projection ?? c.Subquery.Map.Properties).Count;
+                if (subqueryWidth != c.Properties.Count)
+                {
+                    throw new SimpleOrmException(
+                        "QRY-006", queryName,
+                        $"subquery membership compares {c.Properties.Count} propert{(c.Properties.Count == 1 ? "y" : "ies")} against a subquery projecting {subqueryWidth} column(s)");
                 }
 
                 if (c.Properties.Count > 1 && !dialect.SupportsRowValueIn)

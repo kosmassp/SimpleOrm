@@ -230,6 +230,23 @@ each compared column correlates `s.<projected> = t.<property>`. Identical rows
 match; parameters keep their order. `conformance/ast/level2/subselect_composite_membership.json`
 pins both renderings side by side.
 
+**Clarifications** (the Go Level 2 port asked; ADR-0031):
+
+- **Projection resolves where the AST is built** — by the loader or the
+  conformance runner — so an unknown projection property is refused there;
+  the renderer receives resolved properties. A projection under joins still
+  restricts the root's columns, re-aliased `t_<column>` like the rest.
+- **One root alias for the whole select.** Once the root is aliased — by any
+  join, or by an EXISTS rewrite anywhere in the predicate tree, composites and
+  negations included — every root column reference in that select qualifies
+  with `t.`: predicates, orderings, and every other membership's columns.
+- **Join ON pairs resolve both sides** through their own maps; an unknown
+  property on either side is `QRY-006`. A join whose `parent` names an alias
+  no earlier join declares is `QRY-006` too.
+- **Membership arity.** The listed properties and the subquery's projection
+  (or, unprojected, its mapped columns) must have the same count; a mismatch
+  is `QRY-006` before rendering, never an index error or a database error.
+
 ## Deliberately absent
 
 **GROUP BY does not exist in the AST** and is not planned: aggregations are

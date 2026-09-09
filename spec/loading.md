@@ -75,6 +75,41 @@ single-round-trip alternative for arbitrary shapes.
 Conformance: load cases marked `"viaQuery": true` replay through `Include`
 under **all three modes** against the same `loaded` expectations.
 
+**Clarifications** (the Go Level 2 port asked; ADR-0031):
+
+- **Key-tiebroken ordering, precisely.** When the mode is SubSelect, at least
+  one navigation is included, and the root has a limit or an offset, the
+  root's orderings gain every key property (ascending, in key order) not
+  already ordered on. That ordering drives **both** the root query and every
+  subquery, so the two evaluations pick the same rows. Unpaged roots are
+  untouched.
+- **SubSelect projection.** The subquery projects the owner's correlating
+  properties — its key for one-to-one/one-to-many/many-to-many, its FK
+  properties for many-to-one — in key order; composite owners render a
+  row-value membership (query-ast.md).
+- **The many-to-many link→target hop** is an ordinary key list: it chunks
+  like any other (500 owners per query), in every mode.
+- **Duplicate owners** in a batch call are each filled; entities sharing a
+  key share the loaded instances, because correlation is by value.
+- **Value-wise comparison** (ordering and identity) means: numbers
+  numerically — decimals included, never by their text — strings ordinally,
+  temporals by instant, GUIDs by their bytes, booleans false before true.
+- **Join mode aliases.** `j<n>` counts every include in include order (a
+  many-to-many's projected target join takes the next `j<n>`); `l<n>` counts
+  the many-to-many includes, separately. Root rows keep the order of their
+  **first appearance** in the joined result, which is the query's ORDER BY.
+  An owner whose FK part is null, or whose FK points at no row, reads an
+  all-NULL target segment and loads as null/absent — a null FK and a dead
+  link are indistinguishable here, as everywhere.
+- **Refusal precedence, before any SQL:** `REL-001` (unknown navigation),
+  then `REL-005`/`REL-006` (paging with a collection, several collections),
+  then `REL-003` (keyless root or target, unmapped FK/link properties, arity
+  against a runtime key). Shape problems refuse as `REL-003`; `QRY-006` is
+  reserved for criteria the user wrote.
+- **Composite many-to-many links.** The link's FK declarations to a side are
+  in declaration order, and that order pairs with the side's key parts in key
+  order (metadata-model.md) — a link must declare them in key order.
+
 ## Per kind
 
 | kind | fills | notes |
@@ -116,3 +151,10 @@ for composite-key owners — in `loaded`, composite keys join their parts with
 `|`. `"expect": { "error": "REL-001" }` pins refusals; `REL-002`/`REL-003` need
 drifted data or shape-broken metadata the case format cannot seed, so each
 implementation pins them in its own tests.
+
+A `viaQuery` replay's root query selects exactly the listed owners: for a
+single-column key, `Where(In(<key property>, keys))`; for a composite key, an
+`Or` of one `And` of equalities per owner, parts in key order. It includes the
+case's navigation, runs under each fetch mode in turn, and checks the same
+`loaded` expectations — including an expected error, which every mode must
+raise even though the query would match no rows.

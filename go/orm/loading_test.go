@@ -111,6 +111,179 @@ func TestLoadEach_ShapeBrokenForeignKey_IsREL003(t *testing.T) {
 	}
 }
 
+// keylessTarget/ownerOfKeylessTarget mirror eager_join_test.go's
+// joinKeylessTarget/joinOwnerOfKeylessTarget: a many-to-one navigation whose
+// target declares no key (only reachable through a view — a table-backed
+// entity must declare a key, MAP-019). spec/loading.md "Shape errors": "an
+// arity mismatch against a key the target never declared" refuses REL-003 at
+// load time in every mode — checkArity's want == 0 case, not just join
+// mode's own explicit guard (db_eager_join.go's buildJoins).
+type keylessTarget struct {
+	ID   int64  `orm:"column"` // no key tag: deliberately keyless
+	Name string `orm:"column"`
+}
+
+func (keylessTarget) Entity() orm.EntityDef {
+	return orm.EntityDef{Source: orm.View("rel003_keyless_targets", "select 1 as id, 'x' as name")}
+}
+
+type ownerOfKeylessTarget struct {
+	ID       int64          `orm:"column,key,generated"`
+	TargetID int64          `orm:"column"`
+	Target   *keylessTarget `orm:"many_to_one=TargetID"`
+}
+
+func (ownerOfKeylessTarget) Entity() orm.EntityDef {
+	return orm.EntityDef{Source: orm.Table("rel003_owners_of_keyless")}
+}
+
+func TestLoadEach_KeylessTarget_IsREL003(t *testing.T) {
+	ctx := context.Background()
+	db, err := orm.Open(ctx, testsupport.TempDatabase(t), orm.Options{Dialect: sqlite.New()})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	// The refusal fires before any SQL runs (checkArity, ahead of
+	// correlate/queryMembership) — no table needs to exist, exactly like
+	// join mode's own TestJoin_KeylessTarget_IsREL003.
+	owner := &ownerOfKeylessTarget{ID: 1, TargetID: 7}
+	err = orm.LoadEach(ctx, db, []*ownerOfKeylessTarget{owner}, "Target")
+	if orm.CodeOf(err) != "REL-003" {
+		t.Fatalf("expected REL-003, got %v", err)
+	}
+}
+
+// keylessOwnerOneToMany/keylessOwnerOneToOne/keylessOwnerManyToMany*: the
+// mirror image of keylessTarget above — the *owner* declares no key (only
+// reachable through a view, MAP-019). Declaration-time validation only checks
+// this arity when the owner's key is already known (map_assembler.go's
+// ownerKeyCount > 0 guard), deferring a keyless owner to runtime — exactly
+// what join mode's fkOnTargetPairs/linkPairsToOwner already guard
+// (db_eager_join.go). Before this fix, loadOneToOne/loadOneToMany/
+// loadManyToMany had no equivalent guard: membershipCriteria indexed the
+// owner's (zero-length) key tuple by the target/link's declared FK count and
+// panicked instead of naming the shape problem (spec/loading.md "Shape
+// errors": "an arity mismatch against a key the target never declared").
+type keylessOwnerOneToMany struct {
+	ID    int64                          `orm:"column"` // no key: deliberately keyless owner
+	Items []*keylessOwnerOneToManyTarget `orm:"one_to_many=OwnerID"`
+}
+
+func (keylessOwnerOneToMany) Entity() orm.EntityDef {
+	return orm.EntityDef{Source: orm.View("rel003_keyless_owners_one_to_many", "select 1 as id")}
+}
+
+type keylessOwnerOneToManyTarget struct {
+	ID      int64 `orm:"column,key,generated"`
+	OwnerID int64 `orm:"column"`
+}
+
+func (keylessOwnerOneToManyTarget) Entity() orm.EntityDef {
+	return orm.EntityDef{Source: orm.Table("rel003_keyless_owner_one_to_many_targets")}
+}
+
+func TestLoadEach_OneToMany_KeylessOwner_IsREL003(t *testing.T) {
+	ctx := context.Background()
+	db, err := orm.Open(ctx, testsupport.TempDatabase(t), orm.Options{Dialect: sqlite.New()})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	owner := &keylessOwnerOneToMany{ID: 1}
+	err = orm.LoadEach(ctx, db, []*keylessOwnerOneToMany{owner}, "Items")
+	if orm.CodeOf(err) != "REL-003" {
+		t.Fatalf("expected REL-003, got %v", err)
+	}
+}
+
+type keylessOwnerOneToOne struct {
+	ID     int64                       `orm:"column"` // no key: deliberately keyless owner
+	Target *keylessOwnerOneToOneTarget `orm:"one_to_one=OwnerID"`
+}
+
+func (keylessOwnerOneToOne) Entity() orm.EntityDef {
+	return orm.EntityDef{Source: orm.View("rel003_keyless_owners_one_to_one", "select 1 as id")}
+}
+
+type keylessOwnerOneToOneTarget struct {
+	ID      int64 `orm:"column,key,generated"`
+	OwnerID int64 `orm:"column"`
+}
+
+func (keylessOwnerOneToOneTarget) Entity() orm.EntityDef {
+	return orm.EntityDef{Source: orm.Table("rel003_keyless_owner_one_to_one_targets")}
+}
+
+func TestLoadEach_OneToOne_KeylessOwner_IsREL003(t *testing.T) {
+	ctx := context.Background()
+	db, err := orm.Open(ctx, testsupport.TempDatabase(t), orm.Options{Dialect: sqlite.New()})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	owner := &keylessOwnerOneToOne{ID: 1}
+	err = orm.LoadEach(ctx, db, []*keylessOwnerOneToOne{owner}, "Target")
+	if orm.CodeOf(err) != "REL-003" {
+		t.Fatalf("expected REL-003, got %v", err)
+	}
+}
+
+type keylessOwnerManyToMany struct {
+	ID    int64                           `orm:"column"` // no key: deliberately keyless owner
+	Items []*keylessOwnerManyToManyTarget `orm:"many_to_many"`
+}
+
+func (keylessOwnerManyToMany) Entity() orm.EntityDef {
+	return orm.EntityDef{
+		Source:     orm.View("rel003_keyless_owners_many_to_many", "select 1 as id"),
+		ManyToMany: []orm.ManyToManyDef{orm.ManyToMany[keylessOwnerManyToManyLink]("Items")},
+	}
+}
+
+type keylessOwnerManyToManyTarget struct {
+	ID int64 `orm:"column,key,generated"`
+}
+
+func (keylessOwnerManyToManyTarget) Entity() orm.EntityDef {
+	return orm.EntityDef{Source: orm.Table("rel003_keyless_owner_mtm_targets")}
+}
+
+type keylessOwnerManyToManyLink struct {
+	OwnerID  int64 `orm:"column,key"`
+	TargetID int64 `orm:"column,key"`
+}
+
+func (keylessOwnerManyToManyLink) Entity() orm.EntityDef {
+	return orm.EntityDef{
+		Source: orm.Table("rel003_keyless_owner_mtm_links"),
+		ForeignKeys: []orm.ForeignKeyDef{
+			orm.ForeignKey[keylessOwnerManyToMany]("OwnerID"),
+			orm.ForeignKey[keylessOwnerManyToManyTarget]("TargetID"),
+		},
+	}
+}
+
+func TestLoadEach_ManyToMany_KeylessOwner_IsREL003(t *testing.T) {
+	ctx := context.Background()
+	db, err := orm.Open(ctx, testsupport.TempDatabase(t), orm.Options{Dialect: sqlite.New()})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	// The owner-side arity check fires before the link/target queries run —
+	// no table needs to exist.
+	owner := &keylessOwnerManyToMany{ID: 1}
+	err = orm.LoadEach(ctx, db, []*keylessOwnerManyToMany{owner}, "Items")
+	if orm.CodeOf(err) != "REL-003" {
+		t.Fatalf("expected REL-003, got %v", err)
+	}
+}
+
 // --- nil-vs-empty slice, shared instances, dead links, reload --------------
 
 func newSeededUser(t *testing.T, ctx context.Context, db *orm.Db, name, email string) *sample.User {

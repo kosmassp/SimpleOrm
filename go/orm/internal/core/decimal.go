@@ -1,6 +1,7 @@
 package core
 
 import (
+	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
@@ -57,6 +58,18 @@ func (d Decimal) IsZero() bool { return d.normalized() == "0" }
 
 // Equal compares by value: 19.90 equals 19.9.
 func (d Decimal) Equal(other Decimal) bool { return d.normalized() == other.normalized() }
+
+// Compare orders two Decimal values numerically (spec/loading.md: key/FK
+// values order "as values, never as a string rendering" — 19.9 must not sort
+// after 19.90 the way it would by digit count or by String()). Parsed through
+// math/big.Rat for exact, arbitrary-precision comparison; this is ordering,
+// not the arithmetic §10 rules out, and every Decimal's text is already a
+// literal big.Rat.SetString accepts.
+func (d Decimal) Compare(other Decimal) int {
+	left, _ := new(big.Rat).SetString(d.String())
+	right, _ := new(big.Rat).SetString(other.String())
+	return left.Cmp(right)
+}
 
 // Value comparison ignores trailing fraction zeros.
 func (d Decimal) normalized() string {

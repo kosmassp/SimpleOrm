@@ -1,14 +1,12 @@
 package orm
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
 	"reflect"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/mapping"
@@ -32,7 +30,7 @@ import (
 // REL-006; a keyless root or target (or an FK shape the loader could not
 // validate at declaration) is REL-003.
 func listWithJoins[T any](ctx context.Context, q *CriteriaQuery[T], m *core.EntityMap, ast *core.SelectAst, queryName string) ([]T, error) {
-	navs, err := resolveJoinNavigations(q.db, m, q.includes, queryName)
+	navs, err := resolveJoinNavigations(q.db, m, q.includes)
 	if err != nil {
 		return nil, err
 	}
@@ -42,7 +40,7 @@ func listWithJoins[T any](ctx context.Context, q *CriteriaQuery[T], m *core.Enti
 	}
 	ast.Joins = joins
 
-	rows, err := q.renderAndRunJoinQuery(ctx, ast, queryName)
+	rows, err := renderAndRunSelect(ctx, q.db, ast, queryName)
 	if err != nil {
 		return nil, err
 	}
@@ -63,17 +61,17 @@ type joinNavigation struct {
 }
 
 // resolveJoinNavigations resolves every Include against m's declared
-// navigations (REL-001 for an unknown name, naming what is declared) and
-// loads each target's (and many-to-many link's) map, numbering aliases in
+// navigations — relationshipNamed/unknownNavigationError (db_eager.go) is the
+// one navigation-by-name lookup and REL-001 error every loading engine uses —
+// and loads each target's (and many-to-many link's) map, numbering aliases in
 // include order.
-func resolveJoinNavigations(db *Db, m *core.EntityMap, includes []string, queryName string) ([]*joinNavigation, error) {
+func resolveJoinNavigations(db *Db, m *core.EntityMap, includes []string) ([]*joinNavigation, error) {
 	navs := make([]*joinNavigation, 0, len(includes))
 	jIndex, lIndex := 0, 0
 	for _, name := range includes {
-		rel := relationshipByName(m, name)
+		rel := relationshipNamed(m, name)
 		if rel == nil {
-			return nil, core.Errorf("REL-001", queryName,
-				"%q is not a declared navigation of %s; declared: %s", name, m.EntityName(), declaredNavigationNames(m))
+			return nil, unknownNavigationError(m, name)
 		}
 		targetMap, err := db.maps.Load(rel.TargetType)
 		if err != nil {
@@ -97,23 +95,6 @@ func resolveJoinNavigations(db *Db, m *core.EntityMap, includes []string, queryN
 		navs = append(navs, nav)
 	}
 	return navs, nil
-}
-
-func relationshipByName(m *core.EntityMap, name string) *core.RelationshipMap {
-	for _, rel := range m.Relationships {
-		if rel.PropertyName == name {
-			return rel
-		}
-	}
-	return nil
-}
-
-func declaredNavigationNames(m *core.EntityMap) string {
-	names := make([]string, len(m.Relationships))
-	for i, rel := range m.Relationships {
-		names[i] = rel.PropertyName
-	}
-	return strings.Join(names, ", ")
 }
 
 // buildJoins applies the eager-loading refusals (REL-005/006/003) and builds
@@ -267,34 +248,6 @@ func linkPairsToTarget(link, target *core.EntityMap, rel *core.RelationshipMap, 
 	return pairs, nil
 }
 
-// renderAndRunJoinQuery renders ast (now carrying Joins) through the dialect
-// and runs it. Mirrors CriteriaQuery.execute's bind closure exactly — listed
-// under "Duplicates to consolidate" in the milestone report, since execute is
-// unexported on *CriteriaQuery and materializes a single-shape []T, which a
-// joined, multi-segment row cannot use.
-func (q *CriteriaQuery[T]) renderAndRunJoinQuery(ctx context.Context, ast *core.SelectAst, queryName string) (*sql.Rows, error) {
-	var bound []any
-	bind := func(value any, property *core.PropertyMap) (string, error) {
-		name := fmt.Sprintf("c%d", len(bound))
-		var columnType core.ColumnType
-		if property != nil {
-			columnType = property.ColumnType
-		}
-		converted, err := q.db.converter.ToDatabase(value, columnType, fmt.Sprintf("%s @%s", queryName, name))
-		if err != nil {
-			return "", err
-		}
-		bound = append(bound, sql.Named(name, converted))
-		return "@" + name, nil
-	}
-
-	sqlText, err := q.db.options.Dialect.SelectSQL(ast, bind)
-	if err != nil {
-		return nil, err
-	}
-	return q.db.exec().QueryContext(ctx, sqlText, bound...)
-}
-
 // navReadState is one navigation's per-query reading plan: which row columns
 // are its segment (by position, found through its "<alias>_" prefix) and the
 // mapping.Plan that turns that segment into a *Target (or Target, for a value
@@ -307,26 +260,26 @@ type navReadState struct {
 }
 
 // ownerRecord is one deduplicated root instance (§7.4): the heap-allocated
-// *T every row for this key writes into, its key (kept as values, not a
-// stringified token — spec/loading.md), and the per-navigation state used
-// while folding rows (a collection's accumulated entries, a singular
-// navigation's already-assigned target key, for REL-002 detection).
+// *T every row for this key writes into, its key (a core.KeyTuple — kept as
+// values, not a stringified token, spec/loading.md), and the per-navigation
+// state used while folding rows (a collection's accumulated entries, a
+// singular navigation's already-assigned target key, for REL-002 detection).
 type ownerRecord struct {
 	ptr          reflect.Value // *T
-	key          []any
+	key          core.KeyTuple
 	collections  map[int][]collectionEntry
-	singularKeys map[int][]any
+	singularKeys map[int]core.KeyTuple
 }
 
 type collectionEntry struct {
-	key   []any
+	key   core.KeyTuple
 	value reflect.Value
 }
 
 // targetInstance is one navigation's shared-by-key target (§7.4: "owners
 // sharing a target … share the same instance").
 type targetInstance struct {
-	key   []any
+	key   core.KeyTuple
 	value reflect.Value
 }
 
@@ -403,10 +356,11 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 		if err != nil {
 			return nil, err
 		}
-		rootKey, err := m.KeyValues(rootValue)
+		rootKeyValues, err := m.KeyValues(rootValue)
 		if err != nil {
 			return nil, err
 		}
+		rootKey := core.KeyTuple(rootKeyValues)
 
 		owner := findOwner(order, rootKey)
 		if owner == nil {
@@ -415,7 +369,7 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 			owner = &ownerRecord{
 				ptr: ptr, key: rootKey,
 				collections:  map[int][]collectionEntry{},
-				singularKeys: map[int][]any{},
+				singularKeys: map[int]core.KeyTuple{},
 			}
 			for i, nav := range navs {
 				if nav.isCollection {
@@ -441,10 +395,11 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 			if err != nil {
 				return nil, err
 			}
-			targetKey, err := nav.targetMap.KeyValues(targetValue)
+			targetKeyValues, err := nav.targetMap.KeyValues(targetValue)
 			if err != nil {
 				return nil, err
 			}
+			targetKey := core.KeyTuple(targetKeyValues)
 
 			instance := findTargetInstance(targetInstances[i], targetKey)
 			if instance == nil {
@@ -460,7 +415,7 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 			}
 
 			if existing, assigned := owner.singularKeys[i]; assigned {
-				if !keyEqual(existing, targetKey) {
+				if !existing.Equal(targetKey) {
 					return nil, core.Errorf("REL-002", queryName,
 						"navigation %q matched more than one row for one %s — its target foreign key needs a unique index",
 						nav.relationship.PropertyName, m.EntityName())
@@ -483,8 +438,9 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 			}
 			entries := owner.collections[navIndex]
 			// Collections order by target key value-wise, never by a string
-			// rendering (spec/loading.md).
-			sort.Slice(entries, func(a, b int) bool { return compareKeyValues(entries[a].key, entries[b].key) < 0 })
+			// rendering (spec/loading.md) — core.KeyTuple.Compare, the same
+			// comparator db_eager.go's sortByProperties uses for merged chunks.
+			sort.Slice(entries, func(a, b int) bool { return entries[a].key.Compare(entries[b].key) < 0 })
 			field := owner.ptr.Elem().FieldByIndex(states[navIndex].field.Index)
 			slice := reflect.MakeSlice(field.Type(), len(entries), len(entries))
 			for j, e := range entries {
@@ -534,113 +490,35 @@ func allNil(values []any) bool {
 	return true
 }
 
-func findOwner(order []*ownerRecord, key []any) *ownerRecord {
+// findOwner, findTargetInstance, and findCollectionEntry all scan a small,
+// per-query list for a core.KeyTuple match by §7.4 structural equality
+// (core.KeyTuple.Equal — never a stringified token, which loses information
+// for date and blob keys, spec/loading.md). A linear scan is the price: fine
+// at fixture and page scale, the same scale every eager-loading round trip
+// already targets.
+func findOwner(order []*ownerRecord, key core.KeyTuple) *ownerRecord {
 	for _, o := range order {
-		if keyEqual(o.key, key) {
+		if o.key.Equal(key) {
 			return o
 		}
 	}
 	return nil
 }
 
-func findTargetInstance(list []*targetInstance, key []any) *targetInstance {
+func findTargetInstance(list []*targetInstance, key core.KeyTuple) *targetInstance {
 	for _, t := range list {
-		if keyEqual(t.key, key) {
+		if t.key.Equal(key) {
 			return t
 		}
 	}
 	return nil
 }
 
-func findCollectionEntry(entries []collectionEntry, key []any) *collectionEntry {
+func findCollectionEntry(entries []collectionEntry, key core.KeyTuple) *collectionEntry {
 	for i := range entries {
-		if keyEqual(entries[i].key, key) {
+		if entries[i].key.Equal(key) {
 			return &entries[i]
 		}
 	}
 	return nil
-}
-
-// keyEqual is §7.4 structural equality over a key/FK tuple, element-wise —
-// never a stringified token, which loses information for date and blob keys
-// (spec/loading.md). A linear scan (findOwner/findTargetInstance/
-// findCollectionEntry) is the price: fine at fixture and page scale, the same
-// scale every eager-loading round trip already targets.
-func keyEqual(a, b []any) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if !reflect.DeepEqual(a[i], b[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-// compareKeyValues orders two key tuples element-wise, by value — never by a
-// string rendering, so "10" sorts after "2" (spec/loading.md, ADR-0021 add.1).
-func compareKeyValues(a, b []any) int {
-	for i := range a {
-		if c := compareKeyValue(a[i], b[i]); c != 0 {
-			return c
-		}
-	}
-	return 0
-}
-
-// compareKeyValue orders one pair of key values by type. The fixture's keys
-// are all int64, so only that path is exercised; the others are best-effort
-// for a reference implementation's other declarable key types (see "Spec
-// gaps" — value-wise ordering for GUID/decimal keys is not spelled out).
-func compareKeyValue(a, b any) int {
-	switch av := a.(type) {
-	case int64:
-		return compareInt64(av, b.(int64))
-	case int:
-		return compareInt64(int64(av), int64(b.(int)))
-	case int32:
-		return compareInt64(int64(av), int64(b.(int32)))
-	case int16:
-		return compareInt64(int64(av), int64(b.(int16)))
-	case string:
-		return strings.Compare(av, b.(string))
-	case bool:
-		bv := b.(bool)
-		if av == bv {
-			return 0
-		}
-		if !av {
-			return -1
-		}
-		return 1
-	case time.Time:
-		bv := b.(time.Time)
-		switch {
-		case av.Before(bv):
-			return -1
-		case av.After(bv):
-			return 1
-		default:
-			return 0
-		}
-	case core.GUID:
-		bv := b.(core.GUID)
-		return bytes.Compare(av[:], bv[:])
-	case core.Decimal:
-		return strings.Compare(av.String(), b.(core.Decimal).String())
-	default:
-		return strings.Compare(fmt.Sprint(a), fmt.Sprint(b))
-	}
-}
-
-func compareInt64(a, b int64) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	default:
-		return 0
-	}
 }

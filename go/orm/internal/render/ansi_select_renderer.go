@@ -12,10 +12,11 @@
 // re-aliased "<alias>_<column>"; SubqueryMembership (in_select) renders a row
 // value or, for a dialect without row-value IN, a correlated EXISTS over the
 // same subquery, rendered through this same function so its placeholders
-// continue the outer numbering. This port mirrors
-// dotnet/src/SimpleOrm/AnsiSelectRenderer.cs; the decomposition
+// continue the outer numbering. Built from spec/query-ast.md (Level 2 is not
+// a line-by-line port of the C# renderer); the decomposition
 // (SelectSQL/renderCriteria/column/Resolve) is what made the extension a pure
-// addition — every existing Level 1 rendering stays byte-identical.
+// addition — every existing Level 1 rendering stays byte-identical to the
+// reference's rendered SQL (CODING-STANDARD §5).
 package render
 
 import (

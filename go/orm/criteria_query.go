@@ -2,8 +2,6 @@ package orm
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 	"reflect"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
@@ -119,27 +117,7 @@ func (q *CriteriaQuery[T]) List(ctx context.Context) ([]T, error) {
 // execute renders the AST through the dialect, binds in render order, and
 // materializes the root rows.
 func (q *CriteriaQuery[T]) execute(ctx context.Context, m *core.EntityMap, ast *core.SelectAst, queryName string) ([]T, error) {
-	var bound []any
-	bind := func(value any, property *core.PropertyMap) (string, error) {
-		name := fmt.Sprintf("c%d", len(bound))
-		var columnType core.ColumnType
-		if property != nil {
-			columnType = property.ColumnType
-		}
-		converted, err := q.db.converter.ToDatabase(value, columnType, fmt.Sprintf("%s @%s", queryName, name))
-		if err != nil {
-			return "", err
-		}
-		bound = append(bound, sql.Named(name, converted))
-		return "@" + name, nil
-	}
-
-	sqlText, err := q.db.options.Dialect.SelectSQL(ast, bind)
-	if err != nil {
-		return nil, err
-	}
-
-	rows, err := q.db.exec().QueryContext(ctx, sqlText, bound...)
+	rows, err := renderAndRunSelect(ctx, q.db, ast, queryName)
 	if err != nil {
 		return nil, err
 	}

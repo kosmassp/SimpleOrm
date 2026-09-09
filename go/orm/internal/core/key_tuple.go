@@ -25,6 +25,21 @@ func (t KeyTuple) Equal(other KeyTuple) bool {
 	return true
 }
 
+// Compare orders two tuples element-wise by value (CompareValues), never by a
+// stringified rendering — the ordering half of §7.4 identity, used to
+// re-establish a single order across merged chunks (db_eager.go) and to order
+// a join-mode collection by its target key (db_eager_join.go). Both callers
+// build tuples over the same property list, so corresponding elements always
+// share a type.
+func (t KeyTuple) Compare(other KeyTuple) int {
+	for i := range t {
+		if c := CompareValues(t[i], other[i]); c != 0 {
+			return c
+		}
+	}
+	return 0
+}
+
 // HasNull reports whether any part is nil: the rule that excludes an owner
 // from querying, symmetric between a null key part and a null many-to-one FK
 // part (spec/loading.md).

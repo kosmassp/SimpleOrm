@@ -1,14 +1,10 @@
 package orm
 
 import (
-	"bytes"
 	"context"
-	"database/sql"
-	"fmt"
 	"reflect"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
 )
@@ -123,13 +119,15 @@ func resolveProperties(m *core.EntityMap, names []string, navigationTarget strin
 	return properties, nil
 }
 
-// checkArity is REL-003's other shape: an FK property count that disagreed
-// with a related key the declaration loader could not size (a target/link
-// type with no static `key` tag it could scan — spec/loading.md: "an arity
-// mismatch against a key the target never declared"). want == 0 means the
-// related key is itself undeclared (keyless): nothing to compare.
+// checkArity is REL-003's other shape: an FK property count that disagrees
+// with a related key's arity (spec/loading.md "Shape errors": "an arity
+// mismatch against a key the target never declared"). want == 0 is exactly
+// that never-declared case — a keyless target or link, only reachable through
+// a view (a table-backed entity must declare a key, MAP-019) — and refuses
+// the same as join-mode eager loading's own keyless-target/root guard
+// (db_eager_join.go's buildJoins), never a silent "nothing to compare".
 func checkArity(navigationTarget string, have, want int, label string) error {
-	if want > 0 && have != want {
+	if have != want {
 		return core.Errorf("REL-003", navigationTarget,
 			"declares %d %s but the related key has %d part(s)", have, label, want)
 	}
@@ -247,27 +245,7 @@ func membershipCriteria(propertyNames []string, tuples []core.KeyTuple) core.Cri
 // addressable pointers (reflect.PointerTo(ast.Map.Type)) ready to attach
 // directly to a pointer-shaped navigation field, or to copy into a value one.
 func selectRows(ctx context.Context, db *Db, ast *core.SelectAst, queryName string) ([]reflect.Value, error) {
-	var bound []any
-	bind := func(value any, property *core.PropertyMap) (string, error) {
-		name := fmt.Sprintf("c%d", len(bound))
-		var columnType core.ColumnType
-		if property != nil {
-			columnType = property.ColumnType
-		}
-		converted, err := db.converter.ToDatabase(value, columnType, fmt.Sprintf("%s @%s", queryName, name))
-		if err != nil {
-			return "", err
-		}
-		bound = append(bound, sql.Named(name, converted))
-		return "@" + name, nil
-	}
-
-	sqlText, err := db.options.Dialect.SelectSQL(ast, bind)
-	if err != nil {
-		return nil, err
-	}
-
-	rows, err := db.exec().QueryContext(ctx, sqlText, bound...)
+	rows, err := renderAndRunSelect(ctx, db, ast, queryName)
 	if err != nil {
 		return nil, err
 	}
@@ -350,100 +328,16 @@ func queryMembership(
 }
 
 // sortByProperties re-establishes a single global order across merged chunks
-// by comparing the ordering properties' actual values (never a stringified
-// rendering — spec/loading.md, ADR-0021 add.1: "10 comes after 2").
+// by comparing the ordering properties' actual values (core.KeyTuple.Compare —
+// never a stringified rendering, spec/loading.md, ADR-0021 add.1: "10 comes
+// after 2"). Shared with the join engine's collection ordering
+// (db_eager_join.go), which sorts core.KeyTuple values directly.
 func sortByProperties(values []reflect.Value, properties []*core.PropertyMap) {
 	sort.SliceStable(values, func(i, j int) bool {
 		left := extractTuple(properties, values[i].Interface())
 		right := extractTuple(properties, values[j].Interface())
-		return compareTuples(left, right) < 0
+		return left.Compare(right) < 0
 	})
-}
-
-func compareTuples(a, b core.KeyTuple) int {
-	for i := range a {
-		if c := compareValue(a[i], b[i]); c != 0 {
-			return c
-		}
-	}
-	return 0
-}
-
-// compareValue orders two values of the same underlying type (both always
-// come from the same mapped property) — the fixed table types a key or FK
-// column can realistically hold. Anything else falls back to comparing the
-// formatted text, which is not truly value-wise; no fixture or sample key
-// needs it today (see the final report's "Spec gaps").
-func compareValue(a, b any) int {
-	switch av := a.(type) {
-	case nil:
-		if b == nil {
-			return 0
-		}
-		return -1
-	case int64:
-		bv := b.(int64)
-		return compareOrdered(av, bv)
-	case int32:
-		bv := b.(int32)
-		return compareOrdered(av, bv)
-	case int16:
-		bv := b.(int16)
-		return compareOrdered(av, bv)
-	case int:
-		bv := b.(int)
-		return compareOrdered(av, bv)
-	case float64:
-		bv := b.(float64)
-		return compareOrdered(av, bv)
-	case float32:
-		bv := b.(float32)
-		return compareOrdered(av, bv)
-	case string:
-		return strings.Compare(av, b.(string))
-	case bool:
-		bv := b.(bool)
-		if av == bv {
-			return 0
-		}
-		if !av {
-			return -1
-		}
-		return 1
-	case time.Time:
-		bv := b.(time.Time)
-		switch {
-		case av.Before(bv):
-			return -1
-		case av.After(bv):
-			return 1
-		default:
-			return 0
-		}
-	case core.GUID:
-		bv := b.(core.GUID)
-		return bytes.Compare(av[:], bv[:])
-	default:
-		if b == nil {
-			return 1
-		}
-		return strings.Compare(fmt.Sprint(a), fmt.Sprint(b))
-	}
-}
-
-type ordered interface {
-	~int | ~int16 | ~int32 | ~int64 | ~float32 | ~float64
-}
-
-func compareOrdered[T ordered](a, b T) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	default:
-		return 0
-	}
 }
 
 // findByTuple returns the first value whose properties equal tuple, or an
@@ -543,6 +437,15 @@ func loadOneToOne[T any](
 	if err != nil {
 		return err
 	}
+	// The declaration loader only checks this arity when the owner's own key
+	// was already known (map_assembler.go's ownerKeyCount > 0 guard) — a
+	// keyless owner (view-backed) defers to here, exactly like join mode's own
+	// runtime check (db_eager_join.go's fkOnTargetPairs). Without it, a
+	// mismatched tuple length panics deeper in membershipCriteria instead of
+	// naming the shape problem.
+	if err := checkArity(navigationTarget, len(targetFKProps), len(ownerMap.KeyProperties), "target foreign-key property/properties"); err != nil {
+		return err
+	}
 
 	field := navigationField(ownerMap.Type, rel.PropertyName)
 	owners, distinct := correlate(entities, ownerMap.KeyProperties)
@@ -602,6 +505,11 @@ func loadOneToMany[T any](
 	if err != nil {
 		return err
 	}
+	// See loadOneToOne's identical guard: the declaration loader defers this
+	// arity check for a keyless (view-backed) owner.
+	if err := checkArity(navigationTarget, len(targetFKProps), len(ownerMap.KeyProperties), "target foreign-key property/properties"); err != nil {
+		return err
+	}
 
 	field := navigationField(ownerMap.Type, rel.PropertyName)
 	owners, distinct := correlate(entities, ownerMap.KeyProperties)
@@ -651,6 +559,12 @@ func loadManyToMany[T any](
 	}
 	linkTargetProps, err := resolveProperties(linkMap, rel.LinkForeignKeysToTarget, navigationTarget)
 	if err != nil {
+		return err
+	}
+	// The owner-side check mirrors join mode's linkPairsToOwner (a keyless
+	// owner defers this to runtime, same as loadOneToOne/loadOneToMany above);
+	// the target-side check mirrors linkPairsToTarget.
+	if err := checkArity(navigationTarget, len(linkOwnerProps), len(ownerMap.KeyProperties), "link foreign-key propert(ies) to the owner"); err != nil {
 		return err
 	}
 	if err := checkArity(navigationTarget, len(linkTargetProps), len(targetMap.KeyProperties), "link foreign-key propert(ies) to the target"); err != nil {

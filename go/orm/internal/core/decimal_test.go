@@ -42,3 +42,21 @@ func TestDecimal_EqualIgnoresTrailingFractionZeros(t *testing.T) {
 		t.Error("DecimalOf keeps the sign")
 	}
 }
+
+func TestDecimal_ComparesNumericallyNeverByString(t *testing.T) {
+	// 19.9 and 19.90 are equal by value despite a different digit count — a
+	// text comparison of Decimal.String() would get this wrong (spec/loading.md
+	// "compared as values, never as a string rendering").
+	if MustDecimal("19.9").Compare(MustDecimal("19.90")) != 0 {
+		t.Error("19.9 should compare equal to 19.90")
+	}
+	if MustDecimal("2").Compare(MustDecimal("10")) >= 0 {
+		t.Error("2 should sort before 10, not after it by leading-digit text order")
+	}
+	if MustDecimal("-5").Compare(MustDecimal("3")) >= 0 {
+		t.Error("-5 should sort before 3")
+	}
+	if MustDecimal("3").Compare(MustDecimal("-5")) <= 0 {
+		t.Error("3 should sort after -5")
+	}
+}

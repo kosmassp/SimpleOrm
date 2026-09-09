@@ -166,6 +166,37 @@ func bindAndQuery(ctx context.Context, db *Db, sqlText string, args any, queryNa
 	return db.exec().QueryContext(ctx, bound.SQL, bound.Args...)
 }
 
+// renderAndRunSelect renders ast through the dialect (spec/query-ast.md) and
+// runs it on the session's current executor. One bind closure, shared by the
+// criteria chain (criteria_query.go's execute), join-mode eager loading
+// (db_eager_join.go's listWithJoins), and every per-kind explicit/batch/
+// MultiQuery/SubSelect loader query (db_eager.go's selectRows) — the AST
+// analog of bindAndQuery above, for callers that render through
+// Dialect.SelectSQL instead of scanning `@name` placeholders out of literal
+// SQL.
+func renderAndRunSelect(ctx context.Context, db *Db, ast *core.SelectAst, queryName string) (*sql.Rows, error) {
+	var bound []any
+	bind := func(value any, property *core.PropertyMap) (string, error) {
+		name := fmt.Sprintf("c%d", len(bound))
+		var columnType core.ColumnType
+		if property != nil {
+			columnType = property.ColumnType
+		}
+		converted, err := db.converter.ToDatabase(value, columnType, fmt.Sprintf("%s @%s", queryName, name))
+		if err != nil {
+			return "", err
+		}
+		bound = append(bound, sql.Named(name, converted))
+		return "@" + name, nil
+	}
+
+	sqlText, err := db.options.Dialect.SelectSQL(ast, bind)
+	if err != nil {
+		return nil, err
+	}
+	return db.exec().QueryContext(ctx, sqlText, bound...)
+}
+
 // materializeRows is the one list-materialization loop (§7.11/ADR-0015's Go
 // analog, minus the C#-only compiled fast paths): the plan is built from the
 // column schema before the first row, so strictness (MAP-001/002) fires even

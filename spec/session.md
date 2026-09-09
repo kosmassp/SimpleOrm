@@ -154,6 +154,6 @@ expectations); `conformance/ast/` pins criteria parameter binding order and
 values. The parameter strictness codes (`PRM-001/002`) and single-row codes
 (`QRY-001/002`) have **no data-driven form yet**: args are native typed values,
 so a portable case format needs an args-shape encoding — reserved, the way
-`ast/` was until Level 2. Until then each implementation proves them in its own
+`ast/` was before ADR-0020. Until then each implementation proves them in its own
 tests (here: DbParameterTests, DbQueryTests). Lifetime and transaction semantics
 likewise have no data-driven form.

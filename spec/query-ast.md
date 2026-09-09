@@ -1,8 +1,10 @@
 # Query AST — criteria as data, rendered by the dialect
 
 The criteria query is an **AST, never SQL text** (§10.4, ADR-0012/0020). Every
-front-end — the string-based criteria chain today, the Level 2 fluent front-end
-later — produces the same tree; the **dialect** turns the tree into SQL. Criteria
+front-end — the string-based criteria chain, eager loading's builders, and any
+typed lambda sugar a language adds (per-language, outside the portable
+contract, ADR-0029) — produces the same tree; the **dialect** turns the tree
+into SQL. Criteria
 name **properties, not columns** (`QRY-006` when unknown); every value binds as a
 parameter — identifiers come from the metadata and values from the parameter
 binder, so no SQL is ever built from user data. Composition is explicit trees, so

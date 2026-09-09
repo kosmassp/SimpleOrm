@@ -1,8 +1,8 @@
 # SimpleOrm conformance suite
 
-The executable definition of the library. Every implementation (C# reference, future
-Go/Java/PHP ports) runs the same files; a port is correct when it passes them
-unchanged. All formats are JSON so any language can load them.
+The executable definition of the library. Every implementation (the C# reference,
+the PHP and Go ports, future Rust) runs the same files; a port is correct when it
+passes them unchanged. All formats are JSON so any language can load them.
 
 Layout (populated milestone by milestone):
 

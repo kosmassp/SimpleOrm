@@ -25,9 +25,12 @@ Per entity:
 - **Columns**: one entry per mapped property — column name, neutral type token,
   nullability, key/generated flags.
 - **Indexes** (tables and materialized views only): name, ordered columns with
-  per-column direction, unique flag. Declaration-only until Level 3 migrations.
-- **Relationships** (declaration-only until Level 2): many-to-one entries — FK
-  column and referenced entity.
+  per-column direction, unique flag. Consumed by generated DDL, snapshots, and
+  the diff generator (ADR-0011/0017); matched structurally, never by name.
+- **Relationships**: many-to-one (FK columns + referenced entity), one-to-one
+  and one-to-many (the target's FK columns), many-to-many (the link and its FK
+  columns to each side). Declarations only — loading is explicit or eager
+  (`loading.md`), never implicit.
 
 ## Capability rules per source
 
@@ -181,8 +184,8 @@ byte-equality):
 }
 ```
 
-Relationship declarations (ADR-0005/0019) are metadata only until Level 2
-milestone 3 loading. **Nothing loads implicitly**: a navigation stays
+Relationship declarations (ADR-0005/0019) are metadata; loading is a separate,
+explicit act (`loading.md`). **Nothing loads implicitly**: a navigation stays
 empty/null until requested — explicitly, or eagerly with the query — and never
 loads on access (ADR-0019 add.1). The four classic cardinalities are the whole
 taxonomy: polymorphic relations and "through" traversals are ruled out

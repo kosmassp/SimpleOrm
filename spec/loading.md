@@ -12,8 +12,8 @@ cannot intercept a property read without proxies; after loading, null means a
 null foreign key or a **dead link** (the FK points at no row — "there is no
 real model to go there" — which loads as null, never as an error). Loading is always an explicit act naming the entity
 (or entities), the navigation, and a cancellation token; eager loading with the
-query itself arrives with graph reshaping (Level 2 milestone 4) and follows the
-same contract: requested, never inferred.
+query itself (`Include` + a fetch mode, ADR-0022, below) follows the same
+contract: requested, never inferred.
 
 ## The calls
 

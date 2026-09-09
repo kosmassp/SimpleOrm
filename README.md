@@ -366,9 +366,12 @@ pure Go). Same API in Go shape — struct tags plus a small `Entity()` descripto
 `orm.Open`, `orm.Query(ctx, db, entry, args)`, `orm.Get[User]`,
 `orm.From[User](db).Where(…)`, errors as `*orm.Error` values, `context.Context`
 everywhere, explicit `orm.Registry` instead of assembly scanning, `embed.FS`
-snapshots, and the CLI as a library the application's `main` embeds. Its coding
-standard — `go/CODING-STANDARD.md` — lists the only permitted divergences.
-`cd go && go vet ./... && go test ./...`.
+snapshots, and the CLI as a library the application's `main` embeds. Level 2 is
+there too (ADR-0031): `orm.Load`/`orm.LoadEach` and
+`orm.From[User](db).Include("Transactions").Fetch(orm.FetchSubSelect)` — built
+from the spec and conformance files with the reference off limits, which is how
+Level 2 was proven reimplementable. Its coding standard — `go/CODING-STANDARD.md`
+— lists the only permitted divergences. `cd go && go vet ./... && go test ./...`.
 
 ## Performance
 

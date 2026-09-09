@@ -2228,3 +2228,77 @@ tuned — the mode's contract (one round trip, no in-memory paging) is what Leve
 
 **Status.** Both owed items closed; the Go Level 2 port is the last item before
 declaring exit.
+
+## ADR-0031 — The Go port reaches Level 2 from the spec alone; Level 2 exit (2026-09-09)
+
+ADR-0029 ruling 6, executed. The exit criterion for a level is "a second
+developer could reimplement it from `spec/` + `conformance/` alone". Levels
+0–1 were proven that way twice (ADR-0026/0027). Level 2 is proven by
+extending the Go port — the port with no attributes, exceptions, async,
+inheritance, or setters — to relationships, the Level 2 AST, and all three
+fetch modes, under a rule stricter than the earlier ports: **the agents were
+forbidden to open `dotnet/` or `php/`**. Every question the spec failed to
+answer was recorded instead of resolved by peeking; that list is the audit.
+
+**Method.** The ADR-0026 method again: the foundation first (the Level 2 AST
+types, `FetchMode`, `Load`/`LoadEach`, the chain's `Include`/`Fetch` hooks,
+stub files per area, CODING-STANDARD §10 rows), then one Sonnet agent for the
+renderer + `ast/level2` runner, two in parallel for the batch/MultiQuery/
+SubSelect engine + `load-cases` runner and for join mode, then a uniformity
+review. Six commits; 12 Go packages green throughout.
+
+**What the Go shape is.** `orm.Load(ctx, db, &e, "Nav")`, `orm.LoadEach(ctx,
+db, []*T, "Nav")`, `orm.From[T](db).Include("Nav").Fetch(orm.FetchSubSelect)`;
+the `REL-004` guard is unreachable (a slice read cannot be intercepted), so
+the Go expression of "unloaded is not empty" is the **nil vs empty slice**
+distinction — a never-loaded collection is nil, a loaded-but-empty one is an
+empty non-nil slice; singular navigations are nil pointers until loaded.
+Recorded in §10; the spec already allowed it ("where the language cannot
+intercept a property read").
+
+**The audit: 21 questions, all clarifications, no rule changed.** The three
+agents reported every unanswered question; each was checked against the
+reference and the answer written into the spec under "Clarifications" —
+`spec/query-ast.md`: projection resolves at build time; one root alias for
+the whole select once anything aliases it; both ON sides resolve; membership
+arity. `spec/loading.md`: the key-tiebroken ordering rule stated precisely
+(paged SubSelect root: every key property not already ordered on, ascending,
+applied to root and subqueries); SubSelect projection for composite owners;
+the link→target hop chunks; duplicate owners; value-wise comparison per type
+(decimals numerically, never by text); join alias numbering; first-appearance
+root order; null-FK owners under joins; refusal precedence; composite link FK
+order; and how a `viaQuery` replay selects its roots. Two of the questions
+exposed **reference behaviour that was not an error code**: a join off an
+undeclared parent alias threw `InvalidOperationException`, and a membership
+arity mismatch was an index error — both are `QRY-006` now, pinned in C#.
+Nothing in the spec was C#-shaped in a way that changed a rule; the gaps
+were silences, and the port that could not peek is what surfaced them.
+
+**The review pass found two real bugs** in the freshly written engines: the
+join engine ordered `Decimal` keys by their text (the exact failure the spec
+warns against — fixed with a numeric `Decimal.Compare`), and the batch
+engine's arity check skipped a keyless related key, panicking on a keyless
+owner for three kinds and full-scanning for a keyless many-to-one target —
+`REL-003` now, matching join mode, pinned by four tests. Three duplicated
+helpers were consolidated (render-and-run, key comparison, navigation
+resolution).
+
+**Verification.** Go: every conformance folder including `load-cases` (6
+cases × explicit + 3 modes) and `ast/level2` (7 cases byte-identical);
+`gofmt`/`vet` clean; 12 packages ok. C#: 316 passed (two new refusal tests),
+22 skipped (SQL Server LocalDB and the Postgres live suite, no server
+reachable today). PHP unchanged at Level 0–1.
+
+**Level 2 exit.** Declared. Milestones 1–4 and 5b are done, M5 is outside the
+level by ADR-0029, the spec sweep and benchmark refresh are recorded
+(ADR-0029 add.1), and the proof stands: a port that never saw the reference
+passes the same conformance files. What the exit does **not** claim: the PHP
+port stays at Levels 0–1 (its Level 2 upgrade is a field decision for
+Fidelis), a Rust port remains the last stress test in the ADR-0023 order, and
+the non-SQLite dialects still lack shadow/diff tooling (ADR-0024/0025).
+
+**Next target — the owner's call**, not this ADR's: Level 3 (session
+semantics: identity map, snapshot change tracking, unit of work, hooks), the
+PHP Level 2 upgrade, the Rust port, or the Level 4 dialect tooling.
+
+**Status.** Accepted. Level 2 closed.

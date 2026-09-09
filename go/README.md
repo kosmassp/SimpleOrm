@@ -84,6 +84,14 @@ link, err := orm.Get[UserRole](ctx, db, []any{userID, roleID})
 err = orm.Update(ctx, db, &order)                 // optimistic concurrency when a version column is mapped
 err = orm.UpdateOnly(ctx, db, &order, "Status")   // only the listed fields (ADR-0028); same key/version rules
 err = orm.UpdateOnly(ctx, db, &profile, "Address") // an owned navigation (orm.OwnedType + `orm:"owned"`, ADR-0030) stands for its members
+
+// Level 2 loading (spec/loading.md): nothing loads implicitly — a never-loaded collection is a nil slice,
+// a loaded-but-empty one an empty non-nil slice; singular navigations are nil until loaded
+err = orm.Load(ctx, db, &order, "Customer")                        // one entity, one navigation
+err = orm.LoadEach(ctx, db, orders, "Lines")                       // []*Order: one batched query per navigation
+users, err := orm.From[User](db).
+    Include("Transactions", "Profile").Fetch(orm.FetchSubSelect).  // or FetchMultiQuery (default), FetchJoin
+    OrderBy("ID").Limit(20).List(ctx)
 err = orm.Delete[Order](ctx, db, 7)               // by key; orm.DeleteEntity(ctx, db, &order) checks the version
 
 recent, err := orm.From[Order](db).

@@ -2302,3 +2302,47 @@ semantics: identity map, snapshot change tracking, unit of work, hooks), the
 PHP Level 2 upgrade, the Rust port, or the Level 4 dialect tooling.
 
 **Status.** Accepted. Level 2 closed.
+
+## ADR-0032 — After Level 2: the multi-language programme and the PHP Level 2 plan (2026-09-09)
+
+Owner reframing: "the purpose of SimpleOrm is not focusing on Fidelis, but on
+how it is implemented in many language types … to make uniformity for many
+languages." Decisions taken one at a time:
+
+1. **PHP goes to Level 2 next** (renderer projection/joins/`in_select` +
+   `ast/level2` runner; `load`/`loadEach`; `include(...)->fetch(FetchMode::…)`
+   in all three modes with join-mode row segmentation; `load-cases` runner;
+   review pass; ADR with the gap list — the ADR-0031 method, agents forbidden
+   to read `dotnet/` or `go/`). **PHP version unchanged.**
+2. **The unloaded-collection guard in PHP — option 1, both forms.** The mapper
+   `unset()`s a database-read entity's collection navigations, leaving the
+   typed property uninitialized, so a read throws instead of returning `[]`
+   (user-constructed entities keep their `= []` default — ADR-0021 add.2).
+   With the opt-in trait `SimpleOrm\Session\Navigations` (a `__get` that
+   fires because PHP routes reads of an unset declared property through it)
+   the throw is `SimpleOrmException('REL-004', …)`; without the trait it is
+   PHP's own `Error` — still a refusal, never a silent empty array. The trait
+   is a §10 row (the library cannot add `__get` to a user class).
+   **General rule for every port**, to be written into `spec/loading.md`: an
+   unloaded collection must not read as empty; throw `REL-004` where the
+   language can intercept, the language's own error where it can only refuse,
+   and only where neither is possible (Go) fall back to a documented
+   unloaded-vs-empty distinction.
+3. **New ports cover Levels 0–2 in one go** — one foundation pass, one set of
+   agents, one ADR per language; the spec has been proven twice.
+4. **Port order after PHP: Rust → Python → TypeScript** (the honest name for a
+   Node.js port: metadata needs decorators or typed descriptors, the package
+   ships for JavaScript callers). Chosen for how hard each bends the spec:
+   Rust (ownership of loaded graphs, `Result` everywhere, derive-macro
+   metadata) hardest, Python (the async contract against a synchronous
+   `sqlite3`, no static types) second, TypeScript third. Six implementations
+   is the evidence the word "uniformity" needs.
+5. **A porting guide** (`spec/porting-guide.md`: what to build in what order,
+   the foundation-first method, the §10 divergence-table rule, the
+   conformance folders per level) is written **after** those three ports,
+   from the experience, not before.
+
+Fidelis remains a consumer and a field test, not the target. Level 3/4 work
+is not scheduled by this ADR.
+
+**Status.** Accepted. Next session starts with the PHP Level 2 foundation.

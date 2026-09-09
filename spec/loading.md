@@ -15,6 +15,17 @@ real model to go there" — which loads as null, never as an error). Loading is 
 query itself (`Include` + a fetch mode, ADR-0022, below) follows the same
 contract: requested, never inferred.
 
+**The guard across languages** (ADR-0032). An unloaded collection of a
+database-read entity **must not read as empty**. Where the language can
+intercept the read (C# property getters; PHP through `__get` on an unset
+declared property, via an opt-in trait), it throws `REL-004`. Where it can
+only refuse with its own error (PHP without the trait: an uninitialized
+typed property), it does that — a throw beats a silent `[]`. Only where the
+language can do neither (Go: a slice read cannot be intercepted) does the
+port fall back to a documented unloaded-versus-empty distinction (nil versus
+empty slice), recorded as a divergence in its coding standard. Loaded-but-
+empty always reads as empty, in every language.
+
 ## The calls
 
 ```csharp

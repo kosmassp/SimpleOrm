@@ -2,6 +2,7 @@ package mapping
 
 import (
 	"database/sql"
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -243,6 +244,22 @@ func (p *Plan) Read(rows *sql.Rows) (any, error) {
 	}
 	if err := rows.Scan(scanArgs...); err != nil {
 		return nil, err
+	}
+	return p.ReadValues(raw)
+}
+
+// ReadValues assembles a result from column values read elsewhere, in the
+// same order and count as the plan's bindings — Read's post-scan logic,
+// factored out as the entry point join-mode eager loading uses
+// (orm/db_eager_join.go): one joined row is scanned once, then each entity
+// segment (the root, and each projected navigation) calls ReadValues on its
+// own slice of that row's already-read values, sized and ordered exactly like
+// the plan built for that segment's stripped column names. Read and
+// ReadValues share every conversion rule (owned-member nullability included);
+// this addition does not change Read's behavior.
+func (p *Plan) ReadValues(raw []any) (any, error) {
+	if len(raw) != len(p.bindings) {
+		return nil, fmt.Errorf("simpleorm: ReadValues got %d value(s), the plan expects %d", len(raw), len(p.bindings))
 	}
 
 	if p.scalar {

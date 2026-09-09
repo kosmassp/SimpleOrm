@@ -286,10 +286,8 @@ func loadedValueMatches(actual, expected any) bool {
 // orm.From[T](db).Include(nav).Fetch(mode), with a root query selecting
 // exactly the listed owner keys, against the same "loaded" expectations
 // (spec/loading.md "Eager loading": "load cases marked viaQuery: true replay
-// through Include under all three modes"). FetchJoin (and, until the AST
-// renderer's in_select support lands, FetchSubSelect) may not be implemented
-// yet elsewhere in this port; those legs skip on error instead of failing so
-// the explicit-loading leg and FetchMultiQuery still gate the build.
+// through Include under all three modes"). Every mode asserts: the modes
+// must load identical graphs, so a leg that errs or differs fails the case.
 func runViaQueryCase(t *testing.T, ctx context.Context, db *orm.Db, spec loadCaseSpec, mode core.FetchMode) {
 	t.Helper()
 	switch spec.Load.Entity {
@@ -335,18 +333,11 @@ func assertViaQuery[T any](t *testing.T, ctx context.Context, db *orm.Db, spec l
 
 	if spec.Expect.Error != "" {
 		if core.CodeOf(err) != spec.Expect.Error {
-			if mode != core.FetchMultiQuery {
-				t.Skipf("%s (%s): expected error %s, got %v (not implemented yet elsewhere in this port)",
-					spec.Name, mode, spec.Expect.Error, err)
-			}
 			t.Fatalf("%s (%s): expected error %s, got %v", spec.Name, mode, spec.Expect.Error, err)
 		}
 		return
 	}
 	if err != nil {
-		if mode != core.FetchMultiQuery {
-			t.Skipf("%s (%s): %v (not implemented yet elsewhere in this port)", spec.Name, mode, err)
-		}
 		t.Fatalf("%s (%s): unexpected error: %v", spec.Name, mode, err)
 	}
 

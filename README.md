@@ -374,8 +374,22 @@ standard — `go/CODING-STANDARD.md` — lists the only permitted divergences.
 
 Compiled expression-tree mappers with typed-getter fast paths. BenchmarkDotNet vs
 Dapper and raw `Microsoft.Data.Sqlite` (net10.0, `dotnet/benchmarks/`): mapping
-1000 rows to entities runs **~3% faster than Dapper with 22% less allocation**
-(matching the raw reader's allocation floor); single-row reads are within 2.5%.
+1000 rows to entities runs **~5% faster than Dapper with 21% less allocation**
+(matching the raw reader's allocation floor); single-row reads are at parity.
+
+Level 2 paths (ADR-0029 refresh, same machine, 1000 rows × 3 child rows):
+
+| Path | SimpleOrm | Hand-written Dapper |
+|---|---|---|
+| criteria `Where(Eq).OrderBy.Limit(100)` (AST → SQL) | 134 µs | 123 µs (inline SQL) |
+| registry query, same SQL | 123 µs | 123 µs |
+| one-to-many graph, `Fetch(SubSelect)` | 4.1 ms | 3.8 ms (multi-mapped join, grouped by hand) |
+| one-to-many graph, `Fetch(Join)` | 6.4 ms, 2× the allocation | |
+| one-to-many graph, `Fetch(MultiQuery)` / `LoadEachAsync` | 7.2 ms (500-key chunks) | 16.0 ms (one 1000-key `IN` list) |
+
+The criteria renderer costs ~9% over the equivalent inline SQL. On SQLite the
+parameter-heavy `IN` list is what hurts, so **SubSelect is the fastest mode for
+large owner sets** there; Join pays for its segment readers in allocation.
 Numbers are machine-specific — run `dotnet run -c Release` in the benchmarks
 project for yours.
 

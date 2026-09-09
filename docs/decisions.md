@@ -2190,3 +2190,41 @@ type, the mapper leaves a pointer navigation nil for an all-NULL segment —
 byte-identical snapshot; every conformance folder is green in all three.
 
 **Status.** Accepted; implemented in C#, PHP, and Go.
+
+### ADR-0029 addendum 1 — the spec sweep and the benchmark refresh (2026-09-09)
+
+**Spec sweep.** Six passages described as future what later milestones had
+built: eager loading (`loading.md`), indexes "declaration-only until Level 3"
+(consumed by DDL/snapshots/diff since ADR-0011/0017), relationships
+"declaration-only until Level 2" and "metadata only until milestone 3"
+(`metadata-model.md`), "the Level 2 fluent front-end later" (`query-ast.md` —
+now per-language sugar outside the contract, ADR-0029), "future Go/Java/PHP
+ports" (`conformance/README.md`), and CLAUDE.md's `[Index]` note. All reworded
+to the present; no rule changed.
+
+**Benchmark refresh** (`dotnet/benchmarks`, new `LoadingBenchmarks`; ShortRun,
+1000 rows × 3 child rows, SQLite, Ryzen 7 5700U):
+
+| Path | SimpleOrm | Dapper by hand |
+|---|---|---|
+| criteria `Where(Eq).OrderBy.Limit(100)` | 134 µs / 8.2 KB | 123 µs / 6.4 KB (inline SQL) |
+| registry query, same SQL | 123 µs / 7.3 KB | — |
+| graph, `Fetch(SubSelect)` | 4.1 ms / 1.45 MB | 3.8 ms / 1.15 MB (multi-mapped join + manual grouping) |
+| graph, `Fetch(Join)` | 6.4 ms / 2.23 MB | — |
+| graph, `Fetch(MultiQuery)` and `LoadEachAsync` | 7.2 ms / 1.83 MB (500-key chunks) | 16.0 ms / 1.12 MB (one 1000-key `IN`) |
+
+Findings: the AST renderer costs ~9% over inline SQL for a small query (within
+the §8.8 target; the registry path is at parity); on SQLite the parameter-heavy
+`IN` list dominates batch loading — Dapper's single 1000-key list is the slowest
+of all, the reference's 500-key chunks half that, and **SubSelect, which binds no
+keys, is the fastest mode** and within 8% of a hand multi-map; **Join allocates
+~2× the SubSelect path** (segment readers, per-row key tuples, a Gen2 collect)
+and is slower than SubSelect here, so its value is round trips, not speed. The
+Dapper graph baselines stop at a grouped lookup and so carry slightly less work
+than the reference, which attaches the collections. Not acted on: the Join
+allocation is a candidate for the Level 4 performance pass, noted rather than
+tuned — the mode's contract (one round trip, no in-memory paging) is what Level
+2 pins.
+
+**Status.** Both owed items closed; the Go Level 2 port is the last item before
+declaring exit.

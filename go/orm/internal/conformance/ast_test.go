@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/metadata"
+	"github.com/kosmassp/SimpleOrm/go/orm/internal/render"
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/testsupport"
 	"github.com/kosmassp/SimpleOrm/go/orm/sample"
 	"github.com/kosmassp/SimpleOrm/go/orm/sqlite"
@@ -50,27 +52,29 @@ type astCase struct {
 // TestAst_RendersAsSpecified is the ast/ runner (§9, ADR-0020), mirroring
 // ConformanceAstTests.cs: build the AST from JSON, render through the SQLite
 // dialect, and compare the exact SQL and ordered parameter values, or the
-// error code.
+// error code. conformance/ast/level2/ (ADR-0022 add.1: projection, joins,
+// in_select) runs through the same body, its subtests prefixed "level2/".
 func TestAst_RendersAsSpecified(t *testing.T) {
-	dir := testsupport.ConformanceFolder(t, "ast")
-	for _, name := range testsupport.ConformanceCases(t, "ast") {
-		t.Run(name, func(t *testing.T) {
+	runAstFolder(t, "ast", "")
+	runAstFolder(t, filepath.Join("ast", "level2"), "level2/")
+}
+
+func runAstFolder(t *testing.T, folder, subtestPrefix string) {
+	dir := testsupport.ConformanceFolder(t, folder)
+	for _, name := range testsupport.ConformanceCases(t, folder) {
+		t.Run(subtestPrefix+name, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join(dir, name))
 			if err != nil {
-				t.Fatalf("read conformance/ast/%s: %v", name, err)
+				t.Fatalf("read %s/%s: %v", folder, name, err)
 			}
 			var c astCase
 			if err := json.Unmarshal(data, &c); err != nil {
 				t.Fatalf("parse %s: %v", name, err)
 			}
 
-			entityType, ok := sampleEntities[c.Entity]
-			if !ok {
-				t.Fatalf("%s: unknown entity %q", name, c.Entity)
-			}
-			m, err := metadata.NewLoader(nil).Load(entityType)
+			m, err := resolveEntityMap(c.Entity)
 			if err != nil {
-				t.Fatalf("%s: loading %s: %v", name, c.Entity, err)
+				t.Fatalf("%s: %v", name, err)
 			}
 
 			ast, err := parseSelect(m, c.Select)
@@ -107,17 +111,53 @@ func TestAst_RendersAsSpecified(t *testing.T) {
 	}
 }
 
-// parseSelect builds a core.SelectAst from the JSON encoding in spec/query-ast.md.
-func parseSelect(m *core.EntityMap, raw json.RawMessage) (*core.SelectAst, error) {
-	var doc struct {
-		Where   []json.RawMessage `json:"where"`
-		OrderBy []struct {
-			Property string `json:"property"`
-			Order    string `json:"order"`
-		} `json:"orderBy"`
-		Limit  *int64 `json:"limit"`
-		Offset *int64 `json:"offset"`
+// resolveEntityMap loads the EntityMap for a conformance "entity" name (the
+// stand-in for ConformanceAstTests.cs's assembly scan).
+func resolveEntityMap(name string) (*core.EntityMap, error) {
+	entityType, ok := sampleEntities[name]
+	if !ok {
+		return nil, fmt.Errorf("unknown entity %q", name)
 	}
+	m, err := metadata.NewLoader(nil).Load(entityType)
+	if err != nil {
+		return nil, fmt.Errorf("loading %s: %w", name, err)
+	}
+	return m, nil
+}
+
+// joinDoc is one entry of the Level 2 "joins" encoding (spec/query-ast.md
+// "Level 2 extensions"): the target entity, its alias, an optional parent
+// alias (absent hangs off the root), its ON pairs as [parentProperty,
+// targetProperty], and whether it's projected.
+type joinDoc struct {
+	Entity  string      `json:"entity"`
+	Alias   string      `json:"alias"`
+	Parent  string      `json:"parent"`
+	On      [][2]string `json:"on"`
+	Project bool        `json:"project"`
+}
+
+// selectDoc is the JSON encoding of a select (spec/query-ast.md "The select"
+// plus "Level 2 extensions"). Entity is only ever populated on a nested
+// in_select subquery, which carries its own; the top-level select's entity
+// comes from the enclosing astCase instead.
+type selectDoc struct {
+	Entity  string            `json:"entity"`
+	Where   []json.RawMessage `json:"where"`
+	OrderBy []struct {
+		Property string `json:"property"`
+		Order    string `json:"order"`
+	} `json:"orderBy"`
+	Limit      *int64    `json:"limit"`
+	Offset     *int64    `json:"offset"`
+	Projection []string  `json:"projection"`
+	Joins      []joinDoc `json:"joins"`
+}
+
+// parseSelect builds a core.SelectAst from the JSON encoding in
+// spec/query-ast.md, m being the already-resolved root entity map.
+func parseSelect(m *core.EntityMap, raw json.RawMessage) (*core.SelectAst, error) {
+	var doc selectDoc
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &doc); err != nil {
 			return nil, err
@@ -145,17 +185,73 @@ func parseSelect(m *core.EntityMap, raw json.RawMessage) (*core.SelectAst, error
 		orderings[i] = core.Ordering{Property: o.Property, Order: order}
 	}
 
-	return &core.SelectAst{Map: m, Where: where, Orderings: orderings, Limit: doc.Limit, Offset: doc.Offset}, nil
+	ast := &core.SelectAst{Map: m, Where: where, Orderings: orderings, Limit: doc.Limit, Offset: doc.Offset}
+
+	if doc.Projection != nil {
+		queryName := m.EntityName() + " criteria"
+		properties := make([]*core.PropertyMap, len(doc.Projection))
+		for i, name := range doc.Projection {
+			p, err := render.Resolve(m, name, queryName)
+			if err != nil {
+				return nil, err
+			}
+			properties[i] = p
+		}
+		ast.Projection = properties
+	}
+
+	if len(doc.Joins) > 0 {
+		joins := make([]*core.SelectJoin, len(doc.Joins))
+		for i, jd := range doc.Joins {
+			target, err := resolveEntityMap(jd.Entity)
+			if err != nil {
+				return nil, err
+			}
+			pairs := make([]core.JoinPair, len(jd.On))
+			for k, pair := range jd.On {
+				pairs[k] = core.JoinPair{ParentProperty: pair[0], TargetProperty: pair[1]}
+			}
+			joins[i] = &core.SelectJoin{
+				Target:      target,
+				Alias:       jd.Alias,
+				ParentAlias: jd.Parent,
+				On:          pairs,
+				Project:     jd.Project,
+			}
+		}
+		ast.Joins = joins
+	}
+
+	return ast, nil
+}
+
+// parseNestedSelect builds the subquery of an in_select node: it carries its
+// own "entity" (spec/query-ast.md "Subquery membership"), unlike the
+// top-level select whose entity comes from the enclosing astCase.
+func parseNestedSelect(raw json.RawMessage) (*core.SelectAst, error) {
+	var head struct {
+		Entity string `json:"entity"`
+	}
+	if err := json.Unmarshal(raw, &head); err != nil {
+		return nil, err
+	}
+	m, err := resolveEntityMap(head.Entity)
+	if err != nil {
+		return nil, err
+	}
+	return parseSelect(m, raw)
 }
 
 func parseCriteria(raw json.RawMessage) (core.Criteria, error) {
 	var node struct {
-		Op       string            `json:"op"`
-		Property string            `json:"property"`
-		Value    json.RawMessage   `json:"value"`
-		Values   []json.RawMessage `json:"values"`
-		Args     []json.RawMessage `json:"args"`
-		Arg      json.RawMessage   `json:"arg"`
+		Op         string            `json:"op"`
+		Property   string            `json:"property"`
+		Value      json.RawMessage   `json:"value"`
+		Values     []json.RawMessage `json:"values"`
+		Args       []json.RawMessage `json:"args"`
+		Arg        json.RawMessage   `json:"arg"`
+		Properties []string          `json:"properties"`
+		Select     json.RawMessage   `json:"select"`
 	}
 	if err := json.Unmarshal(raw, &node); err != nil {
 		return nil, err
@@ -200,6 +296,12 @@ func parseCriteria(raw json.RawMessage) (core.Criteria, error) {
 			return nil, err
 		}
 		return &core.Negation{Inner: inner}, nil
+	case "in_select":
+		subquery, err := parseNestedSelect(node.Select)
+		if err != nil {
+			return nil, err
+		}
+		return &core.SubqueryMembership{Properties: node.Properties, Subquery: subquery}, nil
 	}
 	return nil, core.Errorf("QRY-006", "ast case", "unknown op %q", node.Op)
 }

@@ -5,11 +5,17 @@
 // and overrides what its SQL disagrees with — the AST is the contract, this
 // rendering is the reference.
 //
-// This port mirrors dotnet/src/SimpleOrm/AnsiSelectRenderer.cs minus joins,
-// projection, and subquery membership — Level 2 features not yet in scope for
-// the Go port (ADR-0027, CLAUDE.md §7b M2/M4). core.SelectAst and core.Criteria
-// carry no such nodes, so the shape below is already the Level 1 subset; the
-// decomposition (Render/column/Resolve) stays ready for them.
+// It also renders the Level 2 extensions (spec/query-ast.md "Level 2
+// extensions: projection, joins, subquery membership", ADR-0022 add.1): a
+// Projection restricts and orders the selected root columns; Joins render as
+// LEFT JOINs with the root aliased "t" and every root/projected-join column
+// re-aliased "<alias>_<column>"; SubqueryMembership (in_select) renders a row
+// value or, for a dialect without row-value IN, a correlated EXISTS over the
+// same subquery, rendered through this same function so its placeholders
+// continue the outer numbering. This port mirrors
+// dotnet/src/SimpleOrm/AnsiSelectRenderer.cs; the decomposition
+// (SelectSQL/renderCriteria/column/Resolve) is what made the extension a pure
+// addition — every existing Level 1 rendering stays byte-identical.
 package render
 
 import (
@@ -18,10 +24,13 @@ import (
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
 )
 
-// SelectSQL renders the select: an explicit column list from ast.Map.Properties
-// in metadata order, the WHERE predicate (one bare, two or more implicitly
-// ANDed), ORDER BY, and paging through the dialect's LimitOffsetClause. Pure:
-// no database, no side effects beyond calling bind in render order.
+// SelectSQL renders the select: an explicit column list (ast.Projection when
+// set, else every mapped column of ast.Map, in metadata order), the WHERE
+// predicate (one bare, two or more implicitly ANDed), ORDER BY, and paging
+// through the dialect's LimitOffsetClause. When ast.Joins is non-empty the
+// root aliases "t", every selected column re-aliases "<alias>_<column>", and
+// root predicates/orderings qualify with "t.". Pure: no database, no side
+// effects beyond calling bind in render order.
 func SelectSQL(dialect core.Dialect, ast *core.SelectAst, bind core.BindCriteriaParameter) (string, error) {
 	m := ast.Map
 	queryName := m.EntityName() + " criteria"
@@ -37,9 +46,38 @@ func SelectSQL(dialect core.Dialect, ast *core.SelectAst, bind core.BindCriteria
 			*ast.Offset)
 	}
 
-	columns := make([]string, len(m.Properties))
-	for i, p := range m.Properties {
-		columns[i] = dialect.QuoteIdentifier(p.ColumnName)
+	hasJoins := len(ast.Joins) > 0
+	// The root needs its own alias whenever joins hang columns off it, or
+	// whenever a composite subquery membership somewhere in WHERE has to
+	// rewrite as a correlated EXISTS (spec: "the root gains alias t for the
+	// correlation — without re-aliasing its columns, which only joins do").
+	needsRootAlias := hasJoins || requiresExistsRewrite(ast.Where, dialect)
+	rootAlias := ""
+	if needsRootAlias {
+		rootAlias = "t"
+	}
+
+	rootProperties := m.Properties
+	if ast.Projection != nil {
+		rootProperties = ast.Projection
+	}
+
+	columns := make([]string, 0, len(rootProperties)+joinColumnCount(ast.Joins))
+	for _, p := range rootProperties {
+		expr := aliasQualifiedColumn(dialect, rootAlias, p.ColumnName)
+		if hasJoins {
+			expr += " as " + dialect.QuoteIdentifier(rootAlias+"_"+p.ColumnName)
+		}
+		columns = append(columns, expr)
+	}
+	for _, j := range ast.Joins {
+		if !j.Project {
+			continue
+		}
+		for _, p := range j.Target.Properties {
+			expr := j.Alias + "." + dialect.QuoteIdentifier(p.ColumnName) + " as " + dialect.QuoteIdentifier(j.Alias+"_"+p.ColumnName)
+			columns = append(columns, expr)
+		}
 	}
 
 	var b strings.Builder
@@ -47,6 +85,21 @@ func SelectSQL(dialect core.Dialect, ast *core.SelectAst, bind core.BindCriteria
 	b.WriteString(strings.Join(columns, ", "))
 	b.WriteString(" from ")
 	b.WriteString(dialect.QuoteIdentifier(m.RelationName))
+	if needsRootAlias {
+		b.WriteString(" ")
+		b.WriteString(rootAlias)
+	}
+
+	if hasJoins {
+		joinClauses, err := renderJoins(ast, dialect, queryName)
+		if err != nil {
+			return "", err
+		}
+		for _, clause := range joinClauses {
+			b.WriteString(" left join ")
+			b.WriteString(clause)
+		}
+	}
 
 	if len(ast.Where) > 0 {
 		var predicate core.Criteria
@@ -55,7 +108,7 @@ func SelectSQL(dialect core.Dialect, ast *core.SelectAst, bind core.BindCriteria
 		} else {
 			predicate = core.And(ast.Where...)
 		}
-		rendered, err := renderCriteria(predicate, m, queryName, dialect, bind)
+		rendered, err := renderCriteria(predicate, m, queryName, dialect, bind, rootAlias)
 		if err != nil {
 			return "", err
 		}
@@ -70,7 +123,7 @@ func SelectSQL(dialect core.Dialect, ast *core.SelectAst, bind core.BindCriteria
 			if err != nil {
 				return "", err
 			}
-			part := dialect.QuoteIdentifier(property.ColumnName)
+			part := aliasQualifiedColumn(dialect, rootAlias, property.ColumnName)
 			if o.Order == core.Desc {
 				part += " desc"
 			}
@@ -113,16 +166,118 @@ func SelectSQL(dialect core.Dialect, ast *core.SelectAst, bind core.BindCriteria
 	return b.String(), nil
 }
 
+// joinColumnCount is a capacity hint: the number of columns every projected
+// join contributes.
+func joinColumnCount(joins []*core.SelectJoin) int {
+	n := 0
+	for _, j := range joins {
+		if j.Project {
+			n += len(j.Target.Properties)
+		}
+	}
+	return n
+}
+
+// aliasQualifiedColumn quotes a column name through the dialect and, when
+// alias is non-empty, prefixes it "<alias>.". Aliases themselves are never
+// quoted (spec/query-ast.md).
+func aliasQualifiedColumn(dialect core.Dialect, alias, columnName string) string {
+	col := dialect.QuoteIdentifier(columnName)
+	if alias == "" {
+		return col
+	}
+	return alias + "." + col
+}
+
+// renderJoins renders every join's " <relation> <alias> on <onClause>" (the
+// caller prepends "left join "), in declaration order. An ON pair names
+// properties resolved through the target's map and the parent's map — the
+// parent is the join's own root when ParentAlias is "", or an earlier join's
+// target when it names that join's alias — exactly like predicates (QRY-006
+// when unknown), tagged with the root's query name.
+func renderJoins(ast *core.SelectAst, dialect core.Dialect, queryName string) ([]string, error) {
+	aliasMaps := make(map[string]*core.EntityMap, len(ast.Joins))
+	for _, j := range ast.Joins {
+		aliasMaps[j.Alias] = j.Target
+	}
+
+	clauses := make([]string, len(ast.Joins))
+	for i, j := range ast.Joins {
+		parentAlias := j.ParentAlias
+		var parentMap *core.EntityMap
+		if parentAlias == "" {
+			parentAlias = "t"
+			parentMap = ast.Map
+		} else if m, ok := aliasMaps[parentAlias]; ok {
+			parentMap = m
+		} else {
+			return nil, core.Errorf("QRY-006", queryName,
+				"join %q names parent alias %q, which is not a declared join", j.Alias, parentAlias)
+		}
+
+		pairs := make([]string, len(j.On))
+		for k, pair := range j.On {
+			parentProperty, err := Resolve(parentMap, pair.ParentProperty, queryName)
+			if err != nil {
+				return nil, err
+			}
+			targetProperty, err := Resolve(j.Target, pair.TargetProperty, queryName)
+			if err != nil {
+				return nil, err
+			}
+			pairs[k] = j.Alias + "." + dialect.QuoteIdentifier(targetProperty.ColumnName) +
+				" = " + parentAlias + "." + dialect.QuoteIdentifier(parentProperty.ColumnName)
+		}
+
+		clauses[i] = dialect.QuoteIdentifier(j.Target.RelationName) + " " + j.Alias + " on " + strings.Join(pairs, " and ")
+	}
+	return clauses, nil
+}
+
+// requiresExistsRewrite reports whether any SubqueryMembership reachable from
+// the predicate list (through Composite/Negation nesting) is a composite
+// membership (more than one property) on a dialect without row-value IN — the
+// one case that forces the root to gain an alias for the correlation, even
+// with no joins.
+func requiresExistsRewrite(where []core.Criteria, dialect core.Dialect) bool {
+	for _, c := range where {
+		if requiresExistsRewriteNode(c, dialect) {
+			return true
+		}
+	}
+	return false
+}
+
+func requiresExistsRewriteNode(criteria core.Criteria, dialect core.Dialect) bool {
+	switch c := criteria.(type) {
+	case *core.SubqueryMembership:
+		return len(c.Properties) > 1 && !dialect.SupportsRowValueIn()
+	case *core.Composite:
+		for _, child := range c.Children {
+			if requiresExistsRewriteNode(child, dialect) {
+				return true
+			}
+		}
+	case *core.Negation:
+		return requiresExistsRewriteNode(c.Inner, dialect)
+	}
+	return false
+}
+
 // renderCriteria renders one predicate node (ADR-0020): null semantics on
-// Comparison, the empty/null rules on InList, composite parenthesization, and
-// Negation's "not " prefix.
+// Comparison, the empty/null rules on InList, composite parenthesization,
+// Negation's "not " prefix, and subquery membership (Level 2). rootAlias is
+// "" for a plain select, or "t" when the root needs qualifying (joins, or a
+// forced EXISTS rewrite elsewhere in the tree) — every root column reference
+// picks it up uniformly, so a query mixing a qualifying reason with an
+// otherwise-unaliased predicate still parses.
 func renderCriteria(
-	criteria core.Criteria, m *core.EntityMap, queryName string, dialect core.Dialect, bind core.BindCriteriaParameter,
+	criteria core.Criteria, m *core.EntityMap, queryName string, dialect core.Dialect, bind core.BindCriteriaParameter, rootAlias string,
 ) (string, error) {
 	switch c := criteria.(type) {
 	case *core.Comparison:
 		if c.Value == nil {
-			col, err := column(m, c.Property, queryName, dialect)
+			col, err := column(m, c.Property, queryName, dialect, rootAlias)
 			if err != nil {
 				return "", err
 			}
@@ -141,7 +296,7 @@ func renderCriteria(
 		if err != nil {
 			return "", err
 		}
-		col, err := column(m, c.Property, queryName, dialect)
+		col, err := column(m, c.Property, queryName, dialect, rootAlias)
 		if err != nil {
 			return "", err
 		}
@@ -170,7 +325,7 @@ func renderCriteria(
 		if err != nil {
 			return "", err
 		}
-		col, err := column(m, c.Property, queryName, dialect)
+		col, err := column(m, c.Property, queryName, dialect, rootAlias)
 		if err != nil {
 			return "", err
 		}
@@ -185,7 +340,7 @@ func renderCriteria(
 		return col + " in (" + strings.Join(placeholders, ", ") + ")", nil
 
 	case *core.NullCheck:
-		col, err := column(m, c.Property, queryName, dialect)
+		col, err := column(m, c.Property, queryName, dialect, rootAlias)
 		if err != nil {
 			return "", err
 		}
@@ -206,7 +361,7 @@ func renderCriteria(
 		}
 		parts := make([]string, len(c.Children))
 		for i, child := range c.Children {
-			part, err := renderCriteria(child, m, queryName, dialect, bind)
+			part, err := renderCriteria(child, m, queryName, dialect, bind, rootAlias)
 			if err != nil {
 				return "", err
 			}
@@ -215,23 +370,89 @@ func renderCriteria(
 		return "(" + strings.Join(parts, " "+c.Operator+" ") + ")", nil
 
 	case *core.Negation:
-		inner, err := renderCriteria(c.Inner, m, queryName, dialect, bind)
+		inner, err := renderCriteria(c.Inner, m, queryName, dialect, bind, rootAlias)
 		if err != nil {
 			return "", err
 		}
 		return "not " + inner, nil
+
+	case *core.SubqueryMembership:
+		return renderSubqueryMembership(c, m, queryName, dialect, bind, rootAlias)
 
 	default:
 		return "", core.Errorf("QRY-006", queryName, "unknown criteria node %T", criteria)
 	}
 }
 
-func column(m *core.EntityMap, property string, queryName string, dialect core.Dialect) (string, error) {
+// renderSubqueryMembership renders in_select (spec/query-ast.md "Subquery
+// membership"): a single property renders "<col> in (<subquery>)"; several
+// render a row value "(<c1>, <c2>) in (<subquery>)" when the dialect supports
+// it, else a correlated EXISTS over the same subquery aliased "s", correlating
+// each subquery-projected column against the root property it was compared to
+// (rootAlias is always non-empty here — requiresExistsRewrite forces it). The
+// subquery renders through the same SelectSQL and the same bind closure, so
+// its placeholders continue the outer numbering.
+func renderSubqueryMembership(
+	c *core.SubqueryMembership, m *core.EntityMap, queryName string, dialect core.Dialect, bind core.BindCriteriaParameter, rootAlias string,
+) (string, error) {
+	properties := make([]*core.PropertyMap, len(c.Properties))
+	columns := make([]string, len(c.Properties))
+	for i, name := range c.Properties {
+		p, err := Resolve(m, name, queryName)
+		if err != nil {
+			return "", err
+		}
+		properties[i] = p
+		columns[i] = aliasQualifiedColumn(dialect, rootAlias, p.ColumnName)
+	}
+
+	subquerySQL, err := SelectSQL(dialect, c.Subquery, bind)
+	if err != nil {
+		return "", err
+	}
+
+	if len(properties) == 1 {
+		return columns[0] + " in (" + subquerySQL + ")", nil
+	}
+
+	if dialect.SupportsRowValueIn() {
+		return "(" + strings.Join(columns, ", ") + ") in (" + subquerySQL + ")", nil
+	}
+
+	// The correlated EXISTS rewrite (ADR-0024, no row-value IN): the subquery
+	// becomes derived table "s"; each compared column correlates against the
+	// projected column in the same position. requiresExistsRewrite already
+	// forced rootAlias non-empty for this case; default defensively to "t" if
+	// that invariant is ever violated.
+	alias := rootAlias
+	if alias == "" {
+		alias = "t"
+	}
+
+	projected := c.Subquery.Projection
+	if projected == nil {
+		projected = c.Subquery.Map.Properties
+	}
+	if len(projected) != len(properties) {
+		return "", core.Errorf("QRY-006", queryName,
+			"in_select over %s projects %d column(s) but %d propert(y/ies) are compared",
+			c.Subquery.Map.EntityName(), len(projected), len(properties))
+	}
+
+	correlations := make([]string, len(properties))
+	for i, p := range properties {
+		correlations[i] = "s." + dialect.QuoteIdentifier(projected[i].ColumnName) + " = " + alias + "." + dialect.QuoteIdentifier(p.ColumnName)
+	}
+
+	return "exists (select 1 from (" + subquerySQL + ") s where " + strings.Join(correlations, " and ") + ")", nil
+}
+
+func column(m *core.EntityMap, property string, queryName string, dialect core.Dialect, rootAlias string) (string, error) {
 	p, err := Resolve(m, property, queryName)
 	if err != nil {
 		return "", err
 	}
-	return dialect.QuoteIdentifier(p.ColumnName), nil
+	return aliasQualifiedColumn(dialect, rootAlias, p.ColumnName), nil
 }
 
 // Resolve is property-name resolution (spec/query-ast.md): exact match first,

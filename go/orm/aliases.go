@@ -100,6 +100,12 @@ type (
 
 	// Criteria is a node of the query AST.
 	Criteria = core.Criteria
+	// SelectJoin is one LEFT JOIN of a select (Level 2 AST, spec/query-ast.md).
+	SelectJoin = core.SelectJoin
+	// JoinPair is one ON equality of a SelectJoin: parent property = target property.
+	JoinPair = core.JoinPair
+	// FetchMode chooses how Include fills navigations (spec/loading.md).
+	FetchMode = core.FetchMode
 	// SelectAst is the criteria query as data.
 	SelectAst = core.SelectAst
 	// Ordering is one ORDER BY term.
@@ -221,6 +227,19 @@ func Or(criteria ...Criteria) Criteria { return core.Or(criteria...) }
 
 // Not negates one criteria node.
 func Not(criteria Criteria) Criteria { return core.Not(criteria) }
+
+// InSelect is subquery membership (Level 2 AST): properties in (select …).
+// Loading builds it and the conformance runner replays it; the chain does not expose it.
+func InSelect(properties []string, subquery *core.SelectAst) Criteria {
+	return core.InSelect(properties, subquery)
+}
+
+// The fetch modes (spec/loading.md): identical graphs, different round trips.
+const (
+	FetchMultiQuery = core.FetchMultiQuery
+	FetchSubSelect  = core.FetchSubSelect
+	FetchJoin       = core.FetchJoin
+)
 
 // --- value and handler helpers ---
 

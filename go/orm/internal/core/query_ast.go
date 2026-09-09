@@ -30,8 +30,9 @@ type Ordering struct {
 // front-end produces this and never SQL text; the dialect renders it
 // (Dialect.SelectSQL). Property names, not column names: the renderer resolves
 // them through the metadata (QRY-006). GROUP BY is deliberately absent —
-// aggregations are statement entities. Joins and projections arrive with
-// Level 2 eager loading and extend this type rather than replace it.
+// aggregations are statement entities. Projection and Joins are the Level 2
+// extensions (spec/query-ast.md "Level 2 extensions", ADR-0022 add.1): eager
+// loading builds them; no front-end exposes them directly.
 type SelectAst struct {
 	Map *EntityMap
 	// Where holds the predicates, implicitly ANDed. Empty means no WHERE clause.
@@ -39,6 +40,33 @@ type SelectAst struct {
 	Orderings []Ordering
 	Limit     *int64
 	Offset    *int64
+	// Projection lists the root properties to select, in order; nil selects
+	// every mapped column (a subquery selects only what it feeds).
+	Projection []*PropertyMap
+	// Joins are LEFT JOINs for join-mode eager loading; empty for plain queries.
+	Joins []*SelectJoin
+}
+
+// SelectJoin is one joined relation of a select (spec/query-ast.md): LEFT JOIN
+// Target aliased Alias, ON equality pairs between the parent's properties and
+// the target's. Only projected joins contribute columns (a many-to-many's link
+// joins without projecting). The aliases are part of the AST, not chosen by
+// the renderer.
+type SelectJoin struct {
+	Target *EntityMap
+	Alias  string
+	// ParentAlias is the alias this join hangs off; "" joins to the root.
+	ParentAlias string
+	On          []JoinPair
+	// Project: whether the join's columns are selected, aliased <alias>_<column>.
+	Project bool
+}
+
+// JoinPair is one ON equality: parent property = target property, each
+// resolved through its own map.
+type JoinPair struct {
+	ParentProperty string
+	TargetProperty string
 }
 
 // Criteria is the query AST (§10.4, ADR-0012): explicit trees built from the
@@ -81,11 +109,31 @@ type Negation struct {
 	Inner Criteria
 }
 
-func (*Comparison) criteria() {}
-func (*InList) criteria()     {}
-func (*NullCheck) criteria()  {}
-func (*Composite) criteria()  {}
-func (*Negation) criteria()   {}
+// SubqueryMembership is the Level 2 in_select predicate (spec/query-ast.md,
+// ADR-0022 add.1 — SubSelect eager loading): the listed root properties, as a
+// row value when more than one, in (select …) over Subquery, whose projection
+// has the same arity. The subquery renders through the same renderer and bind
+// function (placeholders continue the outer numbering); where the dialect has
+// no row-value IN, the renderer rewrites a composite membership as a
+// correlated EXISTS over the aliased root.
+type SubqueryMembership struct {
+	Properties []string
+	Subquery   *SelectAst
+}
+
+func (*Comparison) criteria()         {}
+func (*InList) criteria()             {}
+func (*NullCheck) criteria()          {}
+func (*Composite) criteria()          {}
+func (*Negation) criteria()           {}
+func (*SubqueryMembership) criteria() {}
+
+// InSelect is subquery membership: properties in (select …) over subquery.
+// Part of the Level 2 AST; loading builds it and the conformance runner
+// replays it — the criteria chain does not expose it.
+func InSelect(properties []string, subquery *SelectAst) Criteria {
+	return &SubqueryMembership{Properties: properties, Subquery: subquery}
+}
 
 // Eq is equality; nil renders is null (ADR-0020) — never = NULL, which silently matches nothing.
 func Eq(property string, value any) Criteria { return &Comparison{property, "=", value} }

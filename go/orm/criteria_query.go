@@ -14,13 +14,30 @@ import (
 // arguments (and repeated calls) are implicitly ANDed. The rendered SELECT
 // lists explicit columns (never *), resolves property names through the
 // metadata (QRY-006 when unknown), and binds every value as a parameter.
-// Level 2's Include/Fetch are out of scope for this port (CLAUDE.md §7b M3/M4).
+// Include/Fetch are eager loading (spec/loading.md, ADR-0022): the named
+// navigations load with the query, in the chosen fetch mode.
 type CriteriaQuery[T any] struct {
 	db        *Db
 	where     []Criteria
 	orderings []Ordering
 	limit     *int64
 	offset    *int64
+	includes  []string
+	fetch     FetchMode
+}
+
+// Include names navigations to load with the query (property names, exactly;
+// an unknown one is REL-001 even when the query matches no rows). Includes are
+// single-level; deeper graphs load explicitly from the loaded entities.
+func (q *CriteriaQuery[T]) Include(navigations ...string) *CriteriaQuery[T] {
+	q.includes = append(q.includes, navigations...)
+	return q
+}
+
+// Fetch chooses the eager-loading mode (FetchMultiQuery by default).
+func (q *CriteriaQuery[T]) Fetch(mode FetchMode) *CriteriaQuery[T] {
+	q.fetch = mode
+	return q
 }
 
 // Where appends criteria; multiple arguments and repeated calls are implicitly ANDed.
@@ -75,6 +92,33 @@ func (q *CriteriaQuery[T]) List(ctx context.Context) ([]T, error) {
 	queryName := q.queryName()
 	ast := &core.SelectAst{Map: m, Where: q.where, Orderings: q.orderings, Limit: q.limit, Offset: q.offset}
 
+	if len(q.includes) > 0 && q.fetch == FetchJoin {
+		// Join mode is one SELECT with LEFT JOINs: a different statement, not a
+		// post-pass (db_eager_join.go).
+		return listWithJoins[T](ctx, q, m, ast, queryName)
+	}
+
+	rows, err := q.execute(ctx, m, ast, queryName)
+	if err != nil {
+		return nil, err
+	}
+	if len(q.includes) > 0 {
+		// MultiQuery and SubSelect load after the root query (db_eager.go);
+		// SubSelect filters each navigation by membership in the root query.
+		var ownerSubquery *core.SelectAst
+		if q.fetch == FetchSubSelect {
+			ownerSubquery = ast
+		}
+		if err := eagerLoad[T](ctx, q.db, m, rows, q.includes, ownerSubquery, queryName); err != nil {
+			return nil, err
+		}
+	}
+	return rows, nil
+}
+
+// execute renders the AST through the dialect, binds in render order, and
+// materializes the root rows.
+func (q *CriteriaQuery[T]) execute(ctx context.Context, m *core.EntityMap, ast *core.SelectAst, queryName string) ([]T, error) {
 	var bound []any
 	bind := func(value any, property *core.PropertyMap) (string, error) {
 		name := fmt.Sprintf("c%d", len(bound))

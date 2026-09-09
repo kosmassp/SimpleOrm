@@ -6,8 +6,8 @@ import "context"
 // and criteria over one injected session — the base every app-side data layer
 // was rewriting by hand. Instance-based and session-first (§7.17): no
 // statics, no ambient session. Entity-specific methods come from embedding
-// this in an application type (CODING-STANDARD §10); Level 2 loading methods
-// are out of scope for this port.
+// this in an application type (CODING-STANDARD §10); Load/LoadEach forward
+// to the Level 2 loading functions (spec/loading.md).
 type Repository[T any] struct {
 	db *Db
 }
@@ -61,3 +61,13 @@ func (r *Repository[T]) Find(ctx context.Context, criteria Criteria) ([]T, error
 
 // Query is the full criteria chain for ordering and paging.
 func (r *Repository[T]) Query() *CriteriaQuery[T] { return From[T](r.db) }
+
+// Load is explicit navigation loading (spec/loading.md); nothing loads implicitly.
+func (r *Repository[T]) Load(ctx context.Context, entity *T, navigation string) error {
+	return Load(ctx, r.db, entity, navigation)
+}
+
+// LoadEach is the batch form: one query per navigation for the whole list.
+func (r *Repository[T]) LoadEach(ctx context.Context, entities []*T, navigation string) error {
+	return LoadEach(ctx, r.db, entities, navigation)
+}

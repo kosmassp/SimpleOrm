@@ -3,6 +3,7 @@ package orm
 import (
 	"context"
 	"reflect"
+	"strings"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
 )
@@ -90,6 +91,14 @@ func (q *CriteriaQuery[T]) List(ctx context.Context) ([]T, error) {
 	queryName := q.queryName()
 	ast := &core.SelectAst{Map: m, Where: q.where, Orderings: q.orderings, Limit: q.limit, Offset: q.offset}
 
+	if len(q.includes) > 0 && q.fetch == FetchSubSelect && (q.limit != nil || q.offset != nil) {
+		// A paged SubSelect root re-evaluates inside every subquery, so the page
+		// must be deterministic: every key property not already ordered on
+		// breaks ties, ascending, in key order — on the root and, through the
+		// shared AST, on each subquery (spec/loading.md "Key-tiebroken ordering").
+		ast.Orderings = keyTiebrokenOrderings(m, q.orderings)
+	}
+
 	if len(q.includes) > 0 && q.fetch == FetchJoin {
 		// Join mode is one SELECT with LEFT JOINs: a different statement, not a
 		// post-pass (db_eager_join.go).
@@ -112,6 +121,25 @@ func (q *CriteriaQuery[T]) List(ctx context.Context) ([]T, error) {
 		}
 	}
 	return rows, nil
+}
+
+// keyTiebrokenOrderings appends every key property the orderings do not
+// already name (case-insensitively), ascending, in key order.
+func keyTiebrokenOrderings(m *core.EntityMap, orderings []Ordering) []Ordering {
+	result := append([]Ordering(nil), orderings...)
+	for _, key := range m.KeyProperties {
+		present := false
+		for _, o := range result {
+			if strings.EqualFold(o.Property, key.PropertyName) {
+				present = true
+				break
+			}
+		}
+		if !present {
+			result = append(result, Ordering{Property: key.PropertyName, Order: Asc})
+		}
+	}
+	return result
 }
 
 // execute renders the AST through the dialect, binds in render order, and

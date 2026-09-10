@@ -8,26 +8,30 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Metadata\Attributes\Column;
+use SimpleOrm\Metadata\Attributes\Generated;
+use SimpleOrm\Metadata\Attributes\Ignore;
 use SimpleOrm\Metadata\Attributes\Key;
 use SimpleOrm\Metadata\Attributes\ManyToOne;
+use SimpleOrm\Metadata\Attributes\OneToMany;
+use SimpleOrm\Metadata\Attributes\Table;
 use SimpleOrm\Metadata\Attributes\View;
 use SimpleOrm\Query\Criteria;
 use SimpleOrm\Query\FetchMode;
 use SimpleOrm\Session\Db;
+use SimpleOrm\Session\DbOptions;
 use SimpleOrm\Tests\Sample\Models\Role;
 use SimpleOrm\Tests\Sample\Models\Transaction;
 use SimpleOrm\Tests\Sample\Models\User;
 use SimpleOrm\Tests\Support\SampleDatabase;
 use SimpleOrm\Tests\Support\TempDatabase;
+use SimpleOrm\Types\Decimal;
 
 /**
  * Join-mode eager loading (ADR-0022 add.1, spec/loading.md "Join"): one
  * SELECT with LEFT JOINs, segmented per alias and mapped through the one
- * pipeline (§7.11). Every graph pinned here is checked against explicitly
- * built expectations rather than against `FetchMode::MultiQuery` — at the
- * time this file was written {@see \SimpleOrm\Session\DbLoading::loadEach}
- * (agent (b)'s engine) still throws `LogicException`, so MultiQuery is not
- * yet a working oracle to compare against; re-run once it lands.
+ * pipeline (§7.11). Graphs are checked against explicitly built expectations
+ * and, for the cross-mode contract, against `FetchMode::MultiQuery`; the
+ * `load-cases` runner replays every case in every mode.
  */
 final class EagerJoinTest extends TestCase
 {
@@ -299,21 +303,110 @@ final class EagerJoinTest extends TestCase
 
         $join = $this->db->from(Transaction::class)->orderBy('id')->include('user')->fetch(FetchMode::Join)->toList();
 
-        try {
-            $multi = $this->db->from(Transaction::class)->orderBy('id')->include('user')
-                ->fetch(FetchMode::MultiQuery)->toList();
-        } catch (\LogicException) {
-            self::markTestIncomplete(
-                'DbLoading::loadEach (agent (b), FetchMode::MultiQuery) is not implemented yet — '
-                . 'comparing Join mode against explicitly built expectations only, see the other tests in this class.',
-            );
-        }
+        $multi = $this->db->from(Transaction::class)->orderBy('id')->include('user')
+            ->fetch(FetchMode::MultiQuery)->toList();
 
         self::assertCount(count($join), $multi);
         foreach ($join as $i => $entity) {
             self::assertSame($entity->id, $multi[$i]->id);
             self::assertSame($entity->user?->name, $multi[$i]->user?->name);
         }
+    }
+
+    /**
+     * spec/loading.md "In every mode": collections order by target key,
+     * compared value-wise — never by the stored representation. A `Decimal`
+     * key stores as `TEXT` (§7.9), so a naive `ORDER BY`/string sort would put
+     * "10" before "2"; join mode sorts client-side after fetching
+     * ({@see \SimpleOrm\Session\DbEagerJoin::sortCollections()}) through
+     * {@see \SimpleOrm\Metadata\EntityMap::sortByKey()} — the same ordering
+     * {@see \SimpleOrm\Session\DbLoading} now uses, so both engines agree.
+     */
+    #[Test]
+    public function join_mode_orders_a_decimal_keyed_collection_numerically_not_textually(): void
+    {
+        [$db, $fixture] = self::openDecimalKeyedFixture();
+        try {
+            $owner = new EagerDecimalOwner();
+            $db->insert($owner);
+            $this->insertEagerDecimalChild($db, $owner->id, '2');
+            $this->insertEagerDecimalChild($db, $owner->id, '10');
+
+            $rows = $db->from(EagerDecimalOwner::class)->include('children')->fetch(FetchMode::Join)->toList();
+
+            self::assertSame(
+                ['2', '10'],
+                array_map(static fn (EagerDecimalChild $c): string => (string) $c->code, $rows[0]->children),
+                'numeric order (2 before 10), not the textual order a TEXT column would sort by',
+            );
+        } finally {
+            $db->close();
+            $fixture->delete();
+        }
+    }
+
+    /**
+     * spec/loading.md "Refusal precedence": shape problems refuse as
+     * `REL-003` in every mode, including join. {@see BadFkTarget} declares
+     * `ownerId` as `#[Ignore]`d (a public property, so it passes
+     * `#[OneToMany]`'s declaration-time check, `MAP-021` — but unmapped, so it
+     * is not a valid correlate) — before {@see \SimpleOrm\Session\NavigationShape}
+     * consolidated this check into both loading engines, join mode built its
+     * ON pair straight from the declaration and only the *renderer* caught
+     * the unmapped name, as `QRY-006` instead of `REL-003` (the code
+     * {@see \SimpleOrm\Session\DbLoading} already refused this shape with, see
+     * {@see LoadingTest::an_unmapped_foreign_key_property_name_is_rel_003()}).
+     */
+    #[Test]
+    public function join_mode_refuses_an_unmapped_foreign_key_property_with_rel_003(): void
+    {
+        [$db, $fixture] = self::openBadFkFixture();
+        try {
+            $owner = new BadFkOwner();
+            $db->insert($owner);
+
+            try {
+                $db->from(BadFkOwner::class)->include('items')->fetch(FetchMode::Join)->toList();
+                self::fail('REL-003 expected');
+            } catch (SimpleOrmException $e) {
+                self::assertSame('REL-003', $e->errorCode);
+            }
+        } finally {
+            $db->close();
+            $fixture->delete();
+        }
+    }
+
+    /** @return array{0: Db, 1: TempDatabase} */
+    private static function openDecimalKeyedFixture(): array
+    {
+        $fixture = TempDatabase::create();
+        $db = Db::open($fixture->connectionString(), SampleDatabase::options());
+        $db->createTable(EagerDecimalOwner::class);
+        $db->createTable(EagerDecimalChild::class);
+
+        return [$db, $fixture];
+    }
+
+    private function insertEagerDecimalChild(Db $db, int $ownerId, string $code): EagerDecimalChild
+    {
+        $child = new EagerDecimalChild();
+        $child->code = Decimal::of($code);
+        $child->ownerId = $ownerId;
+        $db->insert($child);
+
+        return $child;
+    }
+
+    /** @return array{0: Db, 1: TempDatabase} */
+    private static function openBadFkFixture(): array
+    {
+        $fixture = TempDatabase::create();
+        $db = Db::open($fixture->connectionString(), SampleDatabase::options());
+        $db->createTable(BadFkOwner::class);
+        $db->createTable(BadFkTarget::class);
+
+        return [$db, $fixture];
     }
 }
 
@@ -362,4 +455,74 @@ final class KeylessTargetOwner
 
     #[ManyToOne('targetId')]
     public private(set) ?KeylessTarget $target = null;
+}
+
+/** `Decimal`-keyed one-to-many fixture (never in `Sample`, test-local per CODING-STANDARD §7). */
+#[Table('kt_eager_decimal_owner')]
+final class EagerDecimalOwner
+{
+    #[Key]
+    #[Generated]
+    #[Column]
+    public int $id;
+
+    #[Column]
+    public ?string $label = null;
+
+    #[OneToMany(EagerDecimalChild::class, 'ownerId')]
+    public private(set) array $children = [];
+}
+
+/** The target: its own key is a `Decimal` — stored as `TEXT` (§7.9), so `ORDER BY` on it is textual, not numeric. */
+#[Table('kt_eager_decimal_child')]
+final class EagerDecimalChild
+{
+    #[Key]
+    #[Column]
+    public Decimal $code;
+
+    #[Column]
+    public int $ownerId;
+}
+
+/**
+ * `REL-003` fixture: see {@see BadFkTarget} — `ownerId` passes `#[OneToMany]`'s
+ * declaration-time check (`MAP-021`, a raw property-exists check) but is not a
+ * *mapped* column, so only load time's own shape check
+ * ({@see \SimpleOrm\Session\NavigationShape}) refuses it, in every fetch mode.
+ */
+#[Table('kt_bad_fk_owner')]
+final class BadFkOwner
+{
+    #[Key]
+    #[Generated]
+    #[Column]
+    public int $id;
+
+    #[Column]
+    public ?string $label = null;
+
+    #[OneToMany(BadFkTarget::class, 'ownerId')]
+    public private(set) array $items = [];
+}
+
+/**
+ * The target of {@see BadFkOwner}: `#[OneToMany]`'s declaration-time check
+ * (`MAP-021`) only proves `ownerId` exists as a **public property** of this
+ * class (a raw `ReflectionClass` check, so it never force-loads this type's
+ * own `EntityMap` and risks a load cycle) — it does not prove the property is
+ * *mapped*. `#[Ignore]` opts it out of mapping, so `ownerId` passes MAP-021
+ * but is absent from `EntityMap::$properties`, reaching REL-003 only at load
+ * time — via every fetch mode, including join.
+ */
+#[Table('kt_bad_fk_target')]
+final class BadFkTarget
+{
+    #[Key]
+    #[Generated]
+    #[Column]
+    public int $id;
+
+    #[Ignore]
+    public int $ownerId = 0;
 }

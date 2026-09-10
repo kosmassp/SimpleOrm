@@ -2346,3 +2346,91 @@ Fidelis remains a consumer and a field test, not the target. Level 3/4 work
 is not scheduled by this ADR.
 
 **Status.** Accepted. Next session starts with the PHP Level 2 foundation.
+
+## ADR-0033 — The PHP port reaches Level 2 from the spec alone (2026-09-10)
+
+ADR-0032 decision 1, executed: PHP goes from Levels 0–1 to Level 2 by the
+ADR-0031 method — the foundation first, then three Sonnet agents in parallel
+**forbidden to open `dotnet/` or `go/`**, then a uniformity review, then every
+gap resolved against the reference. PHP version unchanged (8.4).
+
+**Foundation** (one commit, 335 tests green): the Level 2 AST types
+(`SelectJoin`, `JoinPair` — PHP has no tuples — `SelectAst::$projection`/
+`$joins`, `SubqueryMembership` + `Criteria::inSelect`), the pure enum
+`FetchMode`, `Db::load`/`loadEach`/`resolveNavigation` (`REL-001`) with
+`executeAst` as the one AST execution path, `include()`/`fetch()` on the
+criteria chain with the key-tiebroken ordering for a paged SubSelect root,
+two engine collaborators as stubs (`Session\DbLoading`, `Session\DbEagerJoin`
+— PHP has no partial classes), and **the ADR-0032 guard in both forms**: the
+mapper `unset()`s a database-read entity's collection navigations through a
+closure bound to the entity's scope (`unset` is a write, so `private(set)`
+refuses it from outside), and the opt-in trait `SimpleOrm\Session\Navigations`
+turns the resulting `__get` into `SimpleOrmException('REL-004', …)`; without
+the trait the read is PHP's own `Error` — never a silent `[]`. Four §10 rows.
+The sample entities opt in.
+
+**The three agents** (one commit, 401 tests): (a) the renderer's projection,
+joins (`t`/`j<n>` aliasing, `<alias>_<column>` re-aliasing, both ON sides
+resolved, `QRY-006` for an undeclared parent alias), `in_select` in row-value
+and correlated-EXISTS forms behind `Dialect::supportsRowValueIn()`, and the
+`ast/level2` runner — 7/7 pins byte-identical, Level 1 pins untouched;
+(b) `DbLoading` for all four kinds with distinct-tuple chunking at 500,
+`REL-002`/`REL-003`, SubSelect through `Criteria::inSelect`, the `load-cases`
+runner replaying every case explicitly and in all three modes (18 rows);
+(c) `DbEagerJoin` with `RowSegment` slicing each joined row per alias into the
+existing `ResultMapper` entity plan, first-appearance root order, structural
+deduplication, `REL-005`/`REL-006`/`REL-003`. Because they ran concurrently,
+(b) and (c) built against the AST contract and re-checked the renderer when
+they needed it; nothing blocked.
+
+**The review pass** (one commit, 418 tests) consolidated five duplicated
+concepts — key identity/equality/ordering into one `Metadata\KeyTuple`
+(`equals`/`token`/`compare`, now also behind `EntityMap::keysEqual`),
+collection ordering into `EntityMap::sortByKey`, navigation shape resolution
+into `Session\NavigationShape` (both engines validate the same `REL-003`
+shapes), navigation writes into `EntityMap::navigationProperty`, and the
+criteria query name into `Db::criteriaQueryName` — and found **four real
+bugs**: the batch engine ordered a `Decimal`-keyed collection by its text
+(the Go-review bug again — SQLite sorts a TEXT-stored key textually, `'10'`
+before `'2'`), join mode never validated FK/link mappedness so an `#[Ignore]`d
+FK refused as `QRY-006` instead of `REL-003`, a join alias repeating an
+earlier one (or the root's `t`) silently rebound a later join, and
+`EntityMap::keysEqual` compared `Decimal`s by text. All pinned.
+
+**The audit: 15 gap questions, 13 clarifications, three reference fixes.**
+Every question was checked against the C# reference and answered under
+"Clarifications (the PHP Level 2 port asked; ADR-0033)" in `spec/loading.md`
+(eight) and `spec/query-ast.md` (five). Two of them exposed **the reference
+disagreeing with its own spec**, fixed in C# and pinned: the join engine
+checked a keyless root (`REL-003`) before `REL-006`/`REL-005`, against the
+ADR-0031 precedence clarification; and one-to-many loading trusted SQL
+`ORDER BY` on the target key, which is text order for a decimal key — the
+very failure the spec warns against, previously fixed in Go and now found in
+the reference itself by a pinning test that fails without the sort. The
+third is new: alias uniqueness in a select is `QRY-006` in both
+implementations (`spec/errors.md` widened accordingly). The remaining
+questions were silences the reference already answered consistently
+(distinct-tuple chunking, `REL-003` for every kind at load time, `REL-006`
+before `REL-005`, post-fetch value-wise ordering in every mode, `REL-002`
+under fan-out, subqueries through the dialect seam, the EXISTS rewrite only
+for composite membership, projected joins selecting every target column, the
+runner's navigation-name spelling and explicit-replay shape). No rule
+changed; PHP's `SPEC-GAP` comments were rewritten as references to the
+clarifications, as the Go port's were.
+
+**Verification.** PHP: 418 tests / 1366 assertions green — every conformance
+folder including `ast/level2` (7 byte-identical) and `load-cases` (6 cases ×
+explicit + 3 modes); `NavigationsTest` pins the guard in both forms. C#: 317
+passed, 22 skipped (SQL Server LocalDB and the Postgres live suite, no server
+reachable today). Go unchanged.
+
+**What the PHP Level 2 shape is.** `$db->load($e, 'user')`,
+`$db->loadEach($list, 'transactions')`, `$db->from(User::class)
+->include('transactions', 'profile')->fetch(FetchMode::SubSelect)->toList()`;
+navigations stay `public private(set)`; the guard is the `unset()` +
+`Navigations` trait pair. Four §10 rows describe the whole divergence.
+
+**Next** — the owner's call, per ADR-0032 decision 4: the Rust port at Levels
+0–2 in one go, only when asked.
+
+**Status.** Accepted. PHP at Level 2.

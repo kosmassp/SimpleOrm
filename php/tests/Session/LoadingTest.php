@@ -4,12 +4,18 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Tests\Session;
 
+use DateTimeImmutable;
 use PDO;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use SimpleOrm\Dialect\Dialect;
 use SimpleOrm\Dialect\SqliteDialect;
 use SimpleOrm\Errors\SimpleOrmException;
+use SimpleOrm\Metadata\Attributes\Column;
+use SimpleOrm\Metadata\Attributes\Generated;
+use SimpleOrm\Metadata\Attributes\Key;
+use SimpleOrm\Metadata\Attributes\OneToMany;
+use SimpleOrm\Metadata\Attributes\Table;
 use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\PropertyMap;
@@ -302,6 +308,108 @@ final class LoadingTest extends TestCase
         }
     }
 
+    /**
+     * spec/loading.md "Clarifications": "numbers numerically — decimals
+     * included, never by their text". A `Decimal` key stores as `TEXT`
+     * (§7.9), so SQLite's own `ORDER BY` sorts it lexicographically — the
+     * child rows are inserted "2" then "10" and a naive `ORDER BY code` would
+     * therefore render "10" before "2" ('1' < '2' as text). DbLoading must
+     * still produce the numeric order.
+     */
+    #[Test]
+    public function explicit_batch_load_orders_a_decimal_keyed_collection_numerically_not_textually(): void
+    {
+        [$db, $fixture] = self::openDecimalKeyedFixture();
+        try {
+            $owner = new DecimalKeyOwner();
+            $db->insert($owner);
+            $this->insertDecimalKeyChild($db, $owner->id, '2');
+            $this->insertDecimalKeyChild($db, $owner->id, '10');
+
+            $db->load($owner, 'children');
+
+            self::assertSame(
+                ['2', '10'],
+                array_map(static fn (DecimalKeyChild $c): string => (string) $c->code, $owner->children),
+                'numeric order (2 before 10), not the textual order a TEXT column would sort by',
+            );
+        } finally {
+            $db->close();
+            $fixture->delete();
+        }
+    }
+
+    /**
+     * The DateTimeImmutable-keyed counterpart of the Decimal case above: ISO-8601
+     * UTC text happens to sort the same as chronological order, but this pins
+     * that {@see \SimpleOrm\Metadata\KeyTuple} agrees with the database either
+     * way, and that tuple equality (owners correlate to the right child) holds
+     * for a temporal key too.
+     */
+    #[Test]
+    public function explicit_batch_load_orders_a_temporal_keyed_collection_chronologically(): void
+    {
+        [$db, $fixture] = self::openTemporalKeyedFixture();
+        try {
+            $owner = new TemporalKeyOwner();
+            $db->insert($owner);
+            $later = $this->insertTemporalKeyChild($db, $owner->id, '2026-08-28T09:30:02.0000000Z');
+            $earlier = $this->insertTemporalKeyChild($db, $owner->id, '2026-08-28T09:30:01.0000000Z');
+
+            $db->load($owner, 'children');
+
+            self::assertSame([$earlier->at->getTimestamp(), $later->at->getTimestamp()], array_map(
+                static fn (TemporalKeyChild $c): int => $c->at->getTimestamp(),
+                $owner->children,
+            ));
+        } finally {
+            $db->close();
+            $fixture->delete();
+        }
+    }
+
+    /** @return array{0: Db, 1: TempDatabase} */
+    private static function openDecimalKeyedFixture(): array
+    {
+        $fixture = TempDatabase::create();
+        $db = Db::open($fixture->connectionString(), SampleDatabase::options());
+        $db->createTable(DecimalKeyOwner::class);
+        $db->createTable(DecimalKeyChild::class);
+
+        return [$db, $fixture];
+    }
+
+    private function insertDecimalKeyChild(Db $db, int $ownerId, string $code): DecimalKeyChild
+    {
+        $child = new DecimalKeyChild();
+        $child->code = Decimal::of($code);
+        $child->ownerId = $ownerId;
+        $db->insert($child);
+
+        return $child;
+    }
+
+    /** @return array{0: Db, 1: TempDatabase} */
+    private static function openTemporalKeyedFixture(): array
+    {
+        $fixture = TempDatabase::create();
+        $db = Db::open($fixture->connectionString(), SampleDatabase::options());
+        $db->createTable(TemporalKeyOwner::class);
+        $db->createTable(TemporalKeyChild::class);
+
+        return [$db, $fixture];
+    }
+
+    private function insertTemporalKeyChild(Db $db, int $ownerId, string $at): TemporalKeyChild
+    {
+        $child = new TemporalKeyChild();
+        $child->at = new DateTimeImmutable($at);
+        $child->ownerId = $ownerId;
+        $db->insert($child);
+
+        return $child;
+    }
+
     // --- fixture helpers ---------------------------------------------------------
 
     private function insertTransaction(int $userId, string $amount): Transaction
@@ -518,4 +626,60 @@ final class CountingSelectDialect implements Dialect
     {
         return $this->inner->dropIndexSql($table, $index);
     }
+}
+
+/** `Decimal`-keyed one-to-many fixture (never in `Sample`, test-local per CODING-STANDARD §7). */
+#[Table('kt_decimal_key_owner')]
+final class DecimalKeyOwner
+{
+    #[Key]
+    #[Generated]
+    #[Column]
+    public int $id;
+
+    #[Column]
+    public ?string $label = null;
+
+    #[OneToMany(DecimalKeyChild::class, 'ownerId')]
+    public private(set) array $children = [];
+}
+
+/** The target: its own key is a `Decimal` — stored as `TEXT` (§7.9), so `ORDER BY` on it is textual, not numeric. */
+#[Table('kt_decimal_key_child')]
+final class DecimalKeyChild
+{
+    #[Key]
+    #[Column]
+    public Decimal $code;
+
+    #[Column]
+    public int $ownerId;
+}
+
+/** `DateTimeImmutable`-keyed one-to-many fixture (never in `Sample`, test-local per CODING-STANDARD §7). */
+#[Table('kt_temporal_key_owner')]
+final class TemporalKeyOwner
+{
+    #[Key]
+    #[Generated]
+    #[Column]
+    public int $id;
+
+    #[Column]
+    public ?string $label = null;
+
+    #[OneToMany(TemporalKeyChild::class, 'ownerId')]
+    public private(set) array $children = [];
+}
+
+/** The target: its own key is a `DateTimeImmutable` — stored as ISO-8601 UTC `TEXT` (§7.9). */
+#[Table('kt_temporal_key_child')]
+final class TemporalKeyChild
+{
+    #[Key]
+    #[Column]
+    public DateTimeImmutable $at;
+
+    #[Column]
+    public int $ownerId;
 }

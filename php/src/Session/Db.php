@@ -215,7 +215,7 @@ final class Db
      */
     public function executeAst(SelectAst $ast, string $entityType): array
     {
-        $queryName = self::shortName($entityType) . ' criteria';
+        $queryName = self::criteriaQueryName($ast->map);
         $statement = $this->executeAstStatement($ast, $queryName);
         $plan = $this->planFor($statement, $entityType, $queryName);
 
@@ -1053,6 +1053,17 @@ final class Db
         $slash = strrpos($className, '\\');
 
         return $slash === false ? $className : substr($className, $slash + 1);
+    }
+
+    /**
+     * The name a criteria query against `$map` reports in errors (`"<Entity>
+     * criteria"`, §7.11) — the one implementation {@see DbEagerJoin} and
+     * {@see \SimpleOrm\Query\CriteriaQuery} share (CODING-STANDARD §8) instead
+     * of re-deriving the entity's short name themselves.
+     */
+    public static function criteriaQueryName(EntityMap $map): string
+    {
+        return $map->entityName() . ' criteria';
     }
 
     /** Rolls back an active transaction and releases the connection (PHP has no explicit PDO close; dropping the reference does). */

@@ -13,6 +13,8 @@ namespace SimpleOrm\Mapping;
  * ({@see ResultMapper::createPlan}) maps the segment exactly as it would map
  * a plain, unjoined row — one mapping pipeline, never a second mapper for the
  * joined case.
+ *
+ * @internal an implementation detail of join-mode eager loading, not part of the public API
  */
 final class RowSegment
 {

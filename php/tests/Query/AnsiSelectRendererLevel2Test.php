@@ -90,6 +90,44 @@ final class AnsiSelectRendererLevel2Test extends TestCase
     }
 
     /**
+     * A join declaring its alias as the root's reserved `t` would otherwise
+     * silently overwrite the alias→map entry {@see AnsiSelectRenderer::prepareJoins()}
+     * uses to resolve later ON pairs — spec/query-ast.md is silent on this
+     * exact case (only an undeclared *parent* alias is pinned), so this is a
+     * defensive refusal, not a pinned conformance case.
+     */
+    #[Test]
+    public function a_join_alias_colliding_with_the_root_alias_is_qry_006(): void
+    {
+        $dialect = new SqliteDialect();
+        $userMap = self::map(User::class);
+        $roleMap = self::map(Role::class);
+
+        $join = new SelectJoin($roleMap, 't', null, [new JoinPair('id', 'id')], project: true);
+        $select = new SelectAst($userMap, [], [], joins: [$join]);
+
+        $exception = self::renderExpectingException($dialect, $select);
+        self::assertSame('QRY-006', $exception->errorCode);
+    }
+
+    /** The same collision, between two declared joins rather than against the root. */
+    #[Test]
+    public function two_joins_declaring_the_same_alias_is_qry_006(): void
+    {
+        $dialect = new SqliteDialect();
+        $userMap = self::map(User::class);
+        $roleMap = self::map(Role::class);
+        $userRoleMap = self::map(UserRole::class);
+
+        $first = new SelectJoin($userRoleMap, 'j0', null, [new JoinPair('id', 'userId')], project: false);
+        $second = new SelectJoin($roleMap, 'j0', null, [new JoinPair('id', 'id')], project: true);
+        $select = new SelectAst($userMap, [], [], joins: [$first, $second]);
+
+        $exception = self::renderExpectingException($dialect, $select);
+        self::assertSame('QRY-006', $exception->errorCode);
+    }
+
+    /**
      * Where row-value IN is unsupported (SQL Server; simulated here), a
      * composite membership rewrites as a correlated EXISTS: the root gains
      * alias `t` for the correlation only (its select-list columns stay

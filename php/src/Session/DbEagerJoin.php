@@ -4,28 +4,23 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Session;
 
-use DateTimeImmutable;
 use PDO;
 use PDOStatement;
 use ReflectionProperty;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Mapping\RowSegment;
 use SimpleOrm\Metadata\EntityMap;
+use SimpleOrm\Metadata\KeyTuple;
 use SimpleOrm\Metadata\PropertyMap;
 use SimpleOrm\Metadata\RelationshipKind;
 use SimpleOrm\Metadata\RelationshipMap;
 use SimpleOrm\Query\JoinPair;
 use SimpleOrm\Query\SelectAst;
 use SimpleOrm\Query\SelectJoin;
-use SimpleOrm\Types\Decimal;
 
 use function array_key_exists;
 use function array_map;
 use function in_array;
-use function is_bool;
-use function is_float;
-use function is_int;
-use function usort;
 
 /**
  * Join-mode eager loading (ADR-0022 add.1) — the PHP counterpart of the C# `Db`
@@ -34,18 +29,18 @@ use function usort;
  * link unprojected, then the target), the row partitioned into per-alias
  * segments that reuse the one mapping pipeline (§7.11, {@see RowSegment} +
  * {@see \SimpleOrm\Mapping\ResultMapper}), roots deduplicated by key in
- * first-appearance order, children attached by structural key equality.
- * Refuses paging with a collection include (`REL-005`), more than one
- * collection include (`REL-006`), and keyless roots/targets (`REL-003`) —
- * never in-memory paging or a silent Cartesian product.
+ * first-appearance order, children attached by structural key equality
+ * ({@see KeyTuple} — the one identity/ordering implementation this shares
+ * with {@see DbLoading}, CODING-STANDARD §8). Refuses paging with a collection
+ * include (`REL-005`), more than one collection include (`REL-006`), and a
+ * navigation whose shape is unresolvable (`REL-003`: a keyless root/target to
+ * deduplicate against, or — via {@see NavigationShape}, the same resolver
+ * {@see DbLoading} uses — an unmapped FK/link property or an arity mismatch)
+ * — never in-memory paging or a silent Cartesian product.
  *
- * // SPEC-GAP: spec/loading.md's "Refusal precedence" clarification orders
- * // REL-001, then REL-005/REL-006, then REL-003 — the task brief listed
- * // REL-003 first instead. This class follows the spec text (the more
- * // detailed, explicitly-titled ruling): REL-006, then REL-005, then REL-003.
- * // Between REL-005 and REL-006 themselves the spec gives no order; this
- * // checks REL-006 (several collections) before REL-005 (paging), the
- * // structurally broader problem first.
+ * Refusal precedence (spec/loading.md Clarifications, ADR-0031/0033): `REL-001`
+ * (the caller), then `REL-006`, then `REL-005`, then `REL-003` for the root
+ * and per navigation in include order.
  */
 final class DbEagerJoin
 {
@@ -102,7 +97,7 @@ final class DbEagerJoin
         [$joins, $navigationsByAlias] = $this->buildJoins($map, $relationships);
 
         $joinedAst = new SelectAst($map, $ast->where, $ast->orderings, $ast->limit, $ast->offset, $ast->projection, $joins);
-        $queryName = self::shortName($entityType) . ' criteria';
+        $queryName = Db::criteriaQueryName($map);
         $statement = $this->db->executeAstStatement($joinedAst, $queryName);
 
         return $this->readGraph($map, $entityType, $queryName, $navigationsByAlias, $statement);
@@ -120,26 +115,29 @@ final class DbEagerJoin
         $lCounter = 0;
 
         foreach ($relationships as $relationship) {
-            $targetMap = $this->db->maps()->load($relationship->targetType);
+            // Resolves and validates the navigation's target/link maps and
+            // correlating property lists — the same check DbLoading applies,
+            // so a malformed navigation (an unmapped FK name, an arity
+            // mismatch) refuses `REL-003` here too, instead of reaching the
+            // renderer and surfacing as `QRY-006` (spec/loading.md "Refusal
+            // precedence": shape problems are always REL-003).
+            $shape = NavigationShape::resolve($this->db->maps(), $map, $relationship);
+            $targetMap = $shape->targetMap;
             if ($targetMap->keyProperties === []) {
                 throw new SimpleOrmException(
                     'REL-003',
-                    "{$map->entityName()}.{$relationship->propertyName}",
+                    $map->navigationTarget($relationship),
                     'join-mode eager loading needs a keyed target to deduplicate; load via MultiQuery/SubSelect instead',
                 );
             }
 
             if ($relationship->kind === RelationshipKind::ManyToMany) {
-                $linkType = $relationship->linkType
-                    ?? throw new SimpleOrmException('REL-003', "{$map->entityName()}.{$relationship->propertyName}", 'a many-to-many navigation with no declared link');
-                $linkMap = $this->db->maps()->load($linkType);
-
                 $linkAlias = 'l' . $lCounter++;
                 $joins[] = new SelectJoin(
-                    $linkMap,
+                    $shape->linkMap,
                     $linkAlias,
                     null,
-                    self::onPairs(self::names($map->keyProperties), $relationship->linkForeignKeysToOwner),
+                    self::onPairs(self::names($shape->ownerProperties), self::names($shape->linkToOwner)),
                     false,
                 );
 
@@ -148,7 +146,7 @@ final class DbEagerJoin
                     $targetMap,
                     $targetAlias,
                     $linkAlias,
-                    self::onPairs($relationship->linkForeignKeysToTarget, self::names($targetMap->keyProperties)),
+                    self::onPairs(self::names($shape->linkToTarget), self::names($targetMap->keyProperties)),
                     true,
                 );
 
@@ -156,12 +154,18 @@ final class DbEagerJoin
                 continue;
             }
 
+            // Many-to-one and one-to-one/one-to-many share the same ON-pair
+            // shape once resolved: owner-side correlate = target-side
+            // correlate, in order — NavigationShape already placed the FK on
+            // whichever side declares it.
             $alias = 'j' . $jCounter++;
-            $on = $relationship->kind === RelationshipKind::ManyToOne
-                ? self::onPairs($relationship->foreignKeyProperties, self::names($targetMap->keyProperties))
-                : self::onPairs(self::names($map->keyProperties), $relationship->foreignKeyProperties);
-
-            $joins[] = new SelectJoin($targetMap, $alias, null, $on, true);
+            $joins[] = new SelectJoin(
+                $targetMap,
+                $alias,
+                null,
+                self::onPairs(self::names($shape->ownerProperties), self::names($shape->targetProperties)),
+                true,
+            );
             $navigationsByAlias[$alias] = [
                 'relationship' => $relationship,
                 'map' => $targetMap,
@@ -206,13 +210,13 @@ final class DbEagerJoin
         /** @var array<string, callable> $targetPlanByAlias */
         $targetPlanByAlias = [];
         foreach ($navigationsByAlias as $alias => $meta) {
-            $navigationProperties[$alias] = new ReflectionProperty($map->entityType, $meta['relationship']->propertyName);
+            $navigationProperties[$alias] = $map->navigationProperty($meta['relationship']);
             $targetColumnNamesByAlias[$alias] = self::columnNames($meta['map']->properties);
             $targetKeyColumnNamesByAlias[$alias] = self::columnNames($meta['map']->keyProperties);
             $targetPlanByAlias[$alias] = $mapper->createPlan(
                 $meta['relationship']->targetType,
                 $targetColumnNamesByAlias[$alias],
-                self::shortName($meta['relationship']->targetType) . ' criteria',
+                Db::criteriaQueryName($meta['map']),
             );
         }
 
@@ -228,7 +232,7 @@ final class DbEagerJoin
         $sharedChildren = [];
 
         while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
-            $rootToken = self::token(RowSegment::extract($row, 't_', $rootKeyColumnNames));
+            $rootToken = $this->keyTupleFromSegment(RowSegment::extract($row, 't_', $rootKeyColumnNames), $map->keyProperties, $queryName)->token();
 
             if (!array_key_exists($rootToken, $rootsByKey)) {
                 $entity = $rootPlan(RowSegment::extract($row, 't_', $rootColumnNames));
@@ -254,7 +258,7 @@ final class DbEagerJoin
                     continue;   // a null FK owner or a dead link: no child this row (spec/loading.md "Join mode aliases")
                 }
 
-                $childToken = self::token(RowSegment::extract($row, $alias . '_', $targetKeyColumnNamesByAlias[$alias]));
+                $childToken = $this->keyTupleFromSegment($childSegment, $meta['map']->keyProperties, $queryName)->token();
 
                 if ($meta['collection']) {
                     if (in_array($childToken, $collectionSeenTokens[$alias][$rootToken], true)) {
@@ -272,14 +276,10 @@ final class DbEagerJoin
                 $existingToken = $singularChildToken[$alias][$rootToken] ?? null;
                 if ($existingToken !== null) {
                     if ($meta['relationship']->kind === RelationshipKind::OneToOne && $existingToken !== $childToken) {
-                        // SPEC-GAP: with several included navigations the spec notes
-                        // identity-dedup can mask a genuine duplicate ("a same-key
-                        // duplicate source row is then indistinguishable from it",
-                        // spec/loading.md "Join mode aliases"). This still throws
-                        // whenever a *different* target key is observed for the same
-                        // root under one one-to-one alias — correct with one included
-                        // navigation (the pinned case), best-effort alongside a
-                        // collection navigation's cross-join fan-out.
+                        // A second distinct target key for one root under a one-to-one
+                        // alias is REL-002 in every include combination: children
+                        // deduplicate by key, and a keyed target cannot repeat one
+                        // (spec/loading.md Clarifications, ADR-0033).
                         throw new SimpleOrmException(
                             'REL-002',
                             "{$map->entityName()}.{$meta['relationship']->propertyName}",
@@ -303,10 +303,13 @@ final class DbEagerJoin
 
     /**
      * Collections order by target key, compared value-wise, in every mode
-     * (spec/loading.md "In every mode"). // SPEC-GAP: the AST's `Ordering`
-     * vocabulary resolves only root properties (query-ast.md "Joins": every
-     * ordering qualifies with `t.`) — a joined collection has no way to carry
-     * its own ORDER BY, so this sorts after fetching instead of rendering one.
+     * (spec/loading.md "In every mode") through {@see EntityMap::sortByKey()}
+     * — the same ordering {@see DbLoading} applies to its own collections
+     * (CODING-STANDARD §8), so both engines agree regardless of what a
+     * dialect's own `ORDER BY` would have done with the stored representation.
+     * The AST orders root properties only, so every collection is sorted
+     * value-wise after fetching — the same post-fetch sort as the other modes
+     * (spec/loading.md Clarifications, ADR-0033).
      *
      * @param array<string, array{relationship: RelationshipMap, map: EntityMap, collection: bool}> $navigationsByAlias
      * @param array<string, ReflectionProperty> $navigationProperties
@@ -322,12 +325,7 @@ final class DbEagerJoin
             $targetMap = $meta['map'];
             $property = $navigationProperties[$alias];
             foreach ($rootsByKey as $entity) {
-                $children = $property->getValue($entity);
-                usort($children, static fn (object $a, object $b): int => self::compareKeyTuples(
-                    $targetMap->getKeyValues($a),
-                    $targetMap->getKeyValues($b),
-                ));
-                $property->setValue($entity, $children);
+                $property->setValue($entity, $targetMap->sortByKey($property->getValue($entity)));
             }
         }
     }
@@ -365,78 +363,33 @@ final class DbEagerJoin
     }
 
     /**
-     * A type-tagged correlation key for one row's raw (pre-conversion) column
-     * values — NOT the "stringified token" spec/loading.md rules out (ADR-0021
-     * add.1): that warning is about collapsing *typed* values to one common
-     * string and losing the type distinction (so date/blob keys collide with
-     * unrelated values); this tags every value with its raw PDO type first, so
-     * an int and a string never collapse into the same token, which is all
-     * structural equality needs for deduplication (the entities themselves are
-     * still built through the ordinary conversion pipeline).
+     * Converts a raw row segment's key columns into a {@see KeyTuple} through
+     * the ordinary conversion pipeline, so identity is decided on the same
+     * **values** {@see \SimpleOrm\Mapping\ResultMapper} would build the entity
+     * from — never on the raw PDO cell. A type-tagged token over the raw cell
+     * (this class's previous approach) happened to be safe for the exact
+     * dedup this method needs (a physical row's own column always fetches the
+     * same PHP scalar twice), but a converted `Decimal`/temporal value is the
+     * one identity implementation shared with {@see DbLoading} and
+     * {@see \SimpleOrm\Metadata\EntityMap::keysEqual()} (CODING-STANDARD §8),
+     * so this pays one conversion per row rather than keeping a second,
+     * narrower equality rule alive.
      *
-     * @param array<string, mixed> $rawValues
+     * @param array<string, mixed> $rawSegment keyed by plain column name (e.g. {@see RowSegment::extract()})
+     * @param list<PropertyMap> $properties the key properties owning those columns, in order
      */
-    private static function token(array $rawValues): string
+    private function keyTupleFromSegment(array $rawSegment, array $properties, string $context): KeyTuple
     {
-        $parts = [];
-        foreach ($rawValues as $value) {
-            $parts[] = match (true) {
-                $value === null => 'N',
-                is_bool($value) => 'b:' . ($value ? '1' : '0'),
-                is_int($value) => 'i:' . $value,
-                is_float($value) => 'f:' . $value,
-                default => 's:' . (string) $value,
-            };
-        }
+        $converter = $this->db->converter();
 
-        return implode("\x1f", $parts);
-    }
-
-    /** @param list<mixed> $left @param list<mixed> $right */
-    private static function compareKeyTuples(array $left, array $right): int
-    {
-        foreach ($left as $i => $value) {
-            $cmp = self::compareValue($value, $right[$i]);
-            if ($cmp !== 0) {
-                return $cmp;
-            }
-        }
-
-        return 0;
-    }
-
-    /**
-     * Value-wise comparison (spec/loading.md "Clarifications"): numbers
-     * numerically — decimals included — strings ordinally, temporals by
-     * instant, booleans false before true. GUIDs and byte arrays are PHP
-     * strings here (CODING-STANDARD §10); ordinal string comparison is byte
-     * comparison for them, matching "by their bytes".
-     */
-    private static function compareValue(mixed $a, mixed $b): int
-    {
-        if ($a instanceof DateTimeImmutable && $b instanceof DateTimeImmutable) {
-            return $a <=> $b;
-        }
-
-        if ($a instanceof Decimal && $b instanceof Decimal) {
-            return (float) $a->value <=> (float) $b->value;
-        }
-
-        if (is_bool($a) && is_bool($b)) {
-            return ($a ? 1 : 0) <=> ($b ? 1 : 0);
-        }
-
-        if (is_numeric($a) && is_numeric($b)) {
-            return $a <=> $b;
-        }
-
-        return strcmp((string) $a, (string) $b);
-    }
-
-    private static function shortName(string $entityType): string
-    {
-        $slash = strrpos($entityType, '\\');
-
-        return $slash === false ? $entityType : substr($entityType, $slash + 1);
+        return new KeyTuple(array_map(
+            static fn (PropertyMap $p): mixed => $converter->fromDatabase(
+                $rawSegment[$p->columnName] ?? null,
+                $p->type,
+                $p->phpType,
+                $context,
+            ),
+            $properties,
+        ));
     }
 }

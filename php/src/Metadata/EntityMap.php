@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Metadata;
 
+use ReflectionProperty;
 use SimpleOrm\Errors\SimpleOrmException;
 
 /**
@@ -96,17 +97,55 @@ final readonly class EntityMap
         return array_map(static fn (PropertyMap $key): mixed => $key->getValue($entity), $this->keyProperties);
     }
 
-    /** True when two instances have equal key values, position by position (§7.4). */
+    /**
+     * True when two instances have equal key values, compared **by value**
+     * (§7.4) through {@see KeyTuple} — the one identity implementation
+     * relationship loading also uses (CODING-STANDARD §8), so a `Decimal` or
+     * temporal key compares the same way here as it does while loading.
+     */
     public function keysEqual(object $left, object $right): bool
     {
-        $leftKeys = $this->getKeyValues($left);
-        $rightKeys = $this->getKeyValues($right);
-        foreach ($leftKeys as $i => $value) {
-            if ($value != $rightKeys[$i] || gettype($value) !== gettype($rightKeys[$i])) {
-                return false;
-            }
-        }
+        return (new KeyTuple($this->getKeyValues($left)))->equals(new KeyTuple($this->getKeyValues($right)));
+    }
 
-        return true;
+    /**
+     * `Type.Navigation`, the target form loading errors use (`REL-001`
+     * through `REL-003`).
+     */
+    public function navigationTarget(RelationshipMap $relationship): string
+    {
+        return "{$this->entityName()}.{$relationship->propertyName}";
+    }
+
+    /**
+     * The navigation's own reflection property — `public private(set)`
+     * (`MAP-011`): reflection is the library's only route to write it, exactly
+     * like {@see PropertyMap::setValue()}. The one implementation both the
+     * explicit/batch loading engine and the join-mode eager loader use
+     * (CODING-STANDARD §8) to attach a loaded navigation.
+     */
+    public function navigationProperty(RelationshipMap $relationship): ReflectionProperty
+    {
+        return new ReflectionProperty($this->entityType, $relationship->propertyName);
+    }
+
+    /**
+     * Sorts entities of this type by key, compared value-wise through
+     * {@see KeyTuple} (spec/loading.md: "ordered by target key … compared
+     * value-wise"). The one ordering implementation every relationship-loading
+     * path uses for a collection navigation (CODING-STANDARD §8) — a
+     * dialect's own `ORDER BY` is not, by itself, enough: SQLite sorts a
+     * TEXT-affinity column (every `Decimal` key, §7.9) lexicographically, so
+     * "10" would render before "2".
+     *
+     * @param list<object> $entities
+     * @return list<object>
+     */
+    public function sortByKey(array $entities): array
+    {
+        usort($entities, fn (object $a, object $b): int => (new KeyTuple($this->getKeyValues($a)))
+            ->compare(new KeyTuple($this->getKeyValues($b))));
+
+        return $entities;
     }
 }

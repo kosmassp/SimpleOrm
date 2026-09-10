@@ -65,13 +65,9 @@ final class AnsiSelectRenderer
             "{$queryName}: a criteria query needs a named relation (QRY-005 is the session's gate before rendering)",
         );
 
-        // SPEC-GAP: joins are validated (and thus refused with QRY-006) before
-        // the WHERE/ORDER BY tree is resolved. Neither spec/query-ast.md nor
-        // conformance/ast/level2 says which refusal wins when a select carries
-        // more than one simultaneously (e.g. an undeclared join parent alias
-        // *and* an unrelated unknown WHERE property) — every pinned case
-        // exercises exactly one problem at a time. The error code is QRY-006
-        // either way, so this ordering is unobservable in the conformance suite.
+        // Refusal order inside one select (spec/query-ast.md Clarifications,
+        // ADR-0033): the FROM clause first, then WHERE, then ORDER BY; the
+        // first QRY-006 wins — the renderer never collects a report.
         $preparedJoins = self::prepareJoins($select->joins, $map, $queryName, $dialect);
         $hasJoins = $preparedJoins !== [];
         $rootAlias = ($hasJoins || self::treeNeedsExistsRewrite($select->where, $dialect)) ? 't' : null;
@@ -266,14 +262,10 @@ final class AnsiSelectRenderer
             $criteria->properties,
         );
 
-        // SPEC-GAP (spec/query-ast.md "Subquery membership" says only "the same
-        // renderer with the same bind function", not whether that means this
-        // static class or the `Dialect::selectSql` entry point a dialect
-        // normally delegates to it): dispatched through `$dialect->selectSql()`
-        // rather than calling `self::selectSql()` directly, so a future dialect
-        // that overrides top-level rendering also governs its own subqueries.
-        // SQLite's `selectSql()` just delegates back here, so this is
-        // unobservable on the only implemented dialect.
+        // The subquery renders through `$dialect->selectSql()`, never this class
+        // directly, so a dialect overriding top-level rendering governs its
+        // nested selects too; the outer bind callback continues the parameter
+        // numbering (spec/query-ast.md Clarifications, ADR-0033).
         if (count($resolvedRootProperties) === 1) {
             $subSql = $dialect->selectSql($criteria->subquery, $bind);
 
@@ -361,15 +353,10 @@ final class AnsiSelectRenderer
      */
     private static function prepareJoins(array $joins, EntityMap $rootMap, string $queryName, Dialect $dialect): array
     {
-        // SPEC-GAP: the root's reserved alias 't' is seeded into the same
-        // alias→map table a declared join's own alias is recorded into. Neither
-        // spec/query-ast.md nor any level2 case says what happens if a join
-        // declares its alias as literally 't' (or reuses an earlier join's
-        // alias) — no pinned case does either. Left unvalidated: such a join
-        // silently overwrites this entry, so a later join's ON pair or
-        // `parent` reference could resolve against the wrong map instead of
-        // refusing. A real second dialect/port should decide whether that is
-        // its own QRY-006 case.
+        // Aliases are unique (spec/query-ast.md Clarifications, ADR-0033): a
+        // repeated alias, or the root's `t`, is QRY-006 — a silent overwrite
+        // of the alias→map table would resolve a later join's ON pair or
+        // `parent` against the wrong map.
         /** @var array<string, EntityMap> $mapsByAlias root under the alias every join sees the root as: 't' */
         $mapsByAlias = ['t' => $rootMap];
         $prepared = [];
@@ -381,6 +368,14 @@ final class AnsiSelectRenderer
                 $queryName,
                 "join '{$join->alias}' names parent alias '{$parentAlias}', which no earlier join declares",
             );
+
+            if (isset($mapsByAlias[$join->alias])) {
+                throw new SimpleOrmException(
+                    'QRY-006',
+                    $queryName,
+                    "join alias '{$join->alias}' is already declared by the root or an earlier join",
+                );
+            }
 
             $onClauses = [];
             foreach ($join->on as $pair) {

@@ -154,10 +154,10 @@ final class CriteriaQuery
 
         return match (count($rows)) {
             1 => $rows[0],
-            0 => throw new SimpleOrmException('QRY-001', self::queryName($this->entityType), 'expected exactly one row, found none'),
+            0 => throw new SimpleOrmException('QRY-001', $this->queryName(), 'expected exactly one row, found none'),
             default => throw new SimpleOrmException(
                 'QRY-002',
-                self::queryName($this->entityType),
+                $this->queryName(),
                 sprintf('expected exactly one row, found %d', count($rows)),
             ),
         };
@@ -172,7 +172,7 @@ final class CriteriaQuery
             1 => $rows[0],
             default => throw new SimpleOrmException(
                 'QRY-002',
-                self::queryName($this->entityType),
+                $this->queryName(),
                 sprintf('expected at most one row, found %d', count($rows)),
             ),
         };
@@ -184,11 +184,9 @@ final class CriteriaQuery
         return new SelectAst($map, $this->where, $this->orderings, $this->limit, $this->offset);
     }
 
-    private static function queryName(string $entityType): string
+    /** {@see Db::criteriaQueryName()} — the one implementation (CODING-STANDARD §8). */
+    private function queryName(): string
     {
-        $slash = strrpos($entityType, '\\');
-        $short = $slash === false ? $entityType : substr($entityType, $slash + 1);
-
-        return $short . ' criteria';
+        return Db::criteriaQueryName($this->db->maps()->load($this->entityType));
     }
 }

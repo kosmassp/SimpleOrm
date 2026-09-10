@@ -41,11 +41,11 @@ use UnitEnum;
  * (spec/loading.md: "load cases marked viaQuery: true replay through Include
  * under all three modes").
  *
- * SPEC-GAP: `load.navigation` names the C#-style declaration (PascalCase,
- * e.g. "Transactions"); the PHP declaration is the camelCase property
- * (`transactions`). The spec says the name is exact "like the declaration",
- * which is a per-language notion — this runner translates with `lcfirst()`
- * (see the case loop below).
+ * `load.navigation` is spelled as the reference declares it (`Transactions`);
+ * this runner maps it to the PHP declaration (`transactions`) with `lcfirst()`
+ * — the library call itself stays exact (spec/loading.md Clarifications,
+ * ADR-0033). The explicit replay reads each key with `get()` and issues one
+ * `loadEach()` over the batch, as the same clarification states.
  */
 final class LoadCasesTest extends TestCase
 {
@@ -84,8 +84,7 @@ final class LoadCasesTest extends TestCase
     {
         $spec = self::readCase($fileName);
         $entityType = self::ENTITY_TYPES[$spec['load']['entity']];
-        // SPEC-GAP (see class docblock): translate the spec's PascalCase
-        // declaration name to this port's camelCase property.
+        // The reference's declaration spelling → this port's (class docblock).
         $navigation = lcfirst($spec['load']['navigation']);
 
         $fixture = TempDatabase::create();
@@ -142,13 +141,8 @@ final class LoadCasesTest extends TestCase
     private static function runCase(Db $db, string $entityType, string $navigation, array $keys, string $mode): array
     {
         if ($mode === 'explicit') {
-            // SPEC-GAP: spec/loading.md's "Conformance cases" section defines
-            // exactly how a `viaQuery` replay selects its owners, but is silent
-            // on how the (always-run) `explicit` replay should obtain them from
-            // `load.keys`. Reading a case's `load` object as "the batch form"'s
-            // input, fetching each owner by key and calling `loadEach()` once
-            // over the whole batch seems the natural, and most direct,
-            // reading — never one `load()` per owner.
+            // The explicit replay: each key by `get()`, one `loadEach()` over the
+            // batch — never one `load()` per owner (spec/loading.md Clarifications).
             $owners = array_map(static fn (mixed $key): object => $db->get($entityType, $key), $keys);
             $db->loadEach($owners, $navigation);
 

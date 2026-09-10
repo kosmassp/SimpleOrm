@@ -15,6 +15,7 @@ use SimpleOrm\Tests\Sample\Models\User;
 use SimpleOrm\Tests\Sample\Models\UserProfile;
 use SimpleOrm\Tests\Sample\Models\UserRole;
 use SimpleOrm\Tests\Sample\Models\UserTransactionTotal;
+use SimpleOrm\Types\Decimal;
 
 /**
  * Session setup for Session/Query/Mapping integration tests (mirrors dotnet's
@@ -60,5 +61,52 @@ final class SampleDatabase
         $db->insert($user);
 
         return $user;
+    }
+
+    /** A transaction owned by `$user` (Level 2 eager-loading fixtures: EagerJoinTest). */
+    public static function insertTransaction(Db $db, User $user, string $amount): Transaction
+    {
+        $transaction = new Transaction();
+        $transaction->userId = $user->id;
+        $transaction->amount = Decimal::of($amount);
+        $transaction->createdAtUtc = self::seedTime();
+        $db->insert($transaction);
+
+        return $transaction;
+    }
+
+    /** Level 2 eager-loading fixtures (EagerJoinTest): a role, not yet granted to anyone. */
+    public static function insertRole(Db $db, string $name): Role
+    {
+        $role = new Role();
+        $role->name = $name;
+        $role->createdAtUtc = self::seedTime();
+        $db->insert($role);
+
+        return $role;
+    }
+
+    /** Level 2 eager-loading fixtures (EagerJoinTest): grants `$role` to `$user` via the `UserRole` link. */
+    public static function insertUserRole(Db $db, User $user, Role $role): UserRole
+    {
+        $userRole = new UserRole();
+        $userRole->userId = $user->id;
+        $userRole->roleId = $role->id;
+        $userRole->createdAtUtc = self::seedTime();
+        $db->insert($userRole);
+
+        return $userRole;
+    }
+
+    /** Level 2 eager-loading fixtures (EagerJoinTest): the 1:1 profile side, FK on `UserProfile`. */
+    public static function insertProfile(Db $db, User $user, ?string $bio = null): UserProfile
+    {
+        $profile = new UserProfile();
+        $profile->userId = $user->id;
+        $profile->bio = $bio;
+        $profile->createdAtUtc = self::seedTime();
+        $db->insert($profile);
+
+        return $profile;
     }
 }

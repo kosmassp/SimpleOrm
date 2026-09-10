@@ -173,7 +173,13 @@ public sealed partial class Db
             }
             else
             {
-                // Rows arrive SQL-ordered by target key and grouped stably.
+                // Rows arrive SQL-ordered by target key, which is the value-wise
+                // order for integer keys but the TEXT order for keys stored as
+                // text (decimals, GUIDs — '10' before '2'); the spec's order is
+                // value-wise in every mode (ADR-0033), so the sort is the same
+                // comparison many-to-many and join mode apply.
+                rows?.Sort((left, right) => CompareKeyTuples(
+                    targetMap.GetKeyValues(left), targetMap.GetKeyValues(right)));
                 navigation.SetValue(entities[i], TypedList(relationship.TargetType, rows ?? []));
             }
         }

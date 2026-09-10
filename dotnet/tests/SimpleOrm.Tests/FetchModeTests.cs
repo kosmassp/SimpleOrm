@@ -193,6 +193,54 @@ public sealed class FetchModeTests(SqliteFixture fixture)
     }
 
     [Fact]
+    public async Task Join_mode_refuses_the_request_shape_before_the_metadata_shape()
+    {
+        // spec/loading.md precedence: REL-005/REL-006 (what was asked) before
+        // REL-003 (what the metadata allows) — a paged collection include on a
+        // keyless-target navigation names the paging, not the missing key.
+        await using var db = await TestDb.OpenAsync(fixture);
+        await db.CreateTableAsync<KeylessParentRow>(CancellationToken.None);
+        await db.CreateViewAsync<KeylessChildTotal>(CancellationToken.None);
+
+        var refused = await Assert.ThrowsAsync<SimpleOrmException>(() => db.Query<KeylessParentRow>()
+            .Include(nameof(KeylessParentRow.Children))
+            .Limit(1)
+            .Fetch(FetchMode.Join)
+            .ToListAsync(CancellationToken.None));
+        Assert.Equal("REL-005", refused.Code);
+    }
+
+    [Fact]
+    public async Task Collections_order_by_target_key_value_wise_in_every_mode_even_for_text_stored_keys()
+    {
+        // A decimal key is stored as TEXT on SQLite, where ORDER BY says '10' < '2';
+        // the spec's order is value-wise (2, 9.5, 10) explicitly and in every mode.
+        await using var db = await TestDb.OpenAsync(fixture);
+        await db.CreateTableAsync<DecimalKeyOwner>(CancellationToken.None);
+        await db.CreateTableAsync<DecimalKeyChild>(CancellationToken.None);
+        var owner = new DecimalKeyOwner { Label = "d" };
+        await db.InsertAsync(owner, CancellationToken.None);
+        foreach (var code in new[] { 10m, 2m, 9.5m })
+        {
+            await db.InsertAsync(new DecimalKeyChild { Code = code, OwnerId = owner.Id }, CancellationToken.None);
+        }
+
+        var explicitlyLoaded = await db.GetAsync<DecimalKeyOwner>(owner.Id, CancellationToken.None);
+        await db.LoadAsync(explicitlyLoaded, nameof(DecimalKeyOwner.Children), CancellationToken.None);
+        Assert.Equal([2m, 9.5m, 10m], explicitlyLoaded.Children.Select(c => c.Code));
+
+        foreach (var mode in AllModes)
+        {
+            var rows = await db.Query<DecimalKeyOwner>()
+                .Where(Criteria.Eq(nameof(DecimalKeyOwner.Id), owner.Id))
+                .Include(nameof(DecimalKeyOwner.Children))
+                .Fetch(mode)
+                .ToListAsync(CancellationToken.None);
+            Assert.Equal([2m, 9.5m, 10m], Assert.Single(rows).Children.Select(c => c.Code));
+        }
+    }
+
+    [Fact]
     public async Task Join_mode_with_one_navigation_still_detects_duplicate_one_to_one_rows()
     {
         await using var db = await TestDb.OpenAsync(fixture);
@@ -262,6 +310,33 @@ public sealed class FetchModeTests(SqliteFixture fixture)
 
         [Column]
         public long Total { get; set; }
+    }
+
+    [Table("decimal_key_owners")]
+    public sealed class DecimalKeyOwner
+    {
+        [Key]
+        [Generated]
+        [Column]
+        public long Id { get; set; }
+
+        [Column]
+        public string? Label { get; set; }
+
+        [OneToMany(nameof(DecimalKeyChild.OwnerId))]
+        public IReadOnlyList<DecimalKeyChild> Children { get; private set; } = [];
+    }
+
+    /// <summary>A decimal (TEXT-stored) natural key: SQL ORDER BY is textual, the loaded order must not be.</summary>
+    [Table("decimal_key_children")]
+    public sealed class DecimalKeyChild
+    {
+        [Key]
+        [Column]
+        public decimal Code { get; set; }
+
+        [Column]
+        public long OwnerId { get; set; }
     }
 
     [Table("drift_owners")]

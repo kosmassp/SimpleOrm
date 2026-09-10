@@ -21,32 +21,17 @@ public sealed partial class Db
     {
         var map = root.Map;
         var queryName = typeof(TEntity).Name + " criteria";
-        if (map.KeyProperties.Count == 0)
+
+        // Refusal precedence (spec/loading.md Clarifications, ADR-0033): REL-001
+        // (the caller, before any mode), then REL-006/REL-005 — the request's
+        // shape — then REL-003, the metadata's shape.
+        var relationships = navigations.Select(n => ResolveNavigation<TEntity>(map, n)).ToArray();
+        var collections = relationships.Count(r => r.Kind is RelationshipKind.OneToMany or RelationshipKind.ManyToMany);
+        if (collections > 1)
         {
             throw new SimpleOrmException(
-                "REL-003", queryName,
-                "join-mode eager loading needs a keyed root (§7.4 identity deduplicates the joined rows) — load via MultiQuery");
-        }
-
-        var plans = new List<JoinPlan>();
-        var joins = new List<SelectJoin>();
-        var collections = 0;
-        foreach (var navigation in navigations)
-        {
-            var relationship = ResolveNavigation<TEntity>(map, navigation);
-            if (relationship.Kind is RelationshipKind.OneToMany or RelationshipKind.ManyToMany)
-            {
-                collections++;
-            }
-
-            if (collections > 1)
-            {
-                throw new SimpleOrmException(
-                    "REL-006", queryName,
-                    "join-mode eager loading joins at most one collection navigation: two would multiply into a Cartesian product — use FetchMode.MultiQuery or SubSelect for the rest");
-            }
-
-            plans.Add(BuildJoin(map, relationship, joins, queryName));
+                "REL-006", queryName,
+                "join-mode eager loading joins at most one collection navigation: two would multiply into a Cartesian product — use FetchMode.MultiQuery or SubSelect for the rest");
         }
 
         // To-one joins never multiply root rows (they join the full target key),
@@ -57,6 +42,20 @@ public sealed partial class Db
             throw new SimpleOrmException(
                 "REL-005", queryName,
                 "join-mode eager loading of a collection navigation cannot page: the join multiplies root rows, so limit/offset would count children — use FetchMode.MultiQuery or SubSelect");
+        }
+
+        if (map.KeyProperties.Count == 0)
+        {
+            throw new SimpleOrmException(
+                "REL-003", queryName,
+                "join-mode eager loading needs a keyed root (§7.4 identity deduplicates the joined rows) — load via MultiQuery");
+        }
+
+        var plans = new List<JoinPlan>();
+        var joins = new List<SelectJoin>();
+        foreach (var relationship in relationships)
+        {
+            plans.Add(BuildJoin(map, relationship, joins, queryName));
         }
 
         var joined = new SelectAst(map, root.Where, root.Orderings, root.Limit, root.Offset, joins: joins);

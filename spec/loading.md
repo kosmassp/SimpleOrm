@@ -121,6 +121,40 @@ under **all three modes** against the same `loaded` expectations.
   in declaration order, and that order pairs with the side's key parts in key
   order (metadata-model.md) — a link must declare them in key order.
 
+**Clarifications** (the PHP Level 2 port asked; ADR-0033):
+
+- **Value-wise ordering is a post-fetch sort, in every mode and for every
+  kind.** The SQL `ORDER BY` on the target key is only a determinism aid: a
+  key stored as text (decimals, GUIDs on SQLite) sorts textually there
+  (`'10'` before `'2'`), so every loaded collection — one-to-many,
+  many-to-many, join mode — is sorted value-wise after fetching with the one
+  key comparison. (The reference did this only for many-to-many and join
+  mode until ADR-0033; a decimal-keyed one-to-many loaded in text order.)
+- **Chunking counts distinct complete correlate tuples**, not owners: null
+  parts are excluded and duplicates collapse before chunking, so a chunk is
+  never larger than 500 owners and usually smaller.
+- **`REL-003` applies to every kind at load time**, many-to-one included,
+  even where declaration-time validation (`MAP-016`) already checked the
+  arity — the loader checks the shape it is about to query, uniformly.
+- **Join mode orders refusals `REL-006` before `REL-005`** (both are
+  request-shape refusals; several collections is the broader problem), then
+  `REL-003` for the root, then `REL-003` per navigation in include order.
+- **Join-mode collection order** is the same post-fetch value-wise sort per
+  root; the query's ORDER BY governs only the roots' first-appearance order
+  (the AST orders root properties only — there is no per-join ordering).
+- **`REL-002` in join mode** fires when one root sees more than one distinct
+  target key under a one-to-one alias, in every include combination.
+  Children deduplicate by target key, and a keyed target cannot repeat a
+  key, so deduplication hides nothing a keyed table can produce.
+- **Conformance case names.** `load.navigation` is spelled as the reference
+  declares it (`Transactions`); a port whose declaration casing differs
+  (PHP `$transactions`) maps the name in its runner, as the renderer's
+  case-insensitive property resolution does for criteria. The library call
+  itself stays exact to the declaration (`REL-001` otherwise).
+- **Explicit replay of a load case** reads each of `load.keys` by key and
+  issues one batch `LoadEach` over the list; `viaQuery` replays select the
+  same roots with a criteria query (`Id IN keys`) plus `Include` per mode.
+
 ## Per kind
 
 | kind | fills | notes |

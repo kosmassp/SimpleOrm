@@ -32,6 +32,30 @@ public sealed class AstLevel2Tests
     }
 
     [Fact]
+    public void A_repeated_join_alias_or_the_root_alias_is_QRY006()
+    {
+        var loader = new EntityMapLoader();
+        var users = loader.Load<User>();
+        var links = loader.Load<UserRole>();
+        var roles = loader.Load<Role>();
+
+        var repeated = new SelectAst(users, [], [], joins:
+        [
+            new SelectJoin(links, "j0", parentAlias: null, [("Id", "UserId")], project: false),
+            new SelectJoin(roles, "j0", parentAlias: "j0", [("RoleId", "Id")], project: true),
+        ]);
+        var exception = Assert.Throws<SimpleOrmException>(() => new SqliteDialect().SelectSql(repeated, Bind));
+        Assert.Equal("QRY-006", exception.Code);
+        Assert.Contains("j0", exception.Message);
+
+        var root = new SelectAst(users, [], [], joins:
+        [
+            new SelectJoin(links, "t", parentAlias: null, [("Id", "UserId")], project: true),
+        ]);
+        Assert.Equal("QRY-006", Assert.Throws<SimpleOrmException>(() => new SqliteDialect().SelectSql(root, Bind)).Code);
+    }
+
+    [Fact]
     public void Membership_arity_mismatch_is_QRY006_on_every_dialect()
     {
         var loader = new EntityMapLoader();

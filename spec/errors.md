@@ -63,7 +63,7 @@ these codes.
 | `QRY-003` | embedded SQL resource not found for a registered query | §7.5 | milestone 3 |
 | `QRY-004` | statement execution requested for a type that is not statement-backed | ADR-0010 | milestone 3 |
 | `QRY-005` | select-all or criteria query requested for a source without a named relation (statement/procedure) | ADR-0011 add. | milestone 3 |
-| `QRY-006` | criteria references an unknown or unmapped property | ADR-0012 | milestone 4 |
+| `QRY-006` | criteria references an unknown or unmapped property; at Level 2 also a join whose parent alias no earlier join declares, a repeated join alias (or the root's `t`), an unresolvable ON side, or a subquery membership whose arity disagrees with its projection (ADR-0031/0033) | ADR-0012 | milestone 4 |
 | `QRY-007` | a criteria comparison with null (other than Eq/Ne, which render IS [NOT] NULL) or a null inside an IN list — meaningless three-valued SQL; use IsNull/IsNotNull | ADR-0020 | L2 milestone 2 |
 | `QRY-008` | a negative limit or offset in a criteria query — dialects disagree on its meaning (SQLite silently disables the limit); refused as an arithmetic bug | ADR-0020 add.1 | L2 milestone 2 |
 | `REL-001` | LoadAsync/LoadEachAsync names a property that is not a declared navigation; the error lists what is declared | ADR-0021 | L2 milestone 3 |

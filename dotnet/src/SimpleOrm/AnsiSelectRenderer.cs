@@ -73,8 +73,18 @@ public static class AnsiSelectRenderer
 
         if (joined)
         {
+            var aliases = new HashSet<string>(StringComparer.Ordinal) { "t" };
             foreach (var join in select.Joins)
             {
+                if (!aliases.Add(join.Alias))
+                {
+                    // A repeated alias (or the root's `t`) would silently rebind a
+                    // later join's parent to the wrong relation (ADR-0033).
+                    throw new SimpleOrmException(
+                        "QRY-006", queryName,
+                        $"join alias '{join.Alias}' is already in use in this select");
+                }
+
                 var parent = join.ParentAlias ?? "t";
                 var parentMap = join.ParentAlias is null
                     ? map

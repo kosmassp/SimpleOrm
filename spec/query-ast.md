@@ -247,6 +247,29 @@ pins both renderings side by side.
   (or, unprojected, its mapped columns) must have the same count; a mismatch
   is `QRY-006` before rendering, never an index error or a database error.
 
+**Clarifications** (the PHP Level 2 port asked; ADR-0033):
+
+- **Aliases are unique.** A join alias that repeats an earlier join's alias,
+  or the root's `t`, is `QRY-006` — it would silently rebind a later join's
+  parent to the wrong relation. (Unvalidated in the reference until
+  ADR-0033; now pinned.)
+- **Refusal order inside one select**: the FROM clause validates first
+  (alias uniqueness, the parent alias, both ON sides, in join order), then
+  the WHERE tree in render order, then ORDER BY; the first refusal wins.
+  Every one of them is `QRY-006`, so the order is unobservable by code; the
+  renderer never collects a report (that is SchemaGuard's job).
+- **A subquery renders through the dialect's `SelectSql`**, not the shared
+  renderer directly, so a dialect that overrides top-level rendering governs
+  its nested selects too; the bind callback is the outer one, so parameter
+  numbering continues across the subquery.
+- **Only a composite membership takes the EXISTS rewrite.** A
+  single-property membership renders `col in (select …)` on every dialect
+  and never aliases the root; the rewrite (and the `t` alias it forces)
+  exists only because row-value IN is what some dialects lack.
+- **A projected join selects every mapped column of its target** — joins
+  carry a `project` flag, never a column list; `projection` restricts the
+  root only.
+
 ## Deliberately absent
 
 **GROUP BY does not exist in the AST** and is not planned: aggregations are

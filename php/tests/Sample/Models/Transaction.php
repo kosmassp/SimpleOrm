@@ -14,6 +14,7 @@ use SimpleOrm\Metadata\Attributes\OneToMany;
 use SimpleOrm\Metadata\Attributes\Table;
 use SimpleOrm\Metadata\Attributes\Version;
 use SimpleOrm\Query\SortOrder;
+use SimpleOrm\Session\Navigations;
 use SimpleOrm\Types\Decimal;
 
 /** Table `transactions`: carries the version column — the optimistic-concurrency fixture (§7.16). */
@@ -22,6 +23,8 @@ use SimpleOrm\Types\Decimal;
 #[Index(['status', 'createdAtUtc', SortOrder::Desc], name: 'ix_transactions_status_created')]
 final class Transaction extends BaseModel
 {
+    use Navigations;
+
     #[Key]
     #[Generated]
     #[Column]

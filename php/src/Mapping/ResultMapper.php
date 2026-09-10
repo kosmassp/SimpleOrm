@@ -39,10 +39,13 @@ final class ResultMapper
     /** @var array<string, callable> */
     private array $plans = [];
 
+    private readonly UnloadedNavigations $unloaded;
+
     public function __construct(
         private readonly EntityMapLoader $maps,
         private readonly TypeConverter $converter,
     ) {
+        $this->unloaded = new UnloadedNavigations($maps);
     }
 
     /**
@@ -147,8 +150,15 @@ final class ResultMapper
         // Owned members (ADR-0030) regroup by navigation: construct the owned
         // instance, assign its members, attach it. A nullable navigation whose
         // member columns are all NULL stays null — the row said "no value".
-        return function (array $row) use ($resultType, $columnNames, $byColumn, $queryName): object {
+        // A database-read entity's collection navigations are unset (ADR-0032):
+        // unloaded is not empty.
+        $markUnloaded = $this->unloaded->markerFor($resultType);
+
+        return function (array $row) use ($resultType, $columnNames, $byColumn, $queryName, $markUnloaded): object {
             $instance = new $resultType();
+            if ($markUnloaded !== null) {
+                $markUnloaded($instance);
+            }
             /** @var array<int, array{owner: \SimpleOrm\Metadata\OwnedMap, bindings: list<array{0: string, 1: PropertyMap}>}> $ownedGroups */
             $ownedGroups = [];
             foreach ($columnNames as $i => $columnName) {

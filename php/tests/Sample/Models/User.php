@@ -12,6 +12,7 @@ use SimpleOrm\Metadata\Attributes\ManyToMany;
 use SimpleOrm\Metadata\Attributes\OneToMany;
 use SimpleOrm\Metadata\Attributes\OneToOne;
 use SimpleOrm\Metadata\Attributes\Table;
+use SimpleOrm\Session\Navigations;
 
 /** Table `users` (STRICT). Key: `id`, database-generated. Mirrors dotnet/samples `User`; export pinned by conformance/entities/user.json. */
 #[Table('users')]
@@ -19,6 +20,8 @@ use SimpleOrm\Metadata\Attributes\Table;
 #[Index(['displayName'])]
 final class User extends BaseModel
 {
+    use Navigations;
+
     #[Key]
     #[Generated]
     #[Column]
@@ -34,7 +37,7 @@ final class User extends BaseModel
     #[Column]
     public ?string $displayName = null;
 
-    /** Populated only by the library (Level 2 loading — declaration-only in this port); never a column, never written. */
+    /** Populated only by the library (`load`/`loadEach`/`include`, ADR-0021/0022); never a column, never written; unloaded reads throw `REL-004`. */
     #[OneToMany(Transaction::class, 'userId')]
     public private(set) array $transactions = [];
 

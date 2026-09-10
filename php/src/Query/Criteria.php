@@ -10,6 +10,7 @@ use SimpleOrm\Query\Nodes\Composite;
 use SimpleOrm\Query\Nodes\InList;
 use SimpleOrm\Query\Nodes\Negation;
 use SimpleOrm\Query\Nodes\NullCheck;
+use SimpleOrm\Query\Nodes\SubqueryMembership;
 
 /**
  * The criteria AST's node root and its factories (ADR-0012/0020,
@@ -64,6 +65,20 @@ abstract class Criteria
     public static function in(string $property, array $values): self
     {
         return new InList($property, array_values($values));
+    }
+
+    /**
+     * Subquery membership (ADR-0022 add.1, SubSelect eager loading): the listed
+     * properties of the root, as a row value when more than one, `in (select …)`
+     * over `$subquery`, whose projection must have the same arity. Part of the
+     * Level 2 AST (spec/query-ast.md); the criteria chain does not expose it —
+     * loading builds it, and the conformance runner replays it.
+     *
+     * @param list<string> $properties
+     */
+    public static function inSelect(array $properties, SelectAst $subquery): self
+    {
+        return new SubqueryMembership(array_values($properties), $subquery);
     }
 
     public static function isNull(string $property): self

@@ -4,12 +4,8 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Query;
 
-use PDO;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Metadata\EntityMap;
-use SimpleOrm\Metadata\PropertyMap;
-use SimpleOrm\Parameters\PdoBinder;
-use SimpleOrm\Parameters\SqlPlaceholders;
 use SimpleOrm\Session\Db;
 
 /**
@@ -19,7 +15,9 @@ use SimpleOrm\Session\Db;
  * columns (never `*`), resolves property names through the metadata
  * (`QRY-006` when unknown), and binds every value as a parameter. Instances
  * come from {@see Db::from()}, which has already checked the source carries a
- * named relation (`QRY-005`).
+ * named relation (`QRY-005`). Eager loading (ADR-0022): `include()` names
+ * navigations, `fetch()` picks the {@see FetchMode}; the graphs are identical
+ * in every mode.
  */
 final class CriteriaQuery
 {
@@ -28,6 +26,11 @@ final class CriteriaQuery
 
     /** @var list<Ordering> */
     private array $orderings = [];
+
+    /** @var list<string> */
+    private array $includes = [];
+
+    private FetchMode $fetch = FetchMode::MultiQuery;
 
     private ?int $limit = null;
 
@@ -68,12 +71,80 @@ final class CriteriaQuery
         return $this;
     }
 
+    /**
+     * Eager loading (ADR-0022): the named navigations load automatically with
+     * the query — the root query plus one batch load per navigation (M3
+     * machinery: visible round trips, correct paging, shared instances). An
+     * unknown name is `REL-001`, even when the query matches no rows.
+     * Repeatable; duplicates load once.
+     */
+    public function include(string ...$navigations): self
+    {
+        foreach ($navigations as $navigation) {
+            if (!in_array($navigation, $this->includes, true)) {
+                $this->includes[] = $navigation;
+            }
+        }
+
+        return $this;
+    }
+
+    /** Chooses how the includes fetch (ADR-0022 add.1); no includes, no effect. */
+    public function fetch(FetchMode $mode): self
+    {
+        $this->fetch = $mode;
+
+        return $this;
+    }
+
     /** @return list<object> */
     public function toList(): array
     {
         $map = $this->db->maps()->load($this->entityType);
 
-        return $this->execute($this->toAst($map), $map);
+        // Includes validate before any SQL runs (REL-001 in every mode).
+        foreach ($this->includes as $navigation) {
+            $this->db->resolveNavigation($map, $navigation);
+        }
+
+        if ($this->includes !== [] && $this->fetch === FetchMode::Join) {
+            return $this->db->eagerJoinLoad($this->toAst($map), $this->entityType, $this->includes);
+        }
+
+        $ast = $this->toAst($map);
+        if ($this->fetch === FetchMode::SubSelect && $this->includes !== []
+            && ($ast->limit !== null || $ast->offset !== null)) {
+            // A paged subselect re-evaluates the root, so the page must be
+            // deterministic: the key columns break ordering ties. The tiebroken
+            // AST drives BOTH the root query and every subquery, so the two
+            // evaluations pick the same rows.
+            $orderings = $ast->orderings;
+            foreach ($map->keyProperties as $key) {
+                $ordered = false;
+                foreach ($orderings as $ordering) {
+                    if (strcasecmp($ordering->property, $key->propertyName()) === 0) {
+                        $ordered = true;
+                        break;
+                    }
+                }
+
+                if (!$ordered) {
+                    $orderings[] = new Ordering($key->propertyName());
+                }
+            }
+
+            $ast = new SelectAst($map, $ast->where, $orderings, $ast->limit, $ast->offset);
+        }
+
+        $rows = $this->db->executeAst($ast, $this->entityType);
+        if ($this->includes !== []) {
+            $ownerSubquery = $this->fetch === FetchMode::SubSelect ? $ast : null;
+            foreach ($this->includes as $navigation) {
+                $this->db->loadEachFrom($rows, $navigation, $ownerSubquery);
+            }
+        }
+
+        return $rows;
     }
 
     /** Exactly one row: zero throws `QRY-001`, more than one throws `QRY-002`. */
@@ -111,47 +182,6 @@ final class CriteriaQuery
     public function toAst(EntityMap $map): SelectAst
     {
         return new SelectAst($map, $this->where, $this->orderings, $this->limit, $this->offset);
-    }
-
-    private function execute(SelectAst $ast, EntityMap $map): array
-    {
-        $connection = $this->db->connection();
-        $converter = $this->db->converter();
-        $dialect = $this->db->options()->dialect;
-        $queryName = self::queryName($this->entityType);
-
-        // Binds criteria parameter values in render order (@c0…); the compared
-        // property's conversion rules apply — an enum against an [EnumAsInt]
-        // column binds as its number, not its name.
-        $parameters = [];
-        $bindParameter = static function (mixed $value, ?PropertyMap $property) use (&$parameters, $converter, $queryName): string {
-            $name = 'c' . count($parameters);
-            $parameters[$name] = $converter->toDatabase($value, "{$queryName} @{$name}", $property?->enumAsInt() ?? false);
-
-            return '@' . $name;
-        };
-
-        $sql = SqlPlaceholders::toPdo($dialect->selectSql($ast, $bindParameter));
-        $statement = $connection->prepare($sql);
-        // PdoBinder::bindAndExecute, not a bare execute($parameters): the latter binds
-        // everything as PDO::PARAM_STR, which a column SQLite gives no
-        // declared affinity (a view's aggregate expression) never coerces back.
-        PdoBinder::bindAndExecute($statement, $parameters);
-
-        $columns = [];
-        for ($i = 0; $i < $statement->columnCount(); $i++) {
-            $meta = $statement->getColumnMeta($i);
-            $columns[] = $meta !== false ? $meta['name'] : (string) $i;
-        }
-
-        $plan = $this->db->mapper()->createPlan($this->entityType, $columns, $queryName);
-
-        $results = [];
-        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
-            $results[] = $plan($row);
-        }
-
-        return $results;
     }
 
     private static function queryName(string $entityType): string

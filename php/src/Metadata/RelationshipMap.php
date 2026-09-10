@@ -7,8 +7,8 @@ namespace SimpleOrm\Metadata;
 /**
  * A declared navigation (ADR-0005, extended by ADR-0019): many-to-one through a
  * foreign key on this class, one-to-many/one-to-one through a foreign key on the
- * target, or many-to-many through an explicit link entity. Metadata only in the
- * PHP port (loading is Level 2); it exists so the EntityMap export is complete.
+ * target, or many-to-many through an explicit link entity. Loading is explicit
+ * (ADR-0021: `load`/`loadEach`) or eager (ADR-0022: `include`); never on access.
  */
 final readonly class RelationshipMap
 {

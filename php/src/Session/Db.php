@@ -22,10 +22,12 @@ use SimpleOrm\Metadata\KeyStrategy;
 use SimpleOrm\Metadata\PropertyMap;
 use SimpleOrm\Metadata\RelationKind;
 use SimpleOrm\Metadata\RelationshipKind;
+use SimpleOrm\Metadata\RelationshipMap;
 use SimpleOrm\Parameters\ParameterBinder;
 use SimpleOrm\Parameters\PdoBinder;
 use SimpleOrm\Parameters\SqlPlaceholders;
 use SimpleOrm\Query\CriteriaQuery;
+use SimpleOrm\Query\SelectAst;
 use Stringable;
 
 /**
@@ -45,6 +47,10 @@ final class Db
 
     private readonly ResultMapper $mapper;
 
+    private readonly DbLoading $loading;
+
+    private readonly DbEagerJoin $eagerJoin;
+
     private function __construct(
         PDO $connection,
         private readonly DbOptions $options,
@@ -53,6 +59,8 @@ final class Db
         $this->maps = new EntityMapLoader($options->mapping);
         $this->converter = new TypeConverter($options->typeHandlers, $options->dialect->bindsTemporalsNatively());
         $this->mapper = new ResultMapper($this->maps, $this->converter);
+        $this->loading = new DbLoading($this);
+        $this->eagerJoin = new DbEagerJoin($this);
     }
 
     /** Opens the connection now (§7.17): a failed open leaves nothing behind. */
@@ -192,6 +200,141 @@ final class Db
         $this->requireNamedRelation($map, 'criteria queries need a named relation (statements execute via the statement API)');
 
         return new CriteriaQuery($this, $entityType);
+    }
+
+    /**
+     * Runs a criteria AST through the dialect and the one mapping pipeline
+     * (§7.11) — the single execution path for `CriteriaQuery`, the loading
+     * engines, and the eager-join engine. Criteria parameter values bind in
+     * render order (`@c0…`); the compared property's conversion rules apply —
+     * an enum against an `#[EnumAsInt]` column binds as its number, not its name.
+     *
+     * @param class-string $entityType
+     * @return list<object>
+     * @internal used by {@see CriteriaQuery} and the loading engines
+     */
+    public function executeAst(SelectAst $ast, string $entityType): array
+    {
+        $queryName = self::shortName($entityType) . ' criteria';
+        $statement = $this->executeAstStatement($ast, $queryName);
+        $plan = $this->planFor($statement, $entityType, $queryName);
+
+        $results = [];
+        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
+            $results[] = $plan($row);
+        }
+
+        return $results;
+    }
+
+    /**
+     * Renders and executes a criteria AST, returning the open statement — the
+     * join engine reads its columns itself (segmented by alias), everything
+     * else goes through {@see executeAst()}.
+     *
+     * @internal
+     */
+    public function executeAstStatement(SelectAst $ast, string $queryName): PDOStatement
+    {
+        $converter = $this->converter;
+        $parameters = [];
+        $bindParameter = static function (mixed $value, ?PropertyMap $property) use (&$parameters, $converter, $queryName): string {
+            $name = 'c' . count($parameters);
+            $parameters[$name] = $converter->toDatabase($value, "{$queryName} @{$name}", $property?->enumAsInt() ?? false);
+
+            return '@' . $name;
+        };
+
+        $sql = SqlPlaceholders::toPdo($this->options->dialect->selectSql($ast, $bindParameter));
+        $statement = $this->connection()->prepare($sql);
+        // PdoBinder::bindAndExecute, not a bare execute($parameters): the latter binds
+        // everything as PDO::PARAM_STR, which a column SQLite gives no
+        // declared affinity (a view's aggregate expression) never coerces back.
+        PdoBinder::bindAndExecute($statement, $parameters);
+
+        return $statement;
+    }
+
+    // --- relationship loading (ADR-0021/0022, spec/loading.md) -------------------
+
+    /** Loads one declared navigation of one entity (ADR-0021). */
+    public function load(object $entity, string $navigation): void
+    {
+        $this->loadEach([$entity], $navigation);
+    }
+
+    /**
+     * The batch form (ADR-0019 M3): loads one declared navigation for every
+     * entity in the list with one query per chunk — never one per entity.
+     * Within one call, owners sharing a many-to-one target share the same
+     * loaded instance. Every entity must be of one class (`REL-001` names the
+     * navigation against the first entity's class).
+     *
+     * @param list<object> $entities
+     */
+    public function loadEach(array $entities, string $navigation): void
+    {
+        $this->loadEachFrom($entities, $navigation, null);
+    }
+
+    /**
+     * With `$ownerSubquery` (ADR-0022 add.1, SubSelect mode) the owner set is
+     * expressed as `in (select …)` over the root query instead of a client-side
+     * key list — one query per navigation, no chunking.
+     *
+     * @param list<object> $entities
+     * @internal used by {@see CriteriaQuery}
+     */
+    public function loadEachFrom(array $entities, string $navigation, ?SelectAst $ownerSubquery): void
+    {
+        // The navigation validates even for an empty batch: a wrong name is a
+        // bug regardless of how many entities happened to be in the list. An
+        // empty batch names no class, so the owner subquery's map (SubSelect)
+        // is the only one available; a plain empty batch has nothing to check.
+        if ($entities === [] && $ownerSubquery === null) {
+            return;
+        }
+
+        $map = $ownerSubquery?->map ?? $this->maps->load($entities[0]::class);
+        $relationship = $this->resolveNavigation($map, $navigation);
+        if ($entities === []) {
+            return;
+        }
+
+        $this->loading->loadEach($map, $relationship, array_values($entities), $ownerSubquery);
+    }
+
+    /** A navigation by exact property name, or `REL-001` listing the declared ones. */
+    public function resolveNavigation(EntityMap $map, string $navigation): RelationshipMap
+    {
+        foreach ($map->relationships as $relationship) {
+            if ($relationship->propertyName === $navigation) {
+                return $relationship;
+            }
+        }
+
+        $declared = $map->relationships === []
+            ? 'none'
+            : implode(', ', array_map(static fn (RelationshipMap $r): string => $r->propertyName, $map->relationships));
+
+        throw new SimpleOrmException(
+            'REL-001',
+            $map->entityName(),
+            "'{$navigation}' is not a declared navigation (declared: {$declared})",
+        );
+    }
+
+    /**
+     * Join-mode eager loading (ADR-0022 add.1): one SELECT with LEFT JOINs.
+     *
+     * @param class-string $entityType
+     * @param list<string> $includes
+     * @return list<object>
+     * @internal used by {@see CriteriaQuery}
+     */
+    public function eagerJoinLoad(SelectAst $ast, string $entityType, array $includes): array
+    {
+        return $this->eagerJoin->load($ast, $entityType, $includes);
     }
 
     /** Read by key (ADR-0006): a missing row throws `CRUD-001`; a composite key is a list in key order. */

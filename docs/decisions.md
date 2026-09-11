@@ -2434,3 +2434,81 @@ navigations stay `public private(set)`; the guard is the `unset()` +
 0–2 in one go, only when asked.
 
 **Status.** Accepted. PHP at Level 2.
+
+## ADR-0034 — Level 3 before the remaining ports; the Level 3 milestone plan (2026-09-11)
+
+Owner ruling, reversing the order in ADR-0032 decisions 3–4: **new-language
+ports (Rust, Python, TypeScript) wait until the existing three implementations
+are finished** through the levels the owner schedules. **Level 3 starts now.**
+The uniformity programme is unchanged — it is served by carrying each level
+through C#, PHP, and Go before a fourth language exists, so the spec each new
+port receives is complete rather than growing under it. The porting guide
+still follows the sixth implementation.
+
+**What Level 3 is** (CLAUDE.md §1/§11 — "full session semantics comparable to
+Hibernate but smaller"): a session-wide identity map; snapshot-based change
+tracking; a unit of work with FK-ordered flush, batching, and cascades; simple
+detach/merge rules; event hooks (audit, soft delete); optional inheritance
+mapping; and draft migrations from the metadata diff with `[RenamedFrom]`
+declarations. The brief's expectation stands: Level 3 shares a behavioural
+spec and conformance cases, but each language's session API will diverge more
+than Levels 0–2 did — the §10 tables will grow.
+
+**Milestones (CLAUDE.md §7c) — one at a time, stop and report, never start
+the next unprompted.** Each milestone: the reference first with its spec
+section and conformance folder, then PHP and Go by the ADR-0031 method
+(agents forbidden to read another implementation; gaps become Clarifications),
+then a uniformity review — so the spec is proven per milestone, not at the
+end. Every new error gets a code before a message; Level 3 opens the `UOW-`
+prefix (unit of work and tracking) — `CRUD-`/`REL-` stay for what they name.
+
+1. **Identity map + snapshot change tracking.** One instance per (entity
+   type, key) per session, built on the §7.4 identity (`KeyTuple` in PHP,
+   `KeyTupleComparer` in C#); every read path that materializes an entity
+   (registry queries with entity results, key reads, criteria, loading,
+   eager loading, join segments) consults it. Each tracked instance carries a
+   snapshot of its mapped column values as read; the dirty set is the
+   diff, and `Update` on a tracked entity writes only the dirty columns
+   through the ADR-0028 column-list path (a clean entity writes nothing and
+   says so). Owned types (ADR-0030) snapshot flat, like their columns.
+   Open rulings for the owner at the start of M1: whether tracking is a
+   session mode chosen at open (recommended: `DbOptions.Tracking`, default
+   **untracked** so Level 0–2 behaviour, benchmarks, and the ports' existing
+   suites are untouched; tracked is opt-in per session) or always on; and
+   what a re-read of a known key does to a dirty instance (recommended: the
+   tracked instance wins, the row's values are not applied — Hibernate's
+   rule — with an explicit `Refresh` to overwrite).
+2. **Unit of work.** `Persist`/`Remove` schedule work; `FlushAsync` writes
+   inserts, updates, and deletes in **FK order** derived from relationship
+   metadata (topological over `[ForeignKey]`/navigations, deletes reversed),
+   batched (`DbBatch` under `#if NET`, one statement per row elsewhere),
+   inside the session's transaction; generated keys flow into dependents'
+   FKs before their inserts. Cascades are **declared, never inferred**
+   (`[Cascade]` on a navigation, opt-in per operation). Concurrency stays
+   row-level (`CRUD-010`). Conformance: `flush-cases/` — a graph of
+   scheduled changes in, the exact ordered statement sequence out.
+3. **Detach/merge + event hooks.** `Detach` stops tracking; `Merge` copies a
+   detached instance's state onto the tracked one by key (or starts tracking
+   it) — simple rules, no deep graph merging. Hooks are declared metadata,
+   not registered callbacks: audit columns (`[CreatedAt]`/`[UpdatedAt]` set
+   at flush) and soft delete (`[SoftDelete]` turns `Remove` into an update
+   and makes the flag an explicit criteria filter the user asks for — never
+   a hidden WHERE, §2). Before/after write hooks as an interface on the
+   entity, if the owner wants them at all.
+4. **Inheritance mapping (optional).** Single-table with a discriminator
+   column only, if scheduled; table-per-type is out. The owner may skip
+   this milestone entirely.
+5. **Draft migrations from the metadata diff.** `[RenamedFrom("old")]` on a
+   property or class feeds the ADR-0017 generator's `--rename` automatically;
+   `simpleorm diff --draft` writes the version with a draft marker the
+   author must remove after review. Small; extends existing tooling.
+6. **Level 3 exit.** `spec/` covers every milestone (`spec/session.md`
+   extended, new `spec/unit-of-work.md`), the conformance folders pass in
+   all three implementations, the benchmark shows the untracked path
+   unchanged and the tracked overhead measured, and a port could implement
+   Level 3 from the spec alone.
+
+**Not in Level 3:** lazy proxies (§2, permanent), second-level caching and
+observability (Level 4), savepoints (Level 4), read/write splitting (Level 4).
+
+**Status.** Accepted. Next session starts M1 with the two open rulings.

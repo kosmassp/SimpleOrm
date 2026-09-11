@@ -10,7 +10,7 @@ A SQL-first ORM that grows in levels: a mapper (Level 0), a micro-ORM with migra
 
 C# on SQLite is the **reference implementation**. The long-term plan is a language-neutral **spec** plus a **conformance suite**, with ports to other languages (Go, Java, PHP) and dialects (PostgreSQL, MySQL, SQL Server, Oracle) that pass the same conformance files. Early decisions are made so that later levels and ports don't require rewrites.
 
-**Level 2 is complete** (ADR-0031, 2026-09-09: exit proven by the Go port built from `spec/` + `conformance/` alone). **The programme now is uniformity across languages** (ADR-0032): the purpose is how the same spec is implemented in many language types, Fidelis is a consumer, not the target. **The PHP port is at Level 2** (ADR-0033, 2026-09-10; PHP version unchanged; the unloaded-collection guard via `unset()` + the opt-in `Navigations` trait). **Next: new ports at Levels 0–2 in one go in the order Rust → Python → TypeScript**, then the porting guide — each only when the owner says so. Do not build Level 3+ features unprompted. If I casually ask for something listed under "Deferred," tell me which level it belongs to and why it's deferred before doing anything.
+**Level 2 is complete** (ADR-0031, 2026-09-09: exit proven by the Go port built from `spec/` + `conformance/` alone). **The programme now is uniformity across languages** (ADR-0032): the purpose is how the same spec is implemented in many language types, Fidelis is a consumer, not the target. **The PHP port is at Level 2** (ADR-0033, 2026-09-10; PHP version unchanged; the unloaded-collection guard via `unset()` + the opt-in `Navigations` trait). **Next: Level 3 (ADR-0034, 2026-09-11), milestone by milestone per §7c**, carried through C#, PHP, and Go before any new language; the ports at Levels 0–2 (**Rust → Python → TypeScript**) and the porting guide wait until the existing three implementations are finished. Do not start a milestone unprompted. If I casually ask for something listed under "Deferred," tell me which level it belongs to and why it's deferred before doing anything.
 
 ## 2. Principles that don't change at any level
 
@@ -30,9 +30,9 @@ C# on SQLite is the **reference implementation**. The long-term plan is a langua
 | Query AST + query front-ends (fluent builder, LINQ provider) | 2 — but the criteria core (the AST: `Criteria` factories + `db.Query<T>()` with Where/OrderBy/Limit) was pulled to Level 1 by ADR-0012; the lambda front-end is per-language sugar **outside the Level 2 exit** (ADR-0029), LINQ stays out |
 | Dynamic SQL composition (optional filters, sorting from UI) | covered at Level 1 by the ADR-0012 criteria core |
 | Explicit/batch/eager loading | 2 |
-| Identity map, change tracking, unit of work, cascades, merge/detach | 3 |
-| Inheritance mapping, event hooks (audit, soft delete) | 3 |
-| Draft migrations generated from the metadata diff | 3 |
+| Identity map, change tracking, unit of work, cascades, merge/detach | 3 (active — ADR-0034, §7c M1–M3) |
+| Inheritance mapping, event hooks (audit, soft delete) | 3 (ADR-0034: hooks M3; inheritance M4, optional, single-table only) |
+| Draft migrations generated from the metadata diff | 3 (ADR-0034 M5: `[RenamedFrom]` + `diff --draft`) |
 | Additional dialects — order per ADR-0023: **SQL Server first** (owner field-tests with Fidelis), **PostgreSQL second**, then MySQL/Oracle | 4 (seam exists from Level 1) — **SQL Server pulled forward by ADR-0024, PostgreSQL by ADR-0025**, runtime-first: session/CRUD/criteria/loading/SchemaGuard/migration-runner work; shadow/snapshot/diff tooling stays SQLite-only for now |
 | Read/write splitting and multi-database routing, incl. mixed engines (session-level, never per-entity — see decision log 2026-08-28) | 4 |
 | Caching, observability, resilience, analyzers, source generators | 4 |
@@ -246,6 +246,19 @@ The registry is what the validator enumerates. (The Level 4 source-generator ide
 
 **Session state (2026-09-10, ADR-0033):** the **PHP port is at Level 2** — built by the ADR-0031 method (foundation, three parallel Sonnet agents forbidden to read `dotnet/`/`go/`, a uniformity review, every gap resolved against the reference): renderer projection/joins/`in_select` with the `ast/level2` runner (7 byte-identical pins), `$db->load()`/`loadEach()`, `include()->fetch(FetchMode::MultiQuery|SubSelect|Join)` with join-mode row segmentation (`RowSegment`), the `load-cases` runner replaying every case in every mode; the ADR-0032 guard in both forms (the mapper `unset()`s collection navigations of database-read entities; the opt-in `SimpleOrm\Session\Navigations` trait makes the read `REL-004`, without it PHP's own `Error`). 15 gap questions became 13 spec Clarifications; **two reference deviations from its own spec were fixed in C#** (join-mode refusal precedence; one-to-many collections sorted value-wise after fetching — a decimal key loaded in TEXT order) and alias uniqueness became `QRY-006` in both. PHP: 418 tests. Next per ADR-0032: **Rust** at Levels 0–2, only when the owner says so.
 
+## 7c. Level 3 milestones (ADR-0034) — one at a time; stop and report; do not start the next unprompted
+
+Each milestone: the C# reference first with its spec section and conformance folder, then PHP and Go by the ADR-0031 method (agents forbidden to read another implementation; gaps become spec "Clarifications"), then a uniformity review. Level 3 opens the `UOW-` error prefix.
+
+1. **Identity map + snapshot change tracking.** One instance per (type, key) per session on the §7.4 identity; every entity-materializing read path consults it. Snapshot of mapped values at read; `Update` on a tracked entity writes only the dirty columns via the ADR-0028 path (a clean entity writes nothing). **Owner rulings at M1 start:** tracking as a session mode (`DbOptions.Tracking`, recommended default *untracked* — Level 0–2 behaviour and benchmarks untouched) vs always on; a re-read of a known key against a dirty instance (recommended: tracked wins, explicit `Refresh` overwrites).
+2. **Unit of work.** `Persist`/`Remove` schedule; `FlushAsync` writes in FK order from relationship metadata (deletes reversed), batched (`DbBatch` under `#if NET`), inside the session transaction; generated keys flow into dependents. Cascades **declared** (`[Cascade]`, per operation), never inferred. `conformance/flush-cases/`: graph in, ordered statement sequence out.
+3. **Detach/merge + hooks.** `Detach`; `Merge` by key, no deep graph merge. Hooks as declared metadata: audit columns (`[CreatedAt]`/`[UpdatedAt]`), soft delete (`[SoftDelete]`: `Remove` becomes an update; the flag is an explicit criteria filter, never a hidden WHERE).
+4. **Inheritance mapping** — optional; single-table with discriminator only; may be skipped.
+5. **Draft migrations** — `[RenamedFrom]` feeds the ADR-0017 generator's `--rename`; `diff --draft` writes a draft-marked version.
+6. **Level 3 exit** — `spec/session.md` extended + `spec/unit-of-work.md`; conformance green in C#, PHP, Go; untracked benchmark unchanged, tracked overhead measured; a port could implement Level 3 from the spec alone.
+
+Not in Level 3: lazy proxies (permanent), caching/observability, savepoints, read/write splitting (Level 4).
+
 ## 8. Level 1 milestones — one at a time; stop and report; do not start the next unprompted
 
 1. **Skeleton.** Monorepo layout, multi-targeted core + SQLite dialect, CI build of both targets, temp-file SQLite test fixture, `docs/decisions.md`, empty `spec/` and `conformance/` with READMEs. Done when `dotnet build` succeeds for both TFMs and one trivial integration test passes. *(Done — originally built against PostgreSQL, reworked to SQLite in ADR-0003.)*
@@ -291,7 +304,7 @@ The suite is the executable definition of the library. Every implementation runs
 
 - Ports share **no code**; they share `spec/` and `conformance/`. C# is the reference; a port is correct when it passes the same conformance files unchanged.
 - Do not port before Level 1 exit criteria are met. The first port covers Levels 0–1 only.
-- **Port order (ADR-0023, extended by ADR-0032): PHP first** (done to Level 2 — ADR-0026/0033), **Go** (done to Level 2 — ADR-0027/0031), then **Rust → Python → TypeScript**, each at Levels 0–2 in one go — the spec-neutrality stress tests (traits/derive macros, dataclasses, decorators instead of attributes; no exceptions, a synchronous standard driver, no static types, ownership of loaded graphs): their purpose is to find places where the spec is secretly shaped by one language family, and the port changing the spec is the point. Port agents may not read another implementation (ADR-0031's rule); every unanswered question goes into the port's gap list, which becomes spec "Clarifications". A porting guide follows the sixth implementation.
+- **Port order (ADR-0023, extended by ADR-0032): PHP first** (done to Level 2 — ADR-0026/0033), **Go** (done to Level 2 — ADR-0027/0031), then — **only after the existing three implementations are finished through the scheduled levels (ADR-0034: Level 3 first)** — **Rust → Python → TypeScript**, each at Levels 0–2 in one go — the spec-neutrality stress tests (traits/derive macros, dataclasses, decorators instead of attributes; no exceptions, a synchronous standard driver, no static types, ownership of loaded graphs): their purpose is to find places where the spec is secretly shaped by one language family, and the port changing the spec is the point. Port agents may not read another implementation (ADR-0031's rule); every unanswered question goes into the port's gap list, which becomes spec "Clarifications". A porting guide follows the sixth implementation.
 - Keep the C# public API a thin layer over spec concepts (`EntityMap`, registry, session, rules, runner) so each concept has an obvious counterpart in another language.
 - Realistic expectation: Levels 0–2 port with high fidelity because they are data plus rules plus an AST. Level 3 shares behavioral spec and conformance cases, but each language's session API will diverge. Level 4 is per-ecosystem.
 

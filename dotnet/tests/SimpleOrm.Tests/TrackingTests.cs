@@ -160,7 +160,77 @@ public sealed class TrackingTests(SqliteFixture fixture)
         Assert.False(db.IsDirty(transaction));
     }
 
+    [Fact]
+    public async Task A_column_list_update_moves_the_snapshot_for_the_written_columns_only()
+    {
+        await using var db = await OpenTrackedAsync();
+        var ada = await TestDb.InsertUserAsync(db, $"T{Guid.NewGuid():N}", $"t-{Guid.NewGuid():N}@example.com");
+        ada.Name = "renamed";
+        ada.DisplayName = "display";
+
+        await db.UpdateOnlyAsync(ada, [nameof(User.Name)], CancellationToken.None);
+        Assert.Equal([nameof(User.DisplayName)], db.ChangesOf(ada));   // the unwritten change stays dirty
+
+        var unknown = new User { Id = ada.Id, Name = "x", Email = ada.Email, CreatedAtUtc = TestDb.SeedTime };
+        Assert.Equal("UOW-002", (await Assert.ThrowsAsync<SimpleOrmException>(
+            () => db.DeleteAsync<User>(unknown, CancellationToken.None))).Code);
+        Assert.Equal("UOW-002", (await Assert.ThrowsAsync<SimpleOrmException>(
+            () => db.RefreshAsync(unknown, CancellationToken.None))).Code);
+    }
+
+    [Fact]
+    public async Task A_column_list_update_of_an_unknown_instance_does_not_register_it()
+    {
+        await using var db = await OpenTrackedAsync();
+        long id;
+        await using (var other = await Db.OpenAsync(fixture.ConnectionString, TestDb.Options, CancellationToken.None))
+        {
+            id = (await TestDb.InsertUserAsync(other, $"T{Guid.NewGuid():N}", $"t-{Guid.NewGuid():N}@example.com")).Id;
+        }
+
+        var partial = new User { Id = id, Name = "partial", Email = "unknown@example.com", CreatedAtUtc = TestDb.SeedTime };
+        await db.UpdateOnlyAsync(partial, [nameof(User.Name)], CancellationToken.None);
+        Assert.False(db.IsTracked(partial));          // the session saw only part of the row
+
+        await db.UpdateAsync(partial, CancellationToken.None);   // the full row is written: now the session knows it
+        Assert.True(db.IsTracked(partial));
+        Assert.Same(partial, await db.GetAsync<User>(id, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task A_handler_typed_member_mutated_in_place_is_dirty()
+    {
+        var options = new DbOptions { Dialect = new SqliteDialect(), Tracking = TrackingMode.Tracked };
+        options.TypeHandlers.Json<List<string>>();
+        await using (await TestDb.OpenAsync(fixture))
+        {
+        }
+
+        await using var db = await Db.OpenAsync(fixture.ConnectionString, options, CancellationToken.None);
+        await db.CreateTableAsync<Tagged>(CancellationToken.None);
+        var tagged = new Tagged { Tags = ["a"] };
+        await db.InsertAsync(tagged, CancellationToken.None);
+        Assert.False(db.IsDirty(tagged));
+
+        tagged.Tags.Add("b");                     // the same list instance; the snapshot holds the bound JSON
+        Assert.Equal([nameof(Tagged.Tags)], db.ChangesOf(tagged));
+        await db.UpdateAsync(tagged, CancellationToken.None);
+        Assert.False(db.IsDirty(tagged));
+    }
+
     private sealed record UserById(long Id);
+
+    [Table("tracking_tagged")]
+    public sealed class Tagged
+    {
+        [Key]
+        [Generated]
+        [Column]
+        public long Id { get; set; }
+
+        [Column]
+        public List<string> Tags { get; set; } = [];
+    }
 
     [Table("tracking_blobs")]
     public sealed class Blob

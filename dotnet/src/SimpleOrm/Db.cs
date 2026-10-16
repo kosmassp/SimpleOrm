@@ -519,7 +519,7 @@ public sealed partial class Db : IAsyncDisposable
             await ExecuteUpdateAsync(
                 map, entity, Options.Dialect.UpdateOnlySql(map, dirty),
                 BoundForUpdate(map, dirty), ct).ConfigureAwait(false);
-            tracked.Snapshot = Snapshot(map, entity);
+            TrackWrittenColumns(tracked, map, dirty);
             return;
         }
 
@@ -555,11 +555,11 @@ public sealed partial class Db : IAsyncDisposable
         var set = ResolveUpdateList(map, properties);
         var listed = new HashSet<string>(set.Select(p => p.PropertyName), StringComparer.Ordinal);
         CheckNavigationConsistency(map, entity, listed.Contains);
-        CheckIdentity(map, entity);
+        var tracked = CheckIdentity(map, entity);
 
         await ExecuteUpdateAsync(
             map, entity, Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set), ct).ConfigureAwait(false);
-        TrackWritten(map, entity);
+        TrackWrittenColumns(tracked, map, set);
     }
 
     /// <summary>Validates an update-by-column-list (ADR-0028) and resolves it to property maps, in the caller's order.</summary>
@@ -680,6 +680,7 @@ public sealed partial class Db : IAsyncDisposable
         if (byEntity)
         {
             var entity = (TEntity)keyOrEntity;
+            CheckIdentity(map, entity);
             foreach (var key in map.KeyProperties)
             {
                 AddEntityParameter(command, key, entity);

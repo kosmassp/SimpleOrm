@@ -188,7 +188,7 @@ public sealed class ConformanceCrudTests
     }
 
     /// <summary>The documented conformance value encoding, decoded into a CLR value for the target type.</summary>
-    private static object? ConvertTo(JsonElement value, Type targetType)
+    internal static object? ConvertTo(JsonElement value, Type targetType)
     {
         if (value.ValueKind == JsonValueKind.Null)
         {
@@ -232,7 +232,7 @@ public sealed class ConformanceCrudTests
     }
 
     /// <summary>The documented conformance value encoding, reduced to string form for comparison.</summary>
-    private static string? Encode(object? value) => value switch
+    internal static string? Encode(object? value) => value switch
     {
         null => null,
         bool b => b ? "true" : "false",

@@ -1,0 +1,15 @@
+{
+  "name": "refresh_applies_the_row",
+  "comment": "Refresh is the explicit overwrite: the row's values replace the local change and the snapshot resets; refreshing a row that no longer exists is CRUD-001.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "User", "key": 1, "as": "a" } },
+    { "set": { "ref": "a", "property": "Name", "value": "Changed locally" } },
+    { "refresh": { "ref": "a" } },
+    { "expect": { "value": { "ref": "a", "property": "Name", "equals": "Ada" } } },
+    { "expect": { "dirty": { "ref": "a", "properties": [] } } },
+    { "get": { "entity": "User", "key": 2, "as": "g" } },
+    { "delete": { "entity": "User", "key": 2 } },
+    { "refresh": { "ref": "g" }, "expectError": "CRUD-001" }
+  ]
+}

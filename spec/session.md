@@ -157,3 +157,90 @@ so a portable case format needs an args-shape encoding — reserved, the way
 `ast/` was before ADR-0020. Until then each implementation proves them in its own
 tests (here: DbParameterTests, DbQueryTests). Lifetime and transaction semantics
 likewise have no data-driven form.
+
+## Tracking — the identity map and change snapshots (Level 3 M1, ADR-0034 add.1)
+
+Tracking is a **session mode chosen at open**; the default is **untracked**,
+which is the Level 0–2 session exactly: every read materializes a fresh
+instance, `Update` writes the full row, and nothing below applies.
+
+```csharp
+var options = new DbOptions { Dialect = new SqliteDialect(), Tracking = TrackingMode.Tracked };
+```
+
+A tracked session keeps, for its lifetime:
+
+- **One instance per (entity type, key)** — the §7.4 identity, compared
+  value-wise (decimals numerically, temporals by instant, byte arrays by
+  content). Every read path that materializes an entity consults the map:
+  registry queries and streams whose result type is an entity, key reads,
+  criteria queries, explicit and batch loading, eager loading in every fetch
+  mode (join segments included), and `QueryAll`. Plain result types (DTOs,
+  scalars), keyless entities (views without a key, statements), and rows
+  whose key has a null part are never tracked.
+- **A snapshot of each tracked instance's mapped values** as read or last
+  written; owned members snapshot flat, like their columns (ADR-0030).
+
+**The tracked instance wins** (ruling 2): a read that finds its key in the
+map returns the tracked instance and **does not apply the row's values** —
+dirty or not. Loaded navigations stay as they were. `RefreshAsync(entity)`
+is the explicit overwrite: it re-reads the row by key, applies every mapped
+value onto the instance, and resets the snapshot; a missing row is
+`CRUD-001`. `Refresh` works in both modes.
+
+**Questions** — `IsTracked(entity)` (never throws); `ChangesOf(entity)`,
+the mapped property names whose value differs from the snapshot (dotted for
+owned members), and `IsDirty(entity)`; both are `UOW-001` for an instance
+the session does not track, including every instance in an untracked
+session.
+
+**Writes keep the map honest:**
+
+- `Insert` registers the instance with its generated key and a fresh
+  snapshot.
+- `Update` on a **tracked** instance writes **only the dirty columns**
+  through the column-list path (ADR-0028) — the version bump and check
+  apply as always — and **writes nothing at all when the instance is
+  clean** (no statement, no version bump). On an instance the session does
+  not know (user-constructed, never inserted here) it writes the full row as
+  at Level 1, then tracks it. `UpdateOnly` writes the listed columns as
+  always; both refresh the snapshot afterwards.
+- `Delete` forgets the key; the deleted instance is no longer tracked.
+- A write from an instance that is **not the session's instance for its
+  key** — another tracked instance holds the key, or a tracked instance's
+  key was changed — is `UOW-002` before any SQL. A key is identity; it never
+  updates.
+
+Nothing here adds a round trip: tracking only decides which instance a read
+returns and which columns an update writes. Detach, merge, the unit of
+work, and cascades are later milestones (§7c).
+
+### Conformance: `tracking-cases/`
+
+Each case runs against the seeded fixture database in the declared mode and
+replays a step script against named instances:
+
+```json
+{ "name": "…", "comment": "…", "tracking": "tracked",
+  "steps": [
+    { "get":    { "entity": "User", "key": 1, "as": "a" } },
+    { "set":    { "ref": "a", "property": "Name", "value": "Ada Lovelace" } },
+    { "expect": { "dirty": { "ref": "a", "properties": ["Name"] } } },
+    { "update": { "ref": "a", "expectWritten": ["Name"] } },
+    { "get":    { "entity": "User", "key": 1, "as": "b" } },
+    { "expect": { "same": ["a", "b"] } } ] }
+```
+
+Steps: `get` (by `key`, a list for composite keys, or `keyOf` another
+ref), `new` (a user-constructed instance from `values`), `set`, `insert`,
+`update` (with `expectWritten`: the property list the column-list update
+was asked to write, `[]` for no statement, `"all"` for a full-row update —
+observed through the dialect seam, where every implementation renders
+SQL), `updateOnly`, `delete` (by `ref` or by `entity` + `key`), `refresh`,
+`load` (a navigation of a ref). Expectations: `same`/`notSame` (reference
+identity of two refs; a ref may hop one navigation, `t.User`, or index a
+loaded collection, `a.Transactions[0]`), `dirty`, `value` (`ref`,
+`property`, `equals`), `tracked` (`ref`, `is`). Any step may carry
+`expectError` with the code it must throw. Property names are spelled as
+the reference declares them; a port maps them through its own declaration
+convention in the runner, as the other runners do.

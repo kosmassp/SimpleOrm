@@ -1,0 +1,13 @@
+{
+  "name": "clean_update_writes_nothing",
+  "comment": "A clean tracked instance issues no statement at all on Update - no SQL, no version bump; UpdateOnly still writes what it is told and bumps the version.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "Transaction", "key": 1, "as": "t" } },
+    { "update": { "ref": "t", "expectWritten": [] } },
+    { "expect": { "value": { "ref": "t", "property": "Version", "equals": 0 } } },
+    { "updateOnly": { "ref": "t", "properties": ["Note"] } },
+    { "expect": { "value": { "ref": "t", "property": "Version", "equals": 1 } } },
+    { "expect": { "dirty": { "ref": "t", "properties": [] } } }
+  ]
+}

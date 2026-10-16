@@ -1,0 +1,12 @@
+{
+  "name": "identity_map_returns_the_same_instance",
+  "comment": "A tracked session returns the one instance per key from every read path: two key reads yield the same object, clean.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "User", "key": 1, "as": "a" } },
+    { "get": { "entity": "User", "key": 1, "as": "b" } },
+    { "expect": { "same": ["a", "b"] } },
+    { "expect": { "tracked": { "ref": "a", "is": true } } },
+    { "expect": { "dirty": { "ref": "a", "properties": [] } } }
+  ]
+}

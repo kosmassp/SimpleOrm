@@ -37,6 +37,18 @@ await db.UpdateAsync(user, ct);        // full row by key
 await db.UpdateOnlyAsync(user, [nameof(User.Name)], ct);   // only the listed properties (ADR-0028); same key/version rules
 await db.DeleteAsync<User>(user.Id, ct);
 
+// Tracking (Level 3 M1, ADR-0034): a session mode, untracked by default — opt in at open
+await using var tracked = await Db.OpenAsync("Data Source=app.db",
+    new DbOptions { Dialect = new SqliteDialect(), Tracking = TrackingMode.Tracked }, ct);
+var a = await tracked.GetAsync<User>(7, ct);
+var b = await tracked.GetAsync<User>(7, ct);          // the same instance: one per (type, key) per session
+a.Name = "Ada Lovelace";
+tracked.ChangesOf(a);                                 // ["Name"] — against the snapshot taken when read
+await tracked.UpdateAsync(a, ct);                     // writes only name (column-list path); a clean instance writes nothing
+await tracked.RefreshAsync(a, ct);                    // the explicit overwrite from the row; a re-read never overwrites
+// UOW-001: a tracking question about an instance the session does not track; UOW-002: a write from an
+// instance that is not the session's instance for its key (another holds it, or the key was changed)
+
 // Owned value types (ADR-0030): [Owned] class + [Owned] navigation → address_* columns of user_profiles,
 // one flat EntityMap, dotted paths in criteria and column lists; an all-NULL row reads back as null
 var inParis = await db.Query<UserProfile>().Where(Criteria.Eq("Address.City", "Paris")).ToListAsync(ct);

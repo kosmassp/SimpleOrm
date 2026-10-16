@@ -1,0 +1,14 @@
+{
+  "name": "insert_tracks_the_new_entity",
+  "comment": "An inserted instance becomes the session's instance for its generated key: a later key read returns it, clean.",
+  "tracking": "tracked",
+  "steps": [
+    { "new": { "entity": "User", "as": "n", "values": { "Name": "Linus", "Email": "linus@example.com", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "expect": { "tracked": { "ref": "n", "is": false } } },
+    { "insert": { "ref": "n" } },
+    { "expect": { "tracked": { "ref": "n", "is": true } } },
+    { "get": { "entity": "User", "keyOf": "n", "as": "r" } },
+    { "expect": { "same": ["n", "r"] } },
+    { "expect": { "dirty": { "ref": "n", "properties": [] } } }
+  ]
+}

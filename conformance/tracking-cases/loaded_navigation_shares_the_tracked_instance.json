@@ -1,0 +1,13 @@
+{
+  "name": "loaded_navigation_shares_the_tracked_instance",
+  "comment": "Loading goes through the same identity map: a transaction's loaded user is the instance the session already holds for that key, and the user's loaded transactions contain the tracked transaction.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "User", "key": 1, "as": "a" } },
+    { "get": { "entity": "Transaction", "key": 1, "as": "t" } },
+    { "load": { "ref": "t", "navigation": "User" } },
+    { "expect": { "same": ["a", "t.User"] } },
+    { "load": { "ref": "a", "navigation": "Transactions" } },
+    { "expect": { "same": ["t", "a.Transactions[0]"] } }
+  ]
+}

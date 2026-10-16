@@ -95,6 +95,7 @@ public sealed partial class Db
                 // Children guard their own unloaded collections (REL-004) exactly
                 // like every other materialized entity.
                 attachment.MarkChildUnloaded = UnloadedNavigations.MarkerFor(target, Maps);
+                attachment.TrackChild = TrackerFor(target);
                 cursor += targetMap.Properties.Count;
             }
 
@@ -110,6 +111,7 @@ public sealed partial class Db
                 else
                 {
                     markUnloaded?.Invoke(rootEntity);
+                    rootEntity = (TEntity)Track(map, rootEntity);
                     rootsByKey[rootKey] = rootEntity;
                     results.Add(rootEntity);
                 }
@@ -262,6 +264,9 @@ public sealed partial class Db
 
         public Action<object>? MarkChildUnloaded;
 
+        /// <summary>The session's identity map for the child type (Level 3 M1), or null when untracked.</summary>
+        public Func<object, object>? TrackChild;
+
         private readonly Dictionary<object?[], object> _children = new(KeyTupleComparer.Instance);
         private readonly Dictionary<object?[], List<object>> _byRoot = new(KeyTupleComparer.Instance);
         private readonly Dictionary<object?[], HashSet<object?[]>> _seenByRoot = new(KeyTupleComparer.Instance);
@@ -289,6 +294,11 @@ public sealed partial class Db
             else
             {
                 MarkChildUnloaded?.Invoke(child);
+                if (TrackChild is not null)
+                {
+                    child = TrackChild(child);
+                }
+
                 _children[childKey] = child;
             }
 

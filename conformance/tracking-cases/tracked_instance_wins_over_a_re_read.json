@@ -1,0 +1,13 @@
+{
+  "name": "tracked_instance_wins_over_a_re_read",
+  "comment": "Ruling 2 (ADR-0034 add.1): a read of a known key returns the tracked instance and does not apply the row - the local change survives and stays dirty.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "User", "key": 1, "as": "a" } },
+    { "set": { "ref": "a", "property": "Name", "value": "Changed locally" } },
+    { "get": { "entity": "User", "key": 1, "as": "b" } },
+    { "expect": { "same": ["a", "b"] } },
+    { "expect": { "value": { "ref": "b", "property": "Name", "equals": "Changed locally" } } },
+    { "expect": { "dirty": { "ref": "a", "properties": ["Name"] } } }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "delete_untracks",
+  "comment": "A delete forgets the key: the instance is no longer tracked, a tracking question about it refuses, and a key read finds nothing.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "User", "key": 2, "as": "g" } },
+    { "delete": { "ref": "g" } },
+    { "expect": { "tracked": { "ref": "g", "is": false } } },
+    { "expect": { "dirty": { "ref": "g", "properties": [] } }, "expectError": "UOW-001" },
+    { "get": { "entity": "User", "key": 2, "as": "missing" }, "expectError": "CRUD-001" }
+  ]
+}

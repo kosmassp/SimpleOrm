@@ -1,0 +1,16 @@
+{
+  "name": "dirty_update_writes_only_changed_columns",
+  "comment": "Update on a tracked instance writes the dirty columns only (the ADR-0028 column-list path) and the snapshot moves forward: a second Update writes nothing, and the row holds the change.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "User", "key": 1, "as": "a" } },
+    { "set": { "ref": "a", "property": "Name", "value": "Ada Lovelace" } },
+    { "set": { "ref": "a", "property": "DisplayName", "value": "Ada L." } },
+    { "expect": { "dirty": { "ref": "a", "properties": ["Name", "DisplayName"] } } },
+    { "update": { "ref": "a", "expectWritten": ["Name", "DisplayName"] } },
+    { "expect": { "dirty": { "ref": "a", "properties": [] } } },
+    { "update": { "ref": "a", "expectWritten": [] } },
+    { "refresh": { "ref": "a" } },
+    { "expect": { "value": { "ref": "a", "property": "Name", "equals": "Ada Lovelace" } } }
+  ]
+}

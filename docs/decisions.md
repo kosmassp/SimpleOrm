@@ -2512,3 +2512,14 @@ prefix (unit of work and tracking) — `CRUD-`/`REL-` stay for what they name.
 observability (Level 4), savepoints (Level 4), read/write splitting (Level 4).
 
 **Status.** Accepted. Next session starts M1 with the two open rulings.
+
+### ADR-0034 addendum 1 — the two M1 rulings (2026-10-16)
+
+Owner rulings taken at the start of Level 3 M1:
+
+1. **Tracking is a session mode, configured at open** (`DbOptions.Tracking`);
+   **the default is untracked**, so every Level 0–2 behaviour, benchmark, and
+   port suite is untouched. "Even if always on, it should be configured."
+2. **A re-read of a key the session already tracks returns the tracked
+   instance and does not apply the row's values** — the tracked instance
+   wins, dirty or not; an explicit `Refresh` overwrites it from the row.

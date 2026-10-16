@@ -18,6 +18,7 @@ these codes.
 | `REL-` | relationship loading |
 | `DDL-` | schema generation from metadata |
 | `TX-` | transactions and session |
+| `UOW-` | tracking and the unit of work (Level 3) |
 
 ## MAP — metadata loading and mapping
 
@@ -129,3 +130,10 @@ these codes.
 | `CRUD-010` | optimistic concurrency conflict (zero rows affected with version column) | §7.16 |
 
 Codes are append-only: a retired rule keeps its code (marked retired), never reuses it.
+
+## UOW — tracking and the unit of work (Level 3, ADR-0034)
+
+| Code | Meaning | Decided | Enforced |
+|---|---|---|---|
+| `UOW-001` | a tracking question (`ChangesOf`/`IsDirty`) about an instance the session does not track: the session is untracked, or the instance never came through this session (not read by it, inserted by it, or updated by it) | ADR-0034 add.1 | L3 milestone 1 |
+| `UOW-002` | identity conflict on a write: the instance is not the session's instance for its key — another tracked instance holds that key, or a tracked instance's key was changed (a key is identity and never updates; delete and insert instead) | ADR-0034 add.1 | L3 milestone 1 |

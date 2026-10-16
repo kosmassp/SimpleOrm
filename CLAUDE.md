@@ -71,7 +71,7 @@ spec/                         language-neutral spec, written as each level stabi
   mapping-rules.md            naming conventions, construction, conversions, strictness
   migrations.md               file format, version table, checksums, locking, up/down semantics
   validation-rules.md         every rule with its error code
-  errors.md                   error code registry (MAP-, PRM-, MIG-, VAL-, CRUD-, QRY-, TX-)
+  errors.md                   error code registry (MAP-, PRM-, MIG-, VAL-, CRUD-, QRY-, TX-, REL-, DDL-, UOW-)
   query-ast.md                Level 2
 conformance/                  the executable definition of the library (see §9)
   schema/sqlite/              migrations for the fixture database
@@ -82,6 +82,8 @@ conformance/                  the executable definition of the library (see §9)
   diff-cases/                 generator diff scenarios as JSON (shape vs shape, ADR-0017)
   amend-cases/                diff --amend scenarios: a migrations tree as data in, files deleted/written out (ADR-0017 add.3)
   snapshot-cases/             exact snapshot exports for fixture entities (ADR-0017)
+  load-cases/                 relationship loading replayed explicitly and in every fetch mode (ADR-0021/0022)
+  tracking-cases/             identity map + change tracking step scripts per tracking mode (ADR-0034 M1)
 dotnet/
   SimpleOrm.sln
   src/SimpleOrm/              core: metadata, mapping, parameters, session, rules, migration runner

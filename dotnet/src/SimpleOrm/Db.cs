@@ -74,12 +74,18 @@ public sealed partial class Db : IAsyncDisposable
                 // navigations (REL-004 on access, ADR-0021 add.2); loading
                 // replaces the sentinel. Null for plain result types.
                 var markUnloaded = UnloadedNavigations.MarkerFor(typeof(TResult), Maps);
+                var track = TrackerFor(typeof(TResult));
                 var results = new List<TResult>();
                 var row = 0;
                 while (reader.Read())
                 {
                     var entity = plan(reader);
                     markUnloaded?.Invoke(entity!);
+                    if (track is not null)
+                    {
+                        entity = (TResult)track(entity!);
+                    }
+
                     results.Add(entity);
                     if ((++row & 63) == 0)
                     {
@@ -135,10 +141,16 @@ public sealed partial class Db : IAsyncDisposable
                 // (MAP-001/002/003) fires even for empty results.
                 var plan = _mapper.CreatePlan<TResult>(reader, query.Source.Description);
                 var markUnloaded = UnloadedNavigations.MarkerFor(typeof(TResult), Maps);
+                var track = TrackerFor(typeof(TResult));
                 while (await reader.ReadAsync(ct).ConfigureAwait(false))
                 {
                     var entity = plan(reader);
                     markUnloaded?.Invoke(entity!);
+                    if (track is not null)
+                    {
+                        entity = (TResult)track(entity!);
+                    }
+
                     yield return entity;
                 }
             }
@@ -217,7 +229,14 @@ public sealed partial class Db : IAsyncDisposable
         }
 
         var keyValues = ValidateKey(map, key);
+        var fresh = await ReadByKeyAsync<TEntity>(map, keyValues, ct).ConfigureAwait(false);
+        return fresh is null ? null : (TEntity)Track(map, fresh);
+    }
 
+    /// <summary>One row by key as a fresh instance — the shared read behind <see cref="GetOrDefaultAsync{TEntity}"/> and <see cref="RefreshAsync{TEntity}"/>; never consults the identity map.</summary>
+    private async Task<TEntity?> ReadByKeyAsync<TEntity>(EntityMap map, object?[] keyValues, CancellationToken ct)
+        where TEntity : class
+    {
         using var command = _connection.CreateCommand();
         command.Transaction = _transaction;
         var dialect = Options.Dialect;
@@ -429,6 +448,7 @@ public sealed partial class Db : IAsyncDisposable
         }
 
         CheckNavigationConsistency(map, entity);
+        CheckIdentity(map, entity);
 
         if (map.KeyStrategy == KeyStrategy.ClientGuid)
         {
@@ -464,6 +484,8 @@ public sealed partial class Db : IAsyncDisposable
         {
             await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
+
+        TrackWritten(map, entity);
     }
 
     /// <summary>
@@ -474,17 +496,46 @@ public sealed partial class Db : IAsyncDisposable
     /// Without one, zero rows is <c>CRUD-001</c>. For a narrower SET see
     /// <see cref="UpdateOnlyAsync{TEntity}"/>.
     /// </summary>
-    public Task UpdateAsync<TEntity>(TEntity entity, CancellationToken ct)
+    public async Task UpdateAsync<TEntity>(TEntity entity, CancellationToken ct)
         where TEntity : class
     {
         var map = RequireWritableKeyed<TEntity>();
         CheckNavigationConsistency(map, entity);
 
+        if (CheckIdentity(map, entity) is { } tracked)
+        {
+            // A tracked instance writes only what changed since its snapshot
+            // (Level 3 M1): the ADR-0028 column-list path, and no statement at
+            // all when nothing changed. Key/version/generated columns never
+            // appear in a SET — a changed key is UOW-002 above.
+            var dirty = DirtyProperties(map, entity, tracked.Snapshot)
+                .Where(p => !p.IsKey && !p.IsVersion && !p.IsGenerated)
+                .ToList();
+            if (dirty.Count == 0)
+            {
+                return;
+            }
+
+            await ExecuteUpdateAsync(
+                map, entity, Options.Dialect.UpdateOnlySql(map, dirty),
+                BoundForUpdate(map, dirty), ct).ConfigureAwait(false);
+            tracked.Snapshot = Snapshot(map, entity);
+            return;
+        }
+
         // Bind SET values, key values, and the current version for the WHERE;
         // database-generated non-key columns are never written.
-        return ExecuteUpdateAsync(
+        await ExecuteUpdateAsync(
             map, entity, Options.Dialect.UpdateSql(map),
-            map.Properties.Where(p => p.IsKey || p.IsVersion || !p.IsGenerated), ct);
+            map.Properties.Where(p => p.IsKey || p.IsVersion || !p.IsGenerated), ct).ConfigureAwait(false);
+        TrackWritten(map, entity);
+    }
+
+    /// <summary>The parameters of a column-list update: the SET, the key, and the version when mapped.</summary>
+    private static IEnumerable<PropertyMap> BoundForUpdate(EntityMap map, IReadOnlyList<PropertyMap> set)
+    {
+        var bound = set.Concat(map.KeyProperties);
+        return map.VersionProperty is { } version ? bound.Concat(new[] { version }) : bound;
     }
 
     /// <summary>
@@ -497,21 +548,18 @@ public sealed partial class Db : IAsyncDisposable
     /// repeating list is <c>CRUD-007</c>. Deliberately not an overload: the ports
     /// have no overloading, and the spec names one operation per concept.
     /// </summary>
-    public Task UpdateOnlyAsync<TEntity>(TEntity entity, IReadOnlyList<string> properties, CancellationToken ct)
+    public async Task UpdateOnlyAsync<TEntity>(TEntity entity, IReadOnlyList<string> properties, CancellationToken ct)
         where TEntity : class
     {
         var map = RequireWritableKeyed<TEntity>();
         var set = ResolveUpdateList(map, properties);
         var listed = new HashSet<string>(set.Select(p => p.PropertyName), StringComparer.Ordinal);
         CheckNavigationConsistency(map, entity, listed.Contains);
+        CheckIdentity(map, entity);
 
-        var bound = set.Concat(map.KeyProperties);
-        if (map.VersionProperty is { } version)
-        {
-            bound = bound.Concat(new[] { version });
-        }
-
-        return ExecuteUpdateAsync(map, entity, Options.Dialect.UpdateOnlySql(map, set), bound, ct);
+        await ExecuteUpdateAsync(
+            map, entity, Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set), ct).ConfigureAwait(false);
+        TrackWritten(map, entity);
     }
 
     /// <summary>Validates an update-by-column-list (ADR-0028) and resolves it to property maps, in the caller's order.</summary>
@@ -667,6 +715,8 @@ public sealed partial class Db : IAsyncDisposable
                 "CRUD-001", typeof(TEntity).Name,
                 $"delete affected no rows: no row with key ({FormatKey(byEntity ? KeyOf(map, keyOrEntity) : keyOrEntity)})");
         }
+
+        Untrack(map, byEntity ? map.GetKeyValues(keyOrEntity) : ValidateKey(map, keyOrEntity));
     }
 
     private EntityMap RequireWritableKeyed<TEntity>()
@@ -795,10 +845,16 @@ public sealed partial class Db : IAsyncDisposable
             {
                 var plan = _mapper.CreatePlan<TResult>(reader, StatementName<TResult>());
                 var markUnloaded = UnloadedNavigations.MarkerFor(typeof(TResult), Maps);
+                var track = TrackerFor(typeof(TResult));
                 while (await reader.ReadAsync(ct).ConfigureAwait(false))
                 {
                     var entity = plan(reader);
                     markUnloaded?.Invoke(entity!);
+                    if (track is not null)
+                    {
+                        entity = (TResult)track(entity!);
+                    }
+
                     yield return entity;
                 }
             }

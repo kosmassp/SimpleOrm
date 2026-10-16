@@ -11,4 +11,25 @@ public sealed class DbOptions
 
     /// <summary>Custom and JSON type handlers (§7.9/§7.10); the extension point beyond the fixed conversion table.</summary>
     public TypeHandlerRegistry TypeHandlers { get; init; } = new();
+
+    /// <summary>
+    /// Whether the session keeps an identity map and change snapshots (Level 3 M1,
+    /// ADR-0034 add.1). <see cref="TrackingMode.Untracked"/> by default — every
+    /// Level 0–2 behaviour is unchanged until a session opts in.
+    /// </summary>
+    public TrackingMode Tracking { get; init; } = TrackingMode.Untracked;
+}
+
+/// <summary>
+/// The session's tracking mode (ADR-0034 add.1): <see cref="Tracked"/> keeps one
+/// instance per (entity type, key) for the session's lifetime and a snapshot of
+/// each instance's mapped values as read, so a re-read returns the same instance
+/// (the tracked one wins; <c>RefreshAsync</c> overwrites it on request) and
+/// <c>UpdateAsync</c> writes only what changed. <see cref="Untracked"/> is the
+/// Level 0–2 session: every read materializes a fresh instance.
+/// </summary>
+public enum TrackingMode
+{
+    Untracked,
+    Tracked,
 }

@@ -1,0 +1,14 @@
+{
+  "name": "untracked_session_materializes_fresh_instances",
+  "comment": "The default mode is the Level 0-2 session: every read is a fresh instance, nothing is tracked, tracking questions refuse with UOW-001 rather than answering from nothing, and Update writes the full row.",
+  "tracking": "untracked",
+  "steps": [
+    { "get": { "entity": "User", "key": 1, "as": "a" } },
+    { "get": { "entity": "User", "key": 1, "as": "b" } },
+    { "expect": { "notSame": ["a", "b"] } },
+    { "expect": { "tracked": { "ref": "a", "is": false } } },
+    { "expect": { "dirty": { "ref": "a", "properties": [] } }, "expectError": "UOW-001" },
+    { "set": { "ref": "a", "property": "Name", "value": "Ada Lovelace" } },
+    { "update": { "ref": "a", "expectWritten": "all" } }
+  ]
+}

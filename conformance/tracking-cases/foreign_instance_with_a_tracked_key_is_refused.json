@@ -1,0 +1,14 @@
+{
+  "name": "foreign_instance_with_a_tracked_key_is_refused",
+  "comment": "A write from an instance that is not the session's instance for its key is UOW-002 before any SQL - the identity map is never raced; a changed key on a tracked instance is the same refusal.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "User", "key": 1, "as": "a" } },
+    { "new": { "entity": "User", "as": "b", "values": { "Id": 1, "Name": "Impostor", "Email": "ada@example.com", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "update": { "ref": "b" }, "expectError": "UOW-002" },
+    { "updateOnly": { "ref": "b", "properties": ["Name"] }, "expectError": "UOW-002" },
+    { "expect": { "value": { "ref": "a", "property": "Name", "equals": "Ada" } } },
+    { "set": { "ref": "a", "property": "Id", "value": 99 } },
+    { "update": { "ref": "a" }, "expectError": "UOW-002" }
+  ]
+}

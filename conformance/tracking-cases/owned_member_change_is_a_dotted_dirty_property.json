@@ -1,0 +1,12 @@
+{
+  "name": "owned_member_change_is_a_dotted_dirty_property",
+  "comment": "Owned types snapshot flat (ADR-0030): a changed member reports under its dotted path and the update writes that member's column only.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "UserProfile", "key": 1, "as": "p" } },
+    { "set": { "ref": "p", "property": "Address.City", "value": "Cambridge" } },
+    { "expect": { "dirty": { "ref": "p", "properties": ["Address.City"] } } },
+    { "update": { "ref": "p", "expectWritten": ["Address.City"] } },
+    { "expect": { "dirty": { "ref": "p", "properties": [] } } }
+  ]
+}

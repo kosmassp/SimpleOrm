@@ -218,6 +218,37 @@ public sealed class TrackingTests(SqliteFixture fixture)
         Assert.False(db.IsDirty(tagged));
     }
 
+    [Fact]
+    public async Task Link_rows_read_by_a_many_to_many_load_are_tracked_too()
+    {
+        await using var db = await OpenTrackedAsync();
+        var ada = await TestDb.InsertUserAsync(db, $"T{Guid.NewGuid():N}", $"t-{Guid.NewGuid():N}@example.com");
+        var role = new Role { Name = $"r{Guid.NewGuid():N}", CreatedAtUtc = TestDb.SeedTime };
+        await db.InsertAsync(role, CancellationToken.None);
+        var link = new UserRole { UserId = ada.Id, RoleId = role.Id, CreatedAtUtc = TestDb.SeedTime };
+        await db.InsertAsync(link, CancellationToken.None);
+
+        await db.LoadAsync(ada, nameof(User.Roles), CancellationToken.None);
+        Assert.Same(role, Assert.Single(ada.Roles));
+        // The link row the load read is the session's instance for its key: one rule for every read.
+        Assert.Same(link, await db.GetAsync<UserRole>((ada.Id, role.Id), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task A_column_list_update_validates_the_list_before_the_identity_gate()
+    {
+        await using var db = await OpenTrackedAsync();
+        var ada = await TestDb.InsertUserAsync(db, $"T{Guid.NewGuid():N}", $"t-{Guid.NewGuid():N}@example.com");
+        var foreign = new User { Id = ada.Id, Name = "x", Email = ada.Email, CreatedAtUtc = TestDb.SeedTime };
+
+        var unmapped = await Assert.ThrowsAsync<SimpleOrmException>(
+            () => db.UpdateOnlyAsync(foreign, ["NoSuchProperty"], CancellationToken.None));
+        Assert.Equal("CRUD-005", unmapped.Code);
+        var identity = await Assert.ThrowsAsync<SimpleOrmException>(
+            () => db.UpdateOnlyAsync(foreign, [nameof(User.Name)], CancellationToken.None));
+        Assert.Equal("UOW-002", identity.Code);
+    }
+
     private sealed record UserById(long Id);
 
     [Table("tracking_tagged")]

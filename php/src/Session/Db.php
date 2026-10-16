@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Session;
 
+use Closure;
 use Generator;
 use LogicException;
 use PDO;
@@ -616,12 +617,11 @@ final class Db
             return $detached;
         }
 
-        // SPEC-GAP: spec/unit-of-work.md names no refusal for merging an instance of a read-only source (view/statement); it is
-        // CRUD-003 like every write-side call (a merged value could never be written back), and "an unset generated key counts as not
-        // set" is read as PHP's own unset: null or an uninitialized typed property — a generated int key explicitly 0 is a key value.
+        // A table-backed, keyed entity (CRUD-003/CRUD-002), decided at merge time — a view's copy cannot be merged
+        // (spec/unit-of-work.md "Clarifications on detach and merge").
         $map = $this->requireWritableKeyed($detached::class);
         $keyValues = $map->getKeyValues($detached);
-        if ((new KeyTuple($keyValues))->hasNullPart()) {
+        if ((new KeyTuple($keyValues))->hasNullPart() || self::isUnsetGeneratedKey($map, $keyValues)) {
             throw new SimpleOrmException(
                 'CRUD-002',
                 $map->entityName(),
@@ -633,6 +633,22 @@ final class Db
         self::copyMappedValues($map, $detached, $held, $map->keyProperties);
 
         return $held;
+    }
+
+    /**
+     * An unset key beyond a null part: a database-generated key at its default (an explicit `0` is not a key value) or an
+     * empty client-generated GUID; a natural key's default value is a key (spec/unit-of-work.md "Clarifications on detach
+     * and merge").
+     *
+     * @param list<mixed> $keyValues
+     */
+    private static function isUnsetGeneratedKey(EntityMap $map, array $keyValues): bool
+    {
+        return match ($map->keyStrategy) {
+            KeyStrategy::DatabaseGenerated => $keyValues[0] === 0,
+            KeyStrategy::ClientGuid => $keyValues[0] === '',
+            default => false,
+        };
     }
 
     private function unitOfWork(): DbUnitOfWork
@@ -652,15 +668,14 @@ final class Db
 
     /**
      * Applies every mapped value of `$source` onto `$target` except the `$skip` properties (merge leaves the key alone); an
-     * owned navigation is replaced as a whole (null stays null, ADR-0030). A property the source never initialized has
-     * no value to copy and is left as it is on the target.
+     * owned navigation is replaced as a whole (null stays null, ADR-0030) by a fresh owned instance whose members are copied
+     * one by one, so nothing is aliased. A property the source never initialized has no value to copy and is left as it is
+     * on the target (spec/hooks.md Clarifications).
      *
      * @param list<PropertyMap> $skip
      */
     private static function copyMappedValues(EntityMap $map, object $source, object $target, array $skip = []): void
     {
-        // SPEC-GAP: "every mapped non-key value of the copy is written onto that instance" — a typed PHP property the copy never
-        // initialized has no value to write (null into a non-nullable property is a TypeError), so it is left as it is on the target.
         foreach ($map->properties as $property) {
             if ($property->owner === null && !in_array($property, $skip, true) && $property->property->isInitialized($source)) {
                 $property->setValue($target, $property->getValue($source));
@@ -669,7 +684,14 @@ final class Db
 
         foreach ($map->ownedTypes as $owner) {
             $owned = $owner->property->isInitialized($source) ? $owner->property->getValue($source) : null;
-            $owner->property->setValue($target, $owned);
+            $fresh = $owned === null ? null : new ($owner->ownedType)();
+            foreach ($owned === null ? [] : $owner->members() as $member) {
+                if ($member->property->isInitialized($owned)) {
+                    $member->property->setValue($fresh, $member->property->getValue($owned));
+                }
+            }
+
+            $owner->property->setValue($target, $fresh);
         }
     }
 
@@ -780,8 +802,22 @@ final class Db
         $sql = SqlPlaceholders::toPdo($this->options->dialect->insertSql($map));
         $statement = $this->connection()->prepare($sql);
 
-        $this->fillCreatedAt($map, $entity);
+        // The hooks run after the gates (spec/hooks.md Clarifications); a failed statement puts created-at back to unset.
+        $restoreCreatedAt = $this->fillCreatedAt($map, $entity);
+        try {
+            $this->runInsert($map, $entity, $statement);
+        } catch (Throwable $failure) {
+            $restoreCreatedAt();
 
+            throw $failure;
+        }
+
+        $this->tracking?->register($map, $entity);
+    }
+
+    /** Binds the row, executes the insert, and writes a database-generated key back onto the entity. */
+    private function runInsert(EntityMap $map, object $entity, PDOStatement $statement): void
+    {
         $parameters = [];
         foreach ($map->properties as $property) {
             if ($property->generated) {
@@ -808,8 +844,6 @@ final class Db
                 "{$map->entityName()}.{$keyProperty->propertyName()}",
             ));
         }
-
-        $this->tracking?->register($map, $entity);
     }
 
     /**
@@ -986,15 +1020,17 @@ final class Db
      */
     private function executeUpdate(EntityMap $map, object $entity, string $sql, array $bound): void
     {
-        // SPEC-GAP: spec/hooks.md does not say what an update that is refused leaves on the instance; the previous stamp (and, in
-        // a soft delete, the previous flag) is put back, so a refused write leaves nothing a row never held.
+        // A failed write leaves the instance as it was (spec/hooks.md Clarifications): the previous stamp is put back, so a
+        // refused write leaves nothing a row never held. The clock is read after the callers' gates.
         $stamp = $map->updatedAtProperty();
-        $previous = $stamp?->getValue($entity);
+        $restoreStamp = $stamp?->remember($entity);
         $stamp?->setValue($entity, $this->options->now());
         try {
             $this->runUpdate($map, $entity, $sql, $bound);
         } catch (Throwable $failure) {
-            $stamp?->setValue($entity, $previous);
+            if ($restoreStamp !== null) {
+                $restoreStamp();
+            }
 
             throw $failure;
         }
@@ -1123,40 +1159,41 @@ final class Db
 
     /**
      * A delete on a `#[SoftDelete]` entity (spec/hooks.md): the column-list update of [flag, stamp] with the version
-     * rules of an update. The entity form sets the flag (and stamp) on the instance — restored if the statement is
-     * refused — and is version-checked (`CRUD-010`); the by-key form binds the flag and the clock directly and
-     * refuses a versioned entity (`CRUD-012`: it cannot bump a version it does not know). Zero rows is `CRUD-001`.
-     * Either way the key is forgotten afterwards, like any deleted row.
+     * rules of an update, through the one update path. The entity form sets the flag (and stamp) on the instance —
+     * restored if the statement is refused — and is version-checked (`CRUD-010`); the by-key form carries the key,
+     * flag, and stamp on a scratch instance and refuses a versioned entity (`CRUD-012`: it cannot bump a version it
+     * does not know). Zero rows is `CRUD-001`. Either way the key is forgotten afterwards, like any deleted row.
      */
     private function softDelete(EntityMap $map, PropertyMap $flag, mixed $keyOrEntity, bool $byEntity): void
     {
+        $instance = $byEntity ? $keyOrEntity : $this->scratchForKey($map, $keyOrEntity);
+        $restoreFlag = $flag->remember($instance);
+        $flag->setValue($instance, true);
+
         $set = $this->withUpdatedAt($map, [$flag]);
-        $sql = $this->options->dialect->updateOnlySql($map, $set);
-
-        if ($byEntity) {
-            $previous = $flag->getValue($keyOrEntity);
-            $flag->setValue($keyOrEntity, true);
-            $bound = array_merge($set, $map->keyProperties);
-            if ($map->versionProperty !== null) {
-                $bound[] = $map->versionProperty;
-            }
-
-            try {
-                $this->executeUpdate($map, $keyOrEntity, $sql, $bound);
-            } catch (Throwable $failure) {
-                $flag->setValue($keyOrEntity, $previous);
-
-                throw $failure;
-            }
-
-            $this->tracking?->forget($map, $map->getKeyValues($keyOrEntity), $keyOrEntity);
-
-            return;
+        $bound = array_merge($set, $map->keyProperties);
+        if ($map->versionProperty !== null) {
+            $bound[] = $map->versionProperty;
         }
 
-        // SPEC-GAP: when a by-key soft delete would be both malformed and CRUD-012, the key shape (CRUD-002) is judged first; the
-        // by-key form has no instance, so a tracked holder of the key is forgotten but its in-memory flag and stamp stay as they were.
-        $keyValues = self::validateKey($map, $keyOrEntity);
+        try {
+            $this->executeUpdate($map, $instance, $this->options->dialect->updateOnlySql($map, $set), $bound);
+        } catch (Throwable $failure) {
+            $restoreFlag();
+
+            throw $failure;
+        }
+
+        $this->tracking?->forget($map, $map->getKeyValues($instance), $byEntity ? $instance : null);
+    }
+
+    /**
+     * The by-key soft delete's stand-in instance: the validated key on an instance built without its constructor, so the
+     * flag and stamp have somewhere to live and the one update path binds them. `CRUD-012` for a versioned entity is
+     * decided before the key validates (spec/hooks.md Clarifications: the call can never succeed there).
+     */
+    private function scratchForKey(EntityMap $map, mixed $key): object
+    {
         if ($map->versionProperty !== null) {
             throw new SimpleOrmException(
                 'CRUD-012',
@@ -1165,44 +1202,33 @@ final class Db
             );
         }
 
-        $stamp = $map->updatedAtProperty();
-        $parameters = [$flag->columnName => $this->converter->toDatabase(true, "{$map->entityName()}.{$flag->propertyName()}")];
-        if ($stamp !== null) {
-            $parameters[$stamp->columnName] = $this->converter->toDatabase(
-                $this->options->now(),
-                "{$map->entityName()}.{$stamp->propertyName()}",
-            );
+        $scratch = (new ReflectionClass($map->entityType))->newInstanceWithoutConstructor();
+        foreach (self::validateKey($map, $key) as $i => $value) {
+            $map->keyProperties[$i]->setValue($scratch, $value);
         }
 
-        foreach ($keyValues as $i => $value) {
-            $parameters[$map->keyProperties[$i]->columnName] = $this->converter->toDatabase($value, "{$map->entityName()} key[{$i}]");
-        }
-
-        $statement = $this->connection()->prepare(SqlPlaceholders::toPdo($sql));
-        PdoBinder::bindAndExecute($statement, $parameters);
-        if ($statement->rowCount() === 0) {
-            throw new SimpleOrmException(
-                'CRUD-001',
-                $map->entityName(),
-                sprintf('delete affected no rows: no row with key (%s)', self::formatKey($keyOrEntity)),
-            );
-        }
-
-        $this->tracking?->forget($map, $keyValues, null);
+        return $scratch;
     }
 
     /**
      * The `#[CreatedAt]` hook (spec/hooks.md): the session clock when the value is unset — null, which is also
-     * what an uninitialized typed property reads as; a value the caller set is kept.
+     * what an uninitialized typed property reads as (a `DateTimeImmutable` has no default instant, CODING-STANDARD §10);
+     * a value the caller set is kept. Returns the function that puts the previous state back when the insert fails.
+     *
+     * @return Closure(): void
      */
-    private function fillCreatedAt(EntityMap $map, object $entity): void
+    private function fillCreatedAt(EntityMap $map, object $entity): Closure
     {
         $created = $map->createdAtProperty();
-        // SPEC-GAP: "unset — null, or the type's default instant": PHP has no default instant for DateTimeImmutable, so unset is
-        // null or an uninitialized typed property (both read as null). The clock is read once per statement, never shared by a flush.
-        if ($created !== null && $created->getValue($entity) === null) {
-            $created->setValue($entity, $this->options->now());
+        if ($created === null || $created->getValue($entity) !== null) {
+            return static function (): void {
+            };
         }
+
+        $restore = $created->remember($entity);
+        $created->setValue($entity, $this->options->now());
+
+        return $restore;
     }
 
     /**
@@ -1216,8 +1242,8 @@ final class Db
     {
         $stamp = $map->updatedAtProperty();
 
-        // SPEC-GAP: an update-by-column-list that names the [UpdatedAt] column itself: it is accepted (no CRUD-006), written once, and
-        // takes the clock — the library is the column's writer, so the caller's value never reaches the row.
+        // Listing the stamp column in a column-list update changes nothing: it takes the clock and is written once
+        // (spec/hooks.md Clarifications) — the library is the column's writer, so the caller's value never reaches the row.
         return $stamp === null || in_array($stamp, $set, true) ? $set : [...$set, $stamp];
     }
 

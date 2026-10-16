@@ -72,8 +72,8 @@ final class EntityMapBuilder
         AuditRole $audit = AuditRole::None,
         bool $softDelete = false,
     ): self {
-        // SPEC-GAP: spec/hooks.md says hooks are "read by the same loaders" without naming the manual builder's spelling; the
-        // port adds `audit:`/`softDelete:` named arguments here. The convention loader (no markers at all) cannot declare hooks.
+        // The builder declares hooks like the attribute loader (spec/hooks.md Clarifications): the same MAP-026 rules, run by
+        // the one assembler. The convention loader (no markers at all) cannot declare hooks.
         $reflection = new ReflectionProperty($this->entityType, $property);
         $resolved = PropertyTypes::resolve($reflection, $type, $enumAsInt);
         $this->specs[] = new MappedPropertySpec(

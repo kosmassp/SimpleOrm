@@ -174,8 +174,9 @@ final class DbTracking
      */
     public function detach(object $entity): bool
     {
-        // SPEC-GAP: detach is by instance, not by key: an instance whose key was changed after it was tracked is still forgotten
-        // (under the key it was registered with), and an instance that only shares a key with a tracked one is UOW-001.
+        // By instance, never by key (spec/unit-of-work.md "Clarifications on detach and merge"): an instance whose key was
+        // changed after it was tracked is still forgotten (under the key it was registered with), and an instance that only
+        // shares a key with a tracked one is not this one — UOW-001 for the caller.
         $entry = $this->byInstance[spl_object_id($entity)] ?? null;
         if ($entry === null) {
             return false;

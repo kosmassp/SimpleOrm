@@ -20,10 +20,10 @@ func Detach[T any](db *Db, entity *T) error {
 		return err
 	}
 	if entity == nil {
+		// Go cannot refuse a nil pointer by type: UOW-001 for Detach, CRUD-002 for Merge (spec/hooks.md Clarifications).
 		return core.NewError("UOW-001", reflect.TypeFor[T]().Name(), "detach needs an instance, got nil")
 	}
 
-	// SPEC-GAP: a nil instance has nothing to detach and is UOW-001 (the spec names no nil case).
 	uow := db.schedule()
 	entry := db.entryOf(entity)
 	insert := uow.insertOf[entity]
@@ -33,8 +33,9 @@ func Detach[T any](db *Db, entity *T) error {
 			"the session neither tracks this instance nor has it scheduled; there is nothing to detach")
 	}
 
-	// SPEC-GAP: detaching a *tracked* owner cancels nothing it scheduled — inserts a persist cascade reached from
-	// it stay scheduled and still take its key at flush; only a scheduled owner's cascade is cancelled with it.
+	// By instance, never by key. Detaching a tracked owner cancels nothing it scheduled (the inserts its persist
+	// cascade reached stay and still take its key at flush); a scheduled insert is cancelled with what only its
+	// cascade scheduled; a scheduled removal alone is dropped (spec/unit-of-work.md "Clarifications on detach and merge").
 	if insert != nil {
 		uow.cancel([]*scheduledInsert{insert})
 	}
@@ -47,9 +48,8 @@ func Detach[T any](db *Db, entity *T) error {
 	return nil
 }
 
-// dropRemove takes one scheduled removal off the schedule. SPEC-GAP: only the instance's own removal is
-// dropped — the removals its remove cascade scheduled for its children stay scheduled (the spec says
-// "a removal dropped", not "and its cascade").
+// dropRemove takes one scheduled removal off the schedule: only the instance's own removal is dropped, the
+// removals its remove cascade scheduled for its children stay (spec/unit-of-work.md "Clarifications on detach and merge").
 func (u *unitOfWork) dropRemove(scheduled *scheduledRemove) {
 	remaining := u.removes[:0:0]
 	for _, candidate := range u.removes {
@@ -75,20 +75,17 @@ func Merge[T any](ctx context.Context, db *Db, entity *T) (*T, error) {
 	if entity == nil {
 		return nil, core.NewError("CRUD-002", reflect.TypeFor[T]().Name(), "merge needs an instance, got nil")
 	}
+	// The session's own instance merges as a no-op before any key check.
 	if db.entryOf(entity) != nil {
 		return entity, nil
 	}
 
-	// SPEC-GAP: a nil copy is CRUD-002 (no key to merge by); an instance scheduled for insert but not yet tracked is
-	// an ordinary copy here (its key is read like any other), and a tracked target scheduled for removal still takes
-	// the copy's values — the spec names neither case. A keyed view merges like a table row would (its later
-	// write refuses CRUD-003); a keyless or statement/procedure-backed type is QRY-005 or CRUD-002.
+	// Merge needs a table-backed, keyed entity — CRUD-003/CRUD-002, decided here at merge time (a view's copy cannot
+	// be merged). A scheduled-but-untracked instance is an ordinary copy, and a tracked target scheduled for removal
+	// still takes the copy's values (spec/unit-of-work.md "Clarifications on detach and merge").
 	entityType := reflect.TypeFor[T]()
-	m, err := db.maps.Load(entityType)
+	m, err := requireWritableKeyedType(db, entityType)
 	if err != nil {
-		return nil, err
-	}
-	if err := requireNamedRelation(m, entityType, "merge reads the row by key and needs a named relation"); err != nil {
 		return nil, err
 	}
 	keyValues, err := completeKey(m, entity)
@@ -136,8 +133,8 @@ func completeKey(m *core.EntityMap, entity any) ([]any, error) {
 	}
 	for i, value := range values {
 		if value == nil || (m.KeyStrategy != core.KeyNatural && isZeroKeyPart(value)) {
-			// SPEC-GAP: the spec says an unset generated key counts as not set; the zero GUID of a client-generated
-			// key is read the same way, and a natural key's zero value is a legitimate key.
+			// "Unset key": null, a database-generated key at its default, or an empty client-generated GUID; a natural
+			// key's default value is a key (spec/unit-of-work.md "Clarifications on detach and merge").
 			return nil, core.Errorf("CRUD-002", m.EntityName(),
 				"key part %d (%s) is not set; merge needs a complete key — persist new instances instead", i, m.KeyProperties[i].PropertyName)
 		}

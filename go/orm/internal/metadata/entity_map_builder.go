@@ -135,8 +135,8 @@ func (c *PropertyConfiguration) Type(columnType core.ColumnType) *PropertyConfig
 	return c
 }
 
-// SPEC-GAP: the spec does not say whether the manual builder takes hooks; it does (CreatedAt, UpdatedAt, SoftDelete),
-// validated by the same assembler as the tag (MAP-026), so every loader can declare them.
+// The manual builder declares the hooks like the tag does (spec/hooks.md Clarifications: the same MAP-026 rules apply to
+// both), because the one assembler validates every loader's specs.
 
 // CreatedAt declares the created-at hook (spec/hooks.md): the session fills the column on insert when unset.
 func (c *PropertyConfiguration) CreatedAt() *PropertyConfiguration {

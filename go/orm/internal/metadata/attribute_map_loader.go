@@ -329,6 +329,22 @@ type fieldDeclaration struct {
 // hasHook reports whether the field declares any of the three hooks.
 func (d fieldDeclaration) hasHook() bool { return d.isCreatedAt || d.isUpdatedAt || d.isSoftDelete }
 
+// declareHook records one hook option; naming the same hook twice on one tag is a malformed declaration
+// (MAP-023, the port's own rule — spec/hooks.md Clarifications), never a second hook.
+func declareHook(decl *fieldDeclaration, token string, fieldTarget string, errs *errorCollector) {
+	declared := &decl.isCreatedAt
+	switch token {
+	case "updated_at":
+		declared = &decl.isUpdatedAt
+	case "soft_delete":
+		declared = &decl.isSoftDelete
+	}
+	if *declared {
+		errs.add("MAP-023", fieldTarget, "malformed orm tag: the hook '%s' is named twice", token)
+	}
+	*declared = true
+}
+
 // parseFieldTag tokenizes one `orm` tag value. An unknown option, an unknown
 // `type=` token, or an empty token (a malformed tag) is MAP-023 (ADR-0027).
 func parseFieldTag(tagValue string, fieldTarget string, errs *errorCollector) fieldDeclaration {
@@ -354,12 +370,8 @@ func parseFieldTag(tagValue string, fieldTarget string, errs *errorCollector) fi
 			decl.isVersion = true
 		case token == "enum_int":
 			decl.isEnumInt = true
-		case token == "created_at":
-			decl.isCreatedAt = true
-		case token == "updated_at":
-			decl.isUpdatedAt = true
-		case token == "soft_delete":
-			decl.isSoftDelete = true
+		case token == "created_at" || token == "updated_at" || token == "soft_delete":
+			declareHook(&decl, token, fieldTarget, errs)
 		case strings.HasPrefix(token, "type="):
 			columnType, ok := core.ParseColumnType(token[len("type="):])
 			if !ok {
@@ -444,9 +456,8 @@ func readField(
 	decl := parseFieldTag(tagValue, fieldTarget, errs)
 
 	if decl.isOwned {
-		// SPEC-GAP: MAP-026 lists "without [Column]" among its causes; a hook beside ignore, on a navigation, on
-		// the owned navigation itself, or on an owned type's member is read as the same rule (a hook needs the
-		// entity's own mapped column) and reported as MAP-026 rather than MAP-019/MAP-024.
+		// A hook on a navigation, an ignored field, the owned navigation, or an owned type's member is MAP-026, never
+		// MAP-019/MAP-024 (spec/hooks.md Clarifications: MAP-026 covers every misplaced hook).
 		if decl.hasHook() {
 			errs.add("MAP-026", fieldTarget, "a hook is declared on a mapped column; an owned navigation is flattened into its owner and carries none")
 			return
@@ -592,6 +603,7 @@ func readOwnedType(
 		}
 		if decl.hasHook() {
 			errs.add("MAP-026", memberTarget, "a hook is declared on a column of the entity itself; an owned type's members carry none")
+			mapped++ // the member is declared, only misplaced: its one error is MAP-026, not also "maps no columns"
 			continue
 		}
 		if decl.isKey || decl.isGenerated || decl.isVersion || decl.isOwned || len(decl.relationships) > 0 {

@@ -39,9 +39,8 @@ final readonly class DbOptions
      */
     public function now(): DateTimeImmutable
     {
-        // SPEC-GAP: spec/hooks.md says a non-UTC instant is VAL-020 but not when, nor what UTC means for a PHP DateTimeImmutable:
-        // checked whenever a hook reads the clock (never at open, which would spend a tick of a counting test clock), and "UTC" is
-        // a zone *named* UTC, Z, or +00:00 (an offset of 0 is not enough: Europe/London is +00:00 only in winter).
+        // "UTC" is the language's notion of it (spec/hooks.md Clarifications): a zone *named* UTC, Z, or +00:00 (an offset of
+        // 0 is not enough: Europe/London is +00:00 only in winter). Checked when a hook reads the clock, never at open.
         $instant = $this->clock !== null ? ($this->clock)() : new DateTimeImmutable('now', new DateTimeZone('UTC'));
         if (!in_array($instant->getTimezone()->getName(), ['UTC', 'Z', '+00:00'], true)) {
             throw new SimpleOrmException(

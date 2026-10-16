@@ -54,7 +54,7 @@ func assemble(
 ) (*core.EntityMap, error) {
 	properties, byProperty := buildProperties(entityType, specs, convention, errs)
 	validateVersion(entityType, properties, errs)
-	validateHooks(properties, errs)
+	validateHooks(kind, properties, errs)
 	keyStrategy := resolveKeyStrategy(entityType, kind, properties, errs)
 	indexes := resolveIndexColumns(entityType, relationName, indexSpecs, byProperty, convention, errs)
 	relationships := resolveRelationships(entityType, relationshipSpecs, byProperty, errs)
@@ -173,14 +173,12 @@ func countHooks(spec *MappedPropertySpec) int {
 	return count
 }
 
-// SPEC-GAP: hooks declared on a view-, statement-, or procedure-backed entity are accepted (their column rules hold) and
-// never acted on — those sources refuse every write (CRUD-003); the spec limits hooks to no particular source.
-//
-// validateHooks is MAP-026 (spec/hooks.md "Declaration rules"): created-at/updated-at on a datetime
-// or datetimeoffset property (nullable or not), soft-delete on a non-nullable bool, no hook on a key,
-// version, or generated column, and at most one property per role. (A property carrying more than one
-// hook is reported where the specs are still visible, in buildProperties.)
-func validateHooks(properties []*core.PropertyMap, errs *errorCollector) {
+// validateHooks is MAP-026 (spec/hooks.md "Declaration rules" and its Clarifications): hooks live only on a
+// table-backed entity (a hook that could never act is a declaration error, as generated and version are on a
+// non-table), created-at/updated-at on a datetime or datetimeoffset property (nullable or not), soft-delete on a
+// non-nullable bool, no hook on a key, version, or generated column, and at most one property per role. (A
+// property carrying more than one hook is reported where the specs are still visible, in buildProperties.)
+func validateHooks(kind core.RelationKind, properties []*core.PropertyMap, errs *errorCollector) {
 	roles := map[string]*core.PropertyMap{}
 	for _, p := range properties {
 		role := ""
@@ -192,6 +190,11 @@ func validateHooks(properties []*core.PropertyMap, errs *errorCollector) {
 		case p.IsSoftDelete:
 			role = "soft_delete"
 		default:
+			continue
+		}
+
+		if kind != core.RelationTable {
+			errs.add("MAP-026", p.Target(), "a %s hook is only valid on a table-backed entity, not a %s: no write could ever act on it", role, kind)
 			continue
 		}
 

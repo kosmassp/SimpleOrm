@@ -2,6 +2,7 @@ package orm_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -100,6 +101,34 @@ type hookUnknownToken struct {
 	Stamp time.Time `orm:"column,created_on"`
 }
 
+type hookOnView struct {
+	ID     int64     `orm:"column,key"`
+	Moment time.Time `orm:"column,created_at"`
+}
+
+func (hookOnView) Entity() orm.EntityDef {
+	return orm.EntityDef{Source: orm.View("hook_view", "select 1 as id, '2026-01-01T00:00:00Z' as moment")}
+}
+
+type hookOnStatement struct {
+	ID    int64      `orm:"column"`
+	Flag  bool       `orm:"column,soft_delete"`
+	Stamp *time.Time `orm:"column"`
+}
+
+func (hookOnStatement) Entity() orm.EntityDef {
+	return orm.EntityDef{Source: orm.Statement("select 1 as id, 0 as flag, null as stamp")}
+}
+
+type hookOnProcedure struct {
+	ID    int64      `orm:"column"`
+	Stamp *time.Time `orm:"column,updated_at"`
+}
+
+func (hookOnProcedure) Entity() orm.EntityDef {
+	return orm.EntityDef{Source: orm.Procedure("hook_procedure", "select 1 as id, null as stamp")}
+}
+
 type hookStampedAddress struct {
 	City string `orm:"column,created_at"`
 }
@@ -157,12 +186,66 @@ func TestHooks_InvalidDeclarationsAreMAP026(t *testing.T) {
 		"a hook on the owned navigation itself":      loadMap[hookOnOwnedNavigation](t),
 		"a hook on a navigation (not a column)":      loadMap[hookOnNavigation](t),
 		"a soft_delete next to a created_at (field)": loadMap[hookSoftDeleteAndCreatedAt](t),
+		"a hook on a view-backed entity":             loadMap[hookOnView](t),
+		"a hook on a statement-backed entity":        loadMap[hookOnStatement](t),
+		"a hook on a procedure-backed entity":        loadMap[hookOnProcedure](t),
 	}
 	for name, err := range cases {
 		t.Run(name, func(t *testing.T) {
-			if !orm.HasCode(err, "MAP-026") {
-				t.Fatalf("expected MAP-026, got %v", err)
+			assertOnlyMAP026(t, err)
+		})
+	}
+}
+
+// assertOnlyMAP026 pins that a misplaced hook is MAP-026 and never also MAP-019/MAP-024 or another code
+// (spec/hooks.md Clarifications: MAP-026 covers every misplaced hook).
+func assertOnlyMAP026(t *testing.T, err error) {
+	t.Helper()
+	var mapping *core.MappingErrors
+	if !errors.As(err, &mapping) || len(mapping.Errors) == 0 {
+		t.Fatalf("expected a MappingErrors carrying MAP-026, got %v", err)
+	}
+	for _, e := range mapping.Errors {
+		if e.Code != "MAP-026" {
+			t.Errorf("expected only MAP-026, also got %v", e)
+		}
+	}
+}
+
+// The manual builder declares hooks under the same rules (spec/hooks.md Clarifications): every shape that can
+// be wrong on a builder-declared table is MAP-026 there too.
+func TestHooks_TheManualBuilderValidatesHooksLikeTheTag(t *testing.T) {
+	type built struct {
+		ID      int64
+		Version int64
+		Stamp   time.Time
+		Other   time.Time
+		Name    string
+		Flag    bool
+		Maybe   *bool
+	}
+	keyed := func(b *metadata.EntityMapBuilder[built]) { b.Property("ID").Key() }
+	cases := map[string]func(b *metadata.EntityMapBuilder[built]){
+		"a hook on the key":            func(b *metadata.EntityMapBuilder[built]) { b.Property("ID").Key().CreatedAt() },
+		"a hook on the version":        func(b *metadata.EntityMapBuilder[built]) { b.Property("Version").Version().UpdatedAt() },
+		"a hook on a generated column": func(b *metadata.EntityMapBuilder[built]) { b.Property("Flag").Generated().SoftDelete() },
+		"created_at on a string":       func(b *metadata.EntityMapBuilder[built]) { b.Property("Name").CreatedAt() },
+		"soft_delete on a nullable":    func(b *metadata.EntityMapBuilder[built]) { b.Property("Maybe").SoftDelete() },
+		"two hooks on one property":    func(b *metadata.EntityMapBuilder[built]) { b.Property("Stamp").CreatedAt().UpdatedAt() },
+		"one role on two properties": func(b *metadata.EntityMapBuilder[built]) {
+			b.Property("Stamp").UpdatedAt()
+			b.Property("Other").UpdatedAt()
+		},
+	}
+	for name, declare := range cases {
+		t.Run(name, func(t *testing.T) {
+			builder := metadata.NewEntityMapBuilder[built]().ToTable("built")
+			if name != "a hook on the key" {
+				keyed(builder)
 			}
+			declare(builder)
+			_, err := builder.Build(core.SnakeCaseConvention)
+			assertOnlyMAP026(t, err)
 		})
 	}
 }
@@ -587,5 +670,54 @@ func TestFlush_AFailedFlushLeavesAnInsertsCreatedAtUnsetSoARetryFillsItAgain(t *
 	assertSummary(t, mustFlush(t, ctx, db), 1, 0, 0)
 	if !linus.CreatedAtUtc.Equal(testsupport.ClockNow) {
 		t.Errorf("the retry fills created_at, got %v", linus.CreatedAtUtc)
+	}
+}
+
+func TestHooks_ATrackedDirtyUpdateWritesTheDirtyColumnsInMetadataOrderThenTheStamp(t *testing.T) {
+	ctx := context.Background()
+	dialect := testsupport.NewRecordingDialect()
+	db := testsupport.OpenSampleWith(t, orm.Options{Dialect: dialect, Tracking: orm.TrackingTracked})
+	testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+	ada := mustGet[sample.User](t, ctx, db, 1)
+
+	// Changed in reverse of metadata order (own columns first, the inherited audit columns after).
+	earlier := testsupport.SeedTime.Add(-time.Hour)
+	ada.CreatedAtUtc = earlier
+	ada.Email = "ada@new.example.com"
+	ada.Name = "Ada Lovelace"
+	dialect.Reset()
+	if err := orm.Update(ctx, db, ada); err != nil {
+		t.Fatal(err)
+	}
+	updates := dialect.Updates()
+	if len(updates) != 1 || strings.Join(updates[0].Properties, ",") != "Name,Email,CreatedAtUtc,UpdatedAtUtc" {
+		t.Fatalf("dirty columns in metadata order, then the stamp: %+v", updates)
+	}
+	if changes, err := orm.ChangesOf(db, ada); err != nil || len(changes) != 0 {
+		t.Errorf("the stamp the update wrote is part of the new snapshot: %v %v", changes, err)
+	}
+}
+
+func TestSoftDelete_CRUD012OutranksAMalformedKeyOnAVersionedByKeyDelete(t *testing.T) {
+	ctx := context.Background()
+	db := openHookDb(t, orm.Options{})
+	insertHookDoc(t, ctx, db, "Spec")
+
+	if err := orm.Delete[hookDoc](ctx, db, "not an integer key"); orm.CodeOf(err) != "CRUD-012" {
+		t.Errorf("expected CRUD-012 before the key validates, got %v", err)
+	}
+	if err := orm.Delete[hookDoc](ctx, db, []any{int64(1), int64(2)}); orm.CodeOf(err) != "CRUD-012" {
+		t.Errorf("expected CRUD-012 for a wrong-arity key too, got %v", err)
+	}
+}
+
+type hookNamedTwice struct {
+	ID    int64     `orm:"column,key,generated"`
+	Stamp time.Time `orm:"column,created_at,created_at"`
+}
+
+func TestHooks_NamingTheSameHookTwiceOnATagIsAMalformedDeclarationMAP023(t *testing.T) {
+	if err := loadMap[hookNamedTwice](t); !orm.HasCode(err, "MAP-023") {
+		t.Fatalf("expected MAP-023, got %v", err)
 	}
 }

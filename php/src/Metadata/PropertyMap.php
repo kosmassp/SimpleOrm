@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Metadata;
 
+use Closure;
 use ReflectionProperty;
 
 /**
@@ -91,6 +92,36 @@ final readonly class PropertyMap
         }
 
         $this->property->setValue($owned, $value);
+    }
+
+    /**
+     * The function that puts this property back as it is now — its value, or **uninitialized** when it holds none
+     * (a typed property cannot take `null` back, so a plain `setValue(null)` would be a `TypeError`). The one
+     * restore every write-side undo uses: a failed update's stamp, a failed insert's created-at, a soft delete's
+     * flag, and the flush journal (spec/hooks.md Clarifications).
+     *
+     * @internal write-side undo helper of the session
+     * @return Closure(): void
+     */
+    public function remember(object $entity): Closure
+    {
+        if ($this->owner !== null || $this->property->isInitialized($entity)) {
+            $value = $this->getValue($entity);
+
+            return function () use ($entity, $value): void {
+                $this->setValue($entity, $value);
+            };
+        }
+
+        return function () use ($entity): void {
+            Closure::bind(
+                function (string $name): void {
+                    unset($this->{$name});
+                },
+                $entity,
+                $this->property->getDeclaringClass()->getName(),
+            )($this->property->getName());
+        };
     }
 
     private static function read(ReflectionProperty $property, object $holder): mixed

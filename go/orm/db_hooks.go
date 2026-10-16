@@ -21,9 +21,8 @@ func (db *Db) now() (time.Time, error) {
 		return time.Now().UTC(), nil
 	}
 	instant := clock()
-	// SPEC-GAP: the spec says "a non-UTC instant is VAL-020" without saying how Go decides that; a
-	// time.Time always carries a location, so the rule here is the zone offset (a fixed zone with
-	// offset zero is UTC, time.Local on a UTC machine passes).
+	// "UTC" is the language's notion of it (spec/hooks.md Clarifications): in Go a zero zone offset — a fixed zone of
+	// offset zero is UTC, time.Local on a UTC machine passes — and any other offset is VAL-020, at the write that reads the clock.
 	if _, offset := instant.Zone(); offset != 0 {
 		return time.Time{}, core.Errorf("VAL-020", "Options.Clock",
 			"the session clock returned %s, which is not UTC; return an instant in UTC (time.Now().UTC())",
@@ -34,17 +33,26 @@ func (db *Db) now() (time.Time, error) {
 
 // fillCreatedAt is the [CreatedAt] hook (spec/hooks.md): on insert the column takes the clock when its
 // value is unset — nil, or the zero instant — and keeps a value the caller set. It writes the value
-// onto the entity, so the instance reads back what the row holds.
-func (db *Db) fillCreatedAt(m *core.EntityMap, entity any) error {
+// onto the entity, so the instance reads back what the row holds, and returns the function that puts the
+// previous value back when the insert then fails (a failed write leaves the instance as it was, spec/hooks.md
+// Clarifications).
+func (db *Db) fillCreatedAt(m *core.EntityMap, entity any) (func(), error) {
 	property := m.CreatedAtProperty
-	if property == nil || !isUnsetInstant(property.Get(entity)) {
-		return nil
+	if property == nil {
+		return func() {}, nil
+	}
+	prior := property.Get(entity)
+	if !isUnsetInstant(prior) {
+		return func() {}, nil
 	}
 	instant, err := db.now()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return property.Set(entity, instant)
+	if err := property.Set(entity, instant); err != nil {
+		return nil, err
+	}
+	return func() { _ = property.Set(entity, prior) }, nil // the value came from Get, so it always assigns back
 }
 
 // isUnsetInstant is "null, or the type's default instant" (spec/hooks.md "[CreatedAt]").
@@ -66,14 +74,12 @@ func (db *Db) stampSet(m *core.EntityMap, entity any, set []*core.PropertyMap) (
 	if property == nil {
 		return set, func() {}, nil
 	}
-	// SPEC-GAP: the clock is read once per hook write, so a flush of several rows reads it once per row (a moving
-	// clock stamps different instants within one flush); the spec does not say whether a flush shares one instant.
+	// The clock is read per write (spec/hooks.md Clarifications), so a flush of several rows may stamp different instants.
 	instant, err := db.now()
 	if err != nil {
 		return nil, nil, err
 	}
-	// SPEC-GAP: the spec does not say what a failed write leaves on the instance; the stamp is put back so a
-	// refused or conflicting write changes nothing observable (and a retry stamps afresh).
+	// A failed write leaves the instance as it was (spec/hooks.md Clarifications): the caller puts the stamp back with restore.
 	prior := property.Get(entity)
 	if err := property.Set(entity, instant); err != nil {
 		return nil, nil, err
@@ -85,8 +91,8 @@ func (db *Db) stampSet(m *core.EntityMap, entity any, set []*core.PropertyMap) (
 			return set, restore, nil
 		}
 	}
-	// SPEC-GAP: a caller who lists the updated-at column in UpdateOnly still gets the clock, not their value
-	// (the library is the column's writer); it is not listed twice.
+	// Listing the stamp column in a column-list update changes nothing: it takes the clock and is written once
+	// (spec/hooks.md Clarifications).
 	return append(append([]*core.PropertyMap{}, set...), property), restore, nil
 }
 

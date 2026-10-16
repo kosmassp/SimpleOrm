@@ -215,8 +215,8 @@ final class MapAssembler
     private static function hookProblem(RelationKind $kind, PropertyMap $property, string $role): ?string
     {
         if ($kind !== RelationKind::Table) {
-            // SPEC-GAP: spec/hooks.md is silent on a hook declared on a view/statement/procedure entity (writes exist only for
-            // tables, so it could never act); strict by default (§2) refuses it as MAP-026 rather than ignoring it.
+            // Hooks are only valid on a table-backed entity (spec/hooks.md Clarifications): writes exist only for tables, so a
+            // hook elsewhere could never act — strict by default (§2) refuses it rather than ignoring it.
             return "a hook is only valid on a table-backed entity, not a {$kind->value}";
         }
 

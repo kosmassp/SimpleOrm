@@ -248,8 +248,8 @@ final class AttributeMapLoader
                 + ($oneToMany !== null ? 1 : 0) + ($manyToMany !== null ? 1 : 0);
 
             $hooks = self::hookAttributes($property);
-            // SPEC-GAP: spec/hooks.md says each hook "carries [Column]" but names no code for a hook on a navigation, an
-            // [Ignore]d property, or one with no #[Column]; all three are MAP-026 here (the hook declaration is what is wrong).
+            // MAP-026 covers every misplaced hook — a navigation, an [Ignore]d or unmapped property, an owned navigation —
+            // never MAP-019/MAP-024 (spec/hooks.md Clarifications).
             if ($hooks !== [] && ($owned !== null || $navigationCount > 0 || $ignore !== null || $column === null)) {
                 $errors[] = new MappingError(
                     'MAP-026',
@@ -804,13 +804,14 @@ final class AttributeMapLoader
             }
 
             if (self::hookAttributes($member) !== []) {
-                // SPEC-GAP: spec/hooks.md is silent on a hook inside an #[Owned] type; refused as MAP-026 (the hook is the
-                // owner's own column), not MAP-024 (which lists what an owned member may not carry, and hooks are not in it).
+                // A hook on an owned type's member is MAP-026, never MAP-024 (spec/hooks.md Clarifications: the hook is the
+                // owner's own column).
                 $errors[] = new MappingError(
                     'MAP-026',
                     $memberTarget,
                     'a hook (#[CreatedAt], #[UpdatedAt], #[SoftDelete]) is valid on an entity\'s own column, not on a member of an #[Owned] type',
                 );
+                $mapped++;   // declared, only misplaced: its one error is MAP-026, not also "maps no columns"
                 continue;
             }
 

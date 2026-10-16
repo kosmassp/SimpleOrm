@@ -596,8 +596,8 @@ func (j *flushJournal) recordInsert(db *Db, scheduled *scheduledInsert) {
 	if key, ok := keyOf(m, scheduled.ptr); ok {
 		displaced = db.tracker.find(m.Type, key)
 	}
-	// The [CreatedAt] hook fills an unset value as the insert runs; a retried flush fills it afresh.
-	// SPEC-GAP: the spec names the stamp of an undone update and the flag of an undone soft delete, not this.
+	// The [CreatedAt] hook fills an unset value as the insert runs; the undo puts it back so a retried flush fills it
+	// afresh (spec/hooks.md Clarifications: the fill of an undone insert's created-at).
 	createdAt := m.CreatedAtProperty
 	var priorCreatedAt any
 	if createdAt != nil {

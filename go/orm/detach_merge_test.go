@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kosmassp/SimpleOrm/go/orm"
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/testsupport"
@@ -204,12 +205,189 @@ func TestMerge_AnUnknownKeyWithNoRowIsCRUD001(t *testing.T) {
 	}
 }
 
-func TestMerge_AProcedureBackedEntityHasNoRelationToReadTheRowFromQRY005(t *testing.T) {
+func TestMerge_NeedsATableBackedKeyedEntityAtMergeTime(t *testing.T) {
 	ctx := context.Background()
 	db := openTracked(t)
 
-	if _, err := orm.Merge(ctx, db, &sample.UserActivityReport{}); orm.CodeOf(err) != "QRY-005" {
-		t.Fatalf("expected QRY-005 for a procedure-backed entity, got %v", err)
+	// A keyed view's copy cannot be merged (CRUD-003, decided at merge time, not "like a table row"); neither
+	// can a statement- or procedure-backed one — the same refusal the other write-side calls give.
+	for name, merge := range map[string]func() error{
+		"a keyed view": func() error {
+			_, err := orm.Merge(ctx, db, &sample.UserTransactionTotal{UserID: 1})
+			return err
+		},
+		"a statement": func() error {
+			_, err := orm.Merge(ctx, db, &sample.DailySales{})
+			return err
+		},
+		"a procedure": func() error {
+			_, err := orm.Merge(ctx, db, &sample.UserActivityReport{})
+			return err
+		},
+	} {
+		if err := merge(); orm.CodeOf(err) != "CRUD-003" {
+			t.Errorf("%s: expected CRUD-003, got %v", name, err)
+		}
+	}
+}
+
+func TestMerge_AnEmptyClientGuidIsAnUnsetKeyButANaturalZeroKeyIsAKey(t *testing.T) {
+	ctx := context.Background()
+	db := openTracked(t)
+	if err := orm.CreateTable[guidDoc](ctx, db); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := orm.Merge(ctx, db, &guidDoc{Title: "unsaved"}); orm.CodeOf(err) != "CRUD-002" {
+		t.Errorf("an empty client-generated GUID is not a key: expected CRUD-002, got %v", err)
+	}
+	// A natural key's default value is a key: the merge reads the row (and finds none) instead of refusing.
+	if _, err := orm.Merge(ctx, db, &sample.UserRole{}); orm.CodeOf(err) != "CRUD-001" {
+		t.Errorf("a natural (0, 0) key is a key: expected CRUD-001, got %v", err)
+	}
+}
+
+func TestMerge_TheSessionsOwnInstanceMergesAsANoOpBeforeAnyKeyCheck(t *testing.T) {
+	ctx := context.Background()
+	db := openTracked(t)
+	testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+	ada := mustGet[sample.User](t, ctx, db, 1)
+
+	ada.Name = "Edited"
+	ada.ID = 0 // its key is no longer a key value, yet it is still the session's own instance
+	merged, err := orm.Merge(ctx, db, ada)
+	if err != nil || merged != ada || ada.Name != "Edited" {
+		t.Fatalf("the session's own instance returns itself untouched: %v %v", merged, err)
+	}
+}
+
+func TestMerge_ATrackedTargetScheduledForRemovalStillTakesTheValuesAndAuditColumnsMergeLikeAnyValue(t *testing.T) {
+	ctx := context.Background()
+	db := openTracked(t)
+	testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+	ada := mustGet[sample.User](t, ctx, db, 1)
+	mustRemove(t, db, ada)
+
+	stamp := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	copyOfAda := newUser("Merged", "ada@example.com")
+	copyOfAda.ID = 1
+	copyOfAda.UpdatedAtUtc = &stamp
+	merged, err := orm.Merge(ctx, db, copyOfAda)
+	if err != nil || merged != ada {
+		t.Fatalf("the tracked instance is the target even while scheduled for removal: %v %v", merged, err)
+	}
+	if ada.Name != "Merged" || ada.UpdatedAtUtc == nil || !ada.UpdatedAtUtc.Equal(stamp) || !ada.CreatedAtUtc.Equal(testsupport.SeedTime) {
+		t.Errorf("values — the audit columns included — are copied as any value: %+v", ada)
+	}
+	if ada.UpdatedAtUtc == copyOfAda.UpdatedAtUtc {
+		t.Error("nothing is aliased: the stamp pointer is the instance's own")
+	}
+	if !db.HasPendingWork() {
+		t.Error("the removal stays scheduled")
+	}
+}
+
+func TestDetach_ATrackedOwnerCancelsNothingItScheduledAndItsChildrenStillTakeItsKey(t *testing.T) {
+	ctx := context.Background()
+	db := openTracked(t)
+	ada := testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+	order := insertJoinTransaction(t, ctx, db, ada.ID, "5")
+	child := newDetail(0, "Cascaded child")
+	order.Details = []*sample.TransactionDetail{child}
+
+	mustPersist(t, db, order) // tracked: schedules nothing for itself, cascades to the loaded child
+	if err := orm.Detach(db, order); err != nil {
+		t.Fatal(err)
+	}
+	if db.IsTracked(order) || !db.HasPendingWork() {
+		t.Fatalf("the owner is forgotten but the child it scheduled stays scheduled")
+	}
+	assertSummary(t, mustFlush(t, ctx, db), 1, 0, 0)
+	if child.TransactionID != order.ID || !db.IsTracked(child) {
+		t.Errorf("the child still took its detached owner's key: %+v", child)
+	}
+}
+
+func TestDetach_ADroppedRemovalLeavesTheRemovalsItsCascadeScheduled(t *testing.T) {
+	ctx := context.Background()
+	db := openTracked(t)
+	ada := testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+	order := insertJoinTransaction(t, ctx, db, ada.ID, "5")
+	child := newDetail(order.ID, "Child")
+	if err := orm.Insert(ctx, db, child); err != nil {
+		t.Fatal(err)
+	}
+	order.Details = []*sample.TransactionDetail{child}
+
+	mustRemove(t, db, order) // Transaction.Details cascades remove: both are scheduled
+	if err := orm.Detach(db, order); err != nil {
+		t.Fatal(err)
+	}
+	assertSummary(t, mustFlush(t, ctx, db), 0, 0, 1)
+	if rowCount[sample.Transaction](t, db) != 1 || rowCount[sample.TransactionDetail](t, db) != 0 {
+		t.Error("only the child's removal flushed; the detached owner's was dropped and its row stays")
+	}
+}
+
+func TestDetach_IsByInstanceNeverByKey(t *testing.T) {
+	ctx := context.Background()
+	db := openTracked(t)
+	testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+	ada := mustGet[sample.User](t, ctx, db, 1)
+
+	sameKey := newUser("Stranger", "stranger@example.com")
+	sameKey.ID = ada.ID
+	if err := orm.Detach(db, sameKey); orm.CodeOf(err) != "UOW-001" {
+		t.Fatalf("an instance that only shares a key is UOW-001, got %v", err)
+	}
+	if !db.IsTracked(ada) {
+		t.Error("the tracked instance for that key is untouched")
+	}
+}
+
+func TestInsert_AFailedImmediateInsertLeavesCreatedAtUnset(t *testing.T) {
+	ctx := context.Background()
+	db := openTracked(t)
+	testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+
+	duplicate := &sample.User{Name: "Impostor", Email: "ada@example.com"} // users.email is unique
+	if err := orm.Insert(ctx, db, duplicate); err == nil {
+		t.Fatal("the unique index on users.email must refuse the insert")
+	}
+	if !duplicate.CreatedAtUtc.IsZero() {
+		t.Errorf("a failed write leaves the instance as it was: created_at is %v", duplicate.CreatedAtUtc)
+	}
+}
+
+func TestHooks_TheClockIsConsultedAfterTheGatesSoTheirRefusalsOutrankVAL020(t *testing.T) {
+	ctx := context.Background()
+	plusOne := time.FixedZone("UTC+1", 3600)
+	badClock := func() time.Time { return time.Date(2026, 8, 29, 1, 0, 0, 0, plusOne) }
+	path := testsupport.TempDatabase(t)
+	good := testsupport.OpenSampleAt(t, path, orm.Options{Tracking: orm.TrackingTracked})
+	ada := testsupport.InsertUser(t, good, "Ada", "ada@example.com")
+	grace := testsupport.InsertUser(t, good, "Grace", "grace@example.com")
+	order := insertJoinTransaction(t, ctx, good, ada.ID, "5")
+
+	db := testsupport.OpenSampleAt(t, path, orm.Options{Tracking: orm.TrackingTracked, Clock: badClock})
+	tracked := mustGet[sample.User](t, ctx, db, ada.ID)
+	tracked.Name = "Edited"
+
+	if err := orm.UpdateOnly(ctx, db, tracked, "NoSuchProperty"); orm.CodeOf(err) != "CRUD-005" {
+		t.Errorf("the list validates before the clock: expected CRUD-005, got %v", err)
+	}
+	inconsistent := mustGet[sample.Transaction](t, ctx, db, order.ID)
+	inconsistent.User = grace // navigation key disagrees with UserID
+	if err := orm.Update(ctx, db, inconsistent); orm.CodeOf(err) != "CRUD-004" {
+		t.Errorf("the navigation check precedes the clock: expected CRUD-004, got %v", err)
+	}
+	holder := newUser("Other", "other@example.com")
+	holder.ID = ada.ID // not the session's instance for that key
+	if err := orm.Update(ctx, db, holder); orm.CodeOf(err) != "UOW-002" {
+		t.Errorf("the identity gate precedes the clock: expected UOW-002, got %v", err)
+	}
+	if err := orm.Update(ctx, db, tracked); orm.CodeOf(err) != "VAL-020" {
+		t.Errorf("past the gates the clock is read: expected VAL-020, got %v", err)
 	}
 }
 

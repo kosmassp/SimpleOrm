@@ -401,9 +401,10 @@ internal static class AttributeMapLoader
             var enumAsInt = member.GetCustomAttribute<EnumAsIntAttribute>();
             if (member.GetCustomAttributes().Any(a => a is CreatedAtAttribute or UpdatedAtAttribute or SoftDeleteAttribute))
             {
+                // Reported, then read as the column it otherwise is, so the owned
+                // type does not also fail "maps no columns" (MAP-024): one error.
                 errors.Add(new MappingError(
                     "MAP-026", memberTarget, "a hook belongs on an entity's own column, not on an owned type's member"));
-                continue;
             }
 
             if (member.GetCustomAttributes().Any(a => a is KeyAttribute or GeneratedAttribute or VersionAttribute

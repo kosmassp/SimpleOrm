@@ -69,6 +69,44 @@ public sealed class HooksTests(SqliteFixture fixture)
     }
 
     [Fact]
+    public async Task A_failed_immediate_insert_leaves_the_created_at_fill_unset()
+    {
+        await using var db = await OpenAsync();
+        await TestDb.InsertUserAsync(db, "ada", "ada@example.com");
+        var duplicate = new User { Name = "dup", Email = "ada@example.com" };   // the unique index refuses
+
+        await Assert.ThrowsAnyAsync<Exception>(() => db.InsertAsync(duplicate, CancellationToken.None));
+        Assert.Equal(default, duplicate.CreatedAtUtc);
+        Assert.Equal(0, duplicate.Id);
+    }
+
+    [Fact]
+    public void A_hook_on_an_owned_member_is_one_error()
+    {
+        var error = Assert.Throws<MappingException>(() => new EntityMapLoader().Load<HookedOwner>());
+        Assert.Equal(["MAP-026"], error.Errors.Select(e => e.Code));
+    }
+
+    [Table("hook_owners")]
+    public sealed class HookedOwner
+    {
+        [Key]
+        [Column]
+        public long Id { get; set; }
+
+        [Owned]
+        public Stamped? Stamped { get; set; }
+    }
+
+    [Owned]
+    public sealed class Stamped
+    {
+        [Column]
+        [UpdatedAt]
+        public DateTime? At { get; set; }
+    }
+
+    [Fact]
     public async Task The_clock_must_be_utc()
     {
         await using var db = await OpenAsync(clock: () => new DateTime(2026, 8, 29, 0, 0, 0, DateTimeKind.Local));

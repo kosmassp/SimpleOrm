@@ -387,13 +387,22 @@ func insertRow(ctx context.Context, db *Db, entityType reflect.Type, entity any)
 		}
 	}
 
-	// The [CreatedAt] hook (spec/hooks.md): an unset created-at takes the clock before the row is bound.
-	// SPEC-GAP: the clock is read after the identity gate and the navigation check, so UOW-002/CRUD-004 outrank a
-	// VAL-020 from the clock; the spec gives no refusal order for hooks.
-	if err := db.fillCreatedAt(m, entity); err != nil {
+	// The [CreatedAt] hook (spec/hooks.md): an unset created-at takes the clock before the row is bound — after
+	// the gates, so UOW-002/CRUD-004 outrank a VAL-020 from the clock (spec/hooks.md Clarifications) — and goes
+	// back to unset if the statement then fails.
+	restoreCreatedAt, err := db.fillCreatedAt(m, entity)
+	if err != nil {
 		return err
 	}
+	if err := writeInsert(ctx, db, entityType, m, entity); err != nil {
+		restoreCreatedAt()
+		return err
+	}
+	return nil
+}
 
+// writeInsert binds the row and runs the insert statement, writing a database-generated key back onto the entity.
+func writeInsert(ctx context.Context, db *Db, entityType reflect.Type, m *core.EntityMap, entity any) error {
 	args := make([]any, 0, len(m.Properties))
 	for _, p := range m.Properties {
 		if p.IsGenerated {
@@ -433,7 +442,7 @@ func insertRow(ctx context.Context, db *Db, entityType reflect.Type, entity any)
 		return keyProperty.Set(entity, value)
 	}
 
-	_, err = db.exec().ExecContext(ctx, sqlText, args...)
+	_, err := db.exec().ExecContext(ctx, sqlText, args...)
 	return err
 }
 
@@ -719,8 +728,8 @@ func Delete[T any](ctx context.Context, db *Db, key any) error {
 		return err
 	}
 	// A soft delete by key on a versioned entity refuses before any SQL: the version it does not know
-	// cannot be bumped blindly (CRUD-012, spec/hooks.md). SPEC-GAP: raised before the key is validated
-	// (the entity's shape comes first, as CRUD-003 does); the spec gives no order against CRUD-002.
+	// cannot be bumped blindly (CRUD-012, spec/hooks.md). Decided before the key validates, so it outranks
+	// CRUD-002 (spec/hooks.md Clarifications: the call can never succeed there).
 	if m.SoftDeleteProperty != nil && m.VersionProperty != nil {
 		return core.NewError("CRUD-012", entityType.Name(),
 			"a soft delete by key cannot bump the version column; pass the entity (orm.DeleteEntity) for the version-checked form")
@@ -731,9 +740,8 @@ func Delete[T any](ctx context.Context, db *Db, key any) error {
 	}
 	if m.SoftDeleteProperty != nil {
 		// Every delete of a [SoftDelete] entity is the flag-setting update (spec/hooks.md); the key's instance,
-		// if the session tracks one, is forgotten like any deleted row.
-		// SPEC-GAP: the by-key form forgets the key's tracked instance but, having no instance to carry it, sets no
-		// flag or stamp on it (the entity form does); the spec says only "forgotten like any deleted row".
+		// if the session tracks one, is forgotten like any deleted row. The by-key form has no instance to carry
+		// the flag or stamp, so it sets nothing on the tracked one (spec/hooks.md Clarifications).
 		if err := softDeleteByKey(ctx, db, entityType, m, keyValues); err != nil {
 			return err
 		}

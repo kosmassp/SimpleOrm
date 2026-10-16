@@ -30,6 +30,7 @@ use SimpleOrm\Session\Db;
 use SimpleOrm\Session\DbOptions;
 use SimpleOrm\Session\TrackingMode;
 use SimpleOrm\Tests\Sample\Models\Role;
+use SimpleOrm\Tests\Sample\Models\Transaction;
 use SimpleOrm\Tests\Sample\Models\User;
 use SimpleOrm\Tests\Support\ConformanceClock;
 use SimpleOrm\Tests\Support\ConformanceSeed;
@@ -297,6 +298,13 @@ final class HooksTest extends TestCase
     }
 
     #[Test]
+    public function crud012_outranks_a_malformed_key_on_a_versioned_by_key_soft_delete(): void
+    {
+        self::assertSame('CRUD-012', $this->code(fn () => $this->db->delete(HookDocument::class, 'not an integer key')));
+        self::assertSame('CRUD-012', $this->code(fn () => $this->db->delete(HookDocument::class, [1, 2])));
+    }
+
+    #[Test]
     public function a_stale_entity_form_soft_delete_is_crud010_and_leaves_the_flag_unset(): void
     {
         $document = $this->newDocument('stale soon');
@@ -390,6 +398,112 @@ final class HooksTest extends TestCase
         self::assertNull($clean->updatedAtUtc);
         self::assertFalse($this->db->isTracked($role));
     }
+    // --- a failed write leaves the instance as it was ----------------------------------------------------
+
+    #[Test]
+    public function a_failed_immediate_insert_leaves_created_at_unset(): void
+    {
+        $duplicate = new User();
+        $duplicate->name = 'Impostor';
+        $duplicate->email = 'ada@example.com';   // users.email is unique
+
+        try {
+            $this->db->insert($duplicate);
+            self::fail('the unique index on users.email should refuse the insert');
+        } catch (PDOException) {
+            // the provider's own exception propagates (CODING-STANDARD §4)
+        }
+
+        self::assertFalse((new ReflectionProperty(User::class, 'createdAtUtc'))->isInitialized($duplicate));
+    }
+
+    #[Test]
+    public function a_refused_update_puts_an_uninitialized_stamp_back_to_uninitialized_and_reports_the_real_refusal(): void
+    {
+        $this->db->createTable(HookStrictStamp::class);
+        $ghost = new HookStrictStamp();
+        $ghost->id = 99;
+
+        // The refusal is the row count (CRUD-001); restoring the stamp must not replace it with a TypeError (null into a typed property).
+        self::assertSame('CRUD-001', $this->code(fn () => $this->db->update($ghost)));
+        self::assertFalse((new ReflectionProperty(HookStrictStamp::class, 'touched'))->isInitialized($ghost));
+    }
+
+    // --- the clock is read after the gates -------------------------------------------------------------
+
+    #[Test]
+    public function the_clock_is_consulted_after_the_gates_so_their_refusals_outrank_val020(): void
+    {
+        $session = Db::open($this->fixture->connectionString(), new DbOptions(
+            new SqliteDialect(),
+            tracking: TrackingMode::Tracked,
+            clock: static fn (): DateTimeImmutable => new DateTimeImmutable('2026-01-01T00:00:00', new DateTimeZone('Europe/Paris')),
+        ));
+        try {
+            $ada = $session->get(User::class, 1);
+            $ada->name = 'Edited';
+            self::assertSame('CRUD-005', $this->code(static fn () => $session->updateOnly($ada, ['noSuchProperty'])));
+
+            $order = $session->get(Transaction::class, 1);
+            (new ReflectionProperty(Transaction::class, 'user'))->setValue($order, $session->get(User::class, 2));
+            self::assertSame('CRUD-004', $this->code(static fn () => $session->update($order)));
+
+            $stranger = new User();
+            $stranger->id = 1;
+            $stranger->name = 'Stranger';
+            $stranger->email = 'stranger@example.com';
+            self::assertSame('UOW-002', $this->code(static fn () => $session->update($stranger)));
+
+            self::assertSame('VAL-020', $this->code(static fn () => $session->update($ada)), 'past the gates the clock is read');
+        } finally {
+            $session->close();
+        }
+    }
+
+    // --- the stamp joins the SET after the dirty columns, in metadata order ------------------------------
+
+    #[Test]
+    public function a_tracked_dirty_update_writes_the_dirty_columns_in_metadata_order_then_the_stamp(): void
+    {
+        $ada = $this->db->get(User::class, 1);
+        // Changed in reverse of metadata order (own columns first, the inherited audit columns after).
+        $ada->createdAtUtc = new DateTimeImmutable('2020-01-01T00:00:00Z');
+        $ada->email = 'ada@new.example.com';
+        $ada->name = 'Ada Lovelace';
+        $this->recorder->updates = [];
+
+        $this->db->update($ada);
+
+        self::assertSame([['name', 'email', 'createdAtUtc', 'updatedAtUtc']], $this->recorder->updates);
+        self::assertSame([], $this->db->changesOf($ada), 'the stamp the update wrote is part of the new snapshot');
+    }
+
+    #[Test]
+    public function a_stamp_only_difference_is_reported_by_changes_of_but_writes_nothing(): void
+    {
+        $ada = $this->db->get(User::class, 1);
+        $ada->updatedAtUtc = new DateTimeImmutable('2020-01-01T00:00:00Z');
+        $this->recorder->updates = [];
+
+        self::assertSame(['updatedAtUtc'], $this->db->changesOf($ada));
+        $this->db->update($ada);
+
+        self::assertSame([], $this->recorder->updates);
+        self::assertEquals(new DateTimeImmutable('2020-01-01T00:00:00Z'), $ada->updatedAtUtc, 'nothing was written, so nothing was stamped');
+    }
+}
+
+/** A non-nullable `#[UpdatedAt]` column on a typed property that starts uninitialized. */
+#[Table('hook_strict_stamps')]
+final class HookStrictStamp
+{
+    #[Key]
+    #[Column]
+    public int $id;
+
+    #[Column]
+    #[UpdatedAt]
+    public DateTimeImmutable $touched;
 }
 
 /** An audit column that is not a date: `MAP-026`. */

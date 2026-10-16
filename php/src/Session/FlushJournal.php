@@ -40,8 +40,8 @@ final class FlushJournal
             $this->recordValue($key, $entity);
         }
 
-        // SPEC-GAP: spec/hooks.md names the flag/stamp/version of an undone soft delete and the stamp of an undone update; the
-        // #[CreatedAt] value an undone insert filled goes back to unset too, so the retry takes the clock again ("flushes as it was").
+        // The #[CreatedAt] value an undone insert filled goes back to unset too, so the retry takes the clock again
+        // (spec/hooks.md Clarifications: the fill of an undone insert's created-at).
         $this->recordProperties([$map->createdAtProperty()], $entity);
     }
 
@@ -85,24 +85,6 @@ final class FlushJournal
     /** An uninitialized property goes back to uninitialized (an `int $id` has no value before its insert), not to null. */
     private function recordValue(PropertyMap $property, object $entity): void
     {
-        $reflection = $property->property;
-        if ($reflection->isInitialized($entity)) {
-            $value = $reflection->getValue($entity);
-            $this->undo[] = static function () use ($reflection, $entity, $value): void {
-                $reflection->setValue($entity, $value);
-            };
-
-            return;
-        }
-
-        $this->undo[] = static function () use ($reflection, $entity): void {
-            Closure::bind(
-                function (string $name): void {
-                    unset($this->{$name});
-                },
-                $entity,
-                $reflection->getDeclaringClass()->getName(),
-            )($reflection->getName());
-        };
+        $this->undo[] = $property->remember($entity);
     }
 }

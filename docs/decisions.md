@@ -2693,3 +2693,81 @@ Postgres live suite, no server reachable). PHP: 505 tests, 1822 assertions. Go: 
 says so.
 
 **Status.** Accepted. M2 done in all three implementations.
+
+## ADR-0037 — Level 3 M3: detach/merge and the declared hooks, in three implementations (2026-10-16)
+
+The third Level 3 milestone (ADR-0034 §7c M3), by the per-milestone method:
+the reference with `spec/hooks.md`, the "Detach and merge" section of
+`spec/unit-of-work.md`, and two conformance folders first; then PHP and Go by
+agents forbidden to read another implementation; then a uniformity review;
+then every gap resolved against the reference and written into the spec.
+
+**Hooks are declared metadata, never callbacks.** Three exist, read by the
+same loaders as everything else, carried in the `EntityMap` and exported only
+when declared (`"audit"`, `"softDelete"`): `[CreatedAt]` fills with the
+**session clock** on insert when unset (a caller's value is kept);
+`[UpdatedAt]` stamps on every write that changes a row — it joins a
+column-list SET and a tracked dirty SET, never counts as what makes an
+instance dirty, never stamps a clean update; `[SoftDelete]` turns a delete
+(both forms, and a flushed `Remove`) into the column-list update that sets
+the flag, version-checked in the entity form, `CRUD-012` by key on a
+versioned entity. **Reads never filter on the flag** — no hidden WHERE (§2);
+the flag is a criteria the caller writes. The clock is `DbOptions.Clock`,
+UTC (`VAL-020` otherwise), fixed by the conformance runners at
+`2026-08-29T00:00:00Z`. Declaration errors are `MAP-026`, which covers every
+misplaced hook. The fixture: `BaseModel` carries both audit roles on every
+sample table — so the existing CRUD, tracking, and flush pins gained the
+stamp — and `Role.IsDeleted` is the flag, added by migration **V0011** in all
+three sample trees.
+
+**Detach and merge**, the simple rules: `Detach` forgets an instance and
+cancels what was scheduled for it; `Merge` copies a detached copy's mapped
+values — the version included, so a stale copy still fails its next update's
+`CRUD-010` — onto the session's instance for its key (the tracked one, or the
+row read now) and returns it; no deep graph merge, navigations untouched;
+`CRUD-001`/`CRUD-002` for a missing row or an unset key — new instances are
+persisted, not merged.
+
+**The ports.** PHP: three attributes, `AuditRole`, `DbOptions::$clock`,
+`detach`/`merge`, `ReflectionProperty::isInitialized` as "unset"; the sample
+project's V0011 + snapshot; 40 new tests, 545 total. Go: tag options
+`created_at`, `updated_at`, `soft_delete`, `Options.Clock`,
+`orm.Detach`/`orm.Merge`, the builder declares hooks too; V0011 in the sample
+migrations; the snapshot produced by its own CLI.
+
+**The audit: 13 + 16 gap questions, six reference alignments, one rule
+taken from a port.** The ports were more careful than the reference on
+failure paths: a failed immediate write now puts the stamp (and a soft
+delete's flag) back, and the flush's undo journal restores an undone
+insert's `[CreatedAt]` fill — both from the Go port. Misplaced hooks are
+`MAP-026` everywhere (the reference reported `MAP-019` for a hook without
+`[Column]` and silently ignored one on an owned member); a hook on a
+non-table source is `MAP-026` — the PHP port's stricter reading, the
+`MAP-013` precedent; an empty client GUID is an unset key for merge; the
+manual builder declares hooks (the Go port's addition), and hook validation
+moved into the assembler so both loaders share one rule. The rest were
+silences answered consistently (the language's notion of UTC, the clock read
+per write, hooks after the gates, `CRUD-012` before the key validates, a zero
+generated key as unset, detach's reach over scheduled work, merge's
+preconditions) — all Clarifications in `spec/hooks.md` and
+`spec/unit-of-work.md`.
+
+**The review pass** aligned both ports — Go's hooks on non-table sources and
+merge of a view (`MAP-026`, `CRUD-003`), PHP's `CRUD-012`-before-key order and
+zero generated keys — found four more real PHP bugs (a refused update turning
+into a `TypeError` on an uninitialized stamp; merge aliasing an owned object;
+the two orderings), consolidated PHP's restore logic into one `remember()`
+and its by-key soft delete onto the shared update path, and pinned every
+Clarification in both ports (30 + 20 new tests). Two of its decisions went
+beyond the Clarifications and both ports agreed, so the reference followed:
+a failed immediate insert puts its `[CreatedAt]` fill back, and a misplaced
+hook on an owned member reports `MAP-026` alone. No `SPEC-GAP` comment
+remains.
+
+**Verification.** C#: 380 passed, 22 skipped (SQL Server LocalDB and the
+Postgres live suite, no server reachable). PHP: 575 tests, 2162 assertions. Go: every package ok.
+
+**Next — M4, inheritance mapping (optional, single-table only) or straight to
+M5, draft migrations** (§7c): the owner's call.
+
+**Status.** Accepted. M3 done in all three implementations.

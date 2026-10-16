@@ -84,9 +84,9 @@ whose columns are the flag and the stamp.
 - **The clock is read per write** — once per statement that fills or stamps —
   so a multi-row flush may stamp different instants; the conformance runners
   fix it, so cases never depend on that.
-- **A failed immediate write leaves the instance as it was**: the stamp (and a
-  soft delete's flag) go back to their previous values when the statement
-  fails (`CRUD-010`, a provider error). A flush's undo journal does the same
+- **A failed immediate write leaves the instance as it was**: the stamp, a
+  soft delete's flag, and an insert's `[CreatedAt]` fill go back to their
+  previous values when the statement fails (`CRUD-010`, a provider error). A flush's undo journal does the same
   for every statement it ran — the stamp of an undone update, the flag,
   stamp, and version of an undone soft delete, and the fill of an undone
   insert's `[CreatedAt]`.

@@ -449,8 +449,24 @@ public sealed partial class Db : IAsyncDisposable
 
         CheckNavigationConsistency(map, entity);
         CheckIdentity(map, entity);
+        var createdBefore = map.CreatedAtProperty?.GetValue(entity);
         FillCreatedAt(map, entity);
+        try
+        {
+            await InsertRowAsync(map, entity, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            map.CreatedAtProperty?.SetValue(entity, createdBefore);   // a failed write leaves the instance as it was
+            throw;
+        }
 
+        TrackWritten(map, entity);
+    }
+
+    /// <summary>The insert statement itself: the generated INSERT, every non-generated column bound, the generated key read back.</summary>
+    private async Task InsertRowAsync(EntityMap map, object entity, CancellationToken ct)
+    {
         if (map.KeyStrategy == KeyStrategy.ClientGuid)
         {
             var keyProperty = map.KeyProperties[0];
@@ -469,7 +485,7 @@ public sealed partial class Db : IAsyncDisposable
             parameter.ParameterName = "@" + property.ColumnName;
             parameter.Value = _converter.ToDatabase(
                 property.GetValue(entity),
-                $"{typeof(TEntity).Name}.{property.PropertyName}",
+                $"{map.EntityType.Name}.{property.PropertyName}",
                 property.EnumAsInt);
             command.Parameters.Add(parameter);
         }
@@ -479,14 +495,12 @@ public sealed partial class Db : IAsyncDisposable
             var key = map.KeyProperties[0];
             var generated = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
             key.SetValue(entity, _converter.FromDatabase(
-                generated, key.ClrType, $"{typeof(TEntity).Name}.{key.PropertyName}"));
+                generated, key.ClrType, $"{map.EntityType.Name}.{key.PropertyName}"));
         }
         else
         {
             await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
-
-        TrackWritten(map, entity);
     }
 
     /// <summary>

@@ -140,7 +140,7 @@ cancels the insert and the inserts its cascade scheduled.
 with the inserts its cascade scheduled, a scheduled removal dropped; `UOW-001` for an instance the session neither
 tracks nor has scheduled), and `merge($detached)` brings a detached copy back: it returns the session's instance for
 the copy's key — the tracked one, else the row read now (`CRUD-001` when there is none; `CRUD-002` for a copy with no
-complete key) — with every mapped non-key value of the copy (the version included) written onto it, so it is dirty
+complete key, `CRUD-003` for a view or statement) — with every mapped non-key value of the copy (the version included) written onto it, so it is dirty
 where they differed; navigations are not merged and the copy stays untracked. Both are `UOW-003` on an untracked session.
 
 ### Hooks (Level 3 M3, ADR-0034)

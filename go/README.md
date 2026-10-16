@@ -193,7 +193,7 @@ never filter on the flag**: write `orm.Eq("IsDeleted", false)` yourself.
 ```go
 err = orm.Detach(db, &user)                 // the session forgets it (and cancels what was scheduled for it); UOW-001 for a stranger
 managed, err := orm.Merge(ctx, db, &copy)   // the session's instance for the copy's key (reads the row if unknown): copies every
-                                            // mapped non-key value, the version included; navigations are not merged; CRUD-002 for an unset key
+                                            // mapped non-key value, the version included; navigations are not merged; CRUD-003 for a non-table type, CRUD-002 for an unset key
 ```
 
 Both need a tracked session (`UOW-003` otherwise).

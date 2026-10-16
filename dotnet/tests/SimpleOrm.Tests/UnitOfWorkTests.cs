@@ -155,10 +155,127 @@ public sealed class UnitOfWorkTests(SqliteFixture fixture)
     }
 
     [Fact]
+    public async Task A_child_two_scheduled_owners_reach_survives_the_cancellation_of_one()
+    {
+        await using var db = await OpenTrackedAsync();
+        await db.CreateTableAsync<Owner>(CancellationToken.None);
+        await db.CreateTableAsync<Passport>(CancellationToken.None);
+        var first = new Owner { Label = "first" };
+        var second = new Owner { Label = "second" };
+        var shared = new Passport { Number = "shared" };
+        typeof(Owner).GetProperty(nameof(Owner.Passport))!.SetValue(first, shared);
+        typeof(Owner).GetProperty(nameof(Owner.Passport))!.SetValue(second, shared);
+        db.Persist(first);
+        db.Persist(second);
+
+        db.Remove(first);                        // cancels first; shared still has a scheduled owner
+        Assert.True(db.HasPendingWork);
+        Assert.Equal(new FlushSummary(2, 0, 0), await db.FlushAsync(CancellationToken.None));
+        Assert.Equal(second.Id, shared.OwnerId);
+    }
+
+    [Fact]
+    public async Task Types_in_a_dependency_cycle_share_a_rank_so_the_schedule_decides()
+    {
+        await using var db = await OpenTrackedAsync();
+        await db.CreateTableAsync<Left>(CancellationToken.None);
+        await db.CreateTableAsync<Right>(CancellationToken.None);
+        var options = new DbOptions { Dialect = new RecordingDialectForTests(new SqliteDialect()), Tracking = TrackingMode.Tracked };
+        await using var recording = await Db.OpenAsync(fixture.ConnectionString, options, CancellationToken.None);
+        var dialect = (RecordingDialectForTests)options.Dialect;
+
+        recording.Persist(new Right { Label = "r" });
+        recording.Persist(new Left { Label = "l" });
+        await recording.FlushAsync(CancellationToken.None);
+        Assert.Equal(["Right", "Left"], dialect.Inserted);   // no navigation set: schedule order inside the cycle
+    }
+
+    [Fact]
     public void An_empty_cascade_declaration_is_refused()
     {
         var error = Assert.Throws<MappingException>(() => new EntityMapLoader().Load<EmptyCascade>());
         Assert.Contains(error.Errors, e => e.Code == "MAP-025");
+    }
+
+    [Table("uow_lefts")]
+    public sealed class Left
+    {
+        [Key]
+        [Generated]
+        [Column]
+        public long Id { get; set; }
+
+        [Column]
+        public string? Label { get; set; }
+
+        [Column]
+        [ForeignKey(typeof(Right))]
+        public long? RightId { get; set; }
+
+        [ManyToOne(nameof(RightId))]
+        public Right? Right { get; private set; }
+    }
+
+    [Table("uow_rights")]
+    public sealed class Right
+    {
+        [Key]
+        [Generated]
+        [Column]
+        public long Id { get; set; }
+
+        [Column]
+        public string? Label { get; set; }
+
+        [Column]
+        [ForeignKey(typeof(Left))]
+        public long? LeftId { get; set; }
+
+        [ManyToOne(nameof(LeftId))]
+        public Left? Left { get; private set; }
+    }
+
+    /// <summary>Records the entity names of the inserts rendered, in order — the seam the flush-cases observe.</summary>
+    private sealed class RecordingDialectForTests(IDialect inner) : IDialect
+    {
+        public List<string> Inserted { get; } = [];
+
+        public string InsertSql(EntityMap map)
+        {
+            Inserted.Add(map.EntityType.Name);
+            return inner.InsertSql(map);
+        }
+
+        public System.Data.Common.DbConnection CreateConnection(string connectionString) => inner.CreateConnection(connectionString);
+        public string QuoteIdentifier(string identifier) => inner.QuoteIdentifier(identifier);
+        public string CreateTableSql(EntityMap map) => inner.CreateTableSql(map);
+        public IReadOnlyList<string> CreateIndexSql(EntityMap map) => inner.CreateIndexSql(map);
+        public string CreateViewSql(EntityMap map) => inner.CreateViewSql(map);
+        public string LimitOffsetClause(string? limitParameter, string? offsetParameter) => inner.LimitOffsetClause(limitParameter, offsetParameter);
+        public bool PagingRequiresOrderBy => inner.PagingRequiresOrderBy;
+        public bool SupportsRowValueIn => inner.SupportsRowValueIn;
+        public string SelectSql(SelectAst select, BindCriteriaParameter bindParameter) => inner.SelectSql(select, bindParameter);
+        public bool SupportsArrayParameters => inner.SupportsArrayParameters;
+        public bool BindsTemporalsNatively => inner.BindsTemporalsNatively;
+        public string ColumnsInfoSql => inner.ColumnsInfoSql;
+        public bool IsDeclaredTypeCompatible(string declaredType, Type clrType, bool enumAsInt) => inner.IsDeclaredTypeCompatible(declaredType, clrType, enumAsInt);
+        public string ViewDefinitionSql => inner.ViewDefinitionSql;
+        public string IndexesInfoSql => inner.IndexesInfoSql;
+        public string StorageType(PropertyMap property) => inner.StorageType(property);
+        public bool SupportsMaterializedViews => inner.SupportsMaterializedViews;
+        public bool SupportsProcedures => inner.SupportsProcedures;
+        public bool SupportsTransactionalDdl => inner.SupportsTransactionalDdl;
+        public System.Data.Common.DbTransaction BeginMigrationRunLock(System.Data.Common.DbConnection connection) => inner.BeginMigrationRunLock(connection);
+        public string VersionTableSql => inner.VersionTableSql;
+        public string RenameTableSql(string fromName, string toName) => inner.RenameTableSql(fromName, toName);
+        public string RenameColumnSql(string table, string fromName, string toName) => inner.RenameColumnSql(table, fromName, toName);
+        public string AddColumnSql(string table, string column, string storageType, bool nullable, string? defaultSql) => inner.AddColumnSql(table, column, storageType, nullable, defaultSql);
+        public string DropColumnSql(string table, string column) => inner.DropColumnSql(table, column);
+        public string DropTableSql(string table) => inner.DropTableSql(table);
+        public string DropIndexSql(string table, string index) => inner.DropIndexSql(table, index);
+        public string UpdateSql(EntityMap map) => inner.UpdateSql(map);
+        public string UpdateOnlySql(EntityMap map, IReadOnlyList<PropertyMap> properties) => inner.UpdateOnlySql(map, properties);
+        public string DeleteSql(EntityMap map, bool checkVersion) => inner.DeleteSql(map, checkVersion);
     }
 
     [Table("uow_empty_cascade")]

@@ -249,6 +249,27 @@ public sealed class TrackingTests(SqliteFixture fixture)
         Assert.Equal("UOW-002", identity.Code);
     }
 
+    [Fact]
+    public async Task A_full_update_checks_every_navigation_before_the_identity_gate_and_the_snapshot()
+    {
+        await using var db = await OpenTrackedAsync();
+        var ada = await TestDb.InsertUserAsync(db, $"T{Guid.NewGuid():N}", $"t-{Guid.NewGuid():N}@example.com");
+        var grace = await TestDb.InsertUserAsync(db, $"T{Guid.NewGuid():N}", $"t-{Guid.NewGuid():N}@example.com");
+        var transaction = new Transaction { UserId = ada.Id, Status = TransactionStatus.Pending, Amount = 5m, CreatedAtUtc = TestDb.SeedTime };
+        await db.InsertAsync(transaction, CancellationToken.None);
+
+        // Clean, but the navigation disagrees with the FK: refused, never silently skipped.
+        typeof(Transaction).GetProperty(nameof(Transaction.User))!.SetValue(transaction, grace);
+        var clean = await Assert.ThrowsAsync<SimpleOrmException>(() => db.UpdateAsync(transaction, CancellationToken.None));
+        Assert.Equal("CRUD-004", clean.Code);
+
+        // A foreign instance with the same inconsistency: CRUD-004 before UOW-002.
+        var foreign = new Transaction { Id = transaction.Id, UserId = ada.Id, Status = TransactionStatus.Pending, Amount = 5m, CreatedAtUtc = TestDb.SeedTime };
+        typeof(Transaction).GetProperty(nameof(Transaction.User))!.SetValue(foreign, grace);
+        var ordered = await Assert.ThrowsAsync<SimpleOrmException>(() => db.UpdateAsync(foreign, CancellationToken.None));
+        Assert.Equal("CRUD-004", ordered.Code);
+    }
+
     private sealed record UserById(long Id);
 
     [Table("tracking_tagged")]

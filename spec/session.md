@@ -319,3 +319,9 @@ convention in the runner, as the other runners do.
   a copy of the tracked state and is never registered. The port records
   the shape in its §10 table; the spec's "instance" means the
   reference-shaped one.
+- **A full-row `Update` validates like a full row** before anything else:
+  every navigation's consistency (`CRUD-004`) is checked first, then the
+  identity gate (`UOW-002`), then the snapshot decides what to write — so
+  a clean tracked instance carrying an inconsistent navigation is refused,
+  not silently skipped. The column-list update checks only the navigations
+  of the listed properties, after the list validates.

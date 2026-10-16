@@ -372,15 +372,23 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 
 		owner := findOwner(order, rootKey)
 		if owner == nil {
-			// SPEC-GAP: an Include on a root the session already tracks overwrites the included
-			// navigations of the tracked instance (the caller asked for them, as with an explicit Load)
-			// but applies none of the row's column values (ruling 2); other navigations stay as they were.
+			// An include reassigns the navigations it names on a tracked root and applies none of the
+			// row's column values; other navigations stay as they were (spec/session.md
+			// Clarifications, ADR-0035).
 			var ptr reflect.Value
 			if rootIsPointer {
-				ptr = reflect.ValueOf(db.resolveAny(trackedRoot, rootValue))
+				resolved, err := db.resolveAny(trackedRoot, rootValue)
+				if err != nil {
+					return nil, err
+				}
+				ptr = reflect.ValueOf(resolved)
 			} else {
+				resolved, err := db.resolveAny(trackedRoot, reflect.ValueOf(rootValue).Elem().Interface())
+				if err != nil {
+					return nil, err
+				}
 				ptr = reflect.New(rootType)
-				ptr.Elem().Set(reflect.ValueOf(db.resolveAny(trackedRoot, reflect.ValueOf(rootValue).Elem().Interface())))
+				ptr.Elem().Set(reflect.ValueOf(resolved))
 			}
 			owner = &ownerRecord{
 				ptr: ptr, key: rootKey,
@@ -419,7 +427,11 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 
 			instance := findTargetInstance(targetInstances[i], targetKey)
 			if instance == nil {
-				instance = &targetInstance{key: targetKey, value: reflect.ValueOf(db.resolveAny(trackedTargets[i], targetValue))}
+				resolved, err := db.resolveAny(trackedTargets[i], targetValue)
+				if err != nil {
+					return nil, err
+				}
+				instance = &targetInstance{key: targetKey, value: reflect.ValueOf(resolved)}
 				targetInstances[i] = append(targetInstances[i], instance)
 			}
 

@@ -85,7 +85,7 @@ func getByKey(ctx context.Context, db *Db, requested reflect.Type, shape resultS
 		fresh = fresh.Elem()
 	}
 	if tracked := db.tracking(m); tracked != nil {
-		return db.resolveRow(tracked, fresh), nil
+		return db.resolveRow(tracked, fresh)
 	}
 	return fresh, nil
 }
@@ -347,10 +347,8 @@ func Insert[T any](ctx context.Context, db *Db, entity *T) error {
 	if err != nil {
 		return err
 	}
-	// SPEC-GAP: the spec says insert registers the instance; it does not say what happens when a
-	// tracked (now stale) instance still holds the generated key — the new instance replaces it.
-	db.track(m, entity)
-	return nil
+	// The inserted instance replaces a stale holder of its key (spec/session.md Clarifications, ADR-0035).
+	return db.track(m, entity)
 }
 
 // insertRow is Insert's write: the statement, the key write-back, no tracking.
@@ -367,20 +365,19 @@ func insertRow[T any](ctx context.Context, db *Db, entity *T) error {
 	if err := checkNavigationConsistency(db, m, entity, nil); err != nil {
 		return err
 	}
-	if m.KeyStrategy == core.KeyNatural {
-		// A supplied key is known before the write, so identity conflicts refuse early;
-		// a generated key can only be checked once it exists.
-		if _, err := db.writeIdentity(m, entity); err != nil {
-			return err
-		}
-	}
-
 	if m.KeyStrategy == core.KeyClientGuid {
 		keyProperty := m.KeyProperties[0]
 		if g, ok := keyProperty.Get(entity).(core.GUID); ok && g.IsZero() {
 			if err := keyProperty.Set(entity, core.NewGUID()); err != nil {
 				return err
 			}
+		}
+	}
+	if m.KeyStrategy != core.KeyDatabaseGenerated {
+		// A caller-supplied key held by another instance is UOW-002 before any SQL; a generated key
+		// has nothing to check yet (spec/session.md Clarifications, ADR-0035).
+		if _, err := db.writeIdentity(m, entity); err != nil {
+			return err
 		}
 	}
 
@@ -453,15 +450,18 @@ func Update[T any](ctx context.Context, db *Db, entity *T) error {
 	if err != nil {
 		return err
 	}
+	// Full-row semantics for validation: every navigation is checked (CRUD-004)
+	// before the identity gate and before the snapshot decides what to write
+	// (spec/session.md Clarifications, ADR-0035).
+	if err := checkNavigationConsistency(db, m, entity, nil); err != nil {
+		return err
+	}
 	entry, err := db.writeIdentity(m, entity)
 	if err != nil {
 		return err
 	}
 	if entry != nil {
 		return updateTracked(ctx, db, m, entry, entity)
-	}
-	if err := checkNavigationConsistency(db, m, entity, nil); err != nil {
-		return err
 	}
 
 	// Bind SET values, key values, and the current version for the WHERE;
@@ -476,8 +476,7 @@ func Update[T any](ctx context.Context, db *Db, entity *T) error {
 		return err
 	}
 	// An instance the session did not know is tracked once its full row is written.
-	db.track(m, entity)
-	return nil
+	return db.track(m, entity)
 }
 
 // updateTracked is Update on a tracked instance (Level 3 M1): only the dirty
@@ -486,30 +485,25 @@ func Update[T any](ctx context.Context, db *Db, entity *T) error {
 // writes nothing at all — no statement, no version bump. A failed write
 // (CRUD-010 included) leaves the snapshot, and so the instance's dirtiness, as it was.
 func updateTracked(ctx context.Context, db *Db, m *core.EntityMap, entry *trackedEntry, entity any) error {
+	changed, err := db.tracker.changed(entry)
+	if err != nil {
+		return err
+	}
 	var set []*core.PropertyMap
-	for _, p := range entry.changed() {
+	for _, p := range changed {
 		if !p.IsKey && !p.IsVersion && !p.IsGenerated {
 			set = append(set, p)
 		}
 	}
 	if len(set) == 0 {
-		// SPEC-GAP: a local edit to a key, version, or generated property is a change
-		// (ChangesOf reports it) but an update never writes those columns; with nothing
-		// else dirty the update is clean — no statement.
+		// Only key/version/generated values differing is clean: no statement, no snapshot change
+		// (spec/session.md Clarifications, ADR-0035).
 		return nil
-	}
-	written := make(map[string]bool, len(set))
-	for _, p := range set {
-		written[p.PropertyName] = true
-	}
-	if err := checkNavigationConsistency(db, m, entity, written); err != nil {
-		return err
 	}
 	if err := executeUpdate(ctx, db, m.Type, m, entity, db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set)); err != nil {
 		return err
 	}
-	entry.resnapshot(append(set, versionOf(m)...))
-	return nil
+	return db.tracker.resnapshot(entry, append(set, versionOf(m)...))
 }
 
 // updateOnlyBindings is the parameter order of the column-list update: the SET
@@ -554,9 +548,8 @@ func UpdateOnly[T any](ctx context.Context, db *Db, entity *T, properties ...str
 		return err
 	}
 
-	// SPEC-GAP: the spec does not order the list validation (CRUD-005/006/007) against the
-	// identity refusal; the list is validated first — it is an argument error, the same
-	// in every session mode.
+	// List (CRUD-005/006/007), then navigation (CRUD-004), then identity (UOW-002): the order of
+	// refusals of spec/session.md Clarifications (ADR-0035).
 	entry, err := db.writeIdentity(m, entity)
 	if err != nil {
 		return err
@@ -564,11 +557,11 @@ func UpdateOnly[T any](ctx context.Context, db *Db, entity *T, properties ...str
 	if err := executeUpdate(ctx, db, reflect.TypeFor[T](), m, entity, db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set)); err != nil {
 		return err
 	}
-	// SPEC-GAP: both updates "refresh the snapshot afterwards"; only the written columns (and the
-	// bumped version) move, so an unwritten local change stays dirty. An instance the session
-	// does not track stays untracked: its other values were neither read nor written here.
+	// Only the written columns and the bumped version move, so an unwritten change stays dirty; an
+	// instance the session does not know stays unregistered — it saw only part of the row
+	// (spec/session.md Clarifications, ADR-0035).
 	if entry != nil {
-		entry.resnapshot(append(append([]*core.PropertyMap{}, set...), versionOf(m)...))
+		return db.tracker.resnapshot(entry, append(append([]*core.PropertyMap{}, set...), versionOf(m)...))
 	}
 	return nil
 }
@@ -715,8 +708,7 @@ func DeleteEntity[T any](ctx context.Context, db *Db, entity *T) error {
 	if err != nil {
 		return err
 	}
-	// SPEC-GAP: the spec words UOW-002 for "a write" and lists Update/UpdateOnly; deleting through
-	// an instance that is not the session's instance for its key is treated as a write too.
+	// The entity form passes the identity gate (spec/session.md Clarifications, ADR-0035).
 	entry, err := db.writeIdentity(m, entity)
 	if err != nil {
 		return err

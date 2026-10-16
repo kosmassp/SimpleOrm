@@ -64,7 +64,7 @@ final class Db
         $this->mapper = new ResultMapper($this->maps, $this->converter);
         $this->loading = new DbLoading($this);
         $this->eagerJoin = new DbEagerJoin($this);
-        $this->tracking = $options->tracking === TrackingMode::Tracked ? new DbTracking($this->maps) : null;
+        $this->tracking = $options->tracking === TrackingMode::Tracked ? new DbTracking($this->maps, $this->converter) : null;
     }
 
     /** Opens the connection now (§7.17): a failed open leaves nothing behind. */
@@ -190,10 +190,8 @@ final class Db
     /** @internal called by {@see DbTransactionScope} only. */
     public function rollbackTransaction(): void
     {
-        // SPEC-GAP: a rollback does not touch the identity map or the snapshots — instances
-        // registered, re-snapshotted, or forgotten inside the rolled-back transaction keep that
-        // state, so a tracked instance can claim to match a row the rollback undid. The spec
-        // is silent on transactions and tracking; `refresh()` is the way back.
+        // The identity map and snapshots are untouched by a rollback; `refresh()` is the way back
+        // (spec/session.md Clarifications, ADR-0035: "transactions do not touch the map").
         if ($this->connection !== null && $this->connection->inTransaction()) {
             $this->connection->rollBack();
         }
@@ -509,19 +507,18 @@ final class Db
     /**
      * The explicit overwrite (ADR-0034 add.1 ruling 2): re-reads the row by the instance's key,
      * applies every mapped value onto the instance, and resets its snapshot; a missing row is
-     * `CRUD-001`. Works in both modes. Loaded navigations stay as they are.
+     * `CRUD-001`. Works in both modes. Loaded navigations stay as they are. An instance that is not
+     * the session's instance for its key — a second copy, or a tracked instance whose key was
+     * changed — is `UOW-002`; an unknown instance with a free key has the row applied and is not
+     * registered.
      */
     public function refresh(object $entity): void
     {
         $map = $this->maps->load($entity::class);
         $keyValues = $map->getKeyValues($entity);
-        // SPEC-GAP: the spec defines refresh only for the session's own instance. For the others
-        // this port takes: a tracked instance whose key was changed, or an instance that is not the
-        // session's for its key, is UOW-002 (consistent with writes); an instance the tracked
-        // session does not know, whose key is free, has the row applied but is NOT registered
-        // (refresh is not a registration act); a keyless entity is CRUD-002, a
-        // statement/procedure source QRY-005; navigations are untouched; an owned navigation is
-        // replaced as a whole (null stays null, ADR-0030).
+        // The identity gate (spec/session.md Clarifications, ADR-0035): a tracked instance whose key was
+        // changed, or one that is not the session's instance for its key, is UOW-002; an instance the
+        // session does not know, with a free key, has the row applied and is not registered.
         $entry = $this->tracking?->identityFor($map, $entity);
 
         $statement = $this->selectByKey($map, $keyValues);
@@ -654,10 +651,8 @@ final class Db
         }
 
         if ($map->keyStrategy !== KeyStrategy::DatabaseGenerated) {
-            // SPEC-GAP: UOW-002 says "a write from an instance that is not the session's instance
-            // for its key" without naming Insert. Taken here: Insert is such a write when the key is
-            // caller-supplied (natural/composite/GUID) and held by another tracked instance — refused
-            // before any SQL; a database-generated key does not exist yet, so nothing to check.
+            // A caller-supplied key held by another instance is UOW-002 before any SQL; a generated key
+            // has nothing to check yet (spec/session.md Clarifications, ADR-0035).
             $this->tracking?->identityFor($map, $entity);
         }
 
@@ -709,6 +704,10 @@ final class Db
     public function update(object $entity): void
     {
         $map = $this->requireWritableKeyed($entity::class);
+        // Full-row semantics for validation: every navigation is checked (CRUD-004)
+        // before the identity gate and before the snapshot decides what to write
+        // (spec/session.md Clarifications, ADR-0035).
+        $this->checkNavigationConsistency($map, $entity);
         $entry = $this->tracking?->identityFor($map, $entity);
 
         if ($entry !== null) {
@@ -716,8 +715,6 @@ final class Db
 
             return;
         }
-
-        $this->checkNavigationConsistency($map, $entity);
 
         // Bind SET values, key values, and the current version for the WHERE;
         // database-generated non-key columns are never written.
@@ -741,18 +738,14 @@ final class Db
             $this->tracking?->dirtyProperties($entry) ?? [],
             static fn (PropertyMap $p): bool => !$p->key && !$p->version && !$p->generated,
         ));
-        // SPEC-GAP: the spec says "clean writes nothing" and that an update never writes key,
-        // version, or generated properties, but not what an instance is whose ONLY differences are
-        // such properties (a hand-edited version/generated value): taken as clean — no statement,
-        // no snapshot change. The CRUD-004 navigation/FK check likewise runs only for FK
-        // properties that are actually written, so a clean instance is never refused.
+        // Only key/version/generated values differing is clean: no statement, no snapshot change
+        // (spec/session.md Clarifications, ADR-0035). The CRUD-004 check likewise covers only the
+        // FK properties actually written, so a clean instance is never refused.
         if ($dirty === []) {
             return;
         }
 
         $entity = $entry->instance;
-        $this->checkNavigationConsistency($map, $entity, array_map(static fn (PropertyMap $p): string => $p->propertyName(), $dirty));
-
         $bound = array_merge($dirty, $map->keyProperties);
         if ($map->versionProperty !== null) {
             $bound[] = $map->versionProperty;
@@ -777,13 +770,13 @@ final class Db
     public function updateOnly(object $entity, array $properties): void
     {
         $map = $this->requireWritableKeyed($entity::class);
-        $entry = $this->tracking?->identityFor($map, $entity);
-        // SPEC-GAP: on an instance the tracked session does not know, UpdateOnly writes the listed
-        // columns but does not register it — unlike full-row Update, the other columns of such an
-        // instance were never written, so a snapshot of it would claim database agreement it lacks.
         $set = self::resolveUpdateList($map, $properties);
         $listed = array_map(static fn (PropertyMap $p): string => $p->propertyName(), $set);
         $this->checkNavigationConsistency($map, $entity, $listed);
+        // List (CRUD-005/006/007), then navigation (CRUD-004), then identity (UOW-002): the order of
+        // refusals of spec/session.md Clarifications (ADR-0035). An unknown instance is not registered —
+        // the session saw only part of its row.
+        $entry = $this->tracking?->identityFor($map, $entity);
 
         $bound = array_merge($set, $map->keyProperties);
         if ($map->versionProperty !== null) {
@@ -915,9 +908,8 @@ final class Db
         $byEntity = is_object($keyOrEntity) && $keyOrEntity instanceof $entityType;
         $checkVersion = $byEntity && $map->versionProperty !== null;
         if ($byEntity) {
-            // SPEC-GAP: the UOW-002 gate for Delete is not stated; taken for the entity form
-            // (a foreign instance, or a tracked instance whose key changed, is refused before
-            // SQL). The by-key form has no instance to gate and forgets whatever instance holds the key.
+            // The entity form passes the identity gate; the by-key form has no instance to gate and
+            // forgets whichever instance holds the key (spec/session.md Clarifications, ADR-0035).
             $this->tracking?->identityFor($map, $keyOrEntity);
         }
 

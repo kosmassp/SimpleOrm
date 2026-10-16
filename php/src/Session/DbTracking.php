@@ -4,22 +4,18 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Session;
 
-use DateTimeInterface;
 use ReflectionClass;
 use SimpleOrm\Errors\SimpleOrmException;
+use SimpleOrm\Mapping\TypeConverter;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Metadata\KeyTuple;
 use SimpleOrm\Metadata\PropertyMap;
 use SimpleOrm\Types\Decimal;
-use UnitEnum;
 
 use function array_key_exists;
 use function array_map;
-use function count;
 use function in_array;
-use function is_array;
-use function is_object;
 use function spl_object_id;
 
 /**
@@ -32,7 +28,10 @@ use function spl_object_id;
  * {@see KeyTuple} — the one identity implementation (CODING-STANDARD §8): its `token()`
  * buckets the map, so a `Decimal` key `10` and `10.0` are one entry. Each entry carries a
  * snapshot of the instance's mapped values (every {@see EntityMap::$properties} entry,
- * owned members flat); the dirty set is the value-wise difference. The tracked instance
+ * owned members flat) in their **database-bound form** — {@see TypeConverter::toDatabase()}'s
+ * output (spec/session.md Clarifications, ADR-0035) — so the dirty set is "the database would
+ * receive a different value": a handler/JSON member compares by what would be written, an
+ * in-place mutation of it counts, and equal decimals are clean whatever their text. The tracked instance
  * **wins** (ruling 2): {@see adopt()} hands back the held instance for a known key and the
  * row's values are never applied — only {@see Db::refresh()} overwrites.
  *
@@ -53,8 +52,10 @@ final class DbTracking
     /** @var array<string, EntityMap|false> result type → its map when tracked, `false` when the type is never tracked */
     private array $trackable = [];
 
-    public function __construct(private readonly EntityMapLoader $maps)
-    {
+    public function __construct(
+        private readonly EntityMapLoader $maps,
+        private readonly TypeConverter $converter,
+    ) {
     }
 
     // --- reads ------------------------------------------------------------------
@@ -87,13 +88,13 @@ final class DbTracking
 
         $held = $this->byKey[$map->entityType][$tuple->token()] ?? null;
         if ($held !== null) {
-            // SPEC-GAP: "does not apply the row's values" — the row is still mapped before it is
-            // discarded (the plan builds the fresh instance), so a conversion/strictness error
-            // (MAP-*, VAL-*) in a re-read row still fires; the spec does not say whether it may.
+            // The plan already built the fresh instance, so a conversion/strictness error in a
+            // re-read row fired before this point; only the values are discarded (spec/session.md
+            // Clarifications, ADR-0035: "a re-read of a tracked key still maps the row").
             return $held->instance;
         }
 
-        $this->store(new TrackedInstance($fresh, $map, $tuple->token(), self::snapshot($map, $fresh)));
+        $this->store(new TrackedInstance($fresh, $map, $tuple->token(), $this->snapshot($map, $fresh)));
 
         return $fresh;
     }
@@ -113,8 +114,7 @@ final class DbTracking
      */
     public function changesOf(object $entity): array
     {
-        // SPEC-GAP: the order of the returned names is unspecified; this port returns
-        // `EntityMap::$properties` order (the runner compares as sets).
+        // Metadata order (spec/session.md Clarifications, ADR-0035).
         $entry = $this->byInstance[spl_object_id($entity)] ?? throw self::notTracked($entity);
 
         return array_map(
@@ -123,12 +123,13 @@ final class DbTracking
         );
     }
 
-    /** @return list<PropertyMap> the entry's properties whose current value differs from its snapshot */
+    /** @return list<PropertyMap> the entry's properties whose database-bound value differs from its snapshot */
     public function dirtyProperties(TrackedInstance $entry): array
     {
         $dirty = [];
         foreach ($entry->map->properties as $i => $property) {
-            if (!self::sameValue($entry->snapshot[$i], $property->getValue($entry->instance))) {
+            $current = $this->bound($entry->map, $property, $entry->instance);
+            if (!KeyTuple::valueEquals($entry->snapshot[$i], $current)) {
                 $dirty[] = $property;
             }
         }
@@ -199,13 +200,13 @@ final class DbTracking
             return;
         }
 
-        $this->store(new TrackedInstance($entity, $map, $tuple->token(), self::snapshot($map, $entity)));
+        $this->store(new TrackedInstance($entity, $map, $tuple->token(), $this->snapshot($map, $entity)));
     }
 
     /** Resets the whole snapshot to the instance's current values (refresh). */
     public function resnapshot(TrackedInstance $entry): void
     {
-        $this->store($entry->withSnapshot(self::snapshot($entry->map, $entry->instance)));
+        $this->store($entry->withSnapshot($this->snapshot($entry->map, $entry->instance)));
     }
 
     /**
@@ -216,15 +217,12 @@ final class DbTracking
      */
     public function resnapshotWritten(TrackedInstance $entry, array $written): void
     {
-        // SPEC-GAP: the spec says `Update`/`UpdateOnly` "refresh the snapshot afterwards" without
-        // saying whether that is the whole snapshot or only what was written. Whole-snapshot
-        // refresh would turn an unwritten change (e.g. `UpdateOnly(['Name'])` while `Email` is
-        // dirty) clean — a silently lost update — so only the written properties and the
-        // version move forward here.
+        // spec/session.md Clarifications (ADR-0035): a column-list update moves the written columns
+        // and the version only — an unwritten change stays dirty.
         $snapshot = $entry->snapshot;
         foreach ($entry->map->properties as $i => $property) {
             if ($property->version || in_array($property, $written, true)) {
-                $snapshot[$i] = self::copy($property->getValue($entry->instance));
+                $snapshot[$i] = $this->bound($entry->map, $property, $entry->instance);
             }
         }
 
@@ -269,15 +267,11 @@ final class DbTracking
 
         $holder = $this->byKey[$type][$entry->token] ?? null;
         if ($holder !== null && $holder->instance !== $entry->instance) {
-            // Another instance held this key (a stale one, e.g. its row was deleted outside
-            // the session and the key reused): the instance just written is the truth.
+            // A key reused after an external delete: the instance that wrote the row is the
+            // session's instance, the stale holder is forgotten (spec/session.md Clarifications, ADR-0035).
             unset($this->byInstance[spl_object_id($holder->instance)]);
         }
 
-        // SPEC-GAP: the spec does not say what an `Insert` does when its (database-generated or
-        // client-assigned) key already belongs to another tracked instance after the write —
-        // reachable when a row was deleted outside the session and its key reused. The
-        // instance just written replaces the stale holder (no error after a committed write).
         $previous = $this->byInstance[spl_object_id($entry->instance)] ?? null;
         if ($previous !== null && $previous->token !== $entry->token) {
             unset($this->byKey[$type][$previous->token]);
@@ -296,11 +290,9 @@ final class DbTracking
     private function trackableMap(string $resultType): ?EntityMap
     {
         if (!array_key_exists($resultType, $this->trackable)) {
-            // SPEC-GAP: the spec excludes "keyless entities" and "plain result types" but is silent on
-            // (a) keyed views (tracked here — writes refuse CRUD-003 as ever) and (b) PHP types
-            // loaded by convention or an explicit map with no mapping attributes: the mapper builds
-            // those through the DTO path (§7.8 construction), so they count as plain result
-            // types and are never tracked.
+            // Keyed views are tracked (writes still refuse CRUD-003); types with no mapping
+            // attributes are built through the DTO path (§7.8) and are plain result types
+            // (spec/session.md Clarifications, ADR-0035: "which types are tracked").
             $this->trackable[$resultType] = class_exists($resultType) && EntityMapLoader::hasMappingAttributes($resultType)
                 ? self::keyedOrFalse($this->maps->load($resultType))
                 : false;
@@ -314,60 +306,28 @@ final class DbTracking
         return $map->keyProperties === [] ? false : $map;
     }
 
-    /** @return list<mixed> */
-    private static function snapshot(EntityMap $map, object $entity): array
+    /** @return list<mixed> one database-bound value per `$map->properties` entry, in that order */
+    private function snapshot(EntityMap $map, object $entity): array
     {
-        return array_map(
-            static fn (PropertyMap $property): mixed => self::copy($property->getValue($entity)),
-            $map->properties,
+        return array_map(fn (PropertyMap $property): mixed => $this->bound($map, $property, $entity), $map->properties);
+    }
+
+    /**
+     * The value the database would receive for the property — {@see TypeConverter::toDatabase()}, the
+     * one conversion every write binds through (spec/session.md Clarifications, ADR-0035). Strings
+     * (bytes, JSON text) are immutable, so the snapshot cannot alias the instance. A `Decimal` the
+     * converter rendered as its own text stays the `Decimal`, so two decimals equal in value are
+     * clean whatever their text; compared through {@see KeyTuple::valueEquals()} (temporals by instant).
+     */
+    private function bound(EntityMap $map, PropertyMap $property, object $entity): mixed
+    {
+        $value = $property->getValue($entity);
+        $bound = $this->converter->toDatabase(
+            $value,
+            "{$map->entityName()}.{$property->propertyName()}",
+            $property->enumAsInt(),
         );
-    }
 
-    /**
-     * A value the instance cannot later change under the snapshot: scalars, enums, and the immutable
-     * value objects (`Decimal`, `DateTimeImmutable`) are kept as they are; arrays and any other object
-     * (a JSON-handler value) are copied deeply, since a mutation inside them is still a change.
-     */
-    private static function copy(mixed $value): mixed
-    {
-        // SPEC-GAP: "a snapshot of each tracked instance's mapped values" does not say how a
-        // value that is a mutable object or array (a JSON/handler-typed property) is captured.
-        // Deep copy here, and structural equality in sameValue(): an in-place mutation counts as a change.
-        return match (true) {
-            is_array($value) => array_map(self::copy(...), $value),
-            !is_object($value), $value instanceof Decimal, $value instanceof UnitEnum => $value,
-            $value instanceof DateTimeInterface => clone $value,
-            default => unserialize(serialize($value)),
-        };
-    }
-
-    /**
-     * Value-wise equality: {@see KeyTuple::valueEquals()} for scalars, `Decimal` (`10` equals `10.0`),
-     * temporals (by instant), and enums; arrays and other objects compare structurally.
-     */
-    private static function sameValue(mixed $left, mixed $right): bool
-    {
-        if (is_array($left) && is_array($right)) {
-            if (count($left) !== count($right)) {
-                return false;
-            }
-
-            foreach ($left as $key => $value) {
-                if (!array_key_exists($key, $right) || !self::sameValue($value, $right[$key])) {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        if (
-            is_object($left) && is_object($right) && $left::class === $right::class
-            && !$left instanceof Decimal && !$left instanceof DateTimeInterface && !$left instanceof UnitEnum
-        ) {
-            return self::sameValue((array) $left, (array) $right);
-        }
-
-        return KeyTuple::valueEquals($left, $right);
+        return $value instanceof Decimal && $bound === (string) $value ? $value : $bound;
     }
 }

@@ -23,11 +23,9 @@ import (
 // session already tracks it is a copy of the tracked instance's current state
 // (the tracked instance wins).
 //
-// SPEC-GAP: the spec speaks of "the instance" a read returns and does not consider languages whose
-// materialization yields values. Assumed: a value-shaped result is never registered (the caller
-// cannot hold what the session would track) and, for a known key, carries the tracked instance's
-// current state; a value-element navigation (`[]T`) is the same. Writing through such a copy is
-// UOW-002 when another instance holds its key.
+// A value-shaped result is never registered and, for a known key, carries the tracked
+// instance's current state; writing through such a copy is UOW-002 when another instance holds
+// its key (spec/session.md Clarifications, ADR-0035: "value-shaped results").
 
 // IsTracking reports whether the session is in tracked mode.
 func (db *Db) IsTracking() bool { return db.tracker != nil }
@@ -48,7 +46,10 @@ func ChangesOf[T any](db *Db, entity *T) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	changed := entry.changed()
+	changed, err := db.tracker.changed(entry)
+	if err != nil {
+		return nil, err
+	}
 	names := make([]string, len(changed))
 	for i, p := range changed {
 		names[i] = p.PropertyName
@@ -62,13 +63,17 @@ func IsDirty[T any](db *Db, entity *T) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return len(entry.changed()) > 0, nil
+	changed, err := db.tracker.changed(entry)
+	return len(changed) > 0, err
 }
 
 // Refresh is the explicit overwrite: it re-reads the row by key, applies every
 // mapped value onto the instance (loaded navigations stay as they are), and
 // resets the snapshot; a missing row is CRUD-001. It works in both modes and
-// never changes which instances are tracked.
+// never changes which instances are tracked. An instance that is not the
+// session's instance for its key — a second copy, or a tracked instance whose
+// key fields were edited — is UOW-002; an unknown instance with a free key has
+// the row applied and stays unregistered.
 func Refresh[T any](ctx context.Context, db *Db, entity *T) error {
 	entityType := reflect.TypeFor[T]()
 	m, err := db.maps.Load(entityType)
@@ -79,21 +84,16 @@ func Refresh[T any](ctx context.Context, db *Db, entity *T) error {
 		return err
 	}
 
-	// SPEC-GAP: the spec does not say whether Refresh of an instance the session does not track
-	// (tracked mode) starts tracking it; it does not — Refresh only resets the snapshot of an
-	// instance that is already tracked, so it can never raise UOW-002.
-	entry := db.entryOf(entity)
-	var key []any
-	if entry != nil {
-		// SPEC-GAP: the spec says "re-reads the row by key" without saying which key when a
-		// tracked instance's key fields were edited; the registered identity is used, so the
-		// overwrite also restores the edited key.
-		key = []any(entry.key)
-	} else {
-		key, err = m.KeyValues(entity)
-		if err != nil {
-			return err
-		}
+	// The identity gate (spec/session.md Clarifications, ADR-0035): a tracked instance whose key was
+	// changed, or one that is not the session's instance for its key, is UOW-002; an instance the
+	// session does not know, with a free key, has the row applied and is not registered.
+	entry, err := db.writeIdentity(m, entity)
+	if err != nil {
+		return err
+	}
+	key, err := m.KeyValues(entity)
+	if err != nil {
+		return err
 	}
 	keyValues, err := validateKey(m, key)
 	if err != nil {
@@ -112,7 +112,11 @@ func Refresh[T any](ctx context.Context, db *Db, entity *T) error {
 		return err
 	}
 	if entry != nil {
-		entry.snapshot = takeSnapshot(m, entity)
+		snapshot, err := db.tracker.snapshotOf(m, entity)
+		if err != nil {
+			return err
+		}
+		entry.snapshot = snapshot
 	}
 	return nil
 }
@@ -164,9 +168,8 @@ func (db *Db) requireTracked(entity any, entityType reflect.Type) (*trackedEntry
 // tracking returns m when reads of it are tracked in this session — tracked
 // mode and a keyed entity — else nil: keyless entities (statements, views
 // without a key) have no identity and are never tracked (spec/session.md).
-// SPEC-GAP: the spec excludes keyless entities and null key parts; a keyed read-only entity (a
-// view or materialized view with a declared key) is tracked like a table — its writes still
-// refuse with CRUD-003.
+// A keyed read-only entity (a view with a declared key) is tracked like a table; its writes
+// still refuse CRUD-003 (spec/session.md Clarifications, ADR-0035: "which types are tracked").
 func (db *Db) tracking(m *core.EntityMap) *core.EntityMap {
 	if db.tracker == nil || m == nil || len(m.KeyProperties) == 0 {
 		return nil
@@ -201,40 +204,48 @@ func keyOf(m *core.EntityMap, entity any) (core.KeyTuple, bool) {
 }
 
 // resolveRow turns a freshly materialized row into the session's instance
-// (m is a tracking map). fresh is a *E or an E:
+// (m is a tracking map) — the one identity resolution every read path goes
+// through. fresh is a *E or an E:
 //   - a *E whose key is known returns the tracked pointer and drops the row's
-//     values (ruling 2: the tracked instance wins); an unknown key registers
-//     the fresh pointer with its snapshot.
+//     values (ruling 2: the tracked instance wins; the row was still mapped, so
+//     its conversion errors fired); an unknown key registers the fresh pointer
+//     with its snapshot.
 //   - an E (a value-shaped result) cannot hand the caller the tracked pointer,
 //     so it is never registered; a known key yields a copy of the tracked
 //     instance's current state.
 //
 // A row with a null key part is returned as it is.
-func (db *Db) resolveRow(m *core.EntityMap, fresh reflect.Value) reflect.Value {
+func (db *Db) resolveRow(m *core.EntityMap, fresh reflect.Value) (reflect.Value, error) {
 	key, ok := keyOf(m, fresh.Interface())
 	if !ok {
-		return fresh
+		return fresh, nil
 	}
 	isPointer := fresh.Kind() == reflect.Pointer
 	if entry := db.tracker.find(m.Type, key); entry != nil {
 		if isPointer {
-			return entry.ptr
+			return entry.ptr, nil
 		}
-		return entry.ptr.Elem()
+		return entry.ptr.Elem(), nil
 	}
 	if isPointer {
-		db.tracker.register(m, fresh, key)
+		if _, err := db.tracker.register(m, fresh, key); err != nil {
+			return reflect.Value{}, err
+		}
 	}
-	return fresh
+	return fresh, nil
 }
 
 // resolveAny is resolveRow for a materialized result of unknown shape (the
 // plan's `any`); m nil means "not tracked".
-func (db *Db) resolveAny(m *core.EntityMap, value any) any {
+func (db *Db) resolveAny(m *core.EntityMap, value any) (any, error) {
 	if m == nil {
-		return value
+		return value, nil
 	}
-	return db.resolveRow(m, reflect.ValueOf(value)).Interface()
+	resolved, err := db.resolveRow(m, reflect.ValueOf(value))
+	if err != nil {
+		return nil, err
+	}
+	return resolved.Interface(), nil
 }
 
 // --- the write side --------------------------------------------------------
@@ -271,13 +282,15 @@ func (db *Db) writeIdentity(m *core.EntityMap, entity any) (*trackedEntry, error
 }
 
 // track registers entity (a *E) after a write stored it, with a fresh snapshot.
-func (db *Db) track(m *core.EntityMap, entity any) {
+func (db *Db) track(m *core.EntityMap, entity any) error {
 	if db.tracking(m) == nil {
-		return
+		return nil
 	}
 	if key, ok := keyOf(m, entity); ok {
-		db.tracker.register(m, reflect.ValueOf(entity), key)
+		_, err := db.tracker.register(m, reflect.ValueOf(entity), key)
+		return err
 	}
+	return nil
 }
 
 // forgetKey drops whatever instance is tracked for (m's type, key).

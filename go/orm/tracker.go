@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
+	"github.com/kosmassp/SimpleOrm/go/orm/internal/mapping"
 )
 
 // tracker is the identity map of a tracked session (Level 3 M1, ADR-0034
@@ -15,17 +16,20 @@ import (
 // or last written. Per type the entries stay sorted by key and are found by
 // binary search through core.KeyTuple.Compare — the one value-wise comparator
 // (decimals numerically, temporals by instant, bytes by content), never a
-// second equality. A session is one connection and not safe for concurrent
-// use, so the tracker carries no lock.
+// second equality. A snapshot holds the database-bound form of each value —
+// the type converter's output (spec/session.md Clarifications, ADR-0035) — so
+// "dirty" means "the database would receive a different value". A session is
+// one connection and not safe for concurrent use, so the tracker carries no lock.
 type tracker struct {
-	types map[reflect.Type][]*trackedEntry // struct type -> entries sorted by key
-	byPtr map[any]*trackedEntry            // the tracked *E -> its entry
+	converter *mapping.TypeConverter           // the one conversion every write binds through
+	types     map[reflect.Type][]*trackedEntry // struct type -> entries sorted by key
+	byPtr     map[any]*trackedEntry            // the tracked *E -> its entry
 }
 
 // trackedEntry is one tracked instance: the pointer the caller holds, the map
 // it was tracked under, the key it was registered with (identity — the live
 // key fields may have been edited since, which a write refuses, UOW-002), and
-// the snapshot, parallel to m.Properties.
+// the snapshot (bound values), parallel to m.Properties.
 type trackedEntry struct {
 	ptr      reflect.Value // *E
 	m        *core.EntityMap
@@ -33,8 +37,8 @@ type trackedEntry struct {
 	snapshot []any
 }
 
-func newTracker() *tracker {
-	return &tracker{types: map[reflect.Type][]*trackedEntry{}, byPtr: map[any]*trackedEntry{}}
+func newTracker(converter *mapping.TypeConverter) *tracker {
+	return &tracker{converter: converter, types: map[reflect.Type][]*trackedEntry{}, byPtr: map[any]*trackedEntry{}}
 }
 
 // search is the insertion point for key in t's sorted entries and whether an
@@ -56,15 +60,20 @@ func (tr *tracker) find(t reflect.Type, key core.KeyTuple) *trackedEntry {
 
 // register tracks ptr (a *E) under key with a fresh snapshot. The pointer's
 // previous entry (it was tracked under another key), and a stale holder of
-// key, are dropped first: a pointer has one identity and a key one instance.
-func (tr *tracker) register(m *core.EntityMap, ptr reflect.Value, key core.KeyTuple) *trackedEntry {
+// key, are dropped first: a pointer has one identity and a key one instance
+// (a key reused after an external delete: the instance that wrote the row wins).
+func (tr *tracker) register(m *core.EntityMap, ptr reflect.Value, key core.KeyTuple) (*trackedEntry, error) {
+	snapshot, err := tr.snapshotOf(m, ptr.Interface())
+	if err != nil {
+		return nil, err
+	}
 	if old := tr.byPtr[ptr.Interface()]; old != nil {
 		tr.forget(old)
 	}
 	if holder := tr.find(m.Type, key); holder != nil {
 		tr.forget(holder)
 	}
-	entry := &trackedEntry{ptr: ptr, m: m, key: key, snapshot: takeSnapshot(m, ptr.Interface())}
+	entry := &trackedEntry{ptr: ptr, m: m, key: key, snapshot: snapshot}
 	i, _ := tr.search(m.Type, key)
 	entries := tr.types[m.Type]
 	entries = append(entries, nil)
@@ -72,7 +81,7 @@ func (tr *tracker) register(m *core.EntityMap, ptr reflect.Value, key core.KeyTu
 	entries[i] = entry
 	tr.types[m.Type] = entries
 	tr.byPtr[ptr.Interface()] = entry
-	return entry
+	return entry, nil
 }
 
 // forget removes entry from both indexes.
@@ -84,51 +93,86 @@ func (tr *tracker) forget(entry *trackedEntry) {
 	}
 }
 
-// takeSnapshot copies every mapped value of entity, in map order (owned
-// members flat, like their columns — ADR-0030). Reference-like values are
-// deep-copied so an in-place edit (a []byte element, a JSON-handler value)
-// shows as a change.
-func takeSnapshot(m *core.EntityMap, entity any) []any {
+// snapshotOf is the bound form of every mapped value of entity, in map order
+// (owned members flat, like their columns — ADR-0030).
+func (tr *tracker) snapshotOf(m *core.EntityMap, entity any) ([]any, error) {
 	snapshot := make([]any, len(m.Properties))
 	for i, p := range m.Properties {
-		snapshot[i] = cloneValue(p.Get(entity))
+		bound, err := tr.bound(m, p, entity)
+		if err != nil {
+			return nil, err
+		}
+		snapshot[i] = bound
 	}
-	return snapshot
+	return snapshot, nil
 }
 
-// changed lists the mapped properties whose current value differs from the
+// bound is the value the database would receive for p — the converter's
+// ToDatabase, the one conversion every write binds through. A []byte is
+// copied (the converter hands back the instance's own slice); a Decimal the
+// converter rendered as its own text stays the Decimal, so two decimals equal
+// in value are clean whatever their text; everything else the converter
+// returns (strings, numbers, instants) is immutable.
+func (tr *tracker) bound(m *core.EntityMap, p *core.PropertyMap, entity any) (any, error) {
+	value := p.Get(entity)
+	bound, err := tr.converter.ToDatabase(value, p.ColumnType, m.EntityName()+"."+p.PropertyName)
+	if err != nil {
+		return nil, err
+	}
+	switch b := bound.(type) {
+	case []byte:
+		return append([]byte{}, b...), nil
+	case string:
+		if d, ok := value.(core.Decimal); ok && b == d.String() {
+			return d, nil
+		}
+	}
+	return bound, nil
+}
+
+// changed lists the mapped properties whose bound value differs from the
 // snapshot, in map order.
-func (e *trackedEntry) changed() []*core.PropertyMap {
+func (tr *tracker) changed(e *trackedEntry) ([]*core.PropertyMap, error) {
 	entity := e.ptr.Interface()
 	var changed []*core.PropertyMap
 	for i, p := range e.m.Properties {
-		if !sameValue(e.snapshot[i], p.Get(entity)) {
+		current, err := tr.bound(e.m, p, entity)
+		if err != nil {
+			return nil, err
+		}
+		if !sameBound(e.snapshot[i], current) {
 			changed = append(changed, p)
 		}
 	}
-	return changed
+	return changed, nil
 }
 
 // resnapshot moves the snapshot of the listed properties to their current
 // values — what a write just stored. Other properties keep their snapshot, so
 // a local change that was not written stays dirty.
-func (e *trackedEntry) resnapshot(properties []*core.PropertyMap) {
+func (tr *tracker) resnapshot(e *trackedEntry, properties []*core.PropertyMap) error {
 	entity := e.ptr.Interface()
 	for _, p := range properties {
 		for i, candidate := range e.m.Properties {
-			if candidate == p {
-				e.snapshot[i] = cloneValue(p.Get(entity))
-				break
+			if candidate != p {
+				continue
 			}
+			bound, err := tr.bound(e.m, p, entity)
+			if err != nil {
+				return err
+			}
+			e.snapshot[i] = bound
+			break
 		}
 	}
+	return nil
 }
 
-// sameValue is snapshot equality: value-wise for the fixed table's types
-// through core.CompareValues (decimals numerically, temporals by instant),
-// by content for byte arrays, and deep equality for anything else (a
-// handler's JSON value).
-func sameValue(a, b any) bool {
+// sameBound compares two bound values: byte arrays by content, decimals
+// numerically (core.CompareValues, the one value-wise comparator), instants
+// by Equal, every other scalar by value. A handler may bind something
+// uncomparable (a map); that falls back to deep equality.
+func sameBound(a, b any) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
@@ -136,83 +180,18 @@ func sameValue(a, b any) bool {
 	case []byte:
 		bv, ok := b.([]byte)
 		return ok && bytes.Equal(av, bv)
-	case time.Time, core.Decimal, core.GUID,
-		string, bool,
-		int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64,
-		float32, float64:
-		if reflect.TypeOf(a) != reflect.TypeOf(b) {
-			return false
-		}
-		return core.CompareValues(a, b) == 0
+	case core.Decimal:
+		bv, ok := b.(core.Decimal)
+		return ok && core.CompareValues(av, bv) == 0
+	case time.Time:
+		bv, ok := b.(time.Time)
+		return ok && av.Equal(bv)
+	}
+	if reflect.TypeOf(a) != reflect.TypeOf(b) {
+		return false
+	}
+	if reflect.TypeOf(a).Comparable() {
+		return a == b
 	}
 	return reflect.DeepEqual(a, b)
-}
-
-// cloneValue deep-copies a snapshot value; immutable scalars (and time.Time,
-// Decimal, GUID, which are values) are returned as they are.
-func cloneValue(v any) any {
-	switch x := v.(type) {
-	case nil:
-		return nil
-	case []byte:
-		return append([]byte{}, x...)
-	case time.Time, core.Decimal, core.GUID, string, bool,
-		int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64,
-		float32, float64:
-		return v
-	}
-	return deepCopy(reflect.ValueOf(v)).Interface()
-}
-
-// deepCopy copies slices, maps, pointers, and the exported fields of structs;
-// everything else is a plain value copy.
-func deepCopy(v reflect.Value) reflect.Value {
-	switch v.Kind() {
-	case reflect.Pointer:
-		if v.IsNil() {
-			return v
-		}
-		copied := reflect.New(v.Type().Elem())
-		copied.Elem().Set(deepCopy(v.Elem()))
-		return copied
-	case reflect.Slice:
-		if v.IsNil() {
-			return v
-		}
-		copied := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
-		for i := 0; i < v.Len(); i++ {
-			copied.Index(i).Set(deepCopy(v.Index(i)))
-		}
-		return copied
-	case reflect.Map:
-		if v.IsNil() {
-			return v
-		}
-		copied := reflect.MakeMapWithSize(v.Type(), v.Len())
-		iter := v.MapRange()
-		for iter.Next() {
-			copied.SetMapIndex(iter.Key(), deepCopy(iter.Value()))
-		}
-		return copied
-	case reflect.Struct:
-		copied := reflect.New(v.Type()).Elem()
-		copied.Set(v) // unexported fields copy shallowly
-		for i := 0; i < v.NumField(); i++ {
-			if copied.Field(i).CanSet() {
-				copied.Field(i).Set(deepCopy(v.Field(i)))
-			}
-		}
-		return copied
-	case reflect.Interface:
-		if v.IsNil() {
-			return v
-		}
-		copied := reflect.New(v.Type()).Elem()
-		copied.Set(deepCopy(v.Elem()))
-		return copied
-	default:
-		return v
-	}
 }

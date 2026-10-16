@@ -66,7 +66,7 @@ func Open(ctx context.Context, connectionString string, options Options) (*Db, e
 	converter := mapping.NewTypeConverter(options.TypeHandlers, options.Dialect.BindsTemporalsNatively())
 	var identityMap *tracker
 	if options.Tracking == TrackingTracked {
-		identityMap = newTracker()
+		identityMap = newTracker(converter)
 	}
 	return &Db{
 		pool:       pool,
@@ -152,9 +152,9 @@ func (t *Tx) Commit(context.Context) error {
 
 // Rollback rolls back the transaction; a second call (or a call after Commit) is a no-op.
 //
-// SPEC-GAP: the spec is silent on what a rollback does to a tracked session. Assumed: nothing — the
-// identity map, snapshots, and in-memory version bumps are not reverted, so after a rollback a
-// tracked instance can be ahead of its row (Refresh is the way back).
+// A rollback reverts the database, not the identity map, the snapshots, or in-memory version
+// bumps; Refresh is the way back (spec/session.md Clarifications, ADR-0035: "transactions do not
+// touch the map").
 func (t *Tx) Rollback(context.Context) error {
 	if t.done {
 		return nil
@@ -222,8 +222,9 @@ func materializeRows[T any](ctx context.Context, db *Db, rows *sql.Rows, queryNa
 // are never tracked — plain result structs, keyless entities, untracked
 // sessions. Callers that know their result is an entity pass db.tracking(m).
 //
-// SPEC-GAP: a read that fails midway (a mapping error, cancellation, REL-002 in join mode) leaves
-// the rows it had already resolved registered; the spec does not ask for the map to be unwound.
+// A read that fails midway (a mapping error, cancellation, REL-002 in join mode) leaves the
+// rows it had already resolved registered: the map is a cache of what the session
+// materialized, not a transaction (spec/session.md Clarifications, ADR-0035).
 func readRows[T any](ctx context.Context, db *Db, rows *sql.Rows, tracked *core.EntityMap, queryName string) ([]T, error) {
 	defer rows.Close()
 
@@ -243,7 +244,11 @@ func readRows[T any](ctx context.Context, db *Db, rows *sql.Rows, tracked *core.
 		if err != nil {
 			return nil, err
 		}
-		results = append(results, db.resolveAny(tracked, value).(T))
+		resolved, err := db.resolveAny(tracked, value)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, resolved.(T))
 		count++
 		if count%64 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -286,7 +291,12 @@ func streamRows[T any](ctx context.Context, db *Db, rows *sql.Rows, queryName st
 			yield(zero, err)
 			return
 		}
-		if !yield(db.resolveAny(tracked, value).(T), nil) {
+		resolved, err := db.resolveAny(tracked, value)
+		if err != nil {
+			yield(zero, err)
+			return
+		}
+		if !yield(resolved.(T), nil) {
 			return
 		}
 	}

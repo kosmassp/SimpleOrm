@@ -240,10 +240,8 @@ final class DbEagerJoin
                         // Re-initialize the included collection (spec/loading.md:
                         // "a loaded-but-empty collection reads as empty") — every
                         // root gets `[]`, filled below as rows match.
-                        // SPEC-GAP: on a root the identity map already holds, "loaded navigations
-                        // stay as they were" (session.md) versus "loading overwrites the navigation"
-                        // (loading.md): taken as — a re-read leaves them, an *included* navigation
-                        // is reloaded (the request is explicit); navigations are never dirty state.
+                        // spec/session.md Clarifications (ADR-0035): a re-read leaves a tracked root's
+                        // navigations alone, an include always reassigns the one it names.
                         $navigationProperties[$alias]->setValue($entity, []);
                         $collectionSeenTokens[$alias][$rootToken] = [];
                     }

@@ -161,7 +161,7 @@ final class TrackingCasesTest extends TestCase
         } elseif (isset($expect['notSame'])) {
             self::assertNotSame(self::resolve($refs, $expect['notSame'][0]), self::resolve($refs, $expect['notSame'][1]), $context);
         } elseif (isset($expect['dirty'])) {
-            // SPEC-GAP: the order of `dirty.properties` (and `expectWritten`) is unspecified; compared as sets.
+            // spec/session.md Clarifications (ADR-0035): the runner may compare the lists as sets (the metadata order is pinned in TrackingTest).
             $actual = $db->changesOf(self::resolve($refs, $expect['dirty']['ref']));
             $expected = array_map(self::propertyName(...), $expect['dirty']['properties']);
             sort($actual);

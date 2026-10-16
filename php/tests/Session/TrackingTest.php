@@ -10,8 +10,11 @@ use PHPUnit\Framework\TestCase;
 use SimpleOrm\Dialect\SqliteDialect;
 use SimpleOrm\Errors\ConcurrencyException;
 use SimpleOrm\Errors\SimpleOrmException;
+use SimpleOrm\Mapping\JsonTypeHandler;
+use SimpleOrm\Mapping\TypeHandlerRegistry;
 use SimpleOrm\Query\Criteria;
 use SimpleOrm\Query\FetchMode;
+use SimpleOrm\Session\Command;
 use SimpleOrm\Session\Db;
 use SimpleOrm\Session\DbOptions;
 use SimpleOrm\Session\EmptyArgs;
@@ -19,7 +22,10 @@ use SimpleOrm\Session\Query;
 use SimpleOrm\Session\TrackingMode;
 use SimpleOrm\Tests\Sample\Models\Transaction;
 use SimpleOrm\Tests\Sample\Models\User;
+use SimpleOrm\Tests\Sample\Models\UserProfile;
 use SimpleOrm\Tests\Sample\Models\UserRole;
+use SimpleOrm\Tests\Session\Fixtures\Document;
+use SimpleOrm\Tests\Session\Fixtures\Settings;
 use SimpleOrm\Tests\Support\ConformanceSeed;
 use SimpleOrm\Tests\Support\RecordingUpdateDialect;
 use SimpleOrm\Tests\Support\SampleDatabase;
@@ -63,9 +69,13 @@ final class TrackingTest extends TestCase
     }
 
     /** A second session on the same database file; untracked unless asked otherwise. */
-    private function session(TrackingMode $mode = TrackingMode::Untracked): Db
+    private function session(TrackingMode $mode = TrackingMode::Untracked, ?TypeHandlerRegistry $handlers = null): Db
     {
-        $session = Db::open($this->fixture->connectionString(), new DbOptions(new SqliteDialect(), tracking: $mode));
+        $session = Db::open($this->fixture->connectionString(), new DbOptions(
+            new SqliteDialect(),
+            typeHandlers: $handlers ?? new TypeHandlerRegistry(),
+            tracking: $mode,
+        ));
         $this->others[] = $session;
 
         return $session;
@@ -378,5 +388,233 @@ final class TrackingTest extends TestCase
         $this->session()->delete(User::class, 2);
 
         self::assertSame('CRUD-001', $this->code(fn () => $this->db->refresh($user)));
+    }
+
+    #[Test]
+    public function refresh_of_an_instance_whose_key_another_tracked_instance_holds_is_uow_002(): void
+    {
+        $held = $this->db->get(User::class, 1);
+        $copy = new User();
+        $copy->id = 1;
+        $copy->name = 'Copy';
+
+        self::assertSame('UOW-002', $this->code(fn () => $this->db->refresh($copy)));
+        self::assertSame('Ada', $held->name);
+        self::assertSame('Copy', $copy->name);
+    }
+
+    #[Test]
+    public function refresh_of_an_unknown_instance_with_a_free_key_applies_the_row_without_registering_it(): void
+    {
+        $stranger = new User();
+        $stranger->id = 2;
+
+        $this->db->refresh($stranger);
+
+        self::assertSame('Grace', $stranger->name);
+        self::assertFalse($this->db->isTracked($stranger));
+        self::assertNotSame($stranger, $this->db->get(User::class, 2));
+    }
+
+    // --- the snapshot holds the database-bound form (ADR-0035) -------------------------
+
+    #[Test]
+    public function a_json_handler_member_mutated_in_place_is_dirty_and_is_written(): void
+    {
+        $handlers = new TypeHandlerRegistry();
+        $handlers->register(new JsonTypeHandler(Settings::class));
+        $db = $this->session(TrackingMode::Tracked, $handlers);
+        $db->createTable(Document::class);
+        $document = new Document();
+        $document->settings = new Settings();
+        $db->insert($document);
+        self::assertFalse($db->isDirty($document));
+
+        $document->settings->size = 14;
+
+        self::assertSame(['settings'], $db->changesOf($document));
+
+        $db->update($document);
+        $stored = $this->session(TrackingMode::Untracked, $handlers)->get(Document::class, $document->id);
+        self::assertSame(14, $stored->settings->size);
+        self::assertFalse($db->isDirty($document));
+
+        $document->settings = new Settings('dark', 14);
+        self::assertFalse($db->isDirty($document), 'a different object that binds the same JSON is clean');
+    }
+
+    #[Test]
+    public function changes_of_lists_properties_in_metadata_order_whatever_the_order_of_the_edits(): void
+    {
+        $user = $this->db->get(User::class, 1);
+        $user->updatedAtUtc = SampleDatabase::seedTime();
+        $user->email = 'ada@lovelace.example';
+        $user->name = 'Ada Lovelace';
+
+        self::assertSame(['name', 'email', 'updatedAtUtc'], $this->db->changesOf($user));
+
+        $profile = $this->db->get(UserProfile::class, 1);
+        $profile->updatedAtUtc = SampleDatabase::seedTime();
+        $profile->address->city = 'Paris';
+        $profile->bio = 'Changed';
+
+        self::assertSame(['bio', 'address.city', 'updatedAtUtc'], $this->db->changesOf($profile));
+    }
+
+    // --- every write passes the identity gate -------------------------------------------
+
+    #[Test]
+    public function the_entity_form_of_delete_is_gated_and_the_by_key_form_forgets_the_holder(): void
+    {
+        $held = $this->db->get(User::class, 1);
+        $copy = new User();
+        $copy->id = 1;
+
+        self::assertSame('UOW-002', $this->code(fn () => $this->db->delete(User::class, $copy)));
+        self::assertTrue($this->db->isTracked($held));
+
+        $second = $this->db->get(User::class, 2);
+        $this->db->delete(User::class, 2);
+
+        self::assertFalse($this->db->isTracked($second));
+    }
+
+    #[Test]
+    public function a_second_instance_for_a_key_held_by_a_loaded_link_row_is_uow_002(): void
+    {
+        $user = $this->db->get(User::class, 1);
+        $this->db->loadEach([$user], 'roles');
+
+        $copy = new UserRole();
+        $copy->userId = 1;
+        $copy->roleId = 1;
+        $copy->createdAtUtc = SampleDatabase::seedTime();
+
+        // The caller never received the link rows, yet the session tracks them like every keyed row.
+        self::assertSame('UOW-002', $this->code(fn () => $this->db->update($copy)));
+    }
+
+    // --- the column-list update and the order of refusals --------------------------------
+
+    #[Test]
+    public function update_only_moves_the_written_columns_and_the_version_but_not_an_unwritten_change(): void
+    {
+        $transaction = $this->db->get(Transaction::class, 1);
+        $transaction->note = 'checked';
+        $transaction->amount = Decimal::of('5');
+
+        $this->db->updateOnly($transaction, ['note']);
+
+        self::assertSame(1, $transaction->version);
+        self::assertSame(['amount'], $this->db->changesOf($transaction));
+    }
+
+    #[Test]
+    public function update_only_of_an_unknown_instance_writes_but_does_not_register_it(): void
+    {
+        $stranger = new User();
+        $stranger->id = 2;
+        $stranger->name = 'Grace Hopper';
+
+        $this->db->updateOnly($stranger, ['name']);
+
+        self::assertFalse($this->db->isTracked($stranger));
+        self::assertSame('Grace Hopper', $this->session()->get(User::class, 2)->name);
+    }
+
+    #[Test]
+    public function update_only_refuses_the_list_first_then_the_navigation_then_the_identity(): void
+    {
+        $this->db->get(User::class, 1);
+        $this->db->get(Transaction::class, 1);
+
+        $foreign = new User();
+        $foreign->id = 1;
+        self::assertSame('CRUD-005', $this->code(fn () => $this->db->updateOnly($foreign, ['nope'])));
+        self::assertSame('UOW-002', $this->code(fn () => $this->db->updateOnly($foreign, ['name'])));
+
+        $foreignTransaction = new Transaction();
+        $foreignTransaction->id = 1;
+        $foreignTransaction->userId = 1;
+        $this->db->load($foreignTransaction, 'user');
+        $foreignTransaction->userId = 2;
+        self::assertSame('CRUD-004', $this->code(fn () => $this->db->updateOnly($foreignTransaction, ['userId'])));
+    }
+
+    #[Test]
+    public function a_full_update_checks_every_navigation_before_the_identity_gate_and_the_snapshot(): void
+    {
+        $grace = $this->db->get(User::class, 2);
+        $transaction = $this->db->get(Transaction::class, 1);
+        $this->db->load($transaction, 'user');
+        self::assertSame(1, $transaction->user?->id);
+
+        // Clean, but the navigation disagrees with the FK: refused, never silently skipped.
+        (new \ReflectionProperty(Transaction::class, 'user'))->setValue($transaction, $grace);
+        self::assertSame('CRUD-004', $this->code(fn () => $this->db->update($transaction)));
+
+        // A foreign instance with the same inconsistency: CRUD-004 before UOW-002.
+        $foreign = new Transaction();
+        $foreign->id = 1;
+        $foreign->userId = 1;
+        (new \ReflectionProperty(Transaction::class, 'user'))->setValue($foreign, $grace);
+        self::assertSame('CRUD-004', $this->code(fn () => $this->db->update($foreign)));
+    }
+
+    // --- reading ---------------------------------------------------------------------------
+
+    #[Test]
+    public function a_re_read_of_a_tracked_key_still_maps_the_row_so_its_errors_still_fire(): void
+    {
+        $user = $this->db->get(User::class, 2);
+        $this->corruptUserTwo();
+
+        self::assertSame('VAL-020', $this->code(fn () => $this->db->get(User::class, 2)));
+        self::assertTrue($this->db->isTracked($user));
+        self::assertFalse($this->db->isDirty($user));
+    }
+
+    #[Test]
+    public function a_read_that_fails_midway_leaves_the_rows_it_resolved_registered(): void
+    {
+        $this->corruptUserTwo();
+        $columns = 'id, name, email, display_name, created_at, updated_at';
+        $query = Query::inline(EmptyArgs::class, User::class, "select {$columns} from users order by id");
+
+        $first = null;
+        try {
+            foreach ($this->db->stream($query, EmptyArgs::value()) as $user) {
+                $first ??= $user;
+            }
+            self::fail('expected the second row to fail');
+        } catch (SimpleOrmException $e) {
+            self::assertSame('VAL-020', $e->errorCode);
+        }
+
+        self::assertNotNull($first);
+        self::assertTrue($this->db->isTracked($first));
+        self::assertSame($first, $this->db->get(User::class, 1));
+    }
+
+    #[Test]
+    public function loading_correlates_by_the_live_foreign_key_of_a_tracked_instance(): void
+    {
+        $user = $this->db->get(User::class, 1);
+        $transaction = $this->db->get(Transaction::class, 1);
+        $transaction->userId = 2;
+
+        $this->db->load($user, 'transactions');
+
+        self::assertSame([], $user->transactions);
+        self::assertSame(['userId'], $this->db->changesOf($transaction));
+    }
+
+    /** A stored `created_at` without a UTC marker: every read of the row is `VAL-020`. */
+    private function corruptUserTwo(): void
+    {
+        $this->session()->execute(
+            Command::inline(EmptyArgs::class, "update users set created_at = '2026-08-28 09:30:00' where id = 2"),
+            EmptyArgs::value(),
+        );
     }
 }

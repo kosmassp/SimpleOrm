@@ -251,30 +251,13 @@ func membershipCriteria(propertyNames []string, tuples []core.KeyTuple) core.Cri
 	return core.Or(children...)
 }
 
-// rowDelivery says whether materialized rows reach the caller (the loaded
-// navigation targets — they resolve through the identity map in a tracked
-// session) or are only read to correlate (many-to-many link rows — never
-// delivered, so never tracked; Level 3 M1).
-//
-// SPEC-GAP: the spec lists "explicit and batch loading" among the reads that consult the map and
-// is silent on many-to-many link rows, which are materialized only to correlate owners with
-// targets. Assumed: never tracked (rowsInternal) — no caller can hold them. Also unspecified:
-// loading finds a tracked target by its LIVE key and FK fields, so a local edit of a tracked
-// instance's FK property changes which owner a later Load attaches it to.
-type rowDelivery int
-
-const (
-	rowsDelivered rowDelivery = iota
-	rowsInternal
-)
-
 // selectRows renders and runs ast (whose Map is the entity actually being
 // queried) through the dialect and the one row-mapping pipeline, without a
 // compile-time type parameter: the loading engine only learns the target
 // type at runtime, from the navigation's declaration. Results come back as
 // addressable pointers (reflect.PointerTo(ast.Map.Type)) ready to attach
 // directly to a pointer-shaped navigation field, or to copy into a value one.
-func selectRows(ctx context.Context, db *Db, ast *core.SelectAst, queryName string, delivery rowDelivery) ([]reflect.Value, error) {
+func selectRows(ctx context.Context, db *Db, ast *core.SelectAst, queryName string) ([]reflect.Value, error) {
 	rows, err := renderAndRunSelect(ctx, db, ast, queryName)
 	if err != nil {
 		return nil, err
@@ -297,8 +280,12 @@ func selectRows(ctx context.Context, db *Db, ast *core.SelectAst, queryName stri
 		if err != nil {
 			return nil, err
 		}
-		if delivery == rowsDelivered {
-			value = db.resolveAny(db.tracking(ast.Map), value)
+		// Every materialized keyed row resolves through the identity map, the many-to-many link
+		// rows included although the caller never receives them (spec/session.md Clarifications,
+		// ADR-0035). Correlation then reads the live values of the tracked instances.
+		value, err = db.resolveAny(db.tracking(ast.Map), value)
+		if err != nil {
+			return nil, err
 		}
 		results = append(results, reflect.ValueOf(value))
 		count++
@@ -326,7 +313,7 @@ func queryMembership(
 	ctx context.Context, db *Db, m *core.EntityMap,
 	matchProperties []string, tuples []core.KeyTuple,
 	ownerSubquery *core.SelectAst, subqueryProjection []*core.PropertyMap,
-	orderProperties []*core.PropertyMap, queryName string, delivery rowDelivery,
+	orderProperties []*core.PropertyMap, queryName string,
 ) ([]reflect.Value, error) {
 	orderings := make([]core.Ordering, len(orderProperties))
 	for i, p := range orderProperties {
@@ -337,7 +324,7 @@ func queryMembership(
 		sub := *ownerSubquery // shallow copy: never mutate the shared root AST (CODING-STANDARD §3)
 		sub.Projection = subqueryProjection
 		ast := &core.SelectAst{Map: m, Where: []core.Criteria{core.InSelect(matchProperties, &sub)}, Orderings: orderings}
-		return selectRows(ctx, db, ast, queryName, delivery)
+		return selectRows(ctx, db, ast, queryName)
 	}
 
 	if len(tuples) == 0 {
@@ -348,7 +335,7 @@ func queryMembership(
 	var all []reflect.Value
 	for _, chunk := range chunks {
 		ast := &core.SelectAst{Map: m, Where: []core.Criteria{membershipCriteria(matchProperties, chunk)}, Orderings: orderings}
-		rows, err := selectRows(ctx, db, ast, queryName, delivery)
+		rows, err := selectRows(ctx, db, ast, queryName)
 		if err != nil {
 			return nil, err
 		}
@@ -440,7 +427,7 @@ func loadManyToOne(
 
 	queryName := navigationTarget + " (many-to-one)"
 	targets, err := queryMembership(ctx, db, targetMap, propertyNames(targetMap.KeyProperties), distinct,
-		ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName, rowsDelivered)
+		ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName)
 	if err != nil {
 		return err
 	}
@@ -490,7 +477,7 @@ func loadOneToOne(
 
 	queryName := navigationTarget + " (one-to-one)"
 	targets, err := queryMembership(ctx, db, targetMap, propertyNames(targetFKProps), distinct,
-		ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName, rowsDelivered)
+		ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName)
 	if err != nil {
 		return err
 	}
@@ -554,7 +541,7 @@ func loadOneToMany(
 
 	queryName := navigationTarget + " (one-to-many)"
 	targets, err := queryMembership(ctx, db, targetMap, propertyNames(targetFKProps), distinct,
-		ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName, rowsDelivered)
+		ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName)
 	if err != nil {
 		return err
 	}
@@ -619,7 +606,7 @@ func loadManyToMany(
 	// query orders by the target key, spec/loading.md).
 	linkQueryName := navigationTarget + " (many-to-many link)"
 	linkRows, err := queryMembership(ctx, db, linkMap, propertyNames(linkOwnerProps), distinctOwners,
-		ownerSubquery, subqueryProjection, nil, linkQueryName, rowsInternal)
+		ownerSubquery, subqueryProjection, nil, linkQueryName)
 	if err != nil {
 		return err
 	}
@@ -631,7 +618,7 @@ func loadManyToMany(
 	// ordered by target key value-wise.
 	targetQueryName := navigationTarget + " (many-to-many target)"
 	targets, err := queryMembership(ctx, db, targetMap, propertyNames(targetMap.KeyProperties), allTargetTuples,
-		nil, nil, targetMap.KeyProperties, targetQueryName, rowsDelivered)
+		nil, nil, targetMap.KeyProperties, targetQueryName)
 	if err != nil {
 		return err
 	}

@@ -1,0 +1,13 @@
+{
+  "name": "cascade_remove_over_an_unloaded_collection_is_refused",
+  "comment": "Nothing loads implicitly: removing a transaction whose Details (Cascade Remove) were never loaded is UOW-005 at Remove time — load them or remove the children explicitly. Nothing was scheduled.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "Transaction", "key": 1, "as": "t" } },
+    { "remove": { "ref": "t" }, "expectError": "UOW-005" },
+    { "expect": { "pending": false } },
+    { "load": { "ref": "t", "navigation": "Details" } },
+    { "remove": { "ref": "t" } },
+    { "flush": { "expectStatements": [ { "op": "delete", "entity": "Transaction" } ], "expectSummary": { "inserted": 0, "updated": 0, "deleted": 1 } } }
+  ]
+}

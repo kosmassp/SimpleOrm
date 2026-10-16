@@ -92,6 +92,10 @@
       "references": "TransactionDetail",
       "targetForeignKeyColumns": [
         "transaction_id"
+      ],
+      "cascade": [
+        "persist",
+        "remove"
       ]
     }
   ]

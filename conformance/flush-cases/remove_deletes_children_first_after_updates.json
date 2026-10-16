@@ -1,0 +1,23 @@
+{
+  "name": "remove_deletes_children_first_after_updates",
+  "comment": "A detail is persisted and flushed, then the transaction's loaded Details cascade its removal: the flush writes the pending update first, then the child, then the parent; the deleted instances are forgotten.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "Transaction", "key": 1, "as": "t" } },
+    { "new": { "entity": "TransactionDetail", "as": "d", "values": { "TransactionId": 1, "Description": "Widget", "Quantity": 1, "UnitPrice": "2.50", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "persist": { "ref": "d" } },
+    { "flush": { "expectStatements": [ { "op": "insert", "entity": "TransactionDetail" } ], "expectSummary": { "inserted": 1, "updated": 0, "deleted": 0 } } },
+    { "load": { "ref": "t", "navigation": "Details" } },
+    { "expect": { "same": ["d", "t.Details[0]"] } },
+    { "get": { "entity": "User", "key": 1, "as": "u" } },
+    { "set": { "ref": "u", "property": "Name", "value": "Ada Lovelace" } },
+    { "remove": { "ref": "t" } },
+    { "expect": { "pending": true } },
+    { "flush": { "expectStatements": [ { "op": "update", "entity": "User", "columns": ["Name"] }, { "op": "delete", "entity": "TransactionDetail" }, { "op": "delete", "entity": "Transaction" } ],
+                 "expectSummary": { "inserted": 0, "updated": 1, "deleted": 2 } } },
+    { "expect": { "tracked": { "ref": "t", "is": false } } },
+    { "expect": { "tracked": { "ref": "d", "is": false } } },
+    { "get": { "entity": "Transaction", "key": 1, "as": "gone" }, "expectError": "CRUD-001" },
+    { "expect": { "count": { "entity": "TransactionDetail", "equals": 0 } } }
+  ]
+}

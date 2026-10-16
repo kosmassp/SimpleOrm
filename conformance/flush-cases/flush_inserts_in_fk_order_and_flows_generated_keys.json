@@ -1,0 +1,19 @@
+{
+  "name": "flush_inserts_in_fk_order_and_flows_generated_keys",
+  "comment": "Two scheduled inserts: the transaction references the user through its navigation only, so the user inserts first (type dependency order beats schedule order) and its generated key flows into the transaction's FK before that insert.",
+  "tracking": "tracked",
+  "steps": [
+    { "new": { "entity": "User", "as": "u", "values": { "Name": "Linus", "Email": "linus@example.com", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "new": { "entity": "Transaction", "as": "t", "values": { "Status": "Pending", "Amount": "5", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" }, "navigations": { "User": "u" } } },
+    { "persist": { "ref": "t" } },
+    { "persist": { "ref": "u" } },
+    { "expect": { "pending": true } },
+    { "flush": { "expectStatements": [ { "op": "insert", "entity": "User" }, { "op": "insert", "entity": "Transaction" } ],
+                 "expectSummary": { "inserted": 2, "updated": 0, "deleted": 0 } } },
+    { "expect": { "pending": false } },
+    { "expect": { "sameValue": ["t.UserId", "u.Id"] } },
+    { "expect": { "same": ["u", "t.User"] } },
+    { "expect": { "tracked": { "ref": "t", "is": true } } },
+    { "expect": { "dirty": { "ref": "t", "properties": [] } } }
+  ]
+}

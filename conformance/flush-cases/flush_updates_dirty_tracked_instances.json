@@ -1,0 +1,18 @@
+{
+  "name": "flush_updates_dirty_tracked_instances",
+  "comment": "Nothing scheduled: the flush still writes every dirty tracked instance as a column-list update, types in foreign-key order (users before transactions) whatever the order they were read in; the version bumps and the snapshots move.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "Transaction", "key": 1, "as": "t" } },
+    { "set": { "ref": "t", "property": "Note", "value": "flushed" } },
+    { "get": { "entity": "User", "key": 1, "as": "u" } },
+    { "set": { "ref": "u", "property": "Name", "value": "Ada Lovelace" } },
+    { "expect": { "pending": false } },
+    { "flush": { "expectStatements": [ { "op": "update", "entity": "User", "columns": ["Name"] }, { "op": "update", "entity": "Transaction", "columns": ["Note"] } ],
+                 "expectSummary": { "inserted": 0, "updated": 2, "deleted": 0 } } },
+    { "expect": { "dirty": { "ref": "t", "properties": [] } } },
+    { "expect": { "dirty": { "ref": "u", "properties": [] } } },
+    { "expect": { "value": { "ref": "t", "property": "Version", "equals": 1 } } },
+    { "flush": { "expectStatements": [], "expectSummary": { "inserted": 0, "updated": 0, "deleted": 0 } } }
+  ]
+}

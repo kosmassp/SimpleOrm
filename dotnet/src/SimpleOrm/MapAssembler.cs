@@ -294,7 +294,7 @@ internal static class MapAssembler
 
             relationships.Add(new RelationshipMap(
                 spec.PropertyName, spec.Kind, spec.TargetType, spec.ForeignKeyProperties,
-                spec.LinkType, spec.LinkForeignKeysToOwner, spec.LinkForeignKeysToTarget));
+                spec.LinkType, spec.LinkForeignKeysToOwner, spec.LinkForeignKeysToTarget, spec.Cascade));
         }
 
         return relationships;

@@ -78,6 +78,9 @@ internal sealed class RelationshipSpec
 
     public Type? LinkType { get; init; }
 
+    /// <summary>What the navigation cascades (Level 3 M2); read from <c>[Cascade]</c>.</summary>
+    public CascadeOperations Cascade { get; set; } = CascadeOperations.None;
+
     public IReadOnlyList<string> LinkForeignKeysToOwner { get; init; } = [];
 
     public IReadOnlyList<string> LinkForeignKeysToTarget { get; init; } = [];

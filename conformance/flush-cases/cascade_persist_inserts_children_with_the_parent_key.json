@@ -1,0 +1,18 @@
+{
+  "name": "cascade_persist_inserts_children_with_the_parent_key",
+  "comment": "Transaction.Details is declared Cascade(Persist | Remove): persisting the transaction schedules its initialized details, the parent inserts first, and each child takes the parent's generated key into its FK.",
+  "tracking": "tracked",
+  "steps": [
+    { "new": { "entity": "TransactionDetail", "as": "d1", "values": { "Description": "Widget", "Quantity": 1, "UnitPrice": "2.50", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "new": { "entity": "TransactionDetail", "as": "d2", "values": { "Description": "Gadget", "Quantity": 2, "UnitPrice": "1.25", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "new": { "entity": "Transaction", "as": "t", "values": { "UserId": 1, "Status": "Pending", "Amount": "5", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" }, "navigations": { "Details": ["d1", "d2"] } } },
+    { "persist": { "ref": "t" } },
+    { "flush": { "expectStatements": [ { "op": "insert", "entity": "Transaction" }, { "op": "insert", "entity": "TransactionDetail" }, { "op": "insert", "entity": "TransactionDetail" } ],
+                 "expectSummary": { "inserted": 3, "updated": 0, "deleted": 0 } } },
+    { "expect": { "sameValue": ["d1.TransactionId", "t.Id"] } },
+    { "expect": { "sameValue": ["d2.TransactionId", "t.Id"] } },
+    { "expect": { "tracked": { "ref": "d1", "is": true } } },
+    { "expect": { "dirty": { "ref": "d2", "properties": [] } } },
+    { "expect": { "count": { "entity": "TransactionDetail", "equals": 2 } } }
+  ]
+}

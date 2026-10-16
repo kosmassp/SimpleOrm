@@ -49,6 +49,15 @@ await tracked.RefreshAsync(a, ct);                    // the explicit overwrite 
 // UOW-001: a tracking question about an instance the session does not track; UOW-002: a write from an
 // instance that is not the session's instance for its key (another holds it, or the key was changed)
 
+// Unit of work (Level 3 M2, ADR-0036; tracked sessions only — UOW-003 otherwise)
+tracked.Persist(order);                               // schedules the insert; [Cascade(Persist)] navigations come along
+tracked.Remove(oldDetail);                            // schedules the delete of a tracked instance (cascades declared Remove)
+var summary = await tracked.FlushAsync(ct);           // inserts in FK order (generated keys flow into dependents),
+                                                      // then every dirty tracked instance, then deletes children-first —
+                                                      // in the session transaction, or one the flush opens and commits
+// UOW-004: a cycle among scheduled instances; UOW-005: a remove cascading over a never-loaded collection
+// (nothing loads implicitly); UOW-006: Persist of an instance scheduled for removal
+
 // Owned value types (ADR-0030): [Owned] class + [Owned] navigation → address_* columns of user_profiles,
 // one flat EntityMap, dotted paths in criteria and column lists; an all-NULL row reads back as null
 var inParis = await db.Query<UserProfile>().Where(Criteria.Eq("Address.City", "Paris")).ToListAsync(ct);

@@ -1,0 +1,20 @@
+{
+  "name": "flush_enlists_in_the_session_transaction",
+  "comment": "With a transaction active the flush writes inside it and leaves it open: a rollback undoes the insert in the database (the identity map is untouched, as session.md says), a commit keeps it.",
+  "tracking": "tracked",
+  "steps": [
+    { "begin": {} },
+    { "new": { "entity": "User", "as": "u", "values": { "Name": "Linus", "Email": "linus@example.com", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "persist": { "ref": "u" } },
+    { "flush": { "expectStatements": [ { "op": "insert", "entity": "User" } ], "expectSummary": { "inserted": 1, "updated": 0, "deleted": 0 } } },
+    { "rollback": {} },
+    { "expect": { "count": { "entity": "User", "equals": 2 } } },
+    { "expect": { "tracked": { "ref": "u", "is": true } } },
+    { "begin": {} },
+    { "new": { "entity": "User", "as": "v", "values": { "Name": "Dennis", "Email": "dennis@example.com", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "persist": { "ref": "v" } },
+    { "flush": { "expectStatements": [ { "op": "insert", "entity": "User" } ], "expectSummary": { "inserted": 1, "updated": 0, "deleted": 0 } } },
+    { "commit": {} },
+    { "expect": { "count": { "entity": "User", "equals": 3 } } }
+  ]
+}

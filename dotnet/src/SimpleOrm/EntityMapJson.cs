@@ -135,6 +135,25 @@ public static class EntityMapJson
                             break;
                     }
 
+                    // Declared cascades (Level 3 M2): written only when declared, so
+                    // exports without any stay byte-identical.
+                    if (relationship.Cascade != CascadeOperations.None)
+                    {
+                        writer.WritePropertyName("cascade");
+                        writer.WriteStartArray();
+                        if (relationship.Cascade.HasFlag(CascadeOperations.Persist))
+                        {
+                            writer.WriteStringValue("persist");
+                        }
+
+                        if (relationship.Cascade.HasFlag(CascadeOperations.Remove))
+                        {
+                            writer.WriteStringValue("remove");
+                        }
+
+                        writer.WriteEndArray();
+                    }
+
                     writer.WriteEndObject();
                 }
 

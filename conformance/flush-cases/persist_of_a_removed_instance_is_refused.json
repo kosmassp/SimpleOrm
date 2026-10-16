@@ -1,0 +1,15 @@
+{
+  "name": "persist_of_a_removed_instance_is_refused",
+  "comment": "A conflicting schedule is UOW-006: an instance scheduled for removal cannot be persisted in the same unit of work; the removal stands and flushes. Removing an instance the session does not track is UOW-001.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "User", "key": 2, "as": "g" } },
+    { "remove": { "ref": "g" } },
+    { "persist": { "ref": "g" }, "expectError": "UOW-006" },
+    { "new": { "entity": "User", "as": "stranger", "values": { "Id": 1, "Name": "Ada", "Email": "ada@example.com", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "remove": { "ref": "stranger" }, "expectError": "UOW-001" },
+    { "flush": { "expectStatements": [ { "op": "delete", "entity": "User" } ], "expectSummary": { "inserted": 0, "updated": 0, "deleted": 1 } } },
+    { "expect": { "tracked": { "ref": "g", "is": false } } },
+    { "expect": { "count": { "entity": "User", "equals": 1 } } }
+  ]
+}

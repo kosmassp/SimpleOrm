@@ -38,6 +38,8 @@ public sealed class Transaction : BaseModel
     public string? Note { get; set; }
 
     /// <summary>Populated only by the library (Level 2 milestone 3 loading); never a column, never written.</summary>
+    /// <summary>Details live and die with their transaction: the unit of work persists and removes them with it (Level 3 M2, declared cascade).</summary>
     [OneToMany(nameof(TransactionDetail.TransactionId))]
+    [Cascade(CascadeOperations.All)]
     public IReadOnlyList<TransactionDetail> Details { get; private set; } = [];
 }

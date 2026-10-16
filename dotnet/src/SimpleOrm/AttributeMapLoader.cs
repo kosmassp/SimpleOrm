@@ -185,6 +185,7 @@ internal static class AttributeMapLoader
             var enumAsInt = property.GetCustomAttribute<EnumAsIntAttribute>();
             var foreignKey = property.GetCustomAttribute<ForeignKeyAttribute>();
             var owned = property.GetCustomAttribute<OwnedAttribute>();
+            var cascade = property.GetCustomAttribute<CascadeAttribute>();
 
             if (owned is not null)
             {
@@ -250,7 +251,14 @@ internal static class AttributeMapLoader
                     ReadCollectionNavigation(entityType, property, target, oneToMany, manyToMany, relationships, errors);
                 }
 
+                ApplyCascade(cascade, property.Name, target, manyToMany is not null, relationships, errors);
                 continue;
+            }
+
+            if (cascade is not null)
+            {
+                errors.Add(new MappingError(
+                    "MAP-025", target, "[Cascade] belongs on a [ManyToOne], [OneToOne], or [OneToMany] navigation"));
             }
 
             if (ignore is not null)
@@ -598,6 +606,35 @@ internal static class AttributeMapLoader
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Attaches a declared cascade (Level 3 M2) to the navigation's spec: declared,
+    /// never inferred; a many-to-many navigation cannot cascade (its link rows are
+    /// entities the unit of work persists explicitly) — MAP-025.
+    /// </summary>
+    private static void ApplyCascade(
+        CascadeAttribute? cascade, string propertyName, string target, bool manyToMany,
+        List<RelationshipSpec> relationships, List<MappingError> errors)
+    {
+        if (cascade is null)
+        {
+            return;
+        }
+
+        if (manyToMany)
+        {
+            errors.Add(new MappingError(
+                "MAP-025", target,
+                "[Cascade] cannot apply to a [ManyToMany] navigation: the link rows are entities the unit of work persists explicitly"));
+            return;
+        }
+
+        var spec = relationships.LastOrDefault(r => r.PropertyName == propertyName);
+        if (spec is not null)
+        {
+            spec.Cascade = cascade.Operations;   // a navigation that failed to resolve already reported its own errors
+        }
     }
 
     /// <summary>

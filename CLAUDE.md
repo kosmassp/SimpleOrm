@@ -84,6 +84,7 @@ conformance/                  the executable definition of the library (see §9)
   snapshot-cases/             exact snapshot exports for fixture entities (ADR-0017)
   load-cases/                 relationship loading replayed explicitly and in every fetch mode (ADR-0021/0022)
   tracking-cases/             identity map + change tracking step scripts per tracking mode (ADR-0034 M1)
+  flush-cases/                unit-of-work step scripts: graph in, ordered statement sequence out (ADR-0034 M2)
 dotnet/
   SimpleOrm.sln
   src/SimpleOrm/              core: metadata, mapping, parameters, session, rules, migration runner

@@ -69,7 +69,12 @@ internal static class UnloadedNavigations
 }
 
 /// <summary>Throws <c>REL-004</c> on any read; one shared instance per (entity type, navigation).</summary>
-internal sealed class UnloadedList<T>(string entityName, string propertyName) : IReadOnlyList<T>
+/// <summary>Marks the unloaded sentinel so the unit of work can tell "never loaded" from "loaded and empty" without touching it (Level 3 M2).</summary>
+internal interface IUnloadedSentinel
+{
+}
+
+internal sealed class UnloadedList<T>(string entityName, string propertyName) : IReadOnlyList<T>, IUnloadedSentinel
 {
     public int Count => throw Unloaded();
 

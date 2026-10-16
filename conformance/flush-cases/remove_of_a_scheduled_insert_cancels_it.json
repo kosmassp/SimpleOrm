@@ -1,0 +1,15 @@
+{
+  "name": "remove_of_a_scheduled_insert_cancels_it",
+  "comment": "Nothing was written yet, so Remove of a scheduled insert simply cancels it: the flush issues no statement and the instance is never tracked.",
+  "tracking": "tracked",
+  "steps": [
+    { "new": { "entity": "User", "as": "u", "values": { "Name": "Linus", "Email": "linus@example.com", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "persist": { "ref": "u" } },
+    { "expect": { "pending": true } },
+    { "remove": { "ref": "u" } },
+    { "expect": { "pending": false } },
+    { "flush": { "expectStatements": [], "expectSummary": { "inserted": 0, "updated": 0, "deleted": 0 } } },
+    { "expect": { "tracked": { "ref": "u", "is": false } } },
+    { "expect": { "count": { "entity": "User", "equals": 2 } } }
+  ]
+}

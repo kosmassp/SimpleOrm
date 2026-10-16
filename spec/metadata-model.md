@@ -218,6 +218,13 @@ permanently (no foreign-key integrity / plain SQL says it better). Rules:
   arity (`MAP-022` — missing, surplus, or short). The export carries the link's
   **column** names for both sides (`linkForeignKeyColumnsToOwner`,
   `linkForeignKeyColumnsToTarget`), resolved through the link's map.
+- **Cascades are declared, never inferred** (Level 3 M2, unit-of-work.md): a
+  `many_to_one`, `one_to_one`, or `one_to_many` navigation may declare what
+  it cascades — `persist`, `remove`, or both — and the export carries
+  `"cascade": ["persist", "remove"]` **only when declared** (an export
+  without cascades is unchanged). A `many_to_many` navigation cannot cascade
+  (its link rows are entities the unit of work persists explicitly), and a
+  cascade on anything but a navigation is a declaration error: `MAP-025`.
 - A property carries at most one relationship declaration, and none of
   `[Column]`/`[Ignore]` beside it (`MAP-019`).
 

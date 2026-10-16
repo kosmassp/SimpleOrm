@@ -100,7 +100,8 @@ public sealed class RelationshipMap
         IReadOnlyList<string> foreignKeyProperties,
         Type? linkType = null,
         IReadOnlyList<string>? linkForeignKeysToOwner = null,
-        IReadOnlyList<string>? linkForeignKeysToTarget = null)
+        IReadOnlyList<string>? linkForeignKeysToTarget = null,
+        CascadeOperations cascade = CascadeOperations.None)
     {
         PropertyName = propertyName;
         Kind = kind;
@@ -109,7 +110,11 @@ public sealed class RelationshipMap
         LinkType = linkType;
         LinkForeignKeysToOwner = linkForeignKeysToOwner ?? [];
         LinkForeignKeysToTarget = linkForeignKeysToTarget ?? [];
+        Cascade = cascade;
     }
+
+    /// <summary>The unit-of-work operations this navigation cascades (Level 3 M2); declared, never inferred.</summary>
+    public CascadeOperations Cascade { get; }
 
     public string PropertyName { get; }
 

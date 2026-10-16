@@ -42,6 +42,7 @@ these codes.
 | `MAP-022` | `[ManyToMany]` link entity's `[ForeignKey]` references to a side are missing or their count mismatches that side's key arity | ADR-0019 (+add.1) | L2 milestone 1 |
 | `MAP-023` | malformed mapping declaration: an annotation the language cannot type-check at compile time is unparseable or names an unknown option, token, or member (Go: a malformed `orm` struct tag, an unknown `type=` token, an embedded pointer, a builder naming a field that does not exist); unreachable where annotations are typed (C#, PHP) | ADR-0027 | Go port |
 | `MAP-024` | invalid owned-type declaration: the navigation is not a single class-typed value or has no setter; the owned type is an entity (carries a relation source or index), is not declared owned at class level, has no parameterless constructor, maps no columns, or carries a key, version, generated column, foreign key, relationship, or nested owned type; or an owned type is loaded as if it were an entity | ADR-0030 | L2 exit |
+| `MAP-025` | invalid cascade declaration: `[Cascade]` on a property that is not a `[ManyToOne]`/`[OneToOne]`/`[OneToMany]` navigation — a `[ManyToMany]` navigation cannot cascade (its link rows are entities the unit of work persists explicitly) | ADR-0034 §7c M2 | L3 milestone 2 |
 | `MAP-030` | no conversion or handler between the CLR type and the database value (either direction) | §7.9 | milestone 4 |
 | `MAP-031` | value conversion failed (format, overflow, unknown enum name) | §7.9 | milestone 4 |
 
@@ -137,3 +138,7 @@ Codes are append-only: a retired rule keeps its code (marked retired), never reu
 |---|---|---|---|
 | `UOW-001` | a tracking question (`ChangesOf`/`IsDirty`) about an instance the session does not track: the session is untracked, or the instance never came through this session (not read by it, inserted by it, or updated by it) | ADR-0034 add.1 | L3 milestone 1 |
 | `UOW-002` | identity conflict on a write: the instance is not the session's instance for its key — another tracked instance holds that key, or a tracked instance's key was changed (a key is identity and never updates; delete and insert instead) | ADR-0034 add.1 | L3 milestone 1 |
+| `UOW-003` | a unit-of-work call (`Persist`/`Remove`/`Flush`) on an untracked session — the unit of work needs the identity map and the snapshots; open the session with tracking | ADR-0034 §7c M2 | L3 milestone 2 |
+| `UOW-004` | the flush cannot order the scheduled inserts (or deletes): the instances reference each other in a cycle through their navigations | ADR-0034 §7c M2 | L3 milestone 2 |
+| `UOW-005` | a remove cascades over a collection navigation that was never loaded — nothing loads implicitly; load it or remove the children explicitly | ADR-0034 §7c M2 | L3 milestone 2 |
+| `UOW-006` | conflicting schedule: `Persist` of an instance scheduled for removal (a `Remove` of an instance scheduled for insert simply cancels the insert) | ADR-0034 §7c M2 | L3 milestone 2 |

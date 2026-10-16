@@ -1,0 +1,13 @@
+{
+  "name": "unit_of_work_needs_a_tracked_session",
+  "comment": "The unit of work is part of tracking: an untracked session has no snapshots to flush from, so Persist, Remove, and Flush refuse with UOW-003.",
+  "tracking": "untracked",
+  "steps": [
+    { "new": { "entity": "User", "as": "u", "values": { "Name": "Linus", "Email": "linus@example.com", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "persist": { "ref": "u" }, "expectError": "UOW-003" },
+    { "get": { "entity": "User", "key": 1, "as": "a" } },
+    { "remove": { "ref": "a" }, "expectError": "UOW-003" },
+    { "flush": {}, "expectError": "UOW-003" },
+    { "expect": { "count": { "entity": "User", "equals": 2 } } }
+  ]
+}

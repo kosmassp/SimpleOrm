@@ -7,6 +7,7 @@ package orm_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -338,5 +339,68 @@ func TestValidate_DormantKindsSkipped(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("expected dormant kinds to be skipped, got: %v", err)
+	}
+}
+
+// A pending draft is pending work (MIG-030, spec/migrations.md Clarifications); a recorded one is history.
+func TestValidate_APendingDraftIsMIG030AndARecordedOneIsHistory(t *testing.T) {
+	ctx := context.Background()
+	path := testsupport.TempDatabase(t)
+	registryFor := func(draft bool) orm.Registry {
+		second := orm.NewSQLVersion(2, orm.SQLVersionStep{
+			ObjectName: "widgets", Description: "add_note", Up: []string{"alter table widgets add column note TEXT"},
+		})
+		if draft {
+			second.AsDraft()
+		}
+		set, err := orm.NewMigrationSet(
+			orm.NewSQLVersion(1, orm.SQLVersionStep{
+				ObjectName: "widgets", Description: "create", Up: []string{"create table widgets (id INTEGER PRIMARY KEY) STRICT"},
+			}), second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return orm.Registry{Migrations: set}
+	}
+	// migrate runs a plan holding only the first version, or both (the second without its marker).
+	migrate := func(both bool) {
+		pool, err := sqlite.New().CreateConnection("Data Source=" + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pool.Close()
+		versions := []migrations.Version{orm.NewSQLVersion(1, orm.SQLVersionStep{
+			ObjectName: "widgets", Description: "create", Up: []string{"create table widgets (id INTEGER PRIMARY KEY) STRICT"},
+		})}
+		if both {
+			versions = append(versions, orm.NewSQLVersion(2, orm.SQLVersionStep{
+				ObjectName: "widgets", Description: "add_note", Up: []string{"alter table widgets add column note TEXT"},
+			}))
+		}
+		set, err := orm.NewMigrationSet(versions...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := migrations.NewRunner(pool, sqlite.New(), metadata.NewLoader(nil), set, nil).Migrate(ctx, migrations.RunOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	migrate(false)
+
+	db, err := orm.Open(ctx, path, orm.Options{Dialect: sqlite.New()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	err = orm.Validate(ctx, db, registryFor(true))
+	var report *orm.ValidationErrors
+	if !errors.As(err, &report) || len(report.Errors) != 1 || report.Errors[0].Code != "MIG-030" || report.Errors[0].Source != "V0002 widgets" {
+		t.Fatalf("a pending draft: want one MIG-030 for V0002 widgets, got %v", err)
+	}
+
+	migrate(true) // V0002 applied (without its marker), then the same history read through marked code
+	if err := orm.Validate(ctx, db, registryFor(true)); err != nil {
+		t.Fatalf("a recorded draft is history, got %v", err)
 	}
 }

@@ -55,6 +55,7 @@ func assemble(
 	properties, byProperty := buildProperties(entityType, specs, convention, errs)
 	validateVersion(entityType, properties, errs)
 	validateHooks(kind, properties, errs)
+	validateRenamedFrom(kind, properties, errs)
 	keyStrategy := resolveKeyStrategy(entityType, kind, properties, errs)
 	indexes := resolveIndexColumns(entityType, relationName, indexSpecs, byProperty, convention, errs)
 	relationships := resolveRelationships(entityType, relationshipSpecs, byProperty, errs)
@@ -222,6 +223,29 @@ func validateHooks(kind core.RelationKind, properties []*core.PropertyMap, errs 
 			continue
 		}
 		roles[role] = p
+	}
+}
+
+// validateRenamedFrom is MAP-027 for the declarations the property specs cannot judge alone (spec/migrations.md
+// "Draft migrations" Clarifications, ADR-0038): only a table has a column diff for a rename to feed, and two
+// properties cannot both have come from one column (matched case-insensitively, like the diff; the names are
+// already trimmed). A blank name is reported where the specs are still visible, in buildProperties.
+func validateRenamedFrom(kind core.RelationKind, properties []*core.PropertyMap, errs *errorCollector) {
+	claimed := map[string]*core.PropertyMap{}
+	for _, p := range properties {
+		if p.RenamedFrom == nil {
+			continue
+		}
+		if kind != core.RelationTable {
+			errs.add("MAP-027", p.Target(), "renamed_from is only valid on a table-backed entity, not a %s: a rename feeds the column diff", kind)
+			continue
+		}
+		key := strings.ToLower(*p.RenamedFrom)
+		if first, exists := claimed[key]; exists {
+			errs.add("MAP-027", p.Target(), "'%s' is already declared as the previous column of '%s'; one column cannot be two columns' origin", *p.RenamedFrom, first.PropertyName)
+			continue
+		}
+		claimed[key] = p
 	}
 }
 

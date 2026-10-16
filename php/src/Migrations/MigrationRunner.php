@@ -31,6 +31,10 @@ final class MigrationRunner
 {
     private readonly SnapshotSet $snapshots;
 
+    /**
+     * @param bool $replayDrafts `@internal` — set only by the tooling (`SqliteShadow`): a throwaway database is no one's
+     *        history, so `shadow` replays a draft; the application has no way to bypass `MIG-013` (ADR-0038)
+     */
     public function __construct(
         private readonly PDO $connection,
         private readonly Dialect $dialect,
@@ -247,8 +251,8 @@ final class MigrationRunner
     }
 
     /**
-     * True when any version is unapplied — the `MIG-030` check SchemaGuard runs at milestone 6.
-     * SPEC-GAP: a pending draft is unapplied work too, so it counts.
+     * True when any version is unapplied — the `MIG-030` check SchemaGuard runs. A pending draft is pending work too
+     * (spec/migrations.md Clarifications, ADR-0038).
      */
     public function hasPending(): bool
     {
@@ -272,8 +276,9 @@ final class MigrationRunner
     /**
      * A pending version marked a draft (`diff --draft`, Level 3 M5) refuses the whole run — `MIG-013`, before any
      * statement executes — until the author has reviewed it and removed the marker. `$upTo` limits the check to the
-     * versions a baseline would record. SPEC-GAP: a draft already recorded (applied somewhere) is history, not pending work, and
-     * baseline refuses only drafts at or below its target — the spec says "pending" and "the whole plan" without defining either.
+     * versions a baseline would record. A draft already recorded (applied somewhere) is history, not pending work, and
+     * baseline refuses only drafts at or below its target; the refusal names the version (spec/migrations.md Clarifications,
+     * ADR-0038).
      *
      * @param list<RenderedVersion> $plan
      * @param array{versions: list<int>, rows: array<int, array<string, array{description: string, checksum: string}>>} $recorded
@@ -281,7 +286,7 @@ final class MigrationRunner
     private function refusePendingDrafts(array $plan, array $recorded, ?int $upTo): void
     {
         if ($this->replayDrafts) {
-            return;   // `shadow` replays a draft like any version (SPEC-GAP: the mechanism is the port's own)
+            return;   // `shadow` replays a draft like any version: tooling only, no application-side bypass (ADR-0038)
         }
 
         foreach ($plan as $version) {

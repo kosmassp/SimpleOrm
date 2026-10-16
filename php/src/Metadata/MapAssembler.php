@@ -95,9 +95,8 @@ final class MapAssembler
                 owner: $owner,
                 audit: $spec->audit,
                 softDelete: $spec->isSoftDelete,
-                renamedFrom: $spec->renamedFrom,
+                renamedFrom: $spec->renamedFrom === null ? null : trim($spec->renamedFrom),
             );
-            self::validateRenamedFrom($shortName, $propertyName, $spec->renamedFrom, $errors);
             $owner?->addMember($property);
             $properties[] = $property;
             $byProperty[$propertyName] = $property;
@@ -105,6 +104,7 @@ final class MapAssembler
 
         self::validateVersion($shortName, $properties, $errors);
         self::validateHooks($shortName, $kind, $properties, $errors);
+        self::validateRenamedFrom($shortName, $kind, $properties, $errors);
         $keyStrategy = self::resolveKeyStrategy($shortName, $kind, $properties, $errors);
         $indexes = self::resolveIndexes($shortName, $relationName, $indexSpecs, $byProperty, $errors);
         $relationships = self::resolveRelationships($shortName, $relationshipSpecs, $byProperty, $errors);
@@ -164,14 +164,49 @@ final class MapAssembler
     }
 
     /**
-     * A declared rename names a previous column (Level 3 M5, `MAP-027`): an empty or blank name declares nothing.
+     * The declared renames (Level 3 M5, spec/migrations.md "Draft migrations" + Clarifications, every violation
+     * `MAP-027`): a rename names a previous column (a blank name declares nothing), only a table has a column diff
+     * for it to feed, and two properties cannot both have come from one column (matched case-insensitively, like
+     * the diff).
      *
+     * @param list<PropertyMap> $properties
      * @param list<MappingError> $errors
      */
-    private static function validateRenamedFrom(string $shortName, string $propertyName, ?string $renamedFrom, array &$errors): void
+    private static function validateRenamedFrom(string $shortName, RelationKind $kind, array $properties, array &$errors): void
     {
-        if ($renamedFrom !== null && trim($renamedFrom) === '') {
-            $errors[] = new MappingError('MAP-027', "{$shortName}.{$propertyName}", '#[RenamedFrom] must name the previous column');
+        /** @var array<string, PropertyMap> $claimed lowercased previous column => the first property declaring it */
+        $claimed = [];
+        foreach ($properties as $property) {
+            if ($property->renamedFrom === null) {
+                continue;
+            }
+
+            $target = "{$shortName}.{$property->propertyName()}";
+            if ($property->renamedFrom === '') {
+                $errors[] = new MappingError('MAP-027', $target, '#[RenamedFrom] must name the previous column');
+                continue;
+            }
+
+            if ($kind !== RelationKind::Table) {
+                $errors[] = new MappingError(
+                    'MAP-027',
+                    $target,
+                    "#[RenamedFrom] is only valid on a table-backed entity, not a {$kind->value}: a rename feeds the column diff",
+                );
+                continue;
+            }
+
+            $key = strtolower($property->renamedFrom);
+            if (isset($claimed[$key])) {
+                $errors[] = new MappingError(
+                    'MAP-027',
+                    $target,
+                    "'{$property->renamedFrom}' is already declared as the previous column of '{$claimed[$key]->propertyName()}'; one column cannot be two columns' origin",
+                );
+                continue;
+            }
+
+            $claimed[$key] = $property;
         }
     }
 

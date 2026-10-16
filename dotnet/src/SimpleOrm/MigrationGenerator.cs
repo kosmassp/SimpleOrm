@@ -129,7 +129,7 @@ public static class MigrationGenerator
             effective[explicitRename.Key] = explicitRename.Value;   // an explicit flag wins, and must hold
         }
 
-        foreach (var rename in effective)
+        foreach (var rename in effective.OrderBy(r => r.Key, StringComparer.Ordinal))   // one emitted order in every implementation
         {
             var from = rename.Key;
             var to = rename.Value;

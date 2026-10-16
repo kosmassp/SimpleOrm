@@ -33,7 +33,8 @@ final readonly class DiffOptions
      * @param Closure(int): bool|null $isApplied amend only, when a database was given: whether it has the version
      *        recorded as applied (only ever warns — other databases exist the tool can't see)
      * @param bool $draft emit the root with the `#[Draft]` marker (Level 3 M5); an amend of a root that already carries
-     *        it keeps the marker (SPEC-GAP: the spec does not say whether an amend preserves it)
+     *        it keeps the marker with or without this flag
+     *        (spec/migrations.md Clarifications, ADR-0038)
      */
     public function __construct(
         public string $migrationsDir,

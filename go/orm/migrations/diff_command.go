@@ -64,8 +64,8 @@ type DiffOptions struct {
 	AllowRemove bool
 	// Draft emits the root with the IsDraft marker (Level 3 M5): migrate and baseline refuse the version
 	// (MIG-013) until the author has reviewed the generated code and deleted the marker. An amend of a root that
-	// already carries the marker keeps it. SPEC-GAP: the spec does not say whether amend keeps the marker; losing
-	// it silently would let unreviewed code apply, so it is kept unless the author removes it by hand.
+	// already carries the marker keeps it, with or without the flag: unreviewed code never becomes applicable by
+	// regeneration (spec/migrations.md Clarifications, ADR-0038).
 	Draft bool
 	// Amend regenerates the newest version in place instead of emitting the next one (ADR-0017 add.3).
 	Amend bool

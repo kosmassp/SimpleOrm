@@ -476,9 +476,9 @@ func validateHistory(plan []RenderedVersion, recorded *recordedHistory) error {
 
 // refusePendingDrafts is MIG-013 (Level 3 M5, migrations.md "Draft migrations"): the first unapplied draft
 // version within scope refuses the whole plan. A draft whose version is already recorded is just an applied
-// version and is not refused (SPEC-GAP: the spec says "reached a version marked draft" and does not cover a
-// draft the database already recorded; refusing would make a database that applied it unmigratable, while
-// the drift guard still checks its checksum).
+// version and is not refused (spec/migrations.md Clarifications, ADR-0038: refusing would make a database that
+// applied it unmigratable, while the drift guard still checks its checksum). Migrate and baseline share this one
+// routine; the refusal names the version.
 func refusePendingDrafts(plan []RenderedVersion, recorded *recordedHistory, inScope func(version int64) bool) error {
 	for _, version := range plan {
 		if !version.Draft || recorded.versions[version.Version] || !inScope(version.Version) {

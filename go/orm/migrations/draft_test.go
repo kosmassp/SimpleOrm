@@ -3,6 +3,7 @@ package migrations_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -130,20 +131,53 @@ func TestDeclaredRename_AnExplicitRenameWinsOverTheDeclarationOfTheSameOldColumn
 	}
 }
 
-type conflictingDeclarations struct {
-	ID int64  `orm:"column,key,generated"`
-	A  string `orm:"column,renamed_from=old"`
-	B  string `orm:"column,renamed_from=old"`
-}
-
-func TestDeclaredRenames_TwoColumnsClaimingOneOldColumnAreReported(t *testing.T) {
-	m, err := metadata.Load[conflictingDeclarations](metadata.NewLoader(nil))
+func TestDeclaredRenames_ReadsEachPropertyOnceInto_OldToNew(t *testing.T) {
+	m, err := metadata.Load[DraftWidget](metadata.NewLoader(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	declared, conflicts := migrations.DeclaredRenames(m)
-	if declared["old"] != "a" || len(conflicts) != 1 || !strings.Contains(conflicts[0], "old") {
-		t.Fatalf("declared = %v, conflicts = %v", declared, conflicts)
+	declared := migrations.DeclaredRenames(m)
+	if len(declared) != 1 || declared["remark"] != "note" {
+		t.Fatalf("declared = %v, want remark -> note", declared)
+	}
+}
+
+func TestDeclaredRename_DeclaresNothingWhileTheModelStillMapsTheOldColumn(t *testing.T) {
+	// note is declared renamed from remark, but the model keeps mapping remark: two columns, so note simply adds.
+	current := &migrations.TableSchema{Name: "w", Columns: []migrations.TableColumn{
+		{Name: "id", StorageType: "INTEGER", Key: true},
+		{Name: "remark", StorageType: "TEXT", Nullable: true},
+		{Name: "note", StorageType: "TEXT", Nullable: true},
+	}}
+	snapshot := &migrations.TableSchema{Name: "w", Columns: []migrations.TableColumn{
+		{Name: "id", StorageType: "INTEGER", Key: true},
+		{Name: "remark", StorageType: "TEXT", Nullable: true},
+	}}
+
+	diff := migrations.DiffSchemas(current, snapshot, nil, map[string]string{"remark": "note"})
+
+	if len(diff.Renamed) != 0 || len(diff.Removed) != 0 || len(diff.Unsupported) != 0 {
+		t.Fatalf("renamed=%v removed=%v unsupported=%v, want none of them", diff.Renamed, diff.Removed, diff.Unsupported)
+	}
+	if len(diff.Added) != 1 || diff.Added[0].Name != "note" {
+		t.Fatalf("added = %v, want note", diff.Added)
+	}
+}
+
+func TestDeclaredRename_AnExplicitRenameMatchesCaseInsensitivelyAndIsAppliedOnce(t *testing.T) {
+	current := &migrations.TableSchema{Name: "w", Columns: []migrations.TableColumn{
+		{Name: "id", StorageType: "INTEGER", Key: true},
+		{Name: "note", StorageType: "TEXT", Nullable: true},
+	}}
+	snapshot := &migrations.TableSchema{Name: "w", Columns: []migrations.TableColumn{
+		{Name: "id", StorageType: "INTEGER", Key: true},
+		{Name: "remark", StorageType: "TEXT", Nullable: true},
+	}}
+
+	diff := migrations.DiffSchemas(current, snapshot, map[string]string{"REMARK": "note"}, map[string]string{"remark": "note"})
+
+	if len(diff.Renamed) != 1 || len(diff.Unsupported) != 0 || len(diff.Added) != 0 {
+		t.Fatalf("renamed=%v unsupported=%v added=%v, want one rename and nothing else", diff.Renamed, diff.Unsupported, diff.Added)
 	}
 }
 
@@ -296,10 +330,18 @@ func TestRunner_AnAlreadyRecordedDraftIsJustAnAppliedVersion(t *testing.T) {
 	if _, err := migrations.NewRunner(pool, sqlite.New(), maps, draftPlan(t, 0), nil).Migrate(ctx, migrations.RunOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	// SPEC-GAP in the runner: a draft whose version is already recorded is not pending, so it is not refused.
-	applied, err := migrations.NewRunner(pool, sqlite.New(), maps, draftPlan(t, 2), nil).Migrate(ctx, migrations.RunOptions{})
+	// A draft whose version is already recorded is history, not pending work, so it is not refused (ADR-0038).
+	runner := migrations.NewRunner(pool, sqlite.New(), maps, draftPlan(t, 2), nil)
+	applied, err := runner.Migrate(ctx, migrations.RunOptions{})
 	if err != nil || applied != 0 {
 		t.Fatalf("applied %d, err %v", applied, err)
+	}
+	entries, err := runner.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries[1].State != migrations.Applied {
+		t.Errorf("a recorded draft keeps its normal state, got %v", entries[1].State)
 	}
 }
 
@@ -312,5 +354,49 @@ func TestShadow_ReplaysADraftLikeAnyVersion(t *testing.T) {
 	}
 	if len(result.Notes) == 0 {
 		t.Error("expected the replay notes for the objects without mapped entities")
+	}
+}
+
+func TestRunner_TheRefusalNamesTheVersion(t *testing.T) {
+	pool := openMigrationsPool(t)
+	runner := migrations.NewRunner(pool, sqlite.New(), metadata.NewLoader(nil), draftPlan(t, 2), nil)
+
+	_, err := runner.Migrate(context.Background(), migrations.RunOptions{})
+
+	var coded *core.Error
+	if !errors.As(err, &coded) || coded.Code != "MIG-013" || coded.Target != "V0002" {
+		t.Fatalf("want MIG-013 naming V0002, got %v", err)
+	}
+}
+
+func TestRunner_MigrateDownIgnoresTheMarker(t *testing.T) {
+	ctx := context.Background()
+	pool := openMigrationsPool(t)
+	maps := metadata.NewLoader(nil)
+	plan := func(draft bool) *migrations.Set {
+		second := rawTableVersion(2, "widgets", "add_note",
+			[]string{"alter table widgets add column note TEXT"}, []string{"alter table widgets drop column note"})
+		if draft {
+			second.AsDraft()
+		}
+		set, err := migrations.NewSet(
+			rawTableVersion(1, "widgets", "create", []string{"create table widgets (id INTEGER PRIMARY KEY) STRICT"}, nil), second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return set
+	}
+	if _, err := migrations.NewRunner(pool, sqlite.New(), maps, plan(false), nil).Migrate(ctx, migrations.RunOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	marked := migrations.NewRunner(pool, sqlite.New(), maps, plan(true), nil)
+	reverted, err := marked.MigrateDown(ctx, 1, migrations.RunOptions{})
+	if err != nil || reverted != 1 {
+		t.Fatalf("down over a recorded draft: reverted %d, err %v", reverted, err)
+	}
+	// Rolled back, the version is pending again -- and now it is pending work the marker refuses.
+	if _, err := marked.Migrate(ctx, migrations.RunOptions{}); core.CodeOf(err) != "MIG-013" {
+		t.Fatalf("want MIG-013 for the rolled-back draft, got %v", err)
 	}
 }

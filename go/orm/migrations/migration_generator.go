@@ -68,35 +68,20 @@ func (d *TableDiff) HasChanges() bool {
 // name (the explicit --rename flags), and the model's own renamed_from declarations (Level 3 M5) are read
 // from m beside them.
 func Diff(m *core.EntityMap, dialect core.Dialect, snapshot *TableSchema, renames map[string]string) *TableDiff {
-	declared, conflicts := DeclaredRenames(m)
-	diff := DiffSchemas(FromMap(m, dialect), snapshot, renames, declared)
-	diff.Unsupported = append(diff.Unsupported, conflicts...)
-	return diff
+	return DiffSchemas(FromMap(m, dialect), snapshot, renames, DeclaredRenames(m))
 }
 
 // DeclaredRenames is the model's renamed_from declarations as an old column -> new column map (Level 3 M5,
-// migrations.md "Draft migrations"). Two columns claiming the same old column cannot both be its rename: the
-// first (in declaration order) keeps it and each later claim is returned as a conflict message, which Diff
-// reports as unsupported (DDL-004).
-func DeclaredRenames(m *core.EntityMap) (declared map[string]string, conflicts []string) {
-	declared = map[string]string{}
-	claimedBy := map[string]string{}
+// migrations.md "Draft migrations"): the one place the declarations are read off a map. The loader already
+// refused two columns claiming one old column (MAP-027), so the map is total.
+func DeclaredRenames(m *core.EntityMap) map[string]string {
+	declared := map[string]string{}
 	for _, p := range m.Properties {
-		if p.RenamedFrom == nil {
-			continue
+		if p.RenamedFrom != nil {
+			declared[*p.RenamedFrom] = p.ColumnName
 		}
-		key := strings.ToLower(*p.RenamedFrom)
-		if first, claimed := claimedBy[key]; claimed {
-			// SPEC-GAP: the spec does not cover two columns declaring the same previous column; the first keeps
-			// the rename and the second is reported rather than guessed.
-			conflicts = append(conflicts, fmt.Sprintf(
-				"renamed_from '%s' is declared by both %s and %s — one old column can be renamed to one new column", *p.RenamedFrom, first, p.ColumnName))
-			continue
-		}
-		claimedBy[key] = p.ColumnName
-		declared[*p.RenamedFrom] = p.ColumnName
 	}
-	return declared, conflicts
+	return declared
 }
 
 // DiffSchemas is the shape-vs-shape core: both sides already in snapshot
@@ -158,8 +143,8 @@ func DiffSchemas(current, snapshot *TableSchema, renames, declared map[string]st
 	// Declared renames run after the explicit ones, against what is left: the old column is gone when an
 	// explicit rename took it (the explicit flag wins), and a declaration whose old column the snapshot lacks or
 	// whose new column it already has declares nothing -- never an unsupported change, since the declaration
-	// outlives the one diff run it was written for. SPEC-GAP: one whose old column the model still maps is not
-	// a rename either (the column was kept, not moved), so it declares nothing.
+	// outlives the one diff run it was written for. One whose old column the model still maps is not a rename
+	// either (the column was kept, not moved): it declares nothing (spec/migrations.md Clarifications, ADR-0038).
 	for _, from := range sortedKeys(declared) {
 		to := declared[from]
 		fromKey, toKey := strings.ToLower(from), strings.ToLower(to)

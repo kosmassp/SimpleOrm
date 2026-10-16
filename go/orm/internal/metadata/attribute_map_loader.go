@@ -633,8 +633,8 @@ func readOwnedType(
 			continue
 		}
 		if decl.renamedFrom != nil {
-			// SPEC-GAP: the spec names no owned-member case; a member's stored column is prefixed by the owner, so a
-			// declared rename there has no stated meaning -- refused as MAP-027 (declared where it cannot act).
+			// A member's stored column is prefixed by the owner, so which old name a rename there means cannot be
+			// said: MAP-027 (spec/migrations.md Clarifications, ADR-0038).
 			errs.add("MAP-027", memberTarget, "renamed_from is not supported on an owned type's member: the stored column is prefixed by its navigation")
 			mapped++
 			continue

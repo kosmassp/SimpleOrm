@@ -2771,3 +2771,75 @@ Postgres live suite, no server reachable). PHP: 575 tests, 2162 assertions. Go: 
 M5, draft migrations** (§7c): the owner's call.
 
 **Status.** Accepted. M3 done in all three implementations.
+
+## ADR-0038 — Level 3 M5: draft migrations, in three implementations; M4 skipped (2026-10-16)
+
+Owner ruling: **M4 (inheritance mapping) is skipped** — §7c marked it optional
+and the owner chose not to take it; single-table inheritance stays off the
+map unless a later ADR schedules it. **M5 is done** by the per-milestone
+method: the reference with the spec section and the conformance additions
+first, then PHP and Go by agents forbidden to read another implementation,
+then a uniformity review, then every gap resolved into the spec.
+
+**Two additions to the ADR-0017 generator, both declared, nothing inferred.**
+`[RenamedFrom("old")]` on a `[Column]` property is a declared rename the
+generator reads exactly as a `--rename table.old=new` flag — one
+data-preserving `RenameColumn` instead of a drop and an add — but kept with
+the model, so the intent survives the one `diff` run; it is **permanent and
+harmless once applied**: when the latest snapshot already has the new
+column, or has neither, it declares nothing. An explicit `--rename` stays
+strict and wins. Exported as `"renamedFrom"`; `MAP-027` when misplaced.
+`diff --draft` emits the version with a draft marker (C# `[Draft]` on the
+root) that `migrate` and `baseline` refuse — **`MIG-013`, the whole plan,
+before anything executes** — until the author has reviewed the code and
+removed it; `status` reports `Draft`; `shadow` and `--amend` treat a draft
+like any version. The fixture: `Role.Name` declares `name`, the column V0004
+renamed it from — a rename the history already holds, so the declaration
+declares nothing today, exactly the permanence the rule promises.
+
+**The ports.** PHP: `#[RenamedFrom]`, `#[Draft]` on the root, `SqlVersion::draft(…)`
+(a static factory — the variadic step list leaves no room for a flag),
+`MigrationState::Draft`, `--draft`, a `replayDrafts` runner option for shadow;
+17 + 2 new tests, 598 total. Go: `renamed_from=` beside `column`, a `Drafted`
+interface the generated root implements (`func (V0012) IsDraft() bool`),
+`SQLVersion.AsDraft()`, a marker-hiding wrapper for shadow. Both share the
+diff core's second map for declared renames and report the state in `status`.
+
+**The audit: 13 + 15 gap questions, six reference fixes.** The ports again
+read the failure and edge paths more carefully than the reference: two
+properties declaring the same previous column crashed the reference's
+generator (a dictionary with a duplicate key) — now `MAP-027` at load; a
+declaration whose old column the model still maps declared a rename of a
+column that still exists — now it declares nothing (the Go port's rule); a
+pending draft was not "pending" for `HasPending` and SchemaGuard's `MIG-030`;
+`--amend` would have dropped an existing draft marker, letting unreviewed
+code become applicable by regeneration (the Go port's catch); `shadow` would
+have refused to replay a draft (both ports had built a tooling-only bypass —
+the reference gained `MigrationRunner.ReplayDrafts`); and a declaration on
+an owned member or a non-table source passed silently — now `MAP-027`, the
+`MAP-026` precedent. The rest were silences answered consistently (export
+order, "pending" for a recorded draft, `baseline N` reaching only `N`,
+`migrate down` ignoring the marker, case-insensitive matching) — all
+Clarifications in `spec/migrations.md`.
+
+**The review** (one implementation per concept, both ports against the
+Clarifications) found five port bugs and one order the spec had left open:
+Go raised two properties declaring the same old column at diff time rather
+than at load (`MAP-027`), and its `--amend` fixture lacked the kept-marker
+case; PHP accepted a declaration on a view and on a second property with the
+same old column, and exported `renamedFrom` before `softDelete`. Both ports
+trimmed the declared name where the reference did not, and the three emitted
+declared renames in three orders — the reference now **trims and emits in
+ordinal order of the old column** (a Clarification), so a generated step is
+byte-identical everywhere. The pins for a pending and a recorded draft, the
+shadow replay, and "explicit `--rename` wins" exist in all three.
+
+
+**Verification.** C#: 390 passed, 22 skipped (LocalDB and the Postgres live suite). PHP: 614 tests, 2270 assertions. Go: every package ok, `gofmt` and `go vet` clean.
+
+**Next — the Level 3 exit** (§7c M6): the spec sweep, the conformance matrix
+green in three implementations, the benchmark (untracked unchanged, tracked
+overhead measured, the `DbBatch` decision), and the proof that a port could
+implement Level 3 from the spec alone — only when the owner says so.
+
+**Status.** Accepted. M5 done in all three implementations; M4 skipped.

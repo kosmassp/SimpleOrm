@@ -62,7 +62,8 @@ final class MigrationGenerator
     }
 
     /**
-     * The model's declared renames: old column => new column, one per `#[RenamedFrom]` property.
+     * The model's declared renames: old column => new column, one per `#[RenamedFrom]` property, in ordinal order of the old
+     * name (the loader already refused two properties claiming one old column, `MAP-027`).
      *
      * @return array<string, string>
      */
@@ -74,6 +75,8 @@ final class MigrationGenerator
                 $declared[$property->renamedFrom] = $property->columnName;
             }
         }
+
+        ksort($declared, SORT_STRING);
 
         return $declared;
     }
@@ -104,9 +107,10 @@ final class MigrationGenerator
             $current[strtolower($column->name)] = new ColumnSpec($column->name, $column->storageType, $column->nullable);
         }
 
-        // Declared renames first decide what they declare, against the snapshot as it stands before any rename.
-        // SPEC-GAP: a declared old column the model still maps, or a new column an explicit rename already targets,
-        // declares nothing (a rename there would collide) — the spec words only "snapshot has the new column or neither".
+        // Declared renames first decide what they declare, against the snapshot as it stands before any rename. A declaration
+        // is a rename only while it can be one: the old column in the snapshot, the new one not yet there, and the model no
+        // longer mapping the old one (spec/migrations.md Clarifications, ADR-0038); an explicit rename of the same old column
+        // wins, and one already targeting the new column leaves nothing to declare.
         $explicitFrom = [];
         $explicitTo = [];
         foreach ($renames as $from => $to) {
@@ -126,6 +130,8 @@ final class MigrationGenerator
             $declared[(string) $from] = (string) $to;
         }
 
+        // Ordinal order of the old name, the order the Go port walks its maps in, so both ports emit the same step.
+        ksort($renames, SORT_STRING);
         $renamed = [];
         $unsupported = [];
         foreach ($renames + $declared as $from => $to) {

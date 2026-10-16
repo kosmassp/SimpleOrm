@@ -335,7 +335,7 @@ internal static class AttributeMapLoader
             specs.Add(new MappedPropertySpec(property)
             {
                 ExplicitColumn = column.Name,
-                RenamedFrom = renamedFrom?.PreviousColumn,
+                RenamedFrom = renamedFrom?.PreviousColumn.Trim(),
                 IsKey = key is not null,
                 IsGenerated = generated is not null,
                 IsVersion = version is not null,

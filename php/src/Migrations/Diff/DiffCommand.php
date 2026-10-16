@@ -69,8 +69,8 @@ final class DiffCommand
         }
 
         $version = $options->amend ? $latest : $latest + 1;
-        // SPEC-GAP: amending a root that is a draft keeps it a draft (dropping the marker would silently make unreviewed
-        // code applicable); --draft marks it either way.
+        // An amend keeps the marker of a root that already carries it, with or without --draft: unreviewed code never becomes
+        // applicable by regeneration (spec/migrations.md Clarifications, ADR-0038).
         $draft = $options->draft || ($options->amend && self::versionIsDraft($set, $version));
         $prefix = sprintf('V%04d', $version);
         $allSteps = self::allSteps($set);

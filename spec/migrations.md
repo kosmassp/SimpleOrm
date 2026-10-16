@@ -262,7 +262,8 @@ pins the export (`Role.Name` was `name` until V0004).
   the old one** — a model that still maps it describes two columns, and the
   new one simply adds. An explicit `--rename` of the same old column wins
   and is applied once, never doubled. Matching is case-insensitive, like
-  explicit renames; names are trimmed.
+  explicit renames; names are trimmed. Renames apply and emit in **ordinal
+  order of the old column**, so every implementation writes the same step.
 - **Two properties declaring the same previous column** is `MAP-027` at
   load — two columns cannot both have come from one — never a diff-time
   refusal.

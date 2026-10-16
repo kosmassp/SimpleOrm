@@ -249,8 +249,8 @@ final class AttributeMapLoader
             $navigationCount = ($manyToOne !== null ? 1 : 0) + ($oneToOne !== null ? 1 : 0)
                 + ($oneToMany !== null ? 1 : 0) + ($manyToMany !== null ? 1 : 0);
 
-            // MAP-027: a declared rename needs a plain #[Column] on the entity's own column (a blank name is the assembler's). SPEC-GAP: the
-            // spec names only "without [Column]"; an #[Ignore]d or navigation property carrying it is read the same way.
+            // MAP-027 covers every misplaced declaration (spec/migrations.md Clarifications): a rename needs a plain #[Column] on the
+            // entity's own column; a blank name and a non-table source are the assembler's.
             if ($renamedFrom !== null && ($owned !== null || $navigationCount > 0 || $ignore !== null || $column === null)) {
                 $errors[] = new MappingError(
                     'MAP-027',
@@ -817,8 +817,7 @@ final class AttributeMapLoader
             }
 
             if ($member->getAttributes(RenamedFrom::class) !== []) {
-                // SPEC-GAP: a declared rename on an owned type's member (its column is prefixed — which name would the old
-                // column carry?) is refused rather than guessed.
+                // An owned member's column is prefixed, so which old name it means cannot be said: MAP-027 (spec/migrations.md Clarifications).
                 $errors[] = new MappingError(
                     'MAP-027',
                     $memberTarget,

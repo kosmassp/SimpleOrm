@@ -78,7 +78,7 @@ func fail(stderr io.Writer, message string) int {
 // --- argument parsing (mirrors Program.cs's inline parser / Arguments.php) --
 
 // booleanFlags take no value; every other --name consumes the next token.
-var booleanFlags = map[string]bool{"force": true, "allow-delete": true, "allow-remove": true, "amend": true}
+var booleanFlags = map[string]bool{"force": true, "allow-delete": true, "allow-remove": true, "amend": true, "draft": true}
 
 type arguments struct {
 	positional []string
@@ -553,6 +553,7 @@ func runDiff(ctx context.Context, registry orm.Registry, a arguments, stdout, st
 		Name:         name,
 		Renames:      renames,
 		AllowRemove:  a.flag("allow-remove"),
+		Draft:        a.flag("draft"),
 		Amend:        a.flag("amend"),
 		Force:        a.flag("force"),
 		IsApplied:    isApplied,
@@ -663,13 +664,19 @@ except shadow which only replays into its own throwaway database):
                               columns; views by DDL), versioned and timestamped
   diff --out <MigrationsDir> [--package <import path>]
        [--name <Description>] [--rename table.old=new]... [--allow-remove]
-       [--amend [--force] [--db <value>]]
+       [--draft] [--amend [--force] [--db <value>]]
                               generate the next migration version from the model vs
                               the latest snapshots (tables by columns, views by
                               DDL); no database needed; removals need
                               --allow-remove (DDL-003); inexpressible changes are
                               DDL-004 (write by hand); a migrated object with no
                               snapshot refuses (run shadow/snapshot first).
+                              A column's renamed_from declaration is read as a
+                              declared rename (permanent: nothing once applied).
+                              --draft marks the emitted version (an IsDraft
+                              method on its root): migrate and baseline refuse
+                              it (MIG-013) and status lists it as Draft until the
+                              reviewed code drops the method.
                               --amend regenerates the newest version in place
                               instead (baseline: the snapshots below it); a
                               hand-written version is replaced only with --force

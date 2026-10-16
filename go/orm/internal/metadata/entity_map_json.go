@@ -105,6 +105,10 @@ func buildColumns(m *core.EntityMap) []any {
 		if p.IsSoftDelete {
 			obj = obj.Set("softDelete", true)
 		}
+		// Declared renames export only when declared (spec/metadata-model.md "Declared renames").
+		if p.RenamedFrom != nil {
+			obj = obj.Set("renamedFrom", *p.RenamedFrom)
+		}
 		result[i] = obj
 	}
 	return result

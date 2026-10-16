@@ -422,6 +422,10 @@ func checkMigrations(ctx context.Context, db *Db, registry Registry, errs *[]*co
 		switch entry.State {
 		case migrations.Pending:
 			code, message = "MIG-030", "pending — apply migrations before starting the application"
+		case migrations.Draft:
+			// SPEC-GAP: the spec does not say how a draft counts for MIG-030; an unapplied version is pending
+			// whatever its marker, so the check reports it (the message names the marker).
+			code, message = "MIG-030", "pending and marked draft — review it, remove the IsDraft marker, then apply migrations"
 		case migrations.Drifted:
 			code, message = "MIG-010", "applied with a different checksum than the code renders"
 		case migrations.Unknown:

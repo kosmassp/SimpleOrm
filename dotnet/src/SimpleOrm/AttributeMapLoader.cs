@@ -411,6 +411,12 @@ internal static class AttributeMapLoader
             var column = member.GetCustomAttribute<ColumnAttribute>();
             var ignore = member.GetCustomAttribute<IgnoreAttribute>();
             var enumAsInt = member.GetCustomAttribute<EnumAsIntAttribute>();
+            if (member.GetCustomAttribute<RenamedFromAttribute>() is not null)
+            {
+                errors.Add(new MappingError(
+                    "MAP-027", memberTarget, "[RenamedFrom] belongs on an entity's own column, not on an owned type's member"));
+            }
+
             if (member.GetCustomAttributes().Any(a => a is CreatedAtAttribute or UpdatedAtAttribute or SoftDeleteAttribute))
             {
                 // Reported, then read as the column it otherwise is, so the owned

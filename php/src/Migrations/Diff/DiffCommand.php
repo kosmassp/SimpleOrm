@@ -69,6 +69,9 @@ final class DiffCommand
         }
 
         $version = $options->amend ? $latest : $latest + 1;
+        // SPEC-GAP: amending a root that is a draft keeps it a draft (dropping the marker would silently make unreviewed
+        // code applicable); --draft marks it either way.
+        $draft = $options->draft || ($options->amend && self::versionIsDraft($set, $version));
         $prefix = sprintf('V%04d', $version);
         $allSteps = self::allSteps($set);
 
@@ -229,7 +232,7 @@ final class DiffCommand
 
             $planned[] = [
                 'path' => "{$options->outDir}/{$prefix}.php",
-                'content' => MigrationGenerator::emitRoot($options->rootNamespace, $version, $stepRefs, $options->dialectLabel),
+                'content' => MigrationGenerator::emitRoot($options->rootNamespace, $version, $stepRefs, $options->dialectLabel, $draft),
             ];
         }
 
@@ -505,6 +508,18 @@ final class DiffCommand
         }
 
         return $ordered;
+    }
+
+    /** Whether the compiled root of `$version` carries the draft marker. */
+    private static function versionIsDraft(MigrationSet $set, int $version): bool
+    {
+        foreach ($set->versions() as $candidate) {
+            if ($candidate->version() === $version) {
+                return $candidate->isDraft();
+            }
+        }
+
+        return false;
     }
 
     /** @param class-string $fqcn */

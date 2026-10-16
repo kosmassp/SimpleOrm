@@ -233,7 +233,7 @@ public sealed class MigrationRunner
 
     /// <summary>True when any version is unapplied — the <c>MIG-030</c> check SchemaGuard runs at milestone 6.</summary>
     public async Task<bool> HasPendingAsync(CancellationToken ct)
-        => (await StatusAsync(ct).ConfigureAwait(false)).Any(e => e.State == MigrationState.Pending);
+        => (await StatusAsync(ct).ConfigureAwait(false)).Any(e => e.State is MigrationState.Pending or MigrationState.Draft);   // a draft is pending too
 
     // --- discovery and validation -------------------------------------------------
 
@@ -331,9 +331,22 @@ public sealed class MigrationRunner
         public bool IsDraft { get; } = isDraft;
     }
 
+    /// <summary>
+    /// Replay drafts as if they were not drafts (Level 3 M5): what <c>shadow</c>
+    /// sets, so a draft's snapshot can be rebuilt on a scratch database. Never
+    /// set by an application — a draft is a version in every respect but
+    /// applicability, and <c>migrate</c>/<c>baseline</c> refuse it.
+    /// </summary>
+    public bool ReplayDrafts { get; init; }
+
     /// <summary>A pending draft never applies or baselines (<c>MIG-013</c>, Level 3 M5): the whole plan refuses before anything executes.</summary>
-    private static void RefuseDrafts(IReadOnlyList<RenderedVersion> plan, RecordedHistory recorded)
+    private void RefuseDrafts(IReadOnlyList<RenderedVersion> plan, RecordedHistory recorded)
     {
+        if (ReplayDrafts)
+        {
+            return;
+        }
+
         var draft = plan.FirstOrDefault(v => v.IsDraft && !recorded.Versions.Contains(v.Version));
         if (draft is not null)
         {

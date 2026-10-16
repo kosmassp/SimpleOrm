@@ -30,6 +30,7 @@ type migrationsCase struct {
 
 type migVersionSpec struct {
 	Version int64         `json:"version"`
+	Draft   bool          `json:"draft"`
 	Steps   []migStepSpec `json:"steps"`
 }
 
@@ -161,7 +162,11 @@ func buildVersions(specs []migVersionSpec) []migrations.Version {
 				Renames: renames, ExpectDefinition: expectDefinition,
 			}
 		}
-		out[i] = migrations.NewSQLVersion(v.Version, steps...)
+		version := migrations.NewSQLVersion(v.Version, steps...)
+		if v.Draft {
+			version.AsDraft()
+		}
+		out[i] = version
 	}
 	return out
 }

@@ -26,6 +26,8 @@ type (
 	MigrationSQL = migrations.MigrationSQL
 	// VersionBuilder collects a version's object steps in explicit, declared order.
 	VersionBuilder = migrations.VersionBuilder
+	// Drafted is the optional marker a root version implements (IsDraft() bool) while `diff --draft` output awaits review (MIG-013).
+	Drafted = migrations.Drafted
 	// Step is one object's migration step (TableMigration[T]/ViewMigration[T] embedders, or a data-driven SQLVersion step).
 	Step = migrations.Step
 	// Version is a root migration, composing its object steps via Compose.

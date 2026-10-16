@@ -144,7 +144,10 @@ final class MigrationsCasesTest extends TestCase
                 );
             }, $v['steps']);
 
-            return new SqlVersion((int) $v['version'], ...$steps);
+            // "draft": true is the data-driven form of a root carrying the draft marker (Level 3 M5).
+            return ($v['draft'] ?? false)
+                ? SqlVersion::draft((int) $v['version'], ...$steps)
+                : new SqlVersion((int) $v['version'], ...$steps);
         }, $versionsJson);
     }
 

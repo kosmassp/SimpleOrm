@@ -13,7 +13,8 @@ use ReflectionProperty;
  * never re-derive it from the PHP type. `$phpType` is kept for construction and
  * handler lookup (`class-string` for enums, `Decimal`, `DateTimeImmutable`;
  * a builtin name otherwise; null when the property is untyped). `$audit` and `$softDelete` carry the
- * declared hooks (Level 3 M3, spec/hooks.md) — at most one per property.
+ * declared hooks (Level 3 M3, spec/hooks.md) — at most one per property. `$renamedFrom` is the declared previous
+ * column name (Level 3 M5, spec/migrations.md "Draft migrations"): only the diff generator reads it.
  */
 final readonly class PropertyMap
 {
@@ -31,6 +32,7 @@ final readonly class PropertyMap
         public ?OwnedMap $owner = null,
         public AuditRole $audit = AuditRole::None,
         public bool $softDelete = false,
+        public ?string $renamedFrom = null,
     ) {
     }
 

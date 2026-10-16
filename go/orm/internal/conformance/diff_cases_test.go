@@ -50,7 +50,7 @@ func TestDiffCases_BehaveAsSpecified(t *testing.T) {
 				}
 			}
 
-			diff := migrations.DiffSchemas(current, snapshot, c.Renames)
+			diff := migrations.DiffSchemas(current, snapshot, c.Renames, declaredRenames(t, c.Current))
 
 			if diff.IsNew != c.Expect.IsNew {
 				t.Errorf("isNew: want %v, got %v", c.Expect.IsNew, diff.IsNew)
@@ -79,6 +79,29 @@ func TestDiffCases_BehaveAsSpecified(t *testing.T) {
 			}
 		})
 	}
+}
+
+// declaredRenames reads the model's declarations out of the case's current columns ("renamedFrom", Level 3 M5):
+// the snapshot form has no field for them, so the runner feeds them as the second rename map -- old column
+// name -> the column carrying the declaration.
+func declaredRenames(t *testing.T, current json.RawMessage) map[string]string {
+	t.Helper()
+	var shape struct {
+		Columns []struct {
+			Column      string  `json:"column"`
+			RenamedFrom *string `json:"renamedFrom"`
+		} `json:"columns"`
+	}
+	if err := json.Unmarshal(current, &shape); err != nil {
+		t.Fatalf("parse current columns: %v", err)
+	}
+	declared := map[string]string{}
+	for _, c := range shape.Columns {
+		if c.RenamedFrom != nil {
+			declared[*c.RenamedFrom] = c.Column
+		}
+	}
+	return declared
 }
 
 func columnNames(specs []migrations.ColumnSpec) []string {

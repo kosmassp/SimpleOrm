@@ -50,19 +50,43 @@ final class MigrationGenerator
         return preg_match(self::DIALECT_STAMP_PATTERN, $source, $matches) === 1 ? $matches['label'] : null;
     }
 
-    /** Diffs the entity's current metadata against the latest snapshot (null = new table). @param array<string, string> $renames declared old-column => new-column pairs */
+    /**
+     * Diffs the entity's current metadata against the latest snapshot (null = new table). The model's own
+     * `#[RenamedFrom]` declarations ride along as the second rename map (Level 3 M5).
+     *
+     * @param array<string, string> $renames explicit (`--rename`) old-column => new-column pairs
+     */
     public static function diffMap(EntityMap $map, Dialect $dialect, ?TableSchema $snapshot, array $renames): TableDiff
     {
-        return self::diff(SchemaSnapshot::fromMap($map, $dialect), $snapshot, $renames);
+        return self::diff(SchemaSnapshot::fromMap($map, $dialect), $snapshot, $renames, self::declaredRenames($map));
+    }
+
+    /**
+     * The model's declared renames: old column => new column, one per `#[RenamedFrom]` property.
+     *
+     * @return array<string, string>
+     */
+    public static function declaredRenames(EntityMap $map): array
+    {
+        $declared = [];
+        foreach ($map->properties as $property) {
+            if ($property->renamedFrom !== null) {
+                $declared[$property->renamedFrom] = $property->columnName;
+            }
+        }
+
+        return $declared;
     }
 
     /**
      * The shape-vs-shape core: both sides in snapshot form, so the algorithm
      * is pure data — which is how the conformance diff cases exercise it.
      *
-     * @param array<string, string> $renames declared old-column => new-column pairs
+     * @param array<string, string> $renames explicit old-column => new-column pairs (`--rename`): strict, an unknown side is unsupported
+     * @param array<string, string> $declaredRenames the model's `#[RenamedFrom]` pairs (old => new): permanent and lenient, they
+     *        apply only when the snapshot has the old column and lacks the new one, and an explicit rename of the same old column wins
      */
-    public static function diff(TableSchema $currentSchema, ?TableSchema $snapshot, array $renames): TableDiff
+    public static function diff(TableSchema $currentSchema, ?TableSchema $snapshot, array $renames, array $declaredRenames = []): TableDiff
     {
         if ($snapshot === null) {
             return new TableDiff(isNew: true, added: [], removed: [], renamed: [], addedIndexSql: [], removedIndexNames: [], unsupported: []);
@@ -80,9 +104,31 @@ final class MigrationGenerator
             $current[strtolower($column->name)] = new ColumnSpec($column->name, $column->storageType, $column->nullable);
         }
 
+        // Declared renames first decide what they declare, against the snapshot as it stands before any rename.
+        // SPEC-GAP: a declared old column the model still maps, or a new column an explicit rename already targets,
+        // declares nothing (a rename there would collide) — the spec words only "snapshot has the new column or neither".
+        $explicitFrom = [];
+        $explicitTo = [];
+        foreach ($renames as $from => $to) {
+            $explicitFrom[strtolower((string) $from)] = true;
+            $explicitTo[strtolower((string) $to)] = true;
+        }
+
+        $declared = [];
+        foreach ($declaredRenames as $from => $to) {
+            $fromKey = strtolower((string) $from);
+            $toKey = strtolower((string) $to);
+            if (isset($explicitFrom[$fromKey]) || isset($explicitTo[$toKey]) || isset($current[$fromKey])
+                || !isset($old[$fromKey]) || isset($old[$toKey]) || !isset($current[$toKey])) {
+                continue;
+            }
+
+            $declared[(string) $from] = (string) $to;
+        }
+
         $renamed = [];
         $unsupported = [];
-        foreach ($renames as $from => $to) {
+        foreach ($renames + $declared as $from => $to) {
             $fromKey = strtolower($from);
             $toKey = strtolower($to);
             if (!isset($old[$fromKey])) {
@@ -330,10 +376,18 @@ final class MigrationGenerator
      * were rendered for, so a future `diff --amend` can refuse a dialect
      * switch.
      *
+     * A `$draft` root (Level 3 M5, `diff --draft`) carries the `#[Draft]` marker: `migrate` and `baseline` refuse it
+     * (`MIG-013`) until the author has reviewed the generated code and removed the attribute.
+     *
      * @param list<class-string> $stepClasses fully qualified step class names, in composition order
      */
-    public static function emitRoot(string $rootNamespace, int $version, array $stepClasses, string $dialectLabel): string
-    {
+    public static function emitRoot(
+        string $rootNamespace,
+        int $version,
+        array $stepClasses,
+        string $dialectLabel,
+        bool $draft = false,
+    ): string {
         $className = 'V' . sprintf('%04d', $version);
 
         $lines = [
@@ -345,7 +399,9 @@ final class MigrationGenerator
             '',
             '/**',
             " * Generated by simpleorm diff (ADR-0017, dialect {$dialectLabel}); review the order before committing.",
+            ...($draft ? [' *', ' * DRAFT: migrate and baseline refuse this version (MIG-013) until you review it and remove #[Draft].'] : []),
             ' */',
+            ...($draft ? ['#[\\SimpleOrm\\Migrations\\Draft]'] : []),
             "final class {$className} extends \\SimpleOrm\\Migrations\\MigrationVersion",
             '{',
             '    public function compose(\\SimpleOrm\\Migrations\\VersionBuilder $version): void',

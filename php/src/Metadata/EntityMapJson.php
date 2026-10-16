@@ -99,6 +99,12 @@ final class EntityMapJson
                 'type' => self::typeToken($property),
                 'nullable' => $property->nullable,
             ];
+            // Declared renames only (spec/metadata-model.md "Declared renames"). SPEC-GAP: the key's position among the
+            // optional flags is unpinned (role.json has none beside it); it sits right after `nullable`.
+            if ($property->renamedFrom !== null) {
+                $entry['renamedFrom'] = $property->renamedFrom;
+            }
+
             if ($property->key) {
                 $entry['key'] = true;
             }

@@ -234,9 +234,13 @@ public static class DiffCommand
                 stepRefs.Add($"{folder}.{type.Name}.{prefix}_{description}");
             }
 
+            // Amending keeps an existing draft's marker: unreviewed code never becomes applicable by regeneration.
+            var rootPath = Path.Combine(options.OutDir, $"{prefix}.cs");
+            var draft = options.Draft
+                || (options.Amend && File.Exists(rootPath) && MigrationGenerator.HasDraftMarker(File.ReadAllText(rootPath)));
             planned.Add((
-                Path.Combine(options.OutDir, $"{prefix}.cs"),
-                MigrationGenerator.EmitRoot(options.RootNamespace, version, stepRefs, options.DialectLabel, options.Draft)));
+                rootPath,
+                MigrationGenerator.EmitRoot(options.RootNamespace, version, stepRefs, options.DialectLabel, draft)));
         }
 
         // A file that exists and is not the tool's own for this version is never overwritten.

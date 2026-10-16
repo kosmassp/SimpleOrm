@@ -135,6 +135,15 @@ func buildProperties(
 			errs.add("MAP-026", target(entityType, propertyName), "a property carries at most one hook; %d are declared", hooks)
 		}
 
+		var renamedFrom *string
+		if spec.RenamedFrom != nil {
+			if old := strings.TrimSpace(*spec.RenamedFrom); old == "" {
+				errs.add("MAP-027", target(entityType, propertyName), "renamed_from names no previous column; write renamed_from=<old_column>")
+			} else {
+				renamedFrom = &old
+			}
+		}
+
 		property := &core.PropertyMap{
 			Field:                spec.Field,
 			Index:                spec.Index,
@@ -149,6 +158,7 @@ func buildProperties(
 			IsVersion:            spec.IsVersion,
 			Audit:                audit,
 			IsSoftDelete:         spec.SoftDelete,
+			RenamedFrom:          renamedFrom,
 			ForeignKeyReferences: spec.ForeignKeyReferences,
 			Owner:                owner,
 		}

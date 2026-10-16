@@ -33,6 +33,15 @@ abstract class MigrationVersion
         return (int) $matches[1];
     }
 
+    /**
+     * Whether the root carries the `#[Draft]` marker (Level 3 M5): a pending draft is never applied or baselined
+     * (`MIG-013`). Data-driven versions (`SqlVersion`) override it with their own flag.
+     */
+    public function isDraft(): bool
+    {
+        return (new ReflectionClass($this))->getAttributes(Draft::class) !== [];
+    }
+
     /** Applies this version's object steps in order (FK order across tables is the author's/generator's job). */
     abstract public function compose(VersionBuilder $version): void;
 }

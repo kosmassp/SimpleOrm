@@ -97,18 +97,26 @@ func Shadow(ctx context.Context, options ShadowOptions) (*ShadowResult, error) {
 	maps := metadata.NewLoader(nil)
 	generatedAt := time.Now().UTC()
 
+	// A draft replays like any version (Level 3 M5, migrations.md "Draft migrations"): the throwaway database
+	// is no one's history, so the roots are replayed through a wrapper without the marker -- MIG-013 guards
+	// real databases only.
+	allVersions := replayable(options.Set)
+	allNumbers := options.Set.VersionNumbers()
+	replaySet, err := migrations.NewSet(allVersions...)
+	if err != nil {
+		return nil, err
+	}
+
 	if options.From > 0 {
 		if err := restoreBaseline(ctx, conn, options.OutDir, options.From, result); err != nil {
 			return nil, err
 		}
-		baselineRunner := migrations.NewRunner(pool, dialect, maps, options.Set, nil)
+		baselineRunner := migrations.NewRunner(pool, dialect, maps, replaySet, nil)
 		if err := baselineRunner.Baseline(ctx, options.From); err != nil {
 			return nil, err
 		}
 	}
 
-	allVersions := options.Set.Versions()
-	allNumbers := options.Set.VersionNumbers()
 	for i, number := range allNumbers {
 		if number <= options.From {
 			continue
@@ -179,6 +187,26 @@ func Shadow(ctx context.Context, options ShadowOptions) (*ShadowResult, error) {
 	}
 
 	return result, nil
+}
+
+// replayVersion is a root seen through the shadow replay: the same steps and number, never a draft.
+type replayVersion struct {
+	inner  migrations.Version
+	number int64
+}
+
+func (r replayVersion) Version() int64                             { return r.number }
+func (r replayVersion) Compose(builder *migrations.VersionBuilder) { r.inner.Compose(builder) }
+
+// replayable wraps every root of set as a replayVersion, in the set's order.
+func replayable(set *migrations.Set) []migrations.Version {
+	roots := set.Versions()
+	numbers := set.VersionNumbers()
+	out := make([]migrations.Version, len(roots))
+	for i, root := range roots {
+		out[i] = replayVersion{inner: root, number: numbers[i]}
+	}
+	return out
 }
 
 // touchedObjects is the distinct object names Status reports at exactly version.

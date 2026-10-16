@@ -75,6 +75,25 @@ internal static class MapAssembler
         {
             errors.Add(new MappingError("MAP-026", entityType.Name, "[SoftDelete] is declared on more than one property"));
         }
+
+        // A declared rename means something only where the generator diffs columns: a table.
+        if (kind != RelationKind.Table)
+        {
+            foreach (var spec in specs.Where(s => s.RenamedFrom is not null))
+            {
+                errors.Add(new MappingError(
+                    "MAP-027", $"{entityType.Name}.{spec.Property.Name}", $"[RenamedFrom] is only valid on a table-backed entity, not a {kind}"));
+            }
+        }
+
+        // Two properties cannot both have come from one previous column (Level 3 M5).
+        foreach (var duplicate in specs.Where(s => s.RenamedFrom is not null)
+            .GroupBy(s => s.RenamedFrom!, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1))
+        {
+            errors.Add(new MappingError(
+                "MAP-027", entityType.Name, $"[RenamedFrom(\"{duplicate.Key}\")] is declared on more than one property"));
+        }
     }
 
     public static EntityMap? Assemble(

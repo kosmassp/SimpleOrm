@@ -16,7 +16,7 @@ use SimpleOrm\Tests\Support\ConformancePaths;
  * `dotnet/tests/SimpleOrm.Tests/ConformanceDiffTests.cs`: each
  * `conformance/diff-cases/*.json` feeds two shapes in snapshot form — the
  * current model and the latest snapshot — plus declared renames through
- * `MigrationGenerator::diff()`, and checks the resulting change exactly: no
+ * `MigrationGenerator::diff()` (a current column's `renamedFrom` is the model's declared rename, the second map), and checks the resulting change exactly: no
  * database, no entities, pure data. `unsupported` entries are substrings
  * (usually the column name): messages differ per language, what they name may
  * not.
@@ -46,7 +46,16 @@ final class DiffCasesTest extends TestCase
         /** @var array<string, string> $renames */
         $renames = $spec['renames'] ?? [];
 
-        $diff = MigrationGenerator::diff($current, $snapshot, $renames);
+        // A current column's "renamedFrom" is the model's declaration (Level 3 M5): old column => new column.
+        /** @var array<string, string> $declared */
+        $declared = [];
+        foreach ($spec['current']['columns'] as $column) {
+            if (isset($column['renamedFrom'])) {
+                $declared[$column['renamedFrom']] = $column['column'];
+            }
+        }
+
+        $diff = MigrationGenerator::diff($current, $snapshot, $renames, $declared);
         $expect = $spec['expect'];
 
         self::assertSame($expect['isNew'] ?? false, $diff->isNew);

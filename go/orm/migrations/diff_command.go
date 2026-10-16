@@ -62,6 +62,11 @@ type DiffOptions struct {
 	Renames map[string]map[string]string
 	// AllowRemove: destructive changes (DDL-003) are emitted only when set.
 	AllowRemove bool
+	// Draft emits the root with the IsDraft marker (Level 3 M5): migrate and baseline refuse the version
+	// (MIG-013) until the author has reviewed the generated code and deleted the marker. An amend of a root that
+	// already carries the marker keeps it. SPEC-GAP: the spec does not say whether amend keeps the marker; losing
+	// it silently would let unreviewed code apply, so it is kept unless the author removes it by hand.
+	Draft bool
 	// Amend regenerates the newest version in place instead of emitting the next one (ADR-0017 add.3).
 	Amend bool
 	// Force, amend only: replace a hand-written version too (its raw SQL, hooks,
@@ -118,9 +123,13 @@ func ExecuteDiff(ctx context.Context, options DiffOptions, stdout, stderr io.Wri
 	// 2-3. Amend: locate the version's files and vet them.
 	var replaceable []string
 	var notices []string
+	draftedBefore := false
 	if options.Amend {
 		if refusal := locateVersionFiles(options, version, prefix, &replaceable, &notices); refusal != "" {
 			return fail(refusal)
+		}
+		if rootBytes, err := os.ReadFile(filepath.Join(options.OutDir, prefix+".go")); err == nil {
+			draftedBefore = HasDraftMarker(string(rootBytes))
 		}
 	}
 
@@ -265,7 +274,11 @@ func ExecuteDiff(ctx context.Context, options DiffOptions, stdout, stderr io.Wri
 			})
 		}
 
-		rootContent, err := EmitRoot(options.Package, version, stepRefs, options.DialectLabel)
+		emit := EmitRoot
+		if options.Draft || draftedBefore {
+			emit = EmitDraftRoot
+		}
+		rootContent, err := emit(options.Package, version, stepRefs, options.DialectLabel)
 		if err != nil {
 			return fail(err.Error())
 		}

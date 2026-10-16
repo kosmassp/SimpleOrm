@@ -122,7 +122,7 @@ final class MigrationSet
                 );
             }
 
-            $rendered[] = new RenderedVersion($version->version(), $steps);
+            $rendered[] = new RenderedVersion($version->version(), $steps, $version->isDraft());
         }
 
         return $rendered;

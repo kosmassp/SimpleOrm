@@ -313,6 +313,11 @@ type fieldDeclaration struct {
 	isUpdatedAt  bool
 	isSoftDelete bool
 
+	// renamedFrom is the renamed_from=<old_column> option (Level 3 M5, migrations.md "Draft migrations"): the
+	// column this one was previously stored under. A bare renamed_from or an empty name is kept as "" so the
+	// assembler reports it as MAP-027 for every loader.
+	renamedFrom *string
+
 	// isOwned is the `owned` option (ADR-0030); ownedPrefix its `owned=<prefix>`
 	// value when given (an empty value disables prefixing), nil for the default.
 	isOwned     bool
@@ -328,6 +333,14 @@ type fieldDeclaration struct {
 
 // hasHook reports whether the field declares any of the three hooks.
 func (d fieldDeclaration) hasHook() bool { return d.isCreatedAt || d.isUpdatedAt || d.isSoftDelete }
+
+// declareRenamedFrom records the renamed_from option; naming it twice on one tag is MAP-023 like a repeated hook.
+func declareRenamedFrom(decl *fieldDeclaration, old string, fieldTarget string, errs *errorCollector) {
+	if decl.renamedFrom != nil {
+		errs.add("MAP-023", fieldTarget, "malformed orm tag: renamed_from is named twice")
+	}
+	decl.renamedFrom = &old
+}
 
 // declareHook records one hook option; naming the same hook twice on one tag is a malformed declaration
 // (MAP-023, the port's own rule — spec/hooks.md Clarifications), never a second hook.
@@ -372,6 +385,10 @@ func parseFieldTag(tagValue string, fieldTarget string, errs *errorCollector) fi
 			decl.isEnumInt = true
 		case token == "created_at" || token == "updated_at" || token == "soft_delete":
 			declareHook(&decl, token, fieldTarget, errs)
+		case token == "renamed_from":
+			declareRenamedFrom(&decl, "", fieldTarget, errs)
+		case strings.HasPrefix(token, "renamed_from="):
+			declareRenamedFrom(&decl, token[len("renamed_from="):], fieldTarget, errs)
 		case strings.HasPrefix(token, "type="):
 			columnType, ok := core.ParseColumnType(token[len("type="):])
 			if !ok {
@@ -462,6 +479,10 @@ func readField(
 			errs.add("MAP-026", fieldTarget, "a hook is declared on a mapped column; an owned navigation is flattened into its owner and carries none")
 			return
 		}
+		if decl.renamedFrom != nil {
+			errs.add("MAP-027", fieldTarget, "renamed_from needs a mapped column; an owned navigation is flattened into its owner and carries none")
+			return
+		}
 		if decl.hasCascade {
 			errs.add("MAP-025", fieldTarget, "cascade is declared on a navigation to an entity; an owned value type is flattened into its owner and has nothing to cascade")
 			return
@@ -486,6 +507,9 @@ func readField(
 		if decl.hasHook() {
 			errs.add("MAP-026", fieldTarget, "a hook is declared on a mapped column; a navigation has none")
 		}
+		if decl.renamedFrom != nil {
+			errs.add("MAP-027", fieldTarget, "renamed_from needs a mapped column; a navigation has none")
+		}
 		rel := decl.relationships[0]
 		rel.cascade = decl.cascade
 		if decl.hasCascade && rel.kind == core.RelationshipManyToMany {
@@ -509,11 +533,17 @@ func readField(
 		if decl.hasHook() {
 			errs.add("MAP-026", fieldTarget, "a hook needs a mapped column; an ignored field has none")
 		}
+		if decl.renamedFrom != nil {
+			errs.add("MAP-027", fieldTarget, "renamed_from needs a mapped column; an ignored field has none")
+		}
 		return
 	}
 
 	if decl.hasHook() && !decl.isColumn {
 		errs.add("MAP-026", fieldTarget, "a hook needs a mapped column: add 'column' to the same orm tag")
+	}
+	if decl.renamedFrom != nil && !decl.isColumn {
+		errs.add("MAP-027", fieldTarget, "renamed_from needs a mapped column: add 'column' to the same orm tag")
 	}
 
 	if !decl.isColumn {
@@ -554,6 +584,7 @@ func readField(
 		CreatedAt:          decl.isCreatedAt,
 		UpdatedAt:          decl.isUpdatedAt,
 		SoftDelete:         decl.isSoftDelete,
+		RenamedFrom:        decl.renamedFrom,
 	})
 }
 
@@ -599,6 +630,13 @@ func readOwnedType(
 		decl := parseFieldTag(tagValue, memberTarget, errs)
 		if decl.hasCascade {
 			errs.add("MAP-025", memberTarget, "cascade is valid only on a navigation to an entity, not on a member of an owned type")
+			continue
+		}
+		if decl.renamedFrom != nil {
+			// SPEC-GAP: the spec names no owned-member case; a member's stored column is prefixed by the owner, so a
+			// declared rename there has no stated meaning -- refused as MAP-027 (declared where it cannot act).
+			errs.add("MAP-027", memberTarget, "renamed_from is not supported on an owned type's member: the stored column is prefixed by its navigation")
+			mapped++
 			continue
 		}
 		if decl.hasHook() {

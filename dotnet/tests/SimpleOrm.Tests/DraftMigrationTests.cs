@@ -43,6 +43,112 @@ public sealed class DraftMigrationTests
     }
 
     [Fact]
+    public void A_declaration_declares_nothing_while_the_model_still_maps_the_old_column_and_duplicates_refuse()
+    {
+        var dialect = new SqliteDialect();
+        var loader = new EntityMapLoader();
+        var map = loader.Load<StillHasBoth>();
+        var snapshot = SchemaSnapshot.FromMap(loader.Load<OnlyOld>(), dialect);   // has "remark" only
+        var diff = MigrationGenerator.Diff(map, dialect, snapshot, new Dictionary<string, string>());
+        Assert.Empty(diff.Renamed);
+        Assert.Equal(["note"], diff.Added.Select(c => c.Name));              // two columns, not a rename
+
+        Assert.Contains(Assert.Throws<MappingException>(() => loader.Load<TwoFromOne>()).Errors, e => e.Code == "MAP-027");
+        Assert.Contains(Assert.Throws<MappingException>(() => loader.Load<RenamedOnView>()).Errors, e => e.Code == "MAP-027");
+        Assert.Contains(Assert.Throws<MappingException>(() => loader.Load<RenamedOwner>()).Errors, e => e.Code == "MAP-027");
+    }
+
+    [Fact]
+    public async Task A_pending_draft_is_pending_and_replays_only_when_told()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"simpleorm_draft_{Guid.NewGuid():N}.db");
+        await using var db = await Db.OpenAsync($"Data Source={path};Pooling=False", TestDb.Options, CancellationToken.None);
+        var versions = new MigrationVersion[]
+        {
+            new SqlVersion(1, new SqlVersion.Step("draft_widgets", "create", ["create table draft_widgets (id INTEGER PRIMARY KEY) STRICT"])) { Draft = true },
+        };
+        Assert.True(await new MigrationRunner(db, versions).HasPendingAsync(CancellationToken.None));
+
+        var replay = new MigrationRunner(db, versions) { ReplayDrafts = true };   // what shadow does
+        Assert.Equal(1, await replay.MigrateAsync(CancellationToken.None));
+        Assert.Equal([MigrationState.Applied], (await replay.StatusAsync(CancellationToken.None)).Select(e => e.State));
+        Assert.True(MigrationGenerator.HasDraftMarker("[Draft]\npublic sealed class V0001 : MigrationVersion"));
+    }
+
+    [Table("widgets")]
+    public sealed class StillHasBoth
+    {
+        [Key]
+        [Column]
+        public long Id { get; set; }
+
+        [Column]
+        public string? Remark { get; set; }
+
+        [Column]
+        [RenamedFrom("remark")]
+        public string? Note { get; set; }
+    }
+
+    [Table("widgets")]
+    public sealed class OnlyOld
+    {
+        [Key]
+        [Column]
+        public long Id { get; set; }
+
+        [Column]
+        public string? Remark { get; set; }
+    }
+
+    [Table("widgets")]
+    public sealed class TwoFromOne
+    {
+        [Key]
+        [Column]
+        public long Id { get; set; }
+
+        [Column]
+        [RenamedFrom("remark")]
+        public string? Note { get; set; }
+
+        [Column]
+        [RenamedFrom("remark")]
+        public string? Memo { get; set; }
+    }
+
+    [View("renamed_view", "select 1 as id, 'x' as note")]
+    public sealed class RenamedOnView
+    {
+        [Key]
+        [Column]
+        public long Id { get; set; }
+
+        [Column]
+        [RenamedFrom("remark")]
+        public string? Note { get; set; }
+    }
+
+    [Table("renamed_owners")]
+    public sealed class RenamedOwner
+    {
+        [Key]
+        [Column]
+        public long Id { get; set; }
+
+        [Owned]
+        public RenamedMember? Member { get; set; }
+    }
+
+    [Owned]
+    public sealed class RenamedMember
+    {
+        [Column]
+        [RenamedFrom("old")]
+        public string? Text { get; set; }
+    }
+
+    [Fact]
     public void The_generated_root_carries_the_draft_marker_only_when_asked()
     {
         var plain = MigrationGenerator.EmitRoot("App.Migrations", 12, ["Table.User.V0012_X"], "sqlite");

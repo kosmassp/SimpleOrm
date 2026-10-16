@@ -68,7 +68,7 @@ final class SqliteShadow
                 // Trust: rebuild the state at fromVersion from the committed
                 // snapshots, verify nothing below it.
                 self::restoreBaseline($connection, $migrationsDir, $fromVersion, $result);
-                (new MigrationRunner($connection, $dialect, $maps, MigrationSet::of(...$versions)))->baseline($fromVersion);
+                (new MigrationRunner($connection, $dialect, $maps, MigrationSet::of(...$versions), replayDrafts: true))->baseline($fromVersion);
             }
 
             foreach ($versions as $version) {
@@ -77,7 +77,7 @@ final class SqliteShadow
                 }
 
                 $subset = array_values(array_filter($versions, static fn ($v): bool => $v->version() <= $version->version()));
-                $runner = new MigrationRunner($connection, $dialect, $maps, MigrationSet::of(...$subset));
+                $runner = new MigrationRunner($connection, $dialect, $maps, MigrationSet::of(...$subset), replayDrafts: true);
                 $runner->migrate();
 
                 $builder = new VersionBuilder();

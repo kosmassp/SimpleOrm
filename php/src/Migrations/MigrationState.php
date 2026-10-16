@@ -18,4 +18,7 @@ enum MigrationState: string
 
     /** Recorded in the database under a version the code no longer declares (`MIG-011`). */
     case Unknown = 'unknown';
+
+    /** Pending, but the version is marked a draft (Level 3 M5): `migrate` and `baseline` refuse it (`MIG-013`) until the marker is removed. */
+    case Draft = 'draft';
 }

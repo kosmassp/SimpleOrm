@@ -64,15 +64,50 @@ func (d *TableDiff) HasChanges() bool {
 		len(d.AddedIndexSQL) > 0 || len(d.RemovedIndexNames) > 0
 }
 
-// Diff diffs m's current shape against snapshot (nil = new table); renames maps old column name -> new column name.
+// Diff diffs m's current shape against snapshot (nil = new table); renames maps old column name -> new column
+// name (the explicit --rename flags), and the model's own renamed_from declarations (Level 3 M5) are read
+// from m beside them.
 func Diff(m *core.EntityMap, dialect core.Dialect, snapshot *TableSchema, renames map[string]string) *TableDiff {
-	return DiffSchemas(FromMap(m, dialect), snapshot, renames)
+	declared, conflicts := DeclaredRenames(m)
+	diff := DiffSchemas(FromMap(m, dialect), snapshot, renames, declared)
+	diff.Unsupported = append(diff.Unsupported, conflicts...)
+	return diff
+}
+
+// DeclaredRenames is the model's renamed_from declarations as an old column -> new column map (Level 3 M5,
+// migrations.md "Draft migrations"). Two columns claiming the same old column cannot both be its rename: the
+// first (in declaration order) keeps it and each later claim is returned as a conflict message, which Diff
+// reports as unsupported (DDL-004).
+func DeclaredRenames(m *core.EntityMap) (declared map[string]string, conflicts []string) {
+	declared = map[string]string{}
+	claimedBy := map[string]string{}
+	for _, p := range m.Properties {
+		if p.RenamedFrom == nil {
+			continue
+		}
+		key := strings.ToLower(*p.RenamedFrom)
+		if first, claimed := claimedBy[key]; claimed {
+			// SPEC-GAP: the spec does not cover two columns declaring the same previous column; the first keeps
+			// the rename and the second is reported rather than guessed.
+			conflicts = append(conflicts, fmt.Sprintf(
+				"renamed_from '%s' is declared by both %s and %s — one old column can be renamed to one new column", *p.RenamedFrom, first, p.ColumnName))
+			continue
+		}
+		claimedBy[key] = p.ColumnName
+		declared[*p.RenamedFrom] = p.ColumnName
+	}
+	return declared, conflicts
 }
 
 // DiffSchemas is the shape-vs-shape core: both sides already in snapshot
 // form, so the algorithm is pure data — what the conformance diff-cases
-// exercise directly.
-func DiffSchemas(current, snapshot *TableSchema, renames map[string]string) *TableDiff {
+// exercise directly. renames are the explicit flags (strict: an unknown side
+// is unsupported, and one wins over a declaration of the same old column);
+// declared are the model's renamed_from declarations (Level 3 M5: permanent
+// and harmless — one applies only while the snapshot still has the old column
+// and not yet the new one, otherwise it declares nothing). Both map old
+// column name -> new column name.
+func DiffSchemas(current, snapshot *TableSchema, renames, declared map[string]string) *TableDiff {
 	if snapshot == nil {
 		return &TableDiff{IsNew: true}
 	}
@@ -93,23 +128,9 @@ func DiffSchemas(current, snapshot *TableSchema, renames map[string]string) *Tab
 
 	// Renames are declared, never inferred; applied in a stable (sorted) order
 	// so a diff over a Go map is deterministic.
-	fromNames := make([]string, 0, len(renames))
-	for from := range renames {
-		fromNames = append(fromNames, from)
-	}
-	sort.Strings(fromNames)
-	for _, from := range fromNames {
-		to := renames[from]
+	applyRename := func(from, to string) {
 		fromKey, toKey := strings.ToLower(from), strings.ToLower(to)
-		oldColumn, hasOld := oldByKey[fromKey]
-		if !hasOld {
-			diff.Unsupported = append(diff.Unsupported, fmt.Sprintf("rename %s -> %s: '%s' is not in the snapshot", from, to, from))
-			continue
-		}
-		if _, hasCurrent := currentByKey[toKey]; !hasCurrent {
-			diff.Unsupported = append(diff.Unsupported, fmt.Sprintf("rename %s -> %s: '%s' is not a mapped column", from, to, to))
-			continue
-		}
+		oldColumn := oldByKey[fromKey]
 		diff.Renamed = append(diff.Renamed, ColumnRename{From: from, To: to})
 		delete(oldByKey, fromKey)
 		oldByKey[toKey] = ColumnSpec{Name: to, StorageType: oldColumn.StorageType, Nullable: oldColumn.Nullable}
@@ -119,6 +140,42 @@ func DiffSchemas(current, snapshot *TableSchema, renames map[string]string) *Tab
 				break
 			}
 		}
+	}
+
+	for _, from := range sortedKeys(renames) {
+		to := renames[from]
+		if _, hasOld := oldByKey[strings.ToLower(from)]; !hasOld {
+			diff.Unsupported = append(diff.Unsupported, fmt.Sprintf("rename %s -> %s: '%s' is not in the snapshot", from, to, from))
+			continue
+		}
+		if _, hasCurrent := currentByKey[strings.ToLower(to)]; !hasCurrent {
+			diff.Unsupported = append(diff.Unsupported, fmt.Sprintf("rename %s -> %s: '%s' is not a mapped column", from, to, to))
+			continue
+		}
+		applyRename(from, to)
+	}
+
+	// Declared renames run after the explicit ones, against what is left: the old column is gone when an
+	// explicit rename took it (the explicit flag wins), and a declaration whose old column the snapshot lacks or
+	// whose new column it already has declares nothing -- never an unsupported change, since the declaration
+	// outlives the one diff run it was written for. SPEC-GAP: one whose old column the model still maps is not
+	// a rename either (the column was kept, not moved), so it declares nothing.
+	for _, from := range sortedKeys(declared) {
+		to := declared[from]
+		fromKey, toKey := strings.ToLower(from), strings.ToLower(to)
+		if _, hasOld := oldByKey[fromKey]; !hasOld {
+			continue
+		}
+		if _, hasNew := oldByKey[toKey]; hasNew {
+			continue
+		}
+		if _, stillMapped := currentByKey[fromKey]; stillMapped {
+			continue
+		}
+		if _, hasCurrent := currentByKey[toKey]; !hasCurrent {
+			continue
+		}
+		applyRename(from, to)
 	}
 
 	for _, c := range current.Columns {
@@ -178,6 +235,16 @@ func DiffSchemas(current, snapshot *TableSchema, renames map[string]string) *Tab
 	}
 
 	return diff
+}
+
+// sortedKeys is m's keys in ordinal order, so a loop over a Go map is deterministic.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func nullSuffix(nullable bool) string {
@@ -372,6 +439,28 @@ type RootStepRef struct {
 // stamps the dialect: the recorded unit remembers what its storage types were
 // rendered for, so a (future) `diff --amend` can refuse a dialect switch.
 func EmitRoot(migrationsPackage string, version int64, steps []RootStepRef, dialectLabel string) (string, error) {
+	return emitRoot(migrationsPackage, version, steps, dialectLabel, false)
+}
+
+// draftMarkerPattern matches the IsDraft method EmitDraftRoot writes; the
+// amend run reads it back so regenerating a draft never silently drops the
+// marker.
+var draftMarkerPattern = regexp.MustCompile(`func \(V\d+\) IsDraft\(\) bool \{\s*return true\s*\}`)
+
+// HasDraftMarker reports whether source (a root) carries the IsDraft marker `diff --draft` writes.
+func HasDraftMarker(source string) bool {
+	return draftMarkerPattern.MatchString(source)
+}
+
+// EmitDraftRoot is EmitRoot plus the draft marker (Level 3 M5, migrations.md
+// "Draft migrations"): `func (V000N) IsDraft() bool { return true }`, which
+// the runner reads as migrations.Drafted -- migrate and baseline refuse the
+// version (MIG-013) until the author has reviewed it and deleted the method.
+func EmitDraftRoot(migrationsPackage string, version int64, steps []RootStepRef, dialectLabel string) (string, error) {
+	return emitRoot(migrationsPackage, version, steps, dialectLabel, true)
+}
+
+func emitRoot(migrationsPackage string, version int64, steps []RootStepRef, dialectLabel string, draft bool) (string, error) {
 	rootPackage := packageAlias(migrationsPackage)
 	typeName := fmt.Sprintf("V%04d", version)
 
@@ -390,10 +479,16 @@ func EmitRoot(migrationsPackage string, version int64, steps []RootStepRef, dial
 		body.WriteString("\n")
 	}
 	body.WriteString("}\n")
+	header := "review the order before committing."
+	if draft {
+		header = "DRAFT -- review the code, then delete IsDraft; migrate and baseline refuse it (MIG-013)."
+		fmt.Fprintf(&body, "\n// IsDraft marks this version as a draft (Level 3 M5): delete this method once the generated code is reviewed.\n"+
+			"func (%s) IsDraft() bool { return true }\n", typeName)
+	}
 
 	source := fmt.Sprintf(
-		"// %s (ADR-0017, dialect %s); review the order before committing.\n"+
+		"// %s (ADR-0017, dialect %s); %s\n"+
 			"package %s\n\nimport (\n%s)\n\ntype %s struct{}\n\n%s",
-		GeneratedMarker, dialectLabel, rootPackage, importBlock(imports), typeName, body.String())
+		GeneratedMarker, dialectLabel, header, rootPackage, importBlock(imports), typeName, body.String())
 	return formatGoSource(source)
 }

@@ -9,6 +9,7 @@ use SimpleOrm\Metadata\Attributes\Generated;
 use SimpleOrm\Metadata\Attributes\Index;
 use SimpleOrm\Metadata\Attributes\Key;
 use SimpleOrm\Metadata\Attributes\ManyToMany;
+use SimpleOrm\Metadata\Attributes\RenamedFrom;
 use SimpleOrm\Metadata\Attributes\SoftDelete;
 use SimpleOrm\Metadata\Attributes\Table;
 
@@ -24,6 +25,7 @@ final class Role extends BaseModel
 
     /** Column renamed to `role_name` by migration V0004. */
     #[Column('role_name')]
+    #[RenamedFrom('name')]
     public string $name;
 
     /** The soft-delete flag (spec/hooks.md, migration V0011): a delete sets it; reads never filter on it. */

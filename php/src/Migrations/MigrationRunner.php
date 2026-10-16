@@ -37,6 +37,7 @@ final class MigrationRunner
         private readonly EntityMapLoader $maps,
         private readonly MigrationSet $set,
         ?SnapshotSet $snapshots = null,
+        private readonly bool $replayDrafts = false,
     ) {
         $this->snapshots = $snapshots ?? new SnapshotSet();
     }
@@ -57,6 +58,7 @@ final class MigrationRunner
             $this->execute($this->dialect->versionTableSql());
             $recorded = $this->readRecorded();
             $this->validateHistory($plan, $recorded);
+            $this->refusePendingDrafts($plan, $recorded, null);
 
             $applied = 0;
             foreach ($plan as $version) {
@@ -178,6 +180,7 @@ final class MigrationRunner
         try {
             $this->execute($this->dialect->versionTableSql());
             $recorded = $this->readRecorded();
+            $this->refusePendingDrafts($plan, $recorded, $version);
 
             foreach ($plan as $entry) {
                 if ($entry->version > $version || in_array($entry->version, $recorded['versions'], true)) {
@@ -211,6 +214,7 @@ final class MigrationRunner
                     $row !== null && $row['checksum'] === $step->checksum => MigrationState::Applied,
                     $row !== null => MigrationState::Drifted,
                     in_array($version->version, $recorded['versions'], true) => MigrationState::Drifted,
+                    $version->draft => MigrationState::Draft,
                     default => MigrationState::Pending,
                 };
                 $entries[] = new MigrationEntry($version->version, $step->objectName, $step->description, $state);
@@ -242,11 +246,14 @@ final class MigrationRunner
         return $entries;
     }
 
-    /** True when any version is unapplied — the `MIG-030` check SchemaGuard runs at milestone 6. */
+    /**
+     * True when any version is unapplied — the `MIG-030` check SchemaGuard runs at milestone 6.
+     * SPEC-GAP: a pending draft is unapplied work too, so it counts.
+     */
     public function hasPending(): bool
     {
         foreach ($this->status() as $entry) {
-            if ($entry->state === MigrationState::Pending) {
+            if ($entry->state === MigrationState::Pending || $entry->state === MigrationState::Draft) {
                 return true;
             }
         }
@@ -260,6 +267,35 @@ final class MigrationRunner
     private function renderAll(): array
     {
         return $this->set->render($this->maps, $this->dialect);
+    }
+
+    /**
+     * A pending version marked a draft (`diff --draft`, Level 3 M5) refuses the whole run — `MIG-013`, before any
+     * statement executes — until the author has reviewed it and removed the marker. `$upTo` limits the check to the
+     * versions a baseline would record. SPEC-GAP: a draft already recorded (applied somewhere) is history, not pending work, and
+     * baseline refuses only drafts at or below its target — the spec says "pending" and "the whole plan" without defining either.
+     *
+     * @param list<RenderedVersion> $plan
+     * @param array{versions: list<int>, rows: array<int, array<string, array{description: string, checksum: string}>>} $recorded
+     */
+    private function refusePendingDrafts(array $plan, array $recorded, ?int $upTo): void
+    {
+        if ($this->replayDrafts) {
+            return;   // `shadow` replays a draft like any version (SPEC-GAP: the mechanism is the port's own)
+        }
+
+        foreach ($plan as $version) {
+            if (!$version->draft || in_array($version->version, $recorded['versions'], true)
+                || ($upTo !== null && $version->version > $upTo)) {
+                continue;
+            }
+
+            throw new SimpleOrmException(
+                'MIG-013',
+                sprintf('V%04d', $version->version),
+                'is marked #[Draft] (diff --draft): review the generated version and remove the marker before it can apply or baseline',
+            );
+        }
     }
 
     /**

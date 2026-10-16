@@ -54,12 +54,12 @@ public static class SqliteShadow
                 {
                     // Trust: rebuild the state at N from the committed snapshots, verify nothing below.
                     RestoreBaseline(probe, migrationsDir, fromVersion, result);
-                    await new MigrationRunner(db, versions).BaselineAsync(fromVersion, ct).ConfigureAwait(false);
+                    await new MigrationRunner(db, versions) { ReplayDrafts = true }.BaselineAsync(fromVersion, ct).ConfigureAwait(false);
                 }
 
                 foreach (var version in versions.Where(v => v.Version > fromVersion && v.Version <= toVersion))
                 {
-                    var runner = new MigrationRunner(db, versions.Where(v => v.Version <= version.Version));
+                    var runner = new MigrationRunner(db, versions.Where(v => v.Version <= version.Version)) { ReplayDrafts = true };   // a draft replays here (Level 3 M5)
                     var touched = (await runner.StatusAsync(ct).ConfigureAwait(false))
                         .Where(e => e.Version == version.Version)
                         .Select(e => e.ObjectName)

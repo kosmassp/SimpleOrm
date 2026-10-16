@@ -275,6 +275,7 @@ final class Application
             $arguments->flag('amend'),
             $arguments->flag('force'),
             $isApplied,
+            $arguments->flag('draft'),
         );
 
         return DiffCommand::execute(
@@ -386,12 +387,15 @@ final class Application
               snapshot [--out <dir>]      write V000N.schema.json per object (tables by
                                           columns; views by DDL), versioned and timestamped
               diff [--out <dir>] [--name <Description>] [--rename table.old=new]...
-                   [--allow-remove] [--amend [--force] [--db <value>]]
+                   [--allow-remove] [--draft] [--amend [--force] [--db <value>]]
                                           generate the next migration version from the model vs
                                           the latest snapshots; no database needed unless
                                           amending against one (a MIG-010 heads-up on an
                                           applied draft); removals need --allow-remove
                                           (DDL-003); inexpressible changes are DDL-004
+                                          --draft marks the root #[Draft]: migrate and baseline
+                                          refuse it (MIG-013) until you review and remove it;
+                                          [RenamedFrom] columns diff as one rename
               shadow [--out <dir>] [--from V000N] [--to V000M]
                                           rebuild snapshots by replaying migrations in a
                                           throwaway database; --from trusts version N as

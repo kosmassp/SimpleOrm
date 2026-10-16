@@ -254,3 +254,38 @@ Two additions to the generator, both declared, nothing inferred:
 Conformance: `diff-cases/` current columns may carry `"renamedFrom"`;
 `migrations-cases/` versions may carry `"draft": true`; `entities/role.json`
 pins the export (`Role.Name` was `name` until V0004).
+
+**Clarifications** (the PHP and Go M5 ports asked; ADR-0038):
+
+- **A declaration is a rename only while it can be one**: the old column in
+  the snapshot, the new one not yet there, **and the model no longer mapping
+  the old one** — a model that still maps it describes two columns, and the
+  new one simply adds. An explicit `--rename` of the same old column wins
+  and is applied once, never doubled. Matching is case-insensitive, like
+  explicit renames; names are trimmed.
+- **Two properties declaring the same previous column** is `MAP-027` at
+  load — two columns cannot both have come from one — never a diff-time
+  refusal.
+- **`MAP-027` covers every misplaced declaration**: without `[Column]`, on an
+  ignored property, a navigation, an owned navigation or an owned type's
+  member (a prefixed column cannot say which old name it means), a blank
+  name, and **a non-table source** (a view or statement has no column diff
+  for the declaration to feed — the `MAP-026` precedent). The manual builder
+  declares renames under the same rules.
+- **Export order of a column's optional keys**: `key`, `generated`, `audit`,
+  `softDelete`, `renamedFrom` — `renamedFrom` last.
+- **"Pending" for `MIG-013`**: a draft not recorded in `schema_version`. A
+  recorded draft is history (its checksum rules apply) and keeps its state;
+  `status` reports `Draft` only for an unrecorded one. `baseline N` refuses
+  drafts at or below `N` only; `migrate down` ignores the marker. The
+  refusal names the version (`V0002`), not an object.
+- **A pending draft is pending work**: `HasPending` is true and SchemaGuard
+  reports it as `MIG-030`.
+- **"Before anything executes"** is met by the run transaction: the version
+  table's creation precedes the refusal and rolls back with it.
+- **`shadow` replays a draft** through a runner option that only the
+  tooling sets (C# `ReplayDrafts`, PHP `replayDrafts`, Go a marker-hiding
+  wrapper) — there is no application-side bypass of `MIG-013`.
+- **`--amend` keeps the marker** of a root that already carries it, with or
+  without `--draft`: unreviewed code never becomes applicable by
+  regeneration.

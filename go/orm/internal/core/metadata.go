@@ -202,6 +202,10 @@ type PropertyMap struct {
 	Audit AuditRole
 	// IsSoftDelete marks the soft-delete flag column (spec/hooks.md): a delete sets it instead of removing the row.
 	IsSoftDelete bool
+	// RenamedFrom is the column this one was previously stored under (Level 3 M5, migrations.md "Draft
+	// migrations"): a declared rename the diff generator reads; nil when undeclared. The mapper and the
+	// session ignore it.
+	RenamedFrom *string
 	// ForeignKeyReferences is the entity this FK column references (the descriptor's ForeignKey), or nil.
 	ForeignKeyReferences reflect.Type
 	// Owner is the owned navigation this member is flattened through

@@ -95,7 +95,9 @@ final class MapAssembler
                 owner: $owner,
                 audit: $spec->audit,
                 softDelete: $spec->isSoftDelete,
+                renamedFrom: $spec->renamedFrom,
             );
+            self::validateRenamedFrom($shortName, $propertyName, $spec->renamedFrom, $errors);
             $owner?->addMember($property);
             $properties[] = $property;
             $byProperty[$propertyName] = $property;
@@ -158,6 +160,18 @@ final class MapAssembler
             if ($property->key) {
                 $errors[] = new MappingError('MAP-019', "{$shortName}.{$property->propertyName()}", '#[Version] cannot be part of the key');
             }
+        }
+    }
+
+    /**
+     * A declared rename names a previous column (Level 3 M5, `MAP-027`): an empty or blank name declares nothing.
+     *
+     * @param list<MappingError> $errors
+     */
+    private static function validateRenamedFrom(string $shortName, string $propertyName, ?string $renamedFrom, array &$errors): void
+    {
+        if ($renamedFrom !== null && trim($renamedFrom) === '') {
+            $errors[] = new MappingError('MAP-027', "{$shortName}.{$propertyName}", '#[RenamedFrom] must name the previous column');
         }
     }
 

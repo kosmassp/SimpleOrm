@@ -21,6 +21,22 @@ type Versioned interface {
 	Version() int64
 }
 
+// Drafted marks a root version as a draft (Level 3 M5, migrations.md "Draft
+// migrations"): `diff --draft` emits `func (V0012) IsDraft() bool { return true }`
+// beside Compose. The runner refuses to apply or baseline a pending draft
+// (MIG-013) until the author has reviewed the code and removed the method; a
+// draft still composes, renders, reports in status as Draft, and replays in
+// shadow. A type without the method, or one returning false, is no draft.
+type Drafted interface {
+	IsDraft() bool
+}
+
+// isDraft reports whether v carries the draft marker.
+func isDraft(v Version) bool {
+	drafted, ok := v.(Drafted)
+	return ok && drafted.IsDraft()
+}
+
 // Described overrides a step's type-name-parsed version and description (the
 // data-driven raw step implements it).
 type Described interface {
@@ -469,6 +485,7 @@ func (a *ViewActions) track(action *MigrationAction) *MigrationAction {
 type SQLVersion struct {
 	version int64
 	steps   []SQLVersionStep
+	draft   bool
 }
 
 // SQLVersionStep is one raw-SQL step's data: the object it changes, its
@@ -490,6 +507,17 @@ func NewSQLVersion(version int64, steps ...SQLVersionStep) *SQLVersion {
 
 // Version is version's number (Versioned) — never parsed from a type name.
 func (v *SQLVersion) Version() int64 { return v.version }
+
+// AsDraft marks the version as a draft (Drafted, Level 3 M5) and returns it —
+// the data-driven form of the generated `IsDraft() bool { return true }`
+// (conformance migrations-cases: `"draft": true`).
+func (v *SQLVersion) AsDraft() *SQLVersion {
+	v.draft = true
+	return v
+}
+
+// IsDraft implements Drafted.
+func (v *SQLVersion) IsDraft() bool { return v.draft }
 
 // Compose applies one raw step per declared SQLVersionStep, in order.
 func (v *SQLVersion) Compose(builder *VersionBuilder) {

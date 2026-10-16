@@ -118,7 +118,9 @@ func (s *Set) VersionOf(v Version) int64 {
 // runner applies.
 type RenderedVersion struct {
 	Version int64
-	Steps   []RenderedStep
+	// Draft is the root's Drafted marker (Level 3 M5): a pending draft is refused by migrate and baseline (MIG-013).
+	Draft bool
+	Steps []RenderedStep
 }
 
 // RenderedStep is one object's rendered change for a version: its Up
@@ -162,7 +164,7 @@ func (s *Set) Render(maps *metadata.Loader, dialect core.Dialect) ([]RenderedVer
 			}
 			steps = append(steps, renderedStep)
 		}
-		rendered = append(rendered, RenderedVersion{Version: nv.number, Steps: steps})
+		rendered = append(rendered, RenderedVersion{Version: nv.number, Draft: isDraft(nv.version), Steps: steps})
 	}
 	return rendered, nil
 }

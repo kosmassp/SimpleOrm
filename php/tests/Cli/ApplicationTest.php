@@ -111,6 +111,44 @@ final class ApplicationTest extends TestCase
     }
 
     #[Test]
+    public function diff_draft_writes_a_draft_marked_root(): void
+    {
+        $this->addLegacyColumnToTheWidgetSnapshot();
+
+        [$exit, $out] = $this->exec(['diff', '--name', 'DropLegacy', '--allow-remove', '--draft']);
+        self::assertSame(0, $exit, $out);
+        self::assertStringContainsString('wrote', $out);
+
+        $root = (string) file_get_contents($this->workDir . '/Migrations/V0003.php');
+        self::assertStringContainsString("#[\\SimpleOrm\\Migrations\\Draft]\nfinal class V0003", $root);
+        $step = (string) file_get_contents($this->workDir . '/Migrations/Table/Widget/V0003_DropLegacy.php');
+        self::assertStringContainsString("removeColumn('legacy')", $step);
+    }
+
+    #[Test]
+    public function diff_without_draft_writes_a_root_with_no_marker(): void
+    {
+        $this->addLegacyColumnToTheWidgetSnapshot();
+
+        [$exit, $out] = $this->exec(['diff', '--name', 'DropLegacy', '--allow-remove']);
+        self::assertSame(0, $exit, $out);
+
+        $root = (string) file_get_contents($this->workDir . '/Migrations/V0003.php');
+        self::assertStringNotContainsString('Migrations\\Draft]', $root);
+    }
+
+    /** The snapshot gains a column the model lacks, so the next diff has something to remove. */
+    private function addLegacyColumnToTheWidgetSnapshot(): void
+    {
+        $path = $this->workDir . '/Migrations/Table/Widget/V0001.schema.json';
+        $json = (string) file_get_contents($path);
+        $legacy = '{ "column": "legacy", "type": "TEXT", "nullable": true },';
+        $changed = str_replace('"columns": [', '"columns": [' . $legacy, $json);
+        self::assertNotSame($json, $changed);
+        file_put_contents($path, $changed);
+    }
+
+    #[Test]
     public function no_arguments_prints_usage_and_exits_2(): void
     {
         [$exit, $out] = $this->exec([]);

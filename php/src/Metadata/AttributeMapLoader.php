@@ -25,6 +25,7 @@ use SimpleOrm\Metadata\Attributes\OneToMany;
 use SimpleOrm\Metadata\Attributes\OneToOne;
 use SimpleOrm\Metadata\Attributes\Owned;
 use SimpleOrm\Metadata\Attributes\Procedure;
+use SimpleOrm\Metadata\Attributes\RenamedFrom;
 use SimpleOrm\Metadata\Attributes\SoftDelete;
 use SimpleOrm\Metadata\Attributes\Statement;
 use SimpleOrm\Metadata\Attributes\Table;
@@ -243,9 +244,20 @@ final class AttributeMapLoader
             $foreignKey = self::attr($property, ForeignKey::class);
             $owned = self::attr($property, Owned::class);
             $cascade = self::attr($property, Cascade::class);
+            $renamedFrom = self::attr($property, RenamedFrom::class);
 
             $navigationCount = ($manyToOne !== null ? 1 : 0) + ($oneToOne !== null ? 1 : 0)
                 + ($oneToMany !== null ? 1 : 0) + ($manyToMany !== null ? 1 : 0);
+
+            // MAP-027: a declared rename needs a plain #[Column] on the entity's own column (a blank name is the assembler's). SPEC-GAP: the
+            // spec names only "without [Column]"; an #[Ignore]d or navigation property carrying it is read the same way.
+            if ($renamedFrom !== null && ($owned !== null || $navigationCount > 0 || $ignore !== null || $column === null)) {
+                $errors[] = new MappingError(
+                    'MAP-027',
+                    $target,
+                    "#[RenamedFrom] is valid only beside #[Column] on an entity's own column, not on a navigation, an #[Owned] member, an #[Ignore]d or an unmapped property",
+                );
+            }
 
             $hooks = self::hookAttributes($property);
             // MAP-026 covers every misplaced hook — a navigation, an [Ignore]d or unmapped property, an owned navigation —
@@ -368,6 +380,7 @@ final class AttributeMapLoader
                 foreignKeyReferences: $foreignKey?->references,
                 audit: count($hooks) === 1 ? self::auditRole($hooks[0]) : AuditRole::None,
                 isSoftDelete: count($hooks) === 1 && $hooks[0] === 'SoftDelete',
+                renamedFrom: $renamedFrom?->column,
             );
         }
     }
@@ -803,6 +816,18 @@ final class AttributeMapLoader
                 continue;
             }
 
+            if ($member->getAttributes(RenamedFrom::class) !== []) {
+                // SPEC-GAP: a declared rename on an owned type's member (its column is prefixed — which name would the old
+                // column carry?) is refused rather than guessed.
+                $errors[] = new MappingError(
+                    'MAP-027',
+                    $memberTarget,
+                    "#[RenamedFrom] is valid on an entity's own column, not on a member of an #[Owned] type",
+                );
+                $mapped++;   // declared, only misplaced: its one error is MAP-027
+                continue;
+            }
+
             if (self::hookAttributes($member) !== []) {
                 // A hook on an owned type's member is MAP-026, never MAP-024 (spec/hooks.md Clarifications: the hook is the
                 // owner's own column).
@@ -901,7 +926,7 @@ final class AttributeMapLoader
         $propertyAttributes = [
             Column::class, Ignore::class, Key::class, Generated::class, Version::class, EnumAsInt::class,
             ForeignKey::class, ManyToOne::class, OneToOne::class, OneToMany::class, ManyToMany::class, Owned::class,
-            Cascade::class, CreatedAt::class, UpdatedAt::class, SoftDelete::class,
+            Cascade::class, CreatedAt::class, UpdatedAt::class, SoftDelete::class, RenamedFrom::class,
         ];
         foreach (PropertyDiscovery::propertiesInDeclarationOrder($class) as $property) {
             foreach ($propertyAttributes as $attribute) {

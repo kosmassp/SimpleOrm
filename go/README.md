@@ -257,3 +257,25 @@ simpleorm shadow --out ./migrations --from V0006 --to V0009
 There is no `--assembly`: the registry *is* the application. `--package` (the
 migrations package's import path, for the code `diff` emits) defaults to the
 package of the registered versions; `--dialect` accepts only `sqlite` today.
+
+### Draft migrations (Level 3 M5, ADR-0034)
+
+A column that was renamed declares its previous name with the `renamed_from`
+tag option, beside `column` (`orm:"column=role_name,renamed_from=name"`).
+`diff` reads it exactly like `--rename roles.name=role_name` (one
+data-preserving `RenameColumn`, not a drop and an add), but the declaration
+stays with the model. It is permanent and harmless: once the snapshot has the
+new column it declares nothing, and an explicit `--rename` still wins. The
+manual builder spells it `Property("Name").RenamedFrom("name")`.
+
+`simpleorm diff --draft` writes the new root with a marker method:
+
+```go
+func (V0012) IsDraft() bool { return true }
+```
+
+`migrate` and `baseline` refuse a pending draft with `MIG-013` before anything
+executes (the earlier versions stay unapplied too; a baseline *below* the
+draft is fine). `status` lists its steps as `Draft`, `shadow` replays it, and
+`diff --amend` regenerates it and keeps the marker. Review the generated code,
+then delete the method; the data-driven form is `orm.NewSQLVersion(...).AsDraft()`.

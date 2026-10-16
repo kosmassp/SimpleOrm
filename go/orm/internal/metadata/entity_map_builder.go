@@ -150,6 +150,13 @@ func (c *PropertyConfiguration) UpdatedAt() *PropertyConfiguration {
 	return c
 }
 
+// RenamedFrom declares the column this property was previously stored under (Level 3 M5): a declared rename
+// diff reads like --rename; an empty name is MAP-027 at Build.
+func (c *PropertyConfiguration) RenamedFrom(oldColumn string) *PropertyConfiguration {
+	c.spec.RenamedFrom = &oldColumn
+	return c
+}
+
 // SoftDelete declares the soft-delete flag (spec/hooks.md): a delete sets this non-nullable bool column instead of removing the row.
 func (c *PropertyConfiguration) SoftDelete() *PropertyConfiguration {
 	c.spec.SoftDelete = true

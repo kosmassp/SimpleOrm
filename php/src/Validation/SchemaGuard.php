@@ -499,6 +499,8 @@ final class SchemaGuard
         foreach ($runner->status() as $entry) {
             [$code, $message] = match ($entry->state) {
                 MigrationState::Pending => ['MIG-030', 'pending — apply migrations before starting the application'],
+                // SPEC-GAP: a pending draft is unapplied work, so the application check reports it as MIG-030 too.
+                MigrationState::Draft => ['MIG-030', 'pending draft — review it, remove its #[Draft] marker, and apply migrations before starting the application'],
                 MigrationState::Drifted => ['MIG-010', 'applied with a different checksum than the code renders'],
                 MigrationState::Unknown => ['MIG-011', 'applied in the database but unknown to the code'],
                 MigrationState::Applied => [null, ''],

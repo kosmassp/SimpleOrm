@@ -160,6 +160,18 @@ row `CRUD-001` — and a flushed `remove` does the same. Reads never filter on t
 new DbOptions(new SqliteDialect(), tracking: TrackingMode::Tracked, clock: fn () => new DateTimeImmutable('2026-08-29T00:00:00Z'));
 ```
 
+### Draft migrations (Level 3 M5, ADR-0034)
+
+`#[RenamedFrom('old_column')]` beside `#[Column('new_column')]` declares the column a property was stored under before
+(`MAP-027` without `#[Column]`, on an `#[Ignore]`d or navigation property, on an owned type's member, or with a blank
+name; the export carries it as `"renamedFrom"` only when declared). `simpleorm diff` reads it exactly like
+`--rename table.old=new` — one data-preserving rename instead of a drop and an add — but it stays with the model: once the
+latest snapshot has the new column (or neither column) it declares nothing, and an explicit `--rename` of the same old
+column wins. `diff --draft` writes the generated root with `#[SimpleOrm\Migrations\Draft]`: `migrate` and `baseline` refuse
+a pending draft (`MIG-013`, the whole plan, before anything executes) until you have reviewed the generated code and
+removed the attribute; `status` lists it as `draft`, `shadow` replays it, `diff --amend` keeps the marker. A baseline
+below the draft is fine; a draft already recorded as applied is history, not pending work.
+
 ## The CLI
 
 `bin/simpleorm` has no assembly to load, so it takes a PSR-4 root instead:
@@ -177,5 +189,6 @@ php bin/simpleorm status --src src --namespace 'App' --db app.db
 php bin/simpleorm validate --src src --namespace 'App' --db app.db
 php bin/simpleorm snapshot --src src --namespace 'App' --db app.db
 php bin/simpleorm diff --src src --namespace 'App' --name AddNote
+php bin/simpleorm diff --src src --namespace 'App' --name AddNote --draft
 php bin/simpleorm shadow --src src --namespace 'App' --from V0001 --to V0003
 ```

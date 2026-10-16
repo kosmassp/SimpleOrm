@@ -25,7 +25,7 @@ func TestDiffSchemas_NewTable(t *testing.T) {
 		{Name: "id", StorageType: "INTEGER", Key: true, Generated: true},
 		{Name: "name", StorageType: "TEXT"},
 	}}
-	diff := migrations.DiffSchemas(current, nil, nil)
+	diff := migrations.DiffSchemas(current, nil, nil, nil)
 	if !diff.IsNew {
 		t.Fatal("expected IsNew")
 	}
@@ -44,7 +44,7 @@ func TestDiffSchemas_AddNullableColumn(t *testing.T) {
 		{Name: "id", StorageType: "INTEGER", Key: true, Generated: true},
 		{Name: "name", StorageType: "TEXT"},
 	}}
-	diff := migrations.DiffSchemas(current, snapshot, nil)
+	diff := migrations.DiffSchemas(current, snapshot, nil, nil)
 	if got := names(diff.Added); len(got) != 1 || got[0] != "note" {
 		t.Fatalf("expected [note], got %v", got)
 	}
@@ -58,7 +58,7 @@ func TestDiffSchemas_AddNotNullIsUnsupported(t *testing.T) {
 	snapshot := &migrations.TableSchema{Name: "widgets", Columns: []migrations.TableColumn{
 		{Name: "id", StorageType: "INTEGER", Key: true, Generated: true},
 	}}
-	diff := migrations.DiffSchemas(current, snapshot, nil)
+	diff := migrations.DiffSchemas(current, snapshot, nil, nil)
 	if len(diff.Added) != 0 {
 		t.Fatalf("a NOT NULL addition must not be Added: %v", diff.Added)
 	}
@@ -75,7 +75,7 @@ func TestDiffSchemas_RemoveColumn(t *testing.T) {
 		{Name: "id", StorageType: "INTEGER", Key: true, Generated: true},
 		{Name: "legacy", StorageType: "TEXT", Nullable: true},
 	}}
-	diff := migrations.DiffSchemas(current, snapshot, nil)
+	diff := migrations.DiffSchemas(current, snapshot, nil, nil)
 	if got := names(diff.Removed); len(got) != 1 || got[0] != "legacy" {
 		t.Fatalf("expected [legacy], got %v", got)
 	}
@@ -90,7 +90,7 @@ func TestDiffSchemas_DeclaredRename(t *testing.T) {
 		{Name: "id", StorageType: "INTEGER", Key: true, Generated: true},
 		{Name: "remark", StorageType: "TEXT", Nullable: true},
 	}}
-	diff := migrations.DiffSchemas(current, snapshot, map[string]string{"remark": "note"})
+	diff := migrations.DiffSchemas(current, snapshot, map[string]string{"remark": "note"}, nil)
 	if len(diff.Renamed) != 1 || diff.Renamed[0] != (migrations.ColumnRename{From: "remark", To: "note"}) {
 		t.Fatalf("expected the declared rename, got %+v", diff.Renamed)
 	}
@@ -108,7 +108,7 @@ func TestDiffSchemas_UndeclaredRenameIsAddRemove(t *testing.T) {
 		{Name: "id", StorageType: "INTEGER", Key: true, Generated: true},
 		{Name: "remark", StorageType: "TEXT", Nullable: true},
 	}}
-	diff := migrations.DiffSchemas(current, snapshot, nil)
+	diff := migrations.DiffSchemas(current, snapshot, nil, nil)
 	if got := names(diff.Added); len(got) != 1 || got[0] != "note" {
 		t.Fatalf("expected added=[note], got %v", got)
 	}
@@ -126,7 +126,7 @@ func TestDiffSchemas_TypeChangeIsUnsupported(t *testing.T) {
 		{Name: "id", StorageType: "INTEGER", Key: true, Generated: true},
 		{Name: "price", StorageType: "TEXT"},
 	}}
-	diff := migrations.DiffSchemas(current, snapshot, nil)
+	diff := migrations.DiffSchemas(current, snapshot, nil, nil)
 	if len(diff.Unsupported) != 1 || !strings.Contains(diff.Unsupported[0], "price") {
 		t.Fatalf("expected an unsupported entry naming 'price', got %v", diff.Unsupported)
 	}
@@ -149,7 +149,7 @@ func TestDiffSchemas_IndexMatchesStructurallyAcrossNames(t *testing.T) {
 			{Name: "idx_dba_hotfix", Columns: []migrations.IndexPart{{ColumnName: "name"}}},
 		},
 	}
-	diff := migrations.DiffSchemas(current, snapshot, nil)
+	diff := migrations.DiffSchemas(current, snapshot, nil, nil)
 	if len(diff.AddedIndexSQL) != 0 || len(diff.RemovedIndexNames) != 0 {
 		t.Fatalf("a structurally-identical index under another name must count as implemented: %+v", diff)
 	}
@@ -165,7 +165,7 @@ func TestDiffSchemas_IndexUniqueMismatchAddsAndRemoves(t *testing.T) {
 	snapshot := &migrations.TableSchema{Name: "widgets", Columns: columns, Indexes: []migrations.TableIndex{
 		{Name: "idx_dba_hotfix", Columns: []migrations.IndexPart{{ColumnName: "name"}}, Unique: true},
 	}}
-	diff := migrations.DiffSchemas(current, snapshot, nil)
+	diff := migrations.DiffSchemas(current, snapshot, nil, nil)
 	if len(diff.AddedIndexSQL) != 1 || !strings.Contains(diff.AddedIndexSQL[0], "ix_widgets_name") {
 		t.Fatalf("expected the model's index to be added: %v", diff.AddedIndexSQL)
 	}
@@ -185,7 +185,7 @@ func mustParse(t *testing.T, source string) {
 
 func TestEmitTableStep_NewTable(t *testing.T) {
 	m := widgetMap()
-	diff := migrations.DiffSchemas(migrations.FromMap(m, sqlite.New()), nil, nil)
+	diff := migrations.DiffSchemas(migrations.FromMap(m, sqlite.New()), nil, nil, nil)
 	source, err := migrations.EmitTableStep(m, sqlite.New(), 1, "CreateWidget", diff)
 	if err != nil {
 		t.Fatal(err)

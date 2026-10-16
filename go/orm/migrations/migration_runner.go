@@ -27,6 +27,9 @@ const (
 	Drifted
 	// Unknown: a recorded row whose (version, object) the plan does not compose.
 	Unknown
+	// Draft: the step's version is unapplied and marked draft (Level 3 M5) -- pending in every respect but
+	// applicability: migrate and baseline refuse it with MIG-013 until the marker is removed.
+	Draft
 )
 
 // String is the reference's state name.
@@ -40,6 +43,8 @@ func (s MigrationState) String() string {
 		return "Drifted"
 	case Unknown:
 		return "Unknown"
+	case Draft:
+		return "Draft"
 	}
 	return fmt.Sprintf("MigrationState(%d)", int(s))
 }
@@ -146,6 +151,10 @@ func (r *Runner) Migrate(ctx context.Context, options RunOptions) (int, error) {
 		return 0, err
 	}
 	if err := validateHistory(plan, recorded); err != nil {
+		return 0, err
+	}
+	// The whole plan refuses before anything executes: a pending draft anywhere in it (Level 3 M5).
+	if err := refusePendingDrafts(plan, recorded, func(int64) bool { return true }); err != nil {
 		return 0, err
 	}
 
@@ -308,6 +317,11 @@ func (r *Runner) Baseline(ctx context.Context, version int64) error {
 	if err != nil {
 		return err
 	}
+	// Recording a draft as applied would make it a version nobody reviewed; only the versions up to the
+	// baseline matter, so a baseline below the draft is fine (Level 3 M5).
+	if err := refusePendingDrafts(plan, recorded, func(v int64) bool { return v <= version }); err != nil {
+		return err
+	}
 
 	for _, entry := range plan {
 		if entry.Version > version || recorded.versions[entry.Version] {
@@ -358,6 +372,8 @@ func (r *Runner) Status(ctx context.Context) ([]MigrationEntry, error) {
 				}
 			} else if recorded.versions[version.Version] {
 				state = Drifted
+			} else if version.Draft {
+				state = Draft
 			} else {
 				state = Pending
 			}
@@ -404,7 +420,7 @@ func (r *Runner) HasPending(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	for _, e := range entries {
-		if e.State == Pending {
+		if e.State == Pending || e.State == Draft {
 			return true, nil
 		}
 	}
@@ -454,6 +470,22 @@ func validateHistory(plan []RenderedVersion, recorded *recordedHistory) error {
 		if !known {
 			return core.Errorf("MIG-011", fmt.Sprintf("V%04d %s", key.Version, key.Object), "applied in the database but unknown to the code")
 		}
+	}
+	return nil
+}
+
+// refusePendingDrafts is MIG-013 (Level 3 M5, migrations.md "Draft migrations"): the first unapplied draft
+// version within scope refuses the whole plan. A draft whose version is already recorded is just an applied
+// version and is not refused (SPEC-GAP: the spec says "reached a version marked draft" and does not cover a
+// draft the database already recorded; refusing would make a database that applied it unmigratable, while
+// the drift guard still checks its checksum).
+func refusePendingDrafts(plan []RenderedVersion, recorded *recordedHistory, inScope func(version int64) bool) error {
+	for _, version := range plan {
+		if !version.Draft || recorded.versions[version.Version] || !inScope(version.Version) {
+			continue
+		}
+		return core.Errorf("MIG-013", fmt.Sprintf("V%04d", version.Version),
+			"is marked draft (simpleorm diff --draft): review the generated code and remove its IsDraft marker before migrating or baselining")
 	}
 	return nil
 }

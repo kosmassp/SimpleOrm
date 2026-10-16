@@ -21,7 +21,17 @@ import (
 // (select <owner keys or FKs> from that query) — never chunked. The
 // many-to-many link→target hop still key-lists.
 func loadEach[T any](ctx context.Context, db *Db, entities []*T, navigation string, ownerSubquery *core.SelectAst) error {
-	ownerMap, err := db.maps.Load(reflect.TypeFor[T]())
+	owners := make([]any, len(entities))
+	for i, e := range entities {
+		owners[i] = e
+	}
+	return loadEachOf(ctx, db, reflect.TypeFor[T](), owners, navigation, ownerSubquery)
+}
+
+// loadEachOf is loadEach over owners of a runtime type: each element is a *E
+// (the eager loaders reach pointer-shaped roots, `From[*User]`, through it).
+func loadEachOf(ctx context.Context, db *Db, ownerType reflect.Type, entities []any, navigation string, ownerSubquery *core.SelectAst) error {
+	ownerMap, err := db.maps.Load(ownerType)
 	if err != nil {
 		return err
 	}
@@ -61,14 +71,17 @@ func loadEach[T any](ctx context.Context, db *Db, entities []*T, navigation stri
 // the root AST for SubSelect; each navigation's loader takes its own copy
 // before adding a Projection, so the same ast is safe to reuse across includes.
 func eagerLoad[T any](ctx context.Context, db *Db, m *core.EntityMap, rows []T, includes []string, ownerSubquery *core.SelectAst, queryName string) error {
-	_ = m
 	_ = queryName
-	pointers := make([]*T, len(rows))
+	owners := make([]any, len(rows))
 	for i := range rows {
-		pointers[i] = &rows[i]
+		if reflect.TypeFor[T]().Kind() == reflect.Pointer {
+			owners[i] = rows[i] // already the *E the caller will hold
+		} else {
+			owners[i] = &rows[i]
+		}
 	}
 	for _, navigation := range includes {
-		if err := loadEach(ctx, db, pointers, navigation, ownerSubquery); err != nil {
+		if err := loadEachOf(ctx, db, m.Type, owners, navigation, ownerSubquery); err != nil {
 			return err
 		}
 	}
@@ -184,7 +197,7 @@ func distinctTuples(tuples []core.KeyTuple) []core.KeyTuple {
 // contains a null part is excluded from querying; its navigations stay
 // empty/null"). owners[i] is nil for an excluded entity; distinct is the
 // de-duplicated, non-null set the query filters on.
-func correlate[T any](entities []*T, properties []*core.PropertyMap) (owners []core.KeyTuple, distinct []core.KeyTuple) {
+func correlate(entities []any, properties []*core.PropertyMap) (owners []core.KeyTuple, distinct []core.KeyTuple) {
 	owners = make([]core.KeyTuple, len(entities))
 	var nonNull []core.KeyTuple
 	for i, e := range entities {
@@ -238,13 +251,30 @@ func membershipCriteria(propertyNames []string, tuples []core.KeyTuple) core.Cri
 	return core.Or(children...)
 }
 
+// rowDelivery says whether materialized rows reach the caller (the loaded
+// navigation targets — they resolve through the identity map in a tracked
+// session) or are only read to correlate (many-to-many link rows — never
+// delivered, so never tracked; Level 3 M1).
+//
+// SPEC-GAP: the spec lists "explicit and batch loading" among the reads that consult the map and
+// is silent on many-to-many link rows, which are materialized only to correlate owners with
+// targets. Assumed: never tracked (rowsInternal) — no caller can hold them. Also unspecified:
+// loading finds a tracked target by its LIVE key and FK fields, so a local edit of a tracked
+// instance's FK property changes which owner a later Load attaches it to.
+type rowDelivery int
+
+const (
+	rowsDelivered rowDelivery = iota
+	rowsInternal
+)
+
 // selectRows renders and runs ast (whose Map is the entity actually being
 // queried) through the dialect and the one row-mapping pipeline, without a
 // compile-time type parameter: the loading engine only learns the target
 // type at runtime, from the navigation's declaration. Results come back as
 // addressable pointers (reflect.PointerTo(ast.Map.Type)) ready to attach
 // directly to a pointer-shaped navigation field, or to copy into a value one.
-func selectRows(ctx context.Context, db *Db, ast *core.SelectAst, queryName string) ([]reflect.Value, error) {
+func selectRows(ctx context.Context, db *Db, ast *core.SelectAst, queryName string, delivery rowDelivery) ([]reflect.Value, error) {
 	rows, err := renderAndRunSelect(ctx, db, ast, queryName)
 	if err != nil {
 		return nil, err
@@ -266,6 +296,9 @@ func selectRows(ctx context.Context, db *Db, ast *core.SelectAst, queryName stri
 		value, err := plan.Read(rows)
 		if err != nil {
 			return nil, err
+		}
+		if delivery == rowsDelivered {
+			value = db.resolveAny(db.tracking(ast.Map), value)
 		}
 		results = append(results, reflect.ValueOf(value))
 		count++
@@ -293,7 +326,7 @@ func queryMembership(
 	ctx context.Context, db *Db, m *core.EntityMap,
 	matchProperties []string, tuples []core.KeyTuple,
 	ownerSubquery *core.SelectAst, subqueryProjection []*core.PropertyMap,
-	orderProperties []*core.PropertyMap, queryName string,
+	orderProperties []*core.PropertyMap, queryName string, delivery rowDelivery,
 ) ([]reflect.Value, error) {
 	orderings := make([]core.Ordering, len(orderProperties))
 	for i, p := range orderProperties {
@@ -304,7 +337,7 @@ func queryMembership(
 		sub := *ownerSubquery // shallow copy: never mutate the shared root AST (CODING-STANDARD §3)
 		sub.Projection = subqueryProjection
 		ast := &core.SelectAst{Map: m, Where: []core.Criteria{core.InSelect(matchProperties, &sub)}, Orderings: orderings}
-		return selectRows(ctx, db, ast, queryName)
+		return selectRows(ctx, db, ast, queryName, delivery)
 	}
 
 	if len(tuples) == 0 {
@@ -315,7 +348,7 @@ func queryMembership(
 	var all []reflect.Value
 	for _, chunk := range chunks {
 		ast := &core.SelectAst{Map: m, Where: []core.Criteria{membershipCriteria(matchProperties, chunk)}, Orderings: orderings}
-		rows, err := selectRows(ctx, db, ast, queryName)
+		rows, err := selectRows(ctx, db, ast, queryName, delivery)
 		if err != nil {
 			return nil, err
 		}
@@ -384,9 +417,9 @@ func appendTarget(slice reflect.Value, target reflect.Value, pointerElem bool) r
 // sharing a target share the same instance (map lookup by structural
 // equality, never string tokens); an owner with any null FK part keeps a
 // null navigation and binds nothing (spec/loading.md "Per kind").
-func loadManyToOne[T any](
+func loadManyToOne(
 	ctx context.Context, db *Db, ownerMap, targetMap *core.EntityMap, rel *core.RelationshipMap,
-	entities []*T, ownerSubquery *core.SelectAst,
+	entities []any, ownerSubquery *core.SelectAst,
 ) error {
 	navigationTarget := ownerMap.EntityName() + "." + rel.PropertyName
 	ownerFKProps, err := resolveProperties(ownerMap, rel.ForeignKeyProperties, navigationTarget)
@@ -407,7 +440,7 @@ func loadManyToOne[T any](
 
 	queryName := navigationTarget + " (many-to-one)"
 	targets, err := queryMembership(ctx, db, targetMap, propertyNames(targetMap.KeyProperties), distinct,
-		ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName)
+		ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName, rowsDelivered)
 	if err != nil {
 		return err
 	}
@@ -428,9 +461,9 @@ func loadManyToOne[T any](
 // null; more than one matching row is REL-002 — the unique index on the
 // target FK is what makes a 1:1, and drift is refused, never resolved by
 // picking one (spec/loading.md).
-func loadOneToOne[T any](
+func loadOneToOne(
 	ctx context.Context, db *Db, ownerMap, targetMap *core.EntityMap, rel *core.RelationshipMap,
-	entities []*T, ownerSubquery *core.SelectAst,
+	entities []any, ownerSubquery *core.SelectAst,
 ) error {
 	navigationTarget := ownerMap.EntityName() + "." + rel.PropertyName
 	targetFKProps, err := resolveProperties(targetMap, rel.ForeignKeyProperties, navigationTarget)
@@ -457,7 +490,7 @@ func loadOneToOne[T any](
 
 	queryName := navigationTarget + " (one-to-one)"
 	targets, err := queryMembership(ctx, db, targetMap, propertyNames(targetFKProps), distinct,
-		ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName)
+		ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName, rowsDelivered)
 	if err != nil {
 		return err
 	}
@@ -496,9 +529,9 @@ func refuseDuplicateOneToOne(targets []reflect.Value, targetFKProps []*core.Prop
 
 // loadOneToMany fills a fresh list of the targets whose FK equals the owner's
 // key — empty, never null, ordered by target key (spec/loading.md).
-func loadOneToMany[T any](
+func loadOneToMany(
 	ctx context.Context, db *Db, ownerMap, targetMap *core.EntityMap, rel *core.RelationshipMap,
-	entities []*T, ownerSubquery *core.SelectAst,
+	entities []any, ownerSubquery *core.SelectAst,
 ) error {
 	navigationTarget := ownerMap.EntityName() + "." + rel.PropertyName
 	targetFKProps, err := resolveProperties(targetMap, rel.ForeignKeyProperties, navigationTarget)
@@ -521,7 +554,7 @@ func loadOneToMany[T any](
 
 	queryName := navigationTarget + " (one-to-many)"
 	targets, err := queryMembership(ctx, db, targetMap, propertyNames(targetFKProps), distinct,
-		ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName)
+		ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName, rowsDelivered)
 	if err != nil {
 		return err
 	}
@@ -548,9 +581,9 @@ func loadOneToMany[T any](
 // for each owner: two queries (link rows, then targets), de-duplicated,
 // ordered by target key value-wise; a link row whose target row does not
 // exist contributes nothing (spec/loading.md).
-func loadManyToMany[T any](
+func loadManyToMany(
 	ctx context.Context, db *Db, ownerMap, targetMap, linkMap *core.EntityMap, rel *core.RelationshipMap,
-	entities []*T, ownerSubquery *core.SelectAst,
+	entities []any, ownerSubquery *core.SelectAst,
 ) error {
 	navigationTarget := ownerMap.EntityName() + "." + rel.PropertyName
 	linkOwnerProps, err := resolveProperties(linkMap, rel.LinkForeignKeysToOwner, navigationTarget)
@@ -586,7 +619,7 @@ func loadManyToMany[T any](
 	// query orders by the target key, spec/loading.md).
 	linkQueryName := navigationTarget + " (many-to-many link)"
 	linkRows, err := queryMembership(ctx, db, linkMap, propertyNames(linkOwnerProps), distinctOwners,
-		ownerSubquery, subqueryProjection, nil, linkQueryName)
+		ownerSubquery, subqueryProjection, nil, linkQueryName, rowsInternal)
 	if err != nil {
 		return err
 	}
@@ -598,7 +631,7 @@ func loadManyToMany[T any](
 	// ordered by target key value-wise.
 	targetQueryName := navigationTarget + " (many-to-many target)"
 	targets, err := queryMembership(ctx, db, targetMap, propertyNames(targetMap.KeyProperties), allTargetTuples,
-		nil, nil, targetMap.KeyProperties, targetQueryName)
+		nil, nil, targetMap.KeyProperties, targetQueryName, rowsDelivered)
 	if err != nil {
 		return err
 	}

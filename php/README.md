@@ -83,6 +83,30 @@ re-initializes the property (an empty collection reads as `[]`); entities you
 construct yourself keep their `= []` initializers; singular navigations stay
 `null` until loaded (no proxies), and a null FK or a dead link loads as `null`.
 
+### Tracking (Level 3 M1, ADR-0034)
+
+Tracking is a session mode chosen at open; the default is untracked — the Level
+0–2 session exactly (fresh instances, full-row `update`):
+
+```php
+$db = Db::open($dsn, new DbOptions(new SqliteDialect(), tracking: TrackingMode::Tracked));
+
+$a = $db->get(User::class, 1);
+$b = $db->get(User::class, 1);        // $b === $a: one instance per (class, key), every read path
+$a->name = 'Ada Lovelace';
+$db->changesOf($a);                   // ['name']  (dotted for owned members: 'address.city')
+$db->update($a);                      // writes only `name`; a clean instance writes nothing
+$db->refresh($a);                     // the explicit overwrite from the row (works untracked too)
+```
+
+A re-read of a tracked key returns the tracked instance and does not apply the
+row — dirty or not — until `refresh()`. `changesOf()`/`isDirty()` are `UOW-001`
+for an instance the session does not track (every instance in an untracked
+session); `isTracked()` never throws. A write from an instance that is not the
+session's instance for its key — a second copy, or a tracked instance whose key
+was changed — is `UOW-002` before any SQL. DTO results, keyless entities, and
+rows with a null key part are never tracked.
+
 ## The CLI
 
 `bin/simpleorm` has no assembly to load, so it takes a PSR-4 root instead:

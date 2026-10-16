@@ -15,21 +15,85 @@ import (
 
 // GetOrDefault reads by key (a single value, or []any for composite keys in
 // key order); a missing row returns nil. QRY-005 for statements/procedures.
+// In a tracked session the result is the session's instance for the key
+// (spec/session.md "Tracking").
 func GetOrDefault[T any](ctx context.Context, db *Db, key any) (*T, error) {
+	result, err := getByKey(ctx, db, reflect.TypeFor[T](), shapePointer, key)
+	if err != nil || !result.IsValid() {
+		return nil, err
+	}
+	if reflect.TypeFor[T]().Kind() == reflect.Pointer {
+		typed := result.Interface().(T)
+		return &typed, nil
+	}
+	return result.Interface().(*T), nil
+}
+
+// Get reads by key; a missing row throws CRUD-001 naming the entity and key.
+// T is the entity struct — the result is a copy (in a tracked session a copy of
+// the tracked instance's state) — or a pointer to it: `Get[*User]` is the
+// session's own instance (CODING-STANDARD §10).
+func Get[T any](ctx context.Context, db *Db, key any) (T, error) {
+	var zero T
 	entityType := reflect.TypeFor[T]()
+	shape := shapeValue
+	if entityType.Kind() == reflect.Pointer {
+		shape = shapePointer
+	}
+	result, err := getByKey(ctx, db, entityType, shape, key)
+	if err != nil {
+		return zero, err
+	}
+	if !result.IsValid() {
+		return zero, core.Errorf("CRUD-001", stripPointer(entityType).Name(), "no row with key (%s)", formatKey(key))
+	}
+	return result.Interface().(T), nil
+}
+
+// resultShape is the shape a read hands the caller (Level 3 M1, CODING-STANDARD
+// §10): only a pointer can be the tracked instance, so only the pointer shape
+// registers an unknown key in the identity map; a value is a copy.
+type resultShape int
+
+const (
+	shapeValue resultShape = iota
+	shapePointer
+)
+
+// getByKey is the key read behind Get/GetOrDefault: the row resolved through
+// the identity map and shaped as asked (a *E, or an E), or an invalid Value
+// when no row matches.
+func getByKey(ctx context.Context, db *Db, requested reflect.Type, shape resultShape, key any) (reflect.Value, error) {
+	entityType := stripPointer(requested)
 	m, err := db.maps.Load(entityType)
 	if err != nil {
-		return nil, err
+		return reflect.Value{}, err
 	}
 	if err := requireNamedRelation(m, entityType, "key reads need a named relation"); err != nil {
-		return nil, err
+		return reflect.Value{}, err
 	}
-
 	keyValues, err := validateKey(m, key)
 	if err != nil {
-		return nil, err
+		return reflect.Value{}, err
 	}
 
+	fresh, err := readRowByKey(ctx, db, m, entityType, keyValues)
+	if err != nil || !fresh.IsValid() {
+		return fresh, err
+	}
+	if shape == shapeValue {
+		fresh = fresh.Elem()
+	}
+	if tracked := db.tracking(m); tracked != nil {
+		return db.resolveRow(tracked, fresh), nil
+	}
+	return fresh, nil
+}
+
+// readRowByKey runs the generated select by key and returns the one row as a
+// fresh *E (never through the identity map), or an invalid Value when no row
+// matches; a key matching several rows is QRY-002.
+func readRowByKey(ctx context.Context, db *Db, m *core.EntityMap, entityType reflect.Type, keyValues []any) (reflect.Value, error) {
 	dialect := db.options.Dialect
 	predicates := make([]string, len(keyValues))
 	args := make([]any, len(keyValues))
@@ -38,7 +102,7 @@ func GetOrDefault[T any](ctx context.Context, db *Db, key any) (*T, error) {
 		predicates[i] = dialect.QuoteIdentifier(m.KeyProperties[i].ColumnName) + " = @" + name
 		converted, err := db.converter.ToDatabase(value, "", fmt.Sprintf("%s key[%d]", entityType.Name(), i))
 		if err != nil {
-			return nil, err
+			return reflect.Value{}, err
 		}
 		args[i] = sql.Named(name, converted)
 	}
@@ -53,48 +117,34 @@ func GetOrDefault[T any](ctx context.Context, db *Db, key any) (*T, error) {
 
 	rows, err := db.exec().QueryContext(ctx, sqlText, args...)
 	if err != nil {
-		return nil, err
+		return reflect.Value{}, err
 	}
 	defer rows.Close()
 
 	resultColumns, err := rows.Columns()
 	if err != nil {
-		return nil, err
+		return reflect.Value{}, err
 	}
-	plan, err := db.mapper.Plan(entityType, resultColumns, entityType.Name()+" get")
+	plan, err := db.mapper.Plan(reflect.PointerTo(entityType), resultColumns, entityType.Name()+" get")
 	if err != nil {
-		return nil, err
+		return reflect.Value{}, err
 	}
 
-	var result *T
+	var result reflect.Value
 	for rows.Next() {
-		if result != nil {
-			return nil, core.Errorf("QRY-002", entityType.Name(), "the key matched more than one row")
+		if result.IsValid() {
+			return reflect.Value{}, core.Errorf("QRY-002", entityType.Name(), "the key matched more than one row")
 		}
 		value, err := plan.Read(rows)
 		if err != nil {
-			return nil, err
+			return reflect.Value{}, err
 		}
-		typed := value.(T)
-		result = &typed
+		result = reflect.ValueOf(value)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return reflect.Value{}, err
 	}
 	return result, nil
-}
-
-// Get reads by key; a missing row throws CRUD-001 naming the entity and key.
-func Get[T any](ctx context.Context, db *Db, key any) (T, error) {
-	var zero T
-	result, err := GetOrDefault[T](ctx, db, key)
-	if err != nil {
-		return zero, err
-	}
-	if result == nil {
-		return zero, core.Errorf("CRUD-001", reflect.TypeFor[T]().Name(), "no row with key (%s)", formatKey(key))
-	}
-	return *result, nil
 }
 
 // validateKey is ADR-0006: the key (a value, or []any in key order) must match
@@ -277,7 +327,7 @@ func QueryAll[T any](ctx context.Context, db *Db) ([]T, error) {
 	if err != nil {
 		return nil, err
 	}
-	return materializeRows[T](ctx, db, rows, entityType.Name()+" select-all")
+	return readRows[T](ctx, db, rows, db.tracking(m), entityType.Name()+" select-all")
 }
 
 // --- generated CRUD (§7.14) -------------------------------------------------
@@ -286,7 +336,25 @@ func QueryAll[T any](ctx context.Context, db *Db) ([]T, error) {
 // key is read back via RETURNING and written onto the entity; an empty
 // client-GUID key is assigned first. A non-null many-to-one navigation whose
 // key disagrees with its FK property is CRUD-004; read-only sources are CRUD-003.
+// In a tracked session the inserted instance becomes the session's instance for
+// its (generated) key, with a fresh snapshot (Level 3 M1); a natural key another
+// tracked instance holds is UOW-002 before any SQL.
 func Insert[T any](ctx context.Context, db *Db, entity *T) error {
+	if err := insertRow(ctx, db, entity); err != nil {
+		return err
+	}
+	m, err := db.maps.Load(reflect.TypeFor[T]())
+	if err != nil {
+		return err
+	}
+	// SPEC-GAP: the spec says insert registers the instance; it does not say what happens when a
+	// tracked (now stale) instance still holds the generated key — the new instance replaces it.
+	db.track(m, entity)
+	return nil
+}
+
+// insertRow is Insert's write: the statement, the key write-back, no tracking.
+func insertRow[T any](ctx context.Context, db *Db, entity *T) error {
 	entityType := reflect.TypeFor[T]()
 	m, err := db.maps.Load(entityType)
 	if err != nil {
@@ -298,6 +366,13 @@ func Insert[T any](ctx context.Context, db *Db, entity *T) error {
 
 	if err := checkNavigationConsistency(db, m, entity, nil); err != nil {
 		return err
+	}
+	if m.KeyStrategy == core.KeyNatural {
+		// A supplied key is known before the write, so identity conflicts refuse early;
+		// a generated key can only be checked once it exists.
+		if _, err := db.writeIdentity(m, entity); err != nil {
+			return err
+		}
 	}
 
 	if m.KeyStrategy == core.KeyClientGuid {
@@ -378,6 +453,13 @@ func Update[T any](ctx context.Context, db *Db, entity *T) error {
 	if err != nil {
 		return err
 	}
+	entry, err := db.writeIdentity(m, entity)
+	if err != nil {
+		return err
+	}
+	if entry != nil {
+		return updateTracked(ctx, db, m, entry, entity)
+	}
 	if err := checkNavigationConsistency(db, m, entity, nil); err != nil {
 		return err
 	}
@@ -390,7 +472,62 @@ func Update[T any](ctx context.Context, db *Db, entity *T) error {
 			bound = append(bound, p)
 		}
 	}
-	return executeUpdate(ctx, db, reflect.TypeFor[T](), m, entity, db.options.Dialect.UpdateSQL(m), bound)
+	if err := executeUpdate(ctx, db, reflect.TypeFor[T](), m, entity, db.options.Dialect.UpdateSQL(m), bound); err != nil {
+		return err
+	}
+	// An instance the session did not know is tracked once its full row is written.
+	db.track(m, entity)
+	return nil
+}
+
+// updateTracked is Update on a tracked instance (Level 3 M1): only the dirty
+// non-key, non-version, non-generated columns are written, through the ADR-0028
+// column-list statement, and the snapshot moves forward; a clean instance
+// writes nothing at all — no statement, no version bump. A failed write
+// (CRUD-010 included) leaves the snapshot, and so the instance's dirtiness, as it was.
+func updateTracked(ctx context.Context, db *Db, m *core.EntityMap, entry *trackedEntry, entity any) error {
+	var set []*core.PropertyMap
+	for _, p := range entry.changed() {
+		if !p.IsKey && !p.IsVersion && !p.IsGenerated {
+			set = append(set, p)
+		}
+	}
+	if len(set) == 0 {
+		// SPEC-GAP: a local edit to a key, version, or generated property is a change
+		// (ChangesOf reports it) but an update never writes those columns; with nothing
+		// else dirty the update is clean — no statement.
+		return nil
+	}
+	written := make(map[string]bool, len(set))
+	for _, p := range set {
+		written[p.PropertyName] = true
+	}
+	if err := checkNavigationConsistency(db, m, entity, written); err != nil {
+		return err
+	}
+	if err := executeUpdate(ctx, db, m.Type, m, entity, db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set)); err != nil {
+		return err
+	}
+	entry.resnapshot(append(set, versionOf(m)...))
+	return nil
+}
+
+// updateOnlyBindings is the parameter order of the column-list update: the SET
+// properties, then the key, then the version for the WHERE.
+func updateOnlyBindings(m *core.EntityMap, set []*core.PropertyMap) []*core.PropertyMap {
+	bound := append(append([]*core.PropertyMap{}, set...), m.KeyProperties...)
+	if m.VersionProperty != nil {
+		bound = append(bound, m.VersionProperty)
+	}
+	return bound
+}
+
+// versionOf is the version property as a list (empty without one), for resnapshot.
+func versionOf(m *core.EntityMap) []*core.PropertyMap {
+	if m.VersionProperty == nil {
+		return nil
+	}
+	return []*core.PropertyMap{m.VersionProperty}
 }
 
 // UpdateOnly is the update by column list (ADR-0028): it writes only the named
@@ -417,11 +554,23 @@ func UpdateOnly[T any](ctx context.Context, db *Db, entity *T, properties ...str
 		return err
 	}
 
-	bound := append(append([]*core.PropertyMap{}, set...), m.KeyProperties...)
-	if version := m.VersionProperty; version != nil {
-		bound = append(bound, version)
+	// SPEC-GAP: the spec does not order the list validation (CRUD-005/006/007) against the
+	// identity refusal; the list is validated first — it is an argument error, the same
+	// in every session mode.
+	entry, err := db.writeIdentity(m, entity)
+	if err != nil {
+		return err
 	}
-	return executeUpdate(ctx, db, reflect.TypeFor[T](), m, entity, db.options.Dialect.UpdateOnlySQL(m, set), bound)
+	if err := executeUpdate(ctx, db, reflect.TypeFor[T](), m, entity, db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set)); err != nil {
+		return err
+	}
+	// SPEC-GAP: both updates "refresh the snapshot afterwards"; only the written columns (and the
+	// bumped version) move, so an unwritten local change stays dirty. An instance the session
+	// does not track stays untracked: its other values were neither read nor written here.
+	if entry != nil {
+		entry.resnapshot(append(append([]*core.PropertyMap{}, set...), versionOf(m)...))
+	}
+	return nil
 }
 
 // resolveUpdateList validates an update-by-column-list (ADR-0028) and resolves
@@ -554,6 +703,7 @@ func Delete[T any](ctx context.Context, db *Db, key any) error {
 	if affected == 0 {
 		return core.Errorf("CRUD-001", entityType.Name(), "delete affected no rows: no row with key (%s)", formatKey(key))
 	}
+	db.forgetKey(m, core.KeyTuple(keyValues))
 	return nil
 }
 
@@ -562,6 +712,12 @@ func Delete[T any](ctx context.Context, db *Db, key any) error {
 func DeleteEntity[T any](ctx context.Context, db *Db, entity *T) error {
 	entityType := reflect.TypeFor[T]()
 	m, err := requireWritableKeyed[T](db)
+	if err != nil {
+		return err
+	}
+	// SPEC-GAP: the spec words UOW-002 for "a write" and lists Update/UpdateOnly; deleting through
+	// an instance that is not the session's instance for its key is treated as a write too.
+	entry, err := db.writeIdentity(m, entity)
 	if err != nil {
 		return err
 	}
@@ -600,6 +756,9 @@ func DeleteEntity[T any](ctx context.Context, db *Db, entity *T) error {
 			}
 		}
 		return core.Errorf("CRUD-001", entityType.Name(), "delete affected no rows: no row with key (%s)", formatKeyOf(m, entity))
+	}
+	if entry != nil {
+		db.tracker.forget(entry)
 	}
 	return nil
 }

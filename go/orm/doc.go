@@ -13,6 +13,8 @@
 // Query), and aliases of the spec-level contracts that live in
 // internal/core (Error, EntityMap, Decimal, Criteria factories, the Dialect
 // seam). orm/sqlite is the SQLite dialect and orm/cli the command.
+// Level 3 M1 adds opt-in tracking (Options.Tracking): an identity map and
+// change snapshots — see tracking.go.
 // How Go differs from the reference — and only there — is the §10 table in
 // CODING-STANDARD.md.
 package orm

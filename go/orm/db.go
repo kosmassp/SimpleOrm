@@ -26,6 +26,8 @@ type Db struct {
 	maps       *metadata.Loader
 	converter  *mapping.TypeConverter
 	mapper     *mapping.ResultMapper
+	// tracker is the identity map and snapshots (Level 3 M1); nil in the default untracked session.
+	tracker *tracker
 }
 
 // executor is the surface *sql.Conn and *sql.Tx share — every statement runs
@@ -62,6 +64,10 @@ func Open(ctx context.Context, connectionString string, options Options) (*Db, e
 
 	loader := metadata.NewLoader(options.Mapping)
 	converter := mapping.NewTypeConverter(options.TypeHandlers, options.Dialect.BindsTemporalsNatively())
+	var identityMap *tracker
+	if options.Tracking == TrackingTracked {
+		identityMap = newTracker()
+	}
 	return &Db{
 		pool:       pool,
 		connection: connection,
@@ -69,6 +75,7 @@ func Open(ctx context.Context, connectionString string, options Options) (*Db, e
 		maps:       loader,
 		converter:  converter,
 		mapper:     mapping.NewResultMapper(loader, converter),
+		tracker:    identityMap,
 	}, nil
 }
 
@@ -144,6 +151,10 @@ func (t *Tx) Commit(context.Context) error {
 }
 
 // Rollback rolls back the transaction; a second call (or a call after Commit) is a no-op.
+//
+// SPEC-GAP: the spec is silent on what a rollback does to a tracked session. Assumed: nothing — the
+// identity map, snapshots, and in-memory version bumps are not reverted, so after a rollback a
+// tracked instance can be ahead of its row (Refresh is the way back).
 func (t *Tx) Rollback(context.Context) error {
 	if t.done {
 		return nil
@@ -202,6 +213,18 @@ func renderAndRunSelect(ctx context.Context, db *Db, ast *core.SelectAst, queryN
 // column schema before the first row, so strictness (MAP-001/002) fires even
 // for an empty result; cancellation is checked every 64 rows.
 func materializeRows[T any](ctx context.Context, db *Db, rows *sql.Rows, queryName string) ([]T, error) {
+	return readRows[T](ctx, db, rows, db.resultMapFor(reflect.TypeFor[T]()), queryName)
+}
+
+// readRows is the loop behind materializeRows. tracked is the entity map the
+// rows resolve through the identity map (Level 3 M1: a known key yields the
+// tracked instance, an unknown one is registered), or nil for results that
+// are never tracked — plain result structs, keyless entities, untracked
+// sessions. Callers that know their result is an entity pass db.tracking(m).
+//
+// SPEC-GAP: a read that fails midway (a mapping error, cancellation, REL-002 in join mode) leaves
+// the rows it had already resolved registered; the spec does not ask for the map to be unwound.
+func readRows[T any](ctx context.Context, db *Db, rows *sql.Rows, tracked *core.EntityMap, queryName string) ([]T, error) {
 	defer rows.Close()
 
 	columns, err := rows.Columns()
@@ -220,7 +243,7 @@ func materializeRows[T any](ctx context.Context, db *Db, rows *sql.Rows, queryNa
 		if err != nil {
 			return nil, err
 		}
-		results = append(results, value.(T))
+		results = append(results, db.resolveAny(tracked, value).(T))
 		count++
 		if count%64 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -240,6 +263,7 @@ func materializeRows[T any](ctx context.Context, db *Db, rows *sql.Rows, queryNa
 func streamRows[T any](ctx context.Context, db *Db, rows *sql.Rows, queryName string, yield func(T, error) bool) {
 	defer rows.Close()
 	var zero T
+	tracked := db.resultMapFor(reflect.TypeFor[T]())
 
 	columns, err := rows.Columns()
 	if err != nil {
@@ -262,7 +286,7 @@ func streamRows[T any](ctx context.Context, db *Db, rows *sql.Rows, queryName st
 			yield(zero, err)
 			return
 		}
-		if !yield(value.(T), nil) {
+		if !yield(db.resolveAny(tracked, value).(T), nil) {
 			return
 		}
 	}

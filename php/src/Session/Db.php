@@ -51,6 +51,9 @@ final class Db
 
     private readonly DbEagerJoin $eagerJoin;
 
+    /** The identity map and snapshots; null in an untracked session (the default, ADR-0034 add.1). */
+    private readonly ?DbTracking $tracking;
+
     private function __construct(
         PDO $connection,
         private readonly DbOptions $options,
@@ -61,6 +64,7 @@ final class Db
         $this->mapper = new ResultMapper($this->maps, $this->converter);
         $this->loading = new DbLoading($this);
         $this->eagerJoin = new DbEagerJoin($this);
+        $this->tracking = $options->tracking === TrackingMode::Tracked ? new DbTracking($this->maps) : null;
     }
 
     /** Opens the connection now (§7.17): a failed open leaves nothing behind. */
@@ -186,6 +190,10 @@ final class Db
     /** @internal called by {@see DbTransactionScope} only. */
     public function rollbackTransaction(): void
     {
+        // SPEC-GAP: a rollback does not touch the identity map or the snapshots — instances
+        // registered, re-snapshotted, or forgotten inside the rolled-back transaction keep that
+        // state, so a tracked instance can claim to match a row the rollback undid. The spec
+        // is silent on transactions and tracking; `refresh()` is the way back.
         if ($this->connection !== null && $this->connection->inTransaction()) {
             $this->connection->rollBack();
         }
@@ -352,6 +360,18 @@ final class Db
     public function getOrDefault(string $entityType, mixed $key): ?object
     {
         $map = $this->maps->load($entityType);
+        $statement = $this->selectByKey($map, $key);
+
+        return $this->singleRow($map, $statement, $this->planFor($statement, $entityType, $map->entityName() . ' get'));
+    }
+
+    /**
+     * Executes the generated key select (ADR-0006): explicit column list, every key column ANDed.
+     * Shared by {@see getOrDefault()} (through the identity map when tracked) and
+     * {@see refresh()} (the raw row, never adopted).
+     */
+    private function selectByKey(EntityMap $map, mixed $key): PDOStatement
+    {
         $this->requireNamedRelation($map, 'key reads need a named relation');
 
         $keyValues = self::validateKey($map, $key);
@@ -372,8 +392,13 @@ final class Db
 
         $statement = $this->connection()->prepare($sql);
         PdoBinder::bindAndExecute($statement, $parameters);
-        $plan = $this->planFor($statement, $entityType, $map->entityName() . ' get');
 
+        return $statement;
+    }
+
+    /** The one row of a key select, or null; a key matching more than one row is `QRY-002`. */
+    private function singleRow(EntityMap $map, PDOStatement $statement, callable $plan): ?object
+    {
         $result = null;
         while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
             if ($result !== null) {
@@ -446,6 +471,87 @@ final class Db
                 $map->entityName(),
                 "is {$map->kind->value}-backed; {$reason}",
             );
+        }
+    }
+
+    // --- tracking: identity map and change snapshots (ADR-0034 add.1, spec/session.md "Tracking") -----
+
+    /** Whether the session opened with {@see TrackingMode::Tracked}. */
+    public function isTracking(): bool
+    {
+        return $this->tracking !== null;
+    }
+
+    /** Whether the session's identity map holds this very instance; never throws, false in an untracked session. */
+    public function isTracked(object $entity): bool
+    {
+        return $this->tracking?->isTracked($entity) ?? false;
+    }
+
+    /**
+     * The mapped property names whose value differs from the snapshot — dotted for owned members
+     * (`address.city`), in declaration order. `UOW-001` in an untracked session and for an
+     * instance the session does not track.
+     *
+     * @return list<string>
+     */
+    public function changesOf(object $entity): array
+    {
+        return ($this->tracking ?? throw DbTracking::untrackedSession($entity))->changesOf($entity);
+    }
+
+    /** True when {@see changesOf()} is not empty; the same `UOW-001` refusals. */
+    public function isDirty(object $entity): bool
+    {
+        return $this->changesOf($entity) !== [];
+    }
+
+    /**
+     * The explicit overwrite (ADR-0034 add.1 ruling 2): re-reads the row by the instance's key,
+     * applies every mapped value onto the instance, and resets its snapshot; a missing row is
+     * `CRUD-001`. Works in both modes. Loaded navigations stay as they are.
+     */
+    public function refresh(object $entity): void
+    {
+        $map = $this->maps->load($entity::class);
+        $keyValues = $map->getKeyValues($entity);
+        // SPEC-GAP: the spec defines refresh only for the session's own instance. For the others
+        // this port takes: a tracked instance whose key was changed, or an instance that is not the
+        // session's for its key, is UOW-002 (consistent with writes); an instance the tracked
+        // session does not know, whose key is free, has the row applied but is NOT registered
+        // (refresh is not a registration act); a keyless entity is CRUD-002, a
+        // statement/procedure source QRY-005; navigations are untouched; an owned navigation is
+        // replaced as a whole (null stays null, ADR-0030).
+        $entry = $this->tracking?->identityFor($map, $entity);
+
+        $statement = $this->selectByKey($map, $keyValues);
+        $fresh = $this->singleRow($map, $statement, $this->rawPlanFor($statement, $entity::class, $map->entityName() . ' refresh'));
+        if ($fresh === null) {
+            throw new SimpleOrmException(
+                'CRUD-001',
+                $map->entityName(),
+                sprintf('refresh found no row with key (%s)', self::formatKey($keyValues)),
+            );
+        }
+
+        self::copyMappedValues($map, $fresh, $entity);
+        if ($entry !== null) {
+            $this->tracking?->resnapshot($entry);
+        }
+    }
+
+    /** Applies every mapped value of `$source` onto `$target`; an owned navigation is replaced as a whole (null stays null, ADR-0030). */
+    private static function copyMappedValues(EntityMap $map, object $source, object $target): void
+    {
+        foreach ($map->properties as $property) {
+            if ($property->owner === null) {
+                $property->setValue($target, $property->getValue($source));
+            }
+        }
+
+        foreach ($map->ownedTypes as $owner) {
+            $owned = $owner->property->isInitialized($source) ? $owner->property->getValue($source) : null;
+            $owner->property->setValue($target, $owned);
         }
     }
 
@@ -547,6 +653,14 @@ final class Db
             }
         }
 
+        if ($map->keyStrategy !== KeyStrategy::DatabaseGenerated) {
+            // SPEC-GAP: UOW-002 says "a write from an instance that is not the session's instance
+            // for its key" without naming Insert. Taken here: Insert is such a write when the key is
+            // caller-supplied (natural/composite/GUID) and held by another tracked instance — refused
+            // before any SQL; a database-generated key does not exist yet, so nothing to check.
+            $this->tracking?->identityFor($map, $entity);
+        }
+
         $sql = SqlPlaceholders::toPdo($this->options->dialect->insertSql($map));
         $statement = $this->connection()->prepare($sql);
 
@@ -576,6 +690,8 @@ final class Db
                 "{$map->entityName()}.{$keyProperty->propertyName()}",
             ));
         }
+
+        $this->tracking?->register($map, $entity);
     }
 
     /**
@@ -584,10 +700,23 @@ final class Db
      * entity's version in the WHERE, throws {@see ConcurrencyException}
      * (`CRUD-010`) on zero rows, and bumps the entity's version on success.
      * Without one, zero rows is `CRUD-001`. For a narrower SET see {@see updateOnly()}.
+     *
+     * On a **tracked** instance (ADR-0034 add.1) it writes only the dirty columns through the
+     * column-list path and nothing at all — no statement, no version bump — when the instance is
+     * clean; on an instance the tracked session does not know it writes the full row and then
+     * tracks it. An instance that is not the session's instance for its key is `UOW-002`.
      */
     public function update(object $entity): void
     {
         $map = $this->requireWritableKeyed($entity::class);
+        $entry = $this->tracking?->identityFor($map, $entity);
+
+        if ($entry !== null) {
+            $this->updateDirty($map, $entry);
+
+            return;
+        }
+
         $this->checkNavigationConsistency($map, $entity);
 
         // Bind SET values, key values, and the current version for the WHERE;
@@ -596,6 +725,41 @@ final class Db
             $map->properties,
             static fn (PropertyMap $p): bool => $p->key || $p->version || !$p->generated,
         )));
+
+        $this->tracking?->register($map, $entity);
+    }
+
+    /**
+     * The tracked update (ADR-0034 add.1): the dirty properties an update may write — never a
+     * key, the version, or a database-generated column — through the ADR-0028 statement; none
+     * dirty means no round trip. The snapshot moves forward only for what was written (and the
+     * bumped version), so an unwritten change can never look clean.
+     */
+    private function updateDirty(EntityMap $map, TrackedInstance $entry): void
+    {
+        $dirty = array_values(array_filter(
+            $this->tracking?->dirtyProperties($entry) ?? [],
+            static fn (PropertyMap $p): bool => !$p->key && !$p->version && !$p->generated,
+        ));
+        // SPEC-GAP: the spec says "clean writes nothing" and that an update never writes key,
+        // version, or generated properties, but not what an instance is whose ONLY differences are
+        // such properties (a hand-edited version/generated value): taken as clean — no statement,
+        // no snapshot change. The CRUD-004 navigation/FK check likewise runs only for FK
+        // properties that are actually written, so a clean instance is never refused.
+        if ($dirty === []) {
+            return;
+        }
+
+        $entity = $entry->instance;
+        $this->checkNavigationConsistency($map, $entity, array_map(static fn (PropertyMap $p): string => $p->propertyName(), $dirty));
+
+        $bound = array_merge($dirty, $map->keyProperties);
+        if ($map->versionProperty !== null) {
+            $bound[] = $map->versionProperty;
+        }
+
+        $this->executeUpdate($map, $entity, $this->options->dialect->updateOnlySql($map, $dirty), $bound);
+        $this->tracking?->resnapshotWritten($entry, $dirty);
     }
 
     /**
@@ -613,6 +777,10 @@ final class Db
     public function updateOnly(object $entity, array $properties): void
     {
         $map = $this->requireWritableKeyed($entity::class);
+        $entry = $this->tracking?->identityFor($map, $entity);
+        // SPEC-GAP: on an instance the tracked session does not know, UpdateOnly writes the listed
+        // columns but does not register it — unlike full-row Update, the other columns of such an
+        // instance were never written, so a snapshot of it would claim database agreement it lacks.
         $set = self::resolveUpdateList($map, $properties);
         $listed = array_map(static fn (PropertyMap $p): string => $p->propertyName(), $set);
         $this->checkNavigationConsistency($map, $entity, $listed);
@@ -623,6 +791,10 @@ final class Db
         }
 
         $this->executeUpdate($map, $entity, $this->options->dialect->updateOnlySql($map, $set), $bound);
+
+        if ($entry !== null) {
+            $this->tracking?->resnapshotWritten($entry, $set);
+        }
     }
 
     /**
@@ -742,6 +914,12 @@ final class Db
 
         $byEntity = is_object($keyOrEntity) && $keyOrEntity instanceof $entityType;
         $checkVersion = $byEntity && $map->versionProperty !== null;
+        if ($byEntity) {
+            // SPEC-GAP: the UOW-002 gate for Delete is not stated; taken for the entity form
+            // (a foreign instance, or a tracked instance whose key changed, is refused before
+            // SQL). The by-key form has no instance to gate and forgets whatever instance holds the key.
+            $this->tracking?->identityFor($map, $keyOrEntity);
+        }
 
         $sql = SqlPlaceholders::toPdo($this->options->dialect->deleteSql($map, $checkVersion));
         $statement = $this->connection()->prepare($sql);
@@ -788,6 +966,13 @@ final class Db
                 ),
             );
         }
+
+        // A delete forgets the key: the deleted instance is no longer tracked.
+        $this->tracking?->forget(
+            $map,
+            $byEntity ? $map->getKeyValues($keyOrEntity) : self::validateKey($map, $keyOrEntity),
+            $byEntity ? $keyOrEntity : null,
+        );
     }
 
     private function requireWritableKeyed(string $entityType): EntityMap
@@ -1014,7 +1199,36 @@ final class Db
         return $results;
     }
 
+    /** The plan every read path uses: the mapping plan, passed through the identity map when the session tracks. */
     private function planFor(PDOStatement $statement, string $resultType, string $queryName): callable
+    {
+        return $this->adoptingPlan($resultType, self::columnNames($statement), $queryName);
+    }
+
+    /** The mapping plan alone: always a fresh instance, never the identity map's ({@see refresh()} reads the raw row). */
+    private function rawPlanFor(PDOStatement $statement, string $resultType, string $queryName): callable
+    {
+        return $this->mapper->createPlan($resultType, self::columnNames($statement), $queryName);
+    }
+
+    /**
+     * The mapping plan for a column list, consulting the identity map for entity results when the
+     * session tracks (ADR-0034 add.1): a known key returns the held instance and the row is not
+     * applied. The join engine builds its per-segment plans through this too.
+     *
+     * @param list<string> $columnNames
+     * @return callable(array<string, mixed>): mixed
+     * @internal used by {@see DbEagerJoin}
+     */
+    public function adoptingPlan(string $resultType, array $columnNames, string $queryName): callable
+    {
+        $plan = $this->mapper->createPlan($resultType, $columnNames, $queryName);
+
+        return $this->tracking?->adopting($plan, $resultType) ?? $plan;
+    }
+
+    /** @return list<string> */
+    private static function columnNames(PDOStatement $statement): array
     {
         $columns = [];
         for ($i = 0; $i < $statement->columnCount(); $i++) {
@@ -1022,7 +1236,7 @@ final class Db
             $columns[] = $meta !== false ? $meta['name'] : (string) $i;
         }
 
-        return $this->mapper->createPlan($resultType, $columns, $queryName);
+        return $columns;
     }
 
     private static function formatKeyOf(EntityMap $map, object $entity): string
@@ -1078,6 +1292,7 @@ final class Db
         }
 
         $this->connection = null;
+        $this->tracking?->clear();
     }
 
     public function __destruct()

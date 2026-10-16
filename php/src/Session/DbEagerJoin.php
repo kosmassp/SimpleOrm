@@ -196,10 +196,9 @@ final class DbEagerJoin
         array $navigationsByAlias,
         PDOStatement $statement,
     ): array {
-        $mapper = $this->db->mapper();
         $rootColumnNames = self::columnNames($map->properties);
         $rootKeyColumnNames = self::columnNames($map->keyProperties);
-        $rootPlan = $mapper->createPlan($entityType, $rootColumnNames, $queryName);
+        $rootPlan = $this->db->adoptingPlan($entityType, $rootColumnNames, $queryName);
 
         /** @var array<string, ReflectionProperty> $navigationProperties */
         $navigationProperties = [];
@@ -213,7 +212,7 @@ final class DbEagerJoin
             $navigationProperties[$alias] = $map->navigationProperty($meta['relationship']);
             $targetColumnNamesByAlias[$alias] = self::columnNames($meta['map']->properties);
             $targetKeyColumnNamesByAlias[$alias] = self::columnNames($meta['map']->keyProperties);
-            $targetPlanByAlias[$alias] = $mapper->createPlan(
+            $targetPlanByAlias[$alias] = $this->db->adoptingPlan(
                 $meta['relationship']->targetType,
                 $targetColumnNamesByAlias[$alias],
                 Db::criteriaQueryName($meta['map']),
@@ -241,6 +240,10 @@ final class DbEagerJoin
                         // Re-initialize the included collection (spec/loading.md:
                         // "a loaded-but-empty collection reads as empty") — every
                         // root gets `[]`, filled below as rows match.
+                        // SPEC-GAP: on a root the identity map already holds, "loaded navigations
+                        // stay as they were" (session.md) versus "loading overwrites the navigation"
+                        // (loading.md): taken as — a re-read leaves them, an *included* navigation
+                        // is reloaded (the request is explicit); navigations are never dirty state.
                         $navigationProperties[$alias]->setValue($entity, []);
                         $collectionSeenTokens[$alias][$rootToken] = [];
                     }

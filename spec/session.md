@@ -244,3 +244,78 @@ loaded collection, `a.Transactions[0]`), `dirty`, `value` (`ref`,
 `expectError` with the code it must throw. Property names are spelled as
 the reference declares them; a port maps them through its own declaration
 convention in the runner, as the other runners do.
+
+**Clarifications** (the PHP and Go M1 ports asked; ADR-0035):
+
+- **The snapshot holds the database-bound form of each value** — the type
+  converter's output — so "dirty" means "the database would receive a
+  different value": a handler-typed or JSON member compares by what would
+  be written, an in-place mutation of such a member counts as a change,
+  byte arrays compare by content, and two decimals equal in value are clean
+  whatever their text. (The reference snapshotted raw values until
+  ADR-0035; a JSON list mutated in place read as clean.)
+- **`ChangesOf` lists properties in metadata order** (the `EntityMap`
+  property order); runners may still compare as sets.
+- **A column-list update moves the snapshot forward for the written
+  columns and the version only**; an unwritten change stays dirty. A
+  column-list update of an instance the session does not know does not
+  register it — the session saw only part of the row. A full-row update
+  or an insert registers with a snapshot of every column. (The reference
+  re-snapshotted the whole row after `UpdateOnly` until ADR-0035, which
+  silently cleared an unwritten change.)
+- **Every write and the refresh pass the identity gate**: `Insert` (a
+  caller-supplied key held by another instance — a generated key has
+  nothing to check yet), `Update`, `UpdateOnly`, the entity form of
+  `Delete`, and `Refresh` are `UOW-002` for an instance that is not the
+  session's instance for its key. The by-key form of `Delete` has no
+  instance to gate and forgets whichever instance holds the key.
+  `Refresh` of an instance the session does not know applies the row but
+  does not register it. (Delete and Refresh were ungated in the reference
+  until ADR-0035.)
+- **A re-read of a tracked key still maps the row** before discarding it,
+  so the row's conversion and strictness errors (`MAP-*`, `VAL-020`)
+  still fire; only the values are not applied.
+- **A key reused after an external delete**: the instance that writes the
+  row becomes the session's instance; the stale holder is forgotten (no
+  error after a committed write).
+- **Only key, version, or generated values differing** is clean: no
+  statement, no snapshot change — those columns are never in a SET; a
+  changed key is `UOW-002`.
+- **Which types are tracked**: every keyed entity map, views included
+  (writes against a view still refuse `CRUD-003`); plain result types and
+  types with no mapping metadata are never tracked.
+- **Transactions do not touch the map**: a rollback reverts the database,
+  not the instances or the snapshots — `Refresh` is the way back.
+- **Navigations are not dirty state** and are never part of a snapshot. A
+  re-read leaves a tracked instance's navigations as they were; an
+  explicit load or an include always (re)assigns the navigation it names,
+  on the tracked instance.
+- **Tracking is per session**: two sessions have two maps; closing a
+  session clears its map.
+- **Conformance spelling**: `tracking-cases` name properties as the
+  reference declares them (`Name`, `Address.City`), unlike `crud-cases`,
+  which name columns; a port's runner maps through its own declaration
+  convention. A single-part `key` is a bare scalar; `keyOf` yields the
+  key of another ref.
+- **Every materialized keyed entity row is tracked**, the many-to-many
+  link rows a load reads included, even though the caller never receives
+  them: one rule for every read path, no special cases.
+- **Loading correlates by the live values** of a tracked instance's key and
+  foreign-key properties — a local edit of a tracked FK changes which owner
+  a later load attaches the target to; the snapshot plays no part in
+  loading.
+- **Order of refusals on a column-list update**: the list validates first
+  (`CRUD-005`/`006`/`007`), then navigation consistency (`CRUD-004`), then
+  identity (`UOW-002`) — all before any SQL.
+- **A read that fails midway** leaves the rows it already resolved
+  registered; the map is a cache of what the session materialized, not a
+  transaction.
+- **Metadata order** means the `EntityMap` property order: a type's own
+  mapped properties first, inherited ones after (mapping-rules.md), owned
+  members at their navigation's position.
+- **Value-shaped results.** Where a language materializes values rather
+  than references (Go `[]T` beside `[]*T`), only the reference-shaped
+  result is the tracked instance; a value-shaped result for a known key is
+  a copy of the tracked state and is never registered. The port records
+  the shape in its §10 table; the spec's "instance" means the
+  reference-shaped one.

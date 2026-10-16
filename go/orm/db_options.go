@@ -16,4 +16,22 @@ type Options struct {
 	// extension point beyond the fixed conversion table. nil means none
 	// registered.
 	TypeHandlers *TypeHandlerRegistry
+	// Tracking chooses the session mode (Level 3 M1, ADR-0034 add.1): the
+	// zero value TrackingUntracked is the Level 0–2 session exactly; opt in
+	// with TrackingTracked for the identity map and change snapshots.
+	Tracking TrackingMode
 }
+
+// TrackingMode is the session's tracking mode, fixed at open (ADR-0034 add.1
+// ruling 1: tracking is configured, never implicit). The default is untracked
+// so every Level 0–2 behaviour and benchmark is untouched.
+type TrackingMode int
+
+const (
+	// TrackingUntracked is the default: every read materializes a fresh
+	// instance, Update writes the full row, nothing is remembered.
+	TrackingUntracked TrackingMode = iota
+	// TrackingTracked keeps one instance per (entity type, key) and a snapshot
+	// of its mapped values (spec/session.md "Tracking").
+	TrackingTracked
+)

@@ -23,9 +23,26 @@ var SeedTime = time.Date(2026, 8, 28, 9, 30, 0, 0, time.UTC)
 // in a parallel phase of this port. Closed on test cleanup.
 func OpenSample(t testing.TB) *orm.Db {
 	t.Helper()
+	return OpenSampleWith(t, orm.Options{})
+}
+
+// OpenSampleWith is OpenSample with session options (Level 3 M1: the tracking
+// mode); a nil Dialect defaults to SQLite.
+func OpenSampleWith(t testing.TB, options orm.Options) *orm.Db {
+	t.Helper()
+	return OpenSampleAt(t, TempDatabase(t), options)
+}
+
+// OpenSampleAt is OpenSampleWith on a given database path (the schema creation
+// is idempotent), for tests that open a second session on the same file.
+func OpenSampleAt(t testing.TB, path string, options orm.Options) *orm.Db {
+	t.Helper()
 	ctx := context.Background()
 
-	db, err := orm.Open(ctx, TempDatabase(t), orm.Options{Dialect: sqlite.New()})
+	if options.Dialect == nil {
+		options.Dialect = sqlite.New()
+	}
+	db, err := orm.Open(ctx, path, options)
 	if err != nil {
 		t.Fatalf("open sample database: %v", err)
 	}

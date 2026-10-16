@@ -102,6 +102,33 @@ recent, err := orm.From[Order](db).
 err = orm.Validate(ctx, db, app.Registry)         // SchemaGuard: the complete report, or nil
 ```
 
+### Tracking (Level 3 M1, ADR-0034)
+
+Tracking is a session mode chosen at open; the default is untracked — the
+Level 0–2 session, nothing remembered. Opt in per session:
+
+```go
+db, err := orm.Open(ctx, "app.db", orm.Options{Dialect: sqlite.New(), Tracking: orm.TrackingTracked})
+
+a, err := orm.Get[*User](ctx, db, 1)               // the pointer shape is the tracked one
+b, err := orm.Get[*User](ctx, db, 1)               // a == b: one instance per (type, key); the re-read does not apply the row
+a.Name = "Ada Lovelace"
+changed, err := orm.ChangesOf(db, a)              // ["Name"] — dotted for owned members ("Address.City"); UOW-001 if untracked
+err = orm.Update(ctx, db, a)                      // writes only the dirty columns; a clean instance writes nothing
+err = orm.Refresh(ctx, db, a)                     // explicit overwrite from the row; works in both modes
+```
+
+Only a pointer can be the session's instance, so **pointer-shaped results are
+the tracked ones**: `orm.From[*User](db)`, `orm.Query[A, *User]` (an entry
+declared with a pointer result), `orm.QueryAll[*User]`, `orm.Get[*User]`,
+`orm.GetOrDefault[User]` (already `*User`), and `[]*T` navigations loaded by
+`Load`/`Include` in every fetch mode. A value-shaped result (`[]User`,
+`orm.Get[User]`) is a copy: never registered, and for a key the session
+tracks it copies the tracked instance's current state. A write through an
+instance that is not the session's instance for its key — another instance
+holds the key, or a tracked instance's key fields were edited — is `UOW-002`
+before any SQL. Insert tracks the new instance; Delete forgets the key.
+
 Errors are values with a stable code: `errors.As(err, &e)` on an `*orm.Error`,
 or `orm.CodeOf(err)`. Every I/O function takes a `context.Context`.
 

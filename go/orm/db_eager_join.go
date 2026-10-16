@@ -296,9 +296,17 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 		return nil, err
 	}
 
-	rootType := reflect.TypeFor[T]()
+	// T is the entity struct or a pointer to it: the pointer shape is what a tracked
+	// session hands out as its own instance (Level 3 M1, CODING-STANDARD §10).
+	rootIsPointer := reflect.TypeFor[T]().Kind() == reflect.Pointer
+	rootType := stripPointer(reflect.TypeFor[T]())
+	trackedRoot := db.tracking(m)
+	trackedTargets := make([]*core.EntityMap, len(navs))
+	for i, nav := range navs {
+		trackedTargets[i] = db.tracking(nav.targetMap)
+	}
 	rootIndices, rootColumns := segmentColumns(columns, "t_")
-	rootPlan, err := db.mapper.Plan(rootType, rootColumns, queryName)
+	rootPlan, err := db.mapper.Plan(reflect.PointerTo(rootType), rootColumns, queryName)
 	if err != nil {
 		return nil, err
 	}
@@ -364,8 +372,16 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 
 		owner := findOwner(order, rootKey)
 		if owner == nil {
-			ptr := reflect.New(rootType)
-			ptr.Elem().Set(reflect.ValueOf(rootValue))
+			// SPEC-GAP: an Include on a root the session already tracks overwrites the included
+			// navigations of the tracked instance (the caller asked for them, as with an explicit Load)
+			// but applies none of the row's column values (ruling 2); other navigations stay as they were.
+			var ptr reflect.Value
+			if rootIsPointer {
+				ptr = reflect.ValueOf(db.resolveAny(trackedRoot, rootValue))
+			} else {
+				ptr = reflect.New(rootType)
+				ptr.Elem().Set(reflect.ValueOf(db.resolveAny(trackedRoot, reflect.ValueOf(rootValue).Elem().Interface())))
+			}
 			owner = &ownerRecord{
 				ptr: ptr, key: rootKey,
 				collections:  map[int][]collectionEntry{},
@@ -403,7 +419,7 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 
 			instance := findTargetInstance(targetInstances[i], targetKey)
 			if instance == nil {
-				instance = &targetInstance{key: targetKey, value: reflect.ValueOf(targetValue)}
+				instance = &targetInstance{key: targetKey, value: reflect.ValueOf(db.resolveAny(trackedTargets[i], targetValue))}
 				targetInstances[i] = append(targetInstances[i], instance)
 			}
 
@@ -448,7 +464,11 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 			}
 			field.Set(slice)
 		}
-		results[i] = owner.ptr.Elem().Interface().(T)
+		if rootIsPointer {
+			results[i] = owner.ptr.Interface().(T)
+		} else {
+			results[i] = owner.ptr.Elem().Interface().(T)
+		}
 	}
 	return results, nil
 }

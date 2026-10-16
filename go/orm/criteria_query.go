@@ -70,11 +70,13 @@ func (q *CriteriaQuery[T]) Offset(offset int64) *CriteriaQuery[T] {
 }
 
 // queryName is "<Entity> criteria" — the name every error and the AST's WHERE naming uses.
-func (q *CriteriaQuery[T]) queryName() string { return reflect.TypeFor[T]().Name() + " criteria" }
+func (q *CriteriaQuery[T]) queryName() string {
+	return stripPointer(reflect.TypeFor[T]()).Name() + " criteria"
+}
 
 // List runs the query and materializes every row.
 func (q *CriteriaQuery[T]) List(ctx context.Context) ([]T, error) {
-	entityType := reflect.TypeFor[T]()
+	entityType := stripPointer(reflect.TypeFor[T]())
 	m, err := q.db.maps.Load(entityType)
 	if err != nil {
 		return nil, err
@@ -149,7 +151,7 @@ func (q *CriteriaQuery[T]) execute(ctx context.Context, m *core.EntityMap, ast *
 	if err != nil {
 		return nil, err
 	}
-	return materializeRows[T](ctx, q.db, rows, queryName)
+	return readRows[T](ctx, q.db, rows, q.db.tracking(m), queryName)
 }
 
 // Single expects exactly one row: zero is QRY-001, more than one QRY-002.

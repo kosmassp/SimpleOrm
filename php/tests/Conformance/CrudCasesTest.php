@@ -4,15 +4,12 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Tests\Conformance;
 
-use DateTimeImmutable;
-use DateTimeZone;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use SimpleOrm\Dialect\SqliteDialect;
 use SimpleOrm\Errors\SimpleOrmException;
-use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\PropertyMap;
 use SimpleOrm\Session\Db;
@@ -21,9 +18,8 @@ use SimpleOrm\Tests\Sample\Models\Transaction;
 use SimpleOrm\Tests\Sample\Models\User;
 use SimpleOrm\Tests\Sample\Models\UserProfile;
 use SimpleOrm\Tests\Support\ConformancePaths;
+use SimpleOrm\Tests\Support\ConformanceValues;
 use SimpleOrm\Tests\Support\TempDatabase;
-use SimpleOrm\Types\Decimal;
-use UnitEnum;
 
 /**
  * The crud-case runner (§9, spec/crud.md): generated insert/get/update/delete
@@ -168,7 +164,7 @@ final class CrudCasesTest extends TestCase
         $map = $db->maps()->load($entity::class);
         foreach ($values as $columnName => $value) {
             $property = self::propertyByColumn($map, $columnName);
-            $property->setValue($entity, self::decodeValue($value, $property));
+            $property->setValue($entity, ConformanceValues::decode($value, $property));
         }
     }
 
@@ -178,8 +174,8 @@ final class CrudCasesTest extends TestCase
         $map = $db->maps()->load($entity::class);
         foreach ($expected as $columnName => $expectedValue) {
             $property = self::propertyByColumn($map, $columnName);
-            $actual = self::encodeForCompare($property->getValue($entity));
-            self::assertSame(self::expectedText($expectedValue), $actual, "{$fileName}: column {$columnName}");
+            $actual = ConformanceValues::encodeForCompare($property->getValue($entity));
+            self::assertSame(ConformanceValues::expectedText($expectedValue), $actual, "{$fileName}: column {$columnName}");
         }
     }
 
@@ -203,64 +199,5 @@ final class CrudCasesTest extends TestCase
         }
 
         throw new RuntimeException("no mapped property for column '{$columnName}' on {$map->entityName()}");
-    }
-
-    /** The documented conformance value encoding, decoded into a PHP value for the property's type. */
-    private static function decodeValue(mixed $value, PropertyMap $property): mixed
-    {
-        if ($value === null) {
-            return null;
-        }
-
-        return match ($property->type) {
-            ColumnType::Int16, ColumnType::Int32, ColumnType::Int64 => (int) $value,
-            ColumnType::Decimal => Decimal::of((string) $value),
-            ColumnType::Double, ColumnType::Float => (float) $value,
-            ColumnType::Bool => (bool) $value,
-            ColumnType::EnumText, ColumnType::EnumInt => self::enumCase($property->phpType, (string) $value),
-            ColumnType::DateTime, ColumnType::DateTimeOffset, ColumnType::Date, ColumnType::Time
-                => new DateTimeImmutable((string) $value),
-            default => (string) $value,
-        };
-    }
-
-    /** @param class-string|null $enumClass */
-    private static function enumCase(?string $enumClass, string $value): UnitEnum
-    {
-        if ($enumClass === null || !enum_exists($enumClass)) {
-            throw new RuntimeException("'{$enumClass}' is not an enum");
-        }
-
-        foreach ($enumClass::cases() as $case) {
-            if (strcasecmp($case->name, $value) === 0) {
-                return $case;
-            }
-        }
-
-        throw new RuntimeException("'{$value}' is not a case of {$enumClass}");
-    }
-
-    /** The documented conformance value encoding, reduced to a comparable string (or null). */
-    private static function encodeForCompare(mixed $value): ?string
-    {
-        return match (true) {
-            $value === null => null,
-            is_bool($value) => $value ? 'true' : 'false',
-            is_int($value) => (string) $value,
-            is_float($value) => (string) $value,
-            $value instanceof Decimal => (string) $value,
-            $value instanceof DateTimeImmutable => $value->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s.u') . '0Z',
-            $value instanceof UnitEnum => $value->name,
-            default => (string) $value,
-        };
-    }
-
-    private static function expectedText(mixed $jsonValue): ?string
-    {
-        return match (true) {
-            $jsonValue === null => null,
-            is_bool($jsonValue) => $jsonValue ? 'true' : 'false',
-            default => (string) $jsonValue,
-        };
     }
 }

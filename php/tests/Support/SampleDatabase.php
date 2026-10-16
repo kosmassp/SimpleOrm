@@ -37,9 +37,10 @@ final class SampleDatabase
         return new DbOptions(new SqliteDialect());
     }
 
-    public static function open(TempDatabase $fixture): Db
+    /** The sample schema on a fresh temp database; `$options` overrides the default session options (tracking mode, a decorated dialect). */
+    public static function open(TempDatabase $fixture, ?DbOptions $options = null): Db
     {
-        $db = Db::open($fixture->connectionString(), self::options());
+        $db = Db::open($fixture->connectionString(), $options ?? self::options());
 
         $db->createTable(User::class);
         $db->createTable(Role::class);

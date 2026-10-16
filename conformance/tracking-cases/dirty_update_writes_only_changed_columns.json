@@ -7,7 +7,7 @@
     { "set": { "ref": "a", "property": "Name", "value": "Ada Lovelace" } },
     { "set": { "ref": "a", "property": "DisplayName", "value": "Ada L." } },
     { "expect": { "dirty": { "ref": "a", "properties": ["Name", "DisplayName"] } } },
-    { "update": { "ref": "a", "expectWritten": ["Name", "DisplayName"] } },
+    { "update": { "ref": "a", "expectWritten": ["Name", "DisplayName", "UpdatedAtUtc"] } },
     { "expect": { "dirty": { "ref": "a", "properties": [] } } },
     { "update": { "ref": "a", "expectWritten": [] } },
     { "refresh": { "ref": "a" } },

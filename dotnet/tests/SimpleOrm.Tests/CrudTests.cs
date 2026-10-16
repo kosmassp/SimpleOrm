@@ -22,12 +22,14 @@ public sealed class CrudTests(SqliteFixture fixture)
         var ada = await TestDb.InsertUserAsync(db, "Ada", "ada@example.com");
 
         ada.Name = "Ada Lovelace";
-        ada.UpdatedAtUtc = TestDb.SeedTime;
+        ada.UpdatedAtUtc = TestDb.SeedTime;        // the [UpdatedAt] hook overwrites it: the library is the writer (Level 3 M3)
         await db.UpdateAsync(ada, CancellationToken.None);
 
         var loaded = await db.GetAsync<User>(ada.Id, CancellationToken.None);
         Assert.Equal("Ada Lovelace", loaded.Name);
-        Assert.Equal(TestDb.SeedTime, loaded.UpdatedAtUtc);
+        Assert.NotNull(loaded.UpdatedAtUtc);
+        Assert.NotEqual(TestDb.SeedTime, loaded.UpdatedAtUtc);
+        Assert.Equal(ada.UpdatedAtUtc, loaded.UpdatedAtUtc);   // the stamp on the instance is what the row holds
     }
 
     [Fact]

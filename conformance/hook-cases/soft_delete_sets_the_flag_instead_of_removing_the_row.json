@@ -1,0 +1,19 @@
+{
+  "name": "soft_delete_sets_the_flag_instead_of_removing_the_row",
+  "comment": "Role.IsDeleted is [SoftDelete]: a flushed Remove is the column-list update that sets the flag (with the [UpdatedAt] stamp), the instance is forgotten like any deleted row, and reads never filter on the flag — the row comes back flagged.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "Role", "key": 1, "as": "r" } },
+    { "expect": { "value": { "ref": "r", "property": "IsDeleted", "equals": false } } },
+    { "remove": { "ref": "r" } },
+    { "flush": { "expectStatements": [ { "op": "update", "entity": "Role", "columns": ["IsDeleted", "UpdatedAtUtc"] } ],
+                 "expectSummary": { "inserted": 0, "updated": 0, "deleted": 1 } } },
+    { "expect": { "tracked": { "ref": "r", "is": false } } },
+    { "expect": { "value": { "ref": "r", "property": "IsDeleted", "equals": true } } },
+    { "expect": { "count": { "entity": "Role", "equals": 3 } } },
+    { "get": { "entity": "Role", "key": 1, "as": "again" } },
+    { "expect": { "notSame": ["r", "again"] } },
+    { "expect": { "value": { "ref": "again", "property": "IsDeleted", "equals": true } } },
+    { "expect": { "value": { "ref": "again", "property": "UpdatedAtUtc", "equals": "2026-08-29T00:00:00.0000000Z" } } }
+  ]
+}

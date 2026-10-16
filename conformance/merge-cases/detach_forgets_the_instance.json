@@ -1,0 +1,17 @@
+{
+  "name": "detach_forgets_the_instance",
+  "comment": "Detach makes the session forget: the instance keeps its values but is no longer the session's instance for its key — a later read is a fresh one; detaching it again is UOW-001.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "User", "key": 1, "as": "a" } },
+    { "set": { "ref": "a", "property": "Name", "value": "Changed locally" } },
+    { "detach": { "ref": "a" } },
+    { "expect": { "tracked": { "ref": "a", "is": false } } },
+    { "expect": { "value": { "ref": "a", "property": "Name", "equals": "Changed locally" } } },
+    { "get": { "entity": "User", "key": 1, "as": "b" } },
+    { "expect": { "notSame": ["a", "b"] } },
+    { "expect": { "value": { "ref": "b", "property": "Name", "equals": "Ada" } } },
+    { "detach": { "ref": "a" }, "expectError": "UOW-001" },
+    { "update": { "ref": "a" }, "expectError": "UOW-002" }
+  ]
+}

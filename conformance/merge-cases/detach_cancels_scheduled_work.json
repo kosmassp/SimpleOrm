@@ -1,0 +1,22 @@
+{
+  "name": "detach_cancels_scheduled_work",
+  "comment": "Detaching a scheduled insert cancels it (with what its cascade scheduled); detaching an instance scheduled for removal drops the removal and forgets the instance.",
+  "tracking": "tracked",
+  "steps": [
+    { "new": { "entity": "TransactionDetail", "as": "d", "values": { "Description": "Widget", "Quantity": 1, "UnitPrice": "2.50" } } },
+    { "new": { "entity": "Transaction", "as": "t", "values": { "UserId": 1, "Status": "Pending", "Amount": "5" }, "navigations": { "Details": ["d"] } } },
+    { "persist": { "ref": "t" } },
+    { "expect": { "pending": true } },
+    { "detach": { "ref": "t" } },
+    { "expect": { "pending": false } },
+    { "flush": { "expectStatements": [], "expectSummary": { "inserted": 0, "updated": 0, "deleted": 0 } } },
+    { "get": { "entity": "User", "key": 2, "as": "g" } },
+    { "remove": { "ref": "g" } },
+    { "expect": { "pending": true } },
+    { "detach": { "ref": "g" } },
+    { "expect": { "pending": false } },
+    { "expect": { "tracked": { "ref": "g", "is": false } } },
+    { "flush": { "expectStatements": [], "expectSummary": { "inserted": 0, "updated": 0, "deleted": 0 } } },
+    { "expect": { "count": { "entity": "User", "equals": 2 } } }
+  ]
+}

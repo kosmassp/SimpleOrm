@@ -17,6 +17,12 @@ internal sealed class MappedPropertySpec
 
     public bool IsVersion { get; set; }
 
+    /// <summary>The audit role declared by <c>[CreatedAt]</c>/<c>[UpdatedAt]</c> (Level 3 M3).</summary>
+    public AuditRole Audit { get; set; } = AuditRole.None;
+
+    /// <summary>Whether <c>[SoftDelete]</c> names this property as the delete flag (Level 3 M3).</summary>
+    public bool IsSoftDelete { get; set; }
+
     public bool EnumAsInt { get; set; }
 
     public Type? ForeignKeyReferences { get; set; }

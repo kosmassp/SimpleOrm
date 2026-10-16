@@ -43,6 +43,7 @@ these codes.
 | `MAP-023` | malformed mapping declaration: an annotation the language cannot type-check at compile time is unparseable or names an unknown option, token, or member (Go: a malformed `orm` struct tag, an unknown `type=` token, an embedded pointer, a builder naming a field that does not exist); unreachable where annotations are typed (C#, PHP) | ADR-0027 | Go port |
 | `MAP-024` | invalid owned-type declaration: the navigation is not a single class-typed value or has no setter; the owned type is an entity (carries a relation source or index), is not declared owned at class level, has no parameterless constructor, maps no columns, or carries a key, version, generated column, foreign key, relationship, or nested owned type; or an owned type is loaded as if it were an entity | ADR-0030 | L2 exit |
 | `MAP-025` | invalid cascade declaration: `[Cascade]` on a property that is not a `[ManyToOne]`/`[OneToOne]`/`[OneToMany]` navigation — a `[ManyToMany]` navigation cannot cascade (its link rows are entities the unit of work persists explicitly) | ADR-0034 §7c M2 | L3 milestone 2 |
+| `MAP-026` | invalid hook declaration (hooks.md): `[CreatedAt]`/`[UpdatedAt]` on a non-temporal property, `[SoftDelete]` on a non-`bool` or nullable property, a hook on a key, version, or generated column or without `[Column]`, a property carrying more than one hook, or a role declared on more than one property of an entity | ADR-0034 §7c M3 | L3 milestone 3 |
 | `MAP-030` | no conversion or handler between the CLR type and the database value (either direction) | §7.9 | milestone 4 |
 | `MAP-031` | value conversion failed (format, overflow, unknown enum name) | §7.9 | milestone 4 |
 
@@ -129,6 +130,7 @@ these codes.
 | `CRUD-006` | update by column list names a key, version, or database-generated property (never written by an update) | ADR-0028 |
 | `CRUD-007` | update by column list is empty or repeats a property | ADR-0028 |
 | `CRUD-010` | optimistic concurrency conflict (zero rows affected with version column) | §7.16 |
+| `CRUD-012` | a soft delete by key on a versioned entity — the version it does not know cannot be bumped blindly; pass the entity (the version-checked form) | ADR-0034 §7c M3 | L3 milestone 3 |
 
 Codes are append-only: a retired rule keeps its code (marked retired), never reuses it.
 

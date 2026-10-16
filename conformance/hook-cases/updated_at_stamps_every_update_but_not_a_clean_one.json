@@ -1,0 +1,21 @@
+{
+  "name": "updated_at_stamps_every_update_but_not_a_clean_one",
+  "comment": "[UpdatedAt] joins the SET of every write that changes a row — a tracked dirty update, a column-list update — and takes the clock; a clean tracked instance writes nothing and is not stamped.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "User", "key": 1, "as": "a" } },
+    { "update": { "ref": "a", "expectWritten": [] } },
+    { "expect": { "value": { "ref": "a", "property": "UpdatedAtUtc", "equals": null } } },
+    { "set": { "ref": "a", "property": "Name", "value": "Ada Lovelace" } },
+    { "update": { "ref": "a", "expectWritten": ["Name", "UpdatedAtUtc"] } },
+    { "expect": { "value": { "ref": "a", "property": "UpdatedAtUtc", "equals": "2026-08-29T00:00:00.0000000Z" } } },
+    { "expect": { "dirty": { "ref": "a", "properties": [] } } },
+    { "set": { "ref": "a", "property": "UpdatedAtUtc", "value": null } },
+    { "expect": { "dirty": { "ref": "a", "properties": ["UpdatedAtUtc"] } } },
+    { "update": { "ref": "a", "expectWritten": [] } },
+    { "updateOnly": { "ref": "a", "properties": ["DisplayName"] } },
+    { "expect": { "value": { "ref": "a", "property": "UpdatedAtUtc", "equals": "2026-08-29T00:00:00.0000000Z" } } },
+    { "refresh": { "ref": "a" } },
+    { "expect": { "value": { "ref": "a", "property": "UpdatedAtUtc", "equals": "2026-08-29T00:00:00.0000000Z" } } }
+  ]
+}

@@ -6,7 +6,7 @@
     { "get": { "entity": "UserProfile", "key": 1, "as": "p" } },
     { "set": { "ref": "p", "property": "Address.City", "value": "Cambridge" } },
     { "expect": { "dirty": { "ref": "p", "properties": ["Address.City"] } } },
-    { "update": { "ref": "p", "expectWritten": ["Address.City"] } },
+    { "update": { "ref": "p", "expectWritten": ["Address.City", "UpdatedAtUtc"] } },
     { "expect": { "dirty": { "ref": "p", "properties": [] } } }
   ]
 }

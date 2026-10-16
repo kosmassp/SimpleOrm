@@ -14,6 +14,9 @@ namespace SimpleOrm.Tests;
 /// </summary>
 internal static class ConformanceDatabase
 {
+    /// <summary>The fixed session clock every runner uses (spec/hooks.md): what the audit hooks write.</summary>
+    public static readonly DateTime Clock = new(2026, 8, 29, 0, 0, 0, DateTimeKind.Utc);
+
     public static readonly Dictionary<string, Type> EntityTypes = new()
     {
         ["User"] = typeof(User),

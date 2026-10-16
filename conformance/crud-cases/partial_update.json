@@ -7,7 +7,7 @@
     { "op": "update", "from": "a", "columns": ["name"],
       "values": { "name": "Ada Lovelace", "email": "changed@example.com" } },
     { "op": "get", "entity": "User", "key": "$last",
-      "expect": { "values": { "name": "Ada Lovelace", "email": "ada@example.com", "updated_at": null } } },
+      "expect": { "values": { "name": "Ada Lovelace", "email": "ada@example.com", "updated_at": "2026-08-29T00:00:00.0000000Z" } } },
     { "op": "update", "from": "a", "columns": ["id"], "values": {}, "expect": { "error": "CRUD-006" } },
     { "op": "update", "from": "a", "columns": ["nope"], "values": {}, "expect": { "error": "CRUD-005" } },
     { "op": "update", "from": "a", "columns": [], "values": {}, "expect": { "error": "CRUD-007" } },

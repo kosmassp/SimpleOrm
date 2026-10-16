@@ -1,0 +1,17 @@
+{
+  "name": "merge_copies_onto_the_tracked_instance",
+  "comment": "Merge of a detached copy whose key the session tracks: the tracked instance takes the copy's mapped values, becomes dirty where they differed, and is what Merge returns; the copy stays untracked.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "User", "key": 1, "as": "a" } },
+    { "new": { "entity": "User", "as": "copy", "values": { "Id": 1, "Name": "Merged", "Email": "ada@example.com", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "merge": { "ref": "copy", "as": "m" } },
+    { "expect": { "same": ["a", "m"] } },
+    { "expect": { "value": { "ref": "a", "property": "Name", "equals": "Merged" } } },
+    { "expect": { "dirty": { "ref": "a", "properties": ["Name"] } } },
+    { "expect": { "tracked": { "ref": "copy", "is": false } } },
+    { "merge": { "ref": "a", "as": "self" } },
+    { "expect": { "same": ["a", "self"] } },
+    { "flush": { "expectStatements": [ { "op": "update", "entity": "User", "columns": ["Name", "UpdatedAtUtc"] } ], "expectSummary": { "inserted": 0, "updated": 1, "deleted": 0 } } }
+  ]
+}

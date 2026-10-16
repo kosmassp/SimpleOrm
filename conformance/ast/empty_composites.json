@@ -11,12 +11,12 @@
   },
   "expect": {
     "sqlite": {
-      "sql": "select id, role_name, created_at, updated_at from roles where (1 = 1 and 1 = 0 and not 1 = 0)",
+      "sql": "select id, role_name, is_deleted, created_at, updated_at from roles where (1 = 1 and 1 = 0 and not 1 = 0)",
       "parameters": [] },
     "sqlserver": {
-      "sql": "select [id], [role_name], [created_at], [updated_at] from [roles] where (1 = 1 and 1 = 0 and not 1 = 0)",
+      "sql": "select [id], [role_name], [is_deleted], [created_at], [updated_at] from [roles] where (1 = 1 and 1 = 0 and not 1 = 0)",
       "parameters": [] },
     "postgres": {
-      "sql": "select \"id\", \"role_name\", \"created_at\", \"updated_at\" from \"roles\" where (1 = 1 and 1 = 0 and not 1 = 0)",
+      "sql": "select \"id\", \"role_name\", \"is_deleted\", \"created_at\", \"updated_at\" from \"roles\" where (1 = 1 and 1 = 0 and not 1 = 0)",
       "parameters": [] } }
 }

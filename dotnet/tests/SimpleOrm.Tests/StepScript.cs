@@ -47,6 +47,10 @@ internal sealed class StepScript(Db db, RecordingDialect dialect, string databas
             {
                 actualError = exception.Code;
             }
+            catch (ConcurrencyException exception)
+            {
+                actualError = exception.Code;
+            }
 
             Assert.Equal(expectedError, actualError);
         }
@@ -151,6 +155,15 @@ internal sealed class StepScript(Db db, RecordingDialect dialect, string databas
         {
             db.Remove(Resolve(remove.GetProperty("ref").GetString()!));
         }
+        else if (step.TryGetProperty("detach", out var detach))
+        {
+            db.Detach(Resolve(detach.GetProperty("ref").GetString()!));
+        }
+        else if (step.TryGetProperty("merge", out var merge))
+        {
+            var detached = Resolve(merge.GetProperty("ref").GetString()!);
+            _refs[merge.GetProperty("as").GetString()!] = await InvokeWithResultAsync(nameof(Db.MergeAsync), detached.GetType(), detached);
+        }
         else if (step.TryGetProperty("flush", out var flush))
         {
             var summary = await db.FlushAsync(CancellationToken.None);
@@ -225,7 +238,14 @@ internal sealed class StepScript(Db db, RecordingDialect dialect, string databas
             var property = db.Maps.Load(entity.GetType()).Properties.Single(p => p.PropertyName == value.GetProperty("property").GetString());
             var expected = value.GetProperty("equals");
             Assert.Equal(
-                expected.ValueKind == JsonValueKind.Number ? expected.GetRawText() : expected.GetString(),
+                expected.ValueKind switch
+                {
+                    JsonValueKind.Number => expected.GetRawText(),
+                    JsonValueKind.True => "true",
+                    JsonValueKind.False => "false",
+                    JsonValueKind.Null => null,
+                    _ => expected.GetString(),
+                },
                 ConformanceCrudTests.Encode(property.GetValue(entity)));
         }
         else if (expect.TryGetProperty("sameValue", out var sameValue))

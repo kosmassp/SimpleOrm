@@ -142,11 +142,13 @@ public sealed partial class Db
                 var entry = _trackedByInstance[entity];
                 var snapshotBefore = (object?[])entry.Snapshot.Clone();
                 var versionBefore = map.VersionProperty?.GetValue(entity);
+                var stampBefore = map.UpdatedAtProperty?.GetValue(entity);
                 await InvokeWriteAsync(nameof(UpdateAsync), map, entity, ct).ConfigureAwait(false);
                 undo.Add(() =>
                 {
                     entry.Snapshot = snapshotBefore;
                     map.VersionProperty?.SetValue(entity, versionBefore);
+                    map.UpdatedAtProperty?.SetValue(entity, stampBefore);
                 });
             }
 
@@ -154,8 +156,18 @@ public sealed partial class Db
             {
                 var map = Maps.Load(entity.GetType());
                 var snapshotBefore = _trackedByInstance[entity].Snapshot;
+                var versionBefore = map.VersionProperty?.GetValue(entity);
+                var stampBefore = map.UpdatedAtProperty?.GetValue(entity);
+                var flagBefore = map.SoftDeleteProperty?.GetValue(entity);
                 await InvokeWriteAsync(nameof(DeleteAsync), map, entity, ct).ConfigureAwait(false);
-                undo.Add(() => Register(map, map.GetKeyValues(entity), entity, snapshotBefore));
+                undo.Add(() =>
+                {
+                    // A soft delete wrote the flag, the stamp, and the version onto the instance.
+                    map.VersionProperty?.SetValue(entity, versionBefore);
+                    map.UpdatedAtProperty?.SetValue(entity, stampBefore);
+                    map.SoftDeleteProperty?.SetValue(entity, flagBefore);
+                    Register(map, map.GetKeyValues(entity), entity, snapshotBefore);
+                });
             }
 
             if (scope is not null)

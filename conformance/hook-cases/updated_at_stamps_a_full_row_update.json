@@ -1,0 +1,14 @@
+{
+  "name": "updated_at_stamps_a_full_row_update",
+  "comment": "An untracked session's full-row update stamps [UpdatedAt] too — the library is the column's writer, a caller's value is overwritten — and the stamp is what the row holds.",
+  "tracking": "untracked",
+  "steps": [
+    { "get": { "entity": "User", "key": 1, "as": "a" } },
+    { "set": { "ref": "a", "property": "Name", "value": "Ada Lovelace" } },
+    { "set": { "ref": "a", "property": "UpdatedAtUtc", "value": "2020-01-01T00:00:00.0000000Z" } },
+    { "update": { "ref": "a", "expectWritten": "all" } },
+    { "expect": { "value": { "ref": "a", "property": "UpdatedAtUtc", "equals": "2026-08-29T00:00:00.0000000Z" } } },
+    { "refresh": { "ref": "a" } },
+    { "expect": { "value": { "ref": "a", "property": "UpdatedAtUtc", "equals": "2026-08-29T00:00:00.0000000Z" } } }
+  ]
+}

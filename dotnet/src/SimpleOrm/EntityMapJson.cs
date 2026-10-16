@@ -186,6 +186,17 @@ public static class EntityMapJson
                 writer.WriteBoolean("generated", true);
             }
 
+            // Declared hooks (Level 3 M3): written only when declared.
+            if (property.Audit != AuditRole.None)
+            {
+                writer.WriteString("audit", property.Audit == AuditRole.CreatedAt ? "created_at" : "updated_at");
+            }
+
+            if (property.IsSoftDelete)
+            {
+                writer.WriteBoolean("softDelete", true);
+            }
+
             writer.WriteEndObject();
         }
 

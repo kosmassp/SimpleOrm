@@ -449,6 +449,7 @@ public sealed partial class Db : IAsyncDisposable
 
         CheckNavigationConsistency(map, entity);
         CheckIdentity(map, entity);
+        FillCreatedAt(map, entity);
 
         if (map.KeyStrategy == KeyStrategy.ClientGuid)
         {
@@ -508,23 +509,28 @@ public sealed partial class Db : IAsyncDisposable
             // (Level 3 M1): the ADR-0028 column-list path, and no statement at
             // all when nothing changed. Key/version/generated columns never
             // appear in a SET — a changed key is UOW-002 above.
+            // The [UpdatedAt] stamp is never what makes an instance dirty: a clean
+            // instance writes nothing; a dirty one carries the stamp in its SET.
             var dirty = DirtyProperties(map, entity, tracked.Snapshot)
-                .Where(p => !p.IsKey && !p.IsVersion && !p.IsGenerated)
+                .Where(p => !p.IsKey && !p.IsVersion && !p.IsGenerated && p.Audit != AuditRole.UpdatedAt)
                 .ToList();
             if (dirty.Count == 0)
             {
                 return;
             }
 
+            StampUpdatedAt(map, entity);
+            var set = WithUpdatedAt(map, dirty);
             await ExecuteUpdateAsync(
-                map, entity, Options.Dialect.UpdateOnlySql(map, dirty),
-                BoundForUpdate(map, dirty), ct).ConfigureAwait(false);
-            TrackWrittenColumns(tracked, map, dirty);
+                map, entity, Options.Dialect.UpdateOnlySql(map, set),
+                BoundForUpdate(map, set), ct).ConfigureAwait(false);
+            TrackWrittenColumns(tracked, map, set);
             return;
         }
 
         // Bind SET values, key values, and the current version for the WHERE;
         // database-generated non-key columns are never written.
+        StampUpdatedAt(map, entity);
         await ExecuteUpdateAsync(
             map, entity, Options.Dialect.UpdateSql(map),
             map.Properties.Where(p => p.IsKey || p.IsVersion || !p.IsGenerated), ct).ConfigureAwait(false);
@@ -552,11 +558,12 @@ public sealed partial class Db : IAsyncDisposable
         where TEntity : class
     {
         var map = RequireWritableKeyed<TEntity>();
-        var set = ResolveUpdateList(map, properties);
+        var set = WithUpdatedAt(map, ResolveUpdateList(map, properties));
         var listed = new HashSet<string>(set.Select(p => p.PropertyName), StringComparer.Ordinal);
         CheckNavigationConsistency(map, entity, listed.Contains);
         var tracked = CheckIdentity(map, entity);
 
+        StampUpdatedAt(map, entity);
         await ExecuteUpdateAsync(
             map, entity, Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set), ct).ConfigureAwait(false);
         TrackWrittenColumns(tracked, map, set);
@@ -669,11 +676,17 @@ public sealed partial class Db : IAsyncDisposable
         where TEntity : class
     {
         var map = RequireWritableKeyed<TEntity>();
+        var byEntity = keyOrEntity is TEntity;
+        if (map.SoftDeleteProperty is not null)
+        {
+            // A declared soft delete is an update that sets the flag (Level 3 M3).
+            await SoftDeleteAsync(map, keyOrEntity, byEntity, ct).ConfigureAwait(false);
+            return;
+        }
 
         using var command = _connection.CreateCommand();
         command.Transaction = _transaction;
 
-        var byEntity = keyOrEntity is TEntity;
         var checkVersion = byEntity && map.VersionProperty is not null;
         command.CommandText = Options.Dialect.DeleteSql(map, checkVersion);
 

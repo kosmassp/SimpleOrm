@@ -1,0 +1,18 @@
+{
+  "name": "soft_delete_by_key_and_by_entity",
+  "comment": "Both immediate delete forms set the flag on a soft-delete entity (Role has no version column, so the by-key form is allowed); a missing row is CRUD-001 as for a hard delete; the flagged rows stay readable.",
+  "tracking": "untracked",
+  "steps": [
+    { "delete": { "entity": "Role", "key": 2 } },
+    { "get": { "entity": "Role", "key": 2, "as": "byKey" } },
+    { "expect": { "value": { "ref": "byKey", "property": "IsDeleted", "equals": true } } },
+    { "get": { "entity": "Role", "key": 10, "as": "auditor" } },
+    { "delete": { "ref": "auditor" } },
+    { "expect": { "value": { "ref": "auditor", "property": "IsDeleted", "equals": true } } },
+    { "get": { "entity": "Role", "key": 10, "as": "stored" } },
+    { "expect": { "value": { "ref": "stored", "property": "IsDeleted", "equals": true } } },
+    { "expect": { "value": { "ref": "stored", "property": "UpdatedAtUtc", "equals": "2026-08-29T00:00:00.0000000Z" } } },
+    { "delete": { "entity": "Role", "key": 99 }, "expectError": "CRUD-001" },
+    { "expect": { "count": { "entity": "Role", "equals": 3 } } }
+  ]
+}

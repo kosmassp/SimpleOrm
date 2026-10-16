@@ -241,3 +241,11 @@ normalized) to their name; a procedure source carries name, `"sql"`, and
 carried separately, never in the token. Types outside the vocabulary export as
 `clr:<full name>` (implementation-specific; requires a registered handler and is
 not portable — conformance entities must not use them).
+
+### Declared hooks (Level 3 M3, hooks.md)
+
+A column may carry one hook, exported only when declared: `"audit":
+"created_at"` or `"audit": "updated_at"` (the session fills or stamps it
+with its clock), and `"softDelete": true` (a delete sets it). Declaration
+errors are `MAP-026`. The fixture declares both audit roles on every
+`BaseModel` table and the soft-delete flag on `roles.is_deleted` (V0011).

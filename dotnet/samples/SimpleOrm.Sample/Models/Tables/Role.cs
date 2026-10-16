@@ -14,6 +14,11 @@ public sealed class Role : BaseModel
     [Column("role_name")]
     public required string Name { get; set; }
 
+    /// <summary>The soft-delete flag (Level 3 M3, migration V0011): a delete sets it; reads filter on it explicitly, never implicitly.</summary>
+    [Column("is_deleted")]
+    [SoftDelete]
+    public bool IsDeleted { get; set; }
+
     /// <summary>The reverse side of <see cref="User.Roles"/>, through the same link (ADR-0019).</summary>
     [ManyToMany(typeof(UserRole))]
     public IReadOnlyList<User> Users { get; private set; } = [];

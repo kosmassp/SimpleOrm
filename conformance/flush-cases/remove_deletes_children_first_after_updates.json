@@ -13,7 +13,7 @@
     { "set": { "ref": "u", "property": "Name", "value": "Ada Lovelace" } },
     { "remove": { "ref": "t" } },
     { "expect": { "pending": true } },
-    { "flush": { "expectStatements": [ { "op": "update", "entity": "User", "columns": ["Name"] }, { "op": "delete", "entity": "TransactionDetail" }, { "op": "delete", "entity": "Transaction" } ],
+    { "flush": { "expectStatements": [ { "op": "update", "entity": "User", "columns": ["Name", "UpdatedAtUtc"] }, { "op": "delete", "entity": "TransactionDetail" }, { "op": "delete", "entity": "Transaction" } ],
                  "expectSummary": { "inserted": 0, "updated": 1, "deleted": 2 } } },
     { "expect": { "tracked": { "ref": "t", "is": false } } },
     { "expect": { "tracked": { "ref": "d", "is": false } } },

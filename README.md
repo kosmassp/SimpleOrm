@@ -58,6 +58,17 @@ var summary = await tracked.FlushAsync(ct);           // inserts in FK order (ge
 // UOW-004: a cycle among scheduled instances; UOW-005: a remove cascading over a never-loaded collection
 // (nothing loads implicitly); UOW-006: Persist of an instance scheduled for removal
 
+// Detach / merge (Level 3 M3): the session forgets an instance, or takes a detached copy's values back
+tracked.Detach(order);                                // no longer the session's instance; scheduled work cancelled
+var managed = await tracked.MergeAsync(detachedCopy, ct);   // the tracked instance (or the row read now) takes the copy's
+                                                      // values, version included — a stale copy still fails CRUD-010
+
+// Declared hooks (Level 3 M3, spec/hooks.md) — metadata the session acts on, never callbacks
+// [CreatedAt]  filled with DbOptions.Clock on insert when unset (a caller's value is kept)
+// [UpdatedAt]  stamped on every write that changes a row (joins a column-list SET; never on a clean update)
+// [SoftDelete] a delete becomes the update that sets the flag; reads never filter on it — write the criteria yourself
+var live = await db.Query<Role>().Where(Criteria.Eq(nameof(Role.IsDeleted), false)).ToListAsync(ct);
+
 // Owned value types (ADR-0030): [Owned] class + [Owned] navigation → address_* columns of user_profiles,
 // one flat EntityMap, dotted paths in criteria and column lists; an all-NULL row reads back as null
 var inParis = await db.Query<UserProfile>().Where(Criteria.Eq("Address.City", "Paris")).ToListAsync(ct);

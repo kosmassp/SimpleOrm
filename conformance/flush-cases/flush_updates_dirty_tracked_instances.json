@@ -8,7 +8,7 @@
     { "get": { "entity": "User", "key": 1, "as": "u" } },
     { "set": { "ref": "u", "property": "Name", "value": "Ada Lovelace" } },
     { "expect": { "pending": false } },
-    { "flush": { "expectStatements": [ { "op": "update", "entity": "User", "columns": ["Name"] }, { "op": "update", "entity": "Transaction", "columns": ["Note"] } ],
+    { "flush": { "expectStatements": [ { "op": "update", "entity": "User", "columns": ["Name", "UpdatedAtUtc"] }, { "op": "update", "entity": "Transaction", "columns": ["Note", "UpdatedAtUtc"] } ],
                  "expectSummary": { "inserted": 0, "updated": 2, "deleted": 0 } } },
     { "expect": { "dirty": { "ref": "t", "properties": [] } } },
     { "expect": { "dirty": { "ref": "u", "properties": [] } } },

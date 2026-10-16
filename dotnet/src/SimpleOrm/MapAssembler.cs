@@ -67,7 +67,9 @@ internal static class MapAssembler
                 spec.IsVersion,
                 spec.EnumAsInt,
                 spec.ForeignKeyReferences,
-                owner);
+                owner,
+                spec.Audit,
+                spec.IsSoftDelete);
             owner?.AddMember(map);
             properties.Add(map);
             byProperty[propertyName] = map;

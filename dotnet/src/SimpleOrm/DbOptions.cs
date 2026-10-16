@@ -18,6 +18,14 @@ public sealed class DbOptions
     /// Level 0–2 behaviour is unchanged until a session opts in.
     /// </summary>
     public TrackingMode Tracking { get; init; } = TrackingMode.Untracked;
+
+    /// <summary>
+    /// The session clock (Level 3 M3, spec/hooks.md): what <c>[CreatedAt]</c> fills
+    /// and <c>[UpdatedAt]</c> stamps. Must return UTC (<c>DateTimeKind.Utc</c>,
+    /// §7.9); <c>DateTime.UtcNow</c> by default, fixed by tests and the
+    /// conformance runners.
+    /// </summary>
+    public Func<DateTime> Clock { get; init; } = () => DateTime.UtcNow;
 }
 
 /// <summary>

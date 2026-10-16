@@ -1,0 +1,16 @@
+{
+  "name": "created_at_fills_when_unset_and_keeps_a_value",
+  "comment": "[CreatedAt] takes the session clock (fixed at 2026-08-29T00:00:00Z) on insert only when unset; a caller's value is kept; [UpdatedAt] stays null on insert. Hooks apply in every tracking mode.",
+  "tracking": "untracked",
+  "steps": [
+    { "new": { "entity": "User", "as": "fresh", "values": { "Name": "Linus", "Email": "linus@example.com" } } },
+    { "insert": { "ref": "fresh" } },
+    { "expect": { "value": { "ref": "fresh", "property": "CreatedAtUtc", "equals": "2026-08-29T00:00:00.0000000Z" } } },
+    { "expect": { "value": { "ref": "fresh", "property": "UpdatedAtUtc", "equals": null } } },
+    { "new": { "entity": "User", "as": "dated", "values": { "Name": "Dennis", "Email": "dennis@example.com", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "insert": { "ref": "dated" } },
+    { "expect": { "value": { "ref": "dated", "property": "CreatedAtUtc", "equals": "2026-08-28T09:30:00.0000000Z" } } },
+    { "get": { "entity": "User", "keyOf": "fresh", "as": "stored" } },
+    { "expect": { "value": { "ref": "stored", "property": "CreatedAtUtc", "equals": "2026-08-29T00:00:00.0000000Z" } } }
+  ]
+}

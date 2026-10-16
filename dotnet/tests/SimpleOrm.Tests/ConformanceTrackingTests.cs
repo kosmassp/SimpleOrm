@@ -45,7 +45,9 @@ public sealed class ConformanceTrackingTests
             // No pooling: the file is deleted right after, and a pool shared with the
             // other runners (which clear it) is one more thing to race against.
             await using (var db = await Db.OpenAsync(
-                $"Data Source={path};Pooling=False", new DbOptions { Dialect = dialect, Tracking = mode }, CancellationToken.None))
+                $"Data Source={path};Pooling=False",
+                new DbOptions { Dialect = dialect, Tracking = mode, Clock = () => ConformanceDatabase.Clock },
+                CancellationToken.None))
             {
                 await new StepScript(db, dialect, path).RunAsync(root);
             }

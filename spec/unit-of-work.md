@@ -205,3 +205,28 @@ row count, read outside the session so a rolled-back flush is visible).
   update's `columns` compare as the property list in metadata order (a
   runner may compare as a set, as for `expectWritten`); `entity` is the
   short type name as the reference declares it.
+
+## Detach and merge (Level 3 M3)
+
+The simple rules, no deep graph merge; both need a tracked session
+(`UOW-003`).
+
+- **`Detach(entity)`** makes the session forget the instance: it is no
+  longer the session's instance for its key (a later read materializes a
+  fresh one), and anything scheduled for it is cancelled — an insert with
+  the inserts its persist cascade scheduled, a removal dropped. The instance
+  keeps its values. An instance the session neither tracks nor has scheduled
+  is `UOW-001`.
+- **`Merge(detached)`** brings a detached copy's state back and **returns the
+  session's instance** for its key: the tracked one when the key is known,
+  otherwise the row read now (one visible round trip; no row is `CRUD-001`).
+  Every mapped non-key value of the copy is written onto that instance —
+  the version included, so a stale copy still fails its next update's
+  version check (`CRUD-010`) — which becomes dirty where the values
+  differed. Navigations are not merged. The copy itself stays untracked. An
+  instance without a complete key is `CRUD-002`: new instances are
+  persisted, not merged. Merging the session's own instance is a no-op that
+  returns it.
+
+Conformance: `merge-cases/`, the same step vocabulary plus `detach` (`ref`)
+and `merge` (`ref`, `as` — the returned instance).

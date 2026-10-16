@@ -214,7 +214,9 @@ session.
 Nothing here adds a round trip: tracking only decides which instance a read
 returns and which columns an update writes. The unit of work — scheduling
 and a single ordered flush, with declared cascades — builds on it in
-unit-of-work.md (M2); detach and merge are later milestones (§7c).
+unit-of-work.md (M2), detach and merge beside it (M3); the declared hooks —
+audit columns and soft delete, written with `DbOptions.Clock` — are in
+hooks.md (M3).
 
 ### Conformance: `tracking-cases/`
 

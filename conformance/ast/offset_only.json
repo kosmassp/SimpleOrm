@@ -5,12 +5,12 @@
   "select": { "offset": 4 },
   "expect": {
     "sqlite": {
-      "sql": "select id, role_name, created_at, updated_at from roles limit -1 offset @c0",
+      "sql": "select id, role_name, is_deleted, created_at, updated_at from roles limit -1 offset @c0",
       "parameters": [4] },
     "sqlserver": {
-      "sql": "select [id], [role_name], [created_at], [updated_at] from [roles] order by (select null) offset @c0 rows",
+      "sql": "select [id], [role_name], [is_deleted], [created_at], [updated_at] from [roles] order by (select null) offset @c0 rows",
       "parameters": [4] },
     "postgres": {
-      "sql": "select \"id\", \"role_name\", \"created_at\", \"updated_at\" from \"roles\" offset @c0",
+      "sql": "select \"id\", \"role_name\", \"is_deleted\", \"created_at\", \"updated_at\" from \"roles\" offset @c0",
       "parameters": [4] } }
 }

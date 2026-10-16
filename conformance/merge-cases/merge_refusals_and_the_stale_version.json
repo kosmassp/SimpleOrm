@@ -1,0 +1,23 @@
+{
+  "name": "merge_refusals_and_the_stale_version",
+  "comment": "A copy with no row is CRUD-001, one with an unset (generated) key is CRUD-002 — new instances are persisted, not merged. A stale copy's version is merged too, so its next update fails the version check (CRUD-010) instead of overwriting newer data.",
+  "tracking": "tracked",
+  "steps": [
+    { "new": { "entity": "User", "as": "ghost", "values": { "Id": 99, "Name": "Nobody", "Email": "nobody@example.com", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "merge": { "ref": "ghost", "as": "m1" }, "expectError": "CRUD-001" },
+    { "new": { "entity": "User", "as": "unsaved", "values": { "Name": "New", "Email": "new@example.com" } } },
+    { "merge": { "ref": "unsaved", "as": "m2" }, "expectError": "CRUD-002" },
+    { "get": { "entity": "Transaction", "key": 1, "as": "t" } },
+    { "set": { "ref": "t", "property": "Note", "value": "fresh" } },
+    { "update": { "ref": "t" } },
+    { "expect": { "value": { "ref": "t", "property": "Version", "equals": 1 } } },
+    { "new": { "entity": "Transaction", "as": "stale", "values": { "Id": 1, "UserId": 1, "Status": "Completed", "Amount": "19.99", "Version": 0, "Note": "stale", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "merge": { "ref": "stale", "as": "m3" } },
+    { "expect": { "same": ["t", "m3"] } },
+    { "expect": { "value": { "ref": "t", "property": "Version", "equals": 0 } } },
+    { "update": { "ref": "t" }, "expectError": "CRUD-010" },
+    { "refresh": { "ref": "t" } },
+    { "expect": { "value": { "ref": "t", "property": "Note", "equals": "fresh" } } },
+    { "expect": { "value": { "ref": "t", "property": "Version", "equals": 1 } } }
+  ]
+}

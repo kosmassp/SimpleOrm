@@ -141,6 +141,14 @@ public sealed class RelationshipMap
     public IReadOnlyList<string> LinkForeignKeysToTarget { get; }
 }
 
+/// <summary>The declared audit hooks (Level 3 M3, spec/hooks.md): <c>[CreatedAt]</c> fills on insert when unset, <c>[UpdatedAt]</c> stamps on every update.</summary>
+public enum AuditRole
+{
+    None,
+    CreatedAt,
+    UpdatedAt,
+}
+
 /// <summary>One mapped property ↔ column pair.</summary>
 public sealed class PropertyMap
 {
@@ -153,7 +161,9 @@ public sealed class PropertyMap
         bool isVersion,
         bool enumAsInt,
         Type? foreignKeyReferences,
-        OwnedMap? owner = null)
+        OwnedMap? owner = null,
+        AuditRole audit = AuditRole.None,
+        bool isSoftDelete = false)
     {
         Property = property;
         ColumnName = columnName;
@@ -164,7 +174,15 @@ public sealed class PropertyMap
         EnumAsInt = enumAsInt;
         ForeignKeyReferences = foreignKeyReferences;
         Owner = owner;
+        Audit = audit;
+        IsSoftDelete = isSoftDelete;
     }
+
+    /// <summary>The audit hook this column carries (Level 3 M3, spec/hooks.md): filled on insert, or stamped on every update.</summary>
+    public AuditRole Audit { get; }
+
+    /// <summary>Whether this column is the soft-delete flag (Level 3 M3): a delete sets it instead of removing the row.</summary>
+    public bool IsSoftDelete { get; }
 
     /// <summary>The member itself — on the entity, or on the owned type when <see cref="Owner"/> is set.</summary>
     public PropertyInfo Property { get; }
@@ -321,6 +339,15 @@ public sealed class EntityMap
     public KeyStrategy KeyStrategy { get; }
 
     public PropertyMap? VersionProperty { get; }
+
+    /// <summary>The <c>[CreatedAt]</c> column, if declared (Level 3 M3).</summary>
+    public PropertyMap? CreatedAtProperty => Properties.FirstOrDefault(p => p.Audit == AuditRole.CreatedAt);
+
+    /// <summary>The <c>[UpdatedAt]</c> column, if declared (Level 3 M3).</summary>
+    public PropertyMap? UpdatedAtProperty => Properties.FirstOrDefault(p => p.Audit == AuditRole.UpdatedAt);
+
+    /// <summary>The <c>[SoftDelete]</c> flag, if declared (Level 3 M3): a delete becomes an update setting it.</summary>
+    public PropertyMap? SoftDeleteProperty => Properties.FirstOrDefault(p => p.IsSoftDelete);
 
     public IReadOnlyList<EntityIndex> Indexes { get; }
 

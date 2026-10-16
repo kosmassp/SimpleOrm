@@ -47,7 +47,7 @@ public sealed class ConformanceCrudTests
         try
         {
             await using var db = await Db.OpenAsync(
-                $"Data Source={path}", new DbOptions { Dialect = new SqliteDialect() }, CancellationToken.None);
+                $"Data Source={path}", new DbOptions { Dialect = new SqliteDialect(), Clock = () => ConformanceDatabase.Clock }, CancellationToken.None);
             await new MigrationRunner(db, typeof(User).Assembly, "SimpleOrm.Sample.Migrations")
                 .MigrateAsync(CancellationToken.None);
 

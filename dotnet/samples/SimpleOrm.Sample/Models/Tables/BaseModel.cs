@@ -11,9 +11,11 @@ public abstract class BaseModel
 {
     /// <summary>ISO-8601 UTC TEXT in the database (CLAUDE.md §7.9).</summary>
     [Column("created_at")]
+    [CreatedAt]
     public DateTime CreatedAtUtc { get; set; }
 
     /// <summary>Null until the row is first updated.</summary>
     [Column("updated_at")]
+    [UpdatedAt]
     public DateTime? UpdatedAtUtc { get; set; }
 }

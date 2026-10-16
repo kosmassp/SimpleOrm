@@ -1,0 +1,16 @@
+{
+  "name": "merge_reads_the_row_when_the_key_is_unknown",
+  "comment": "Merge of a copy whose key the session does not track reads the row now (one visible round trip), tracks it, copies the values onto it, and returns it; a later key read is that instance.",
+  "tracking": "tracked",
+  "steps": [
+    { "new": { "entity": "User", "as": "copy", "values": { "Id": 2, "Name": "Grace Hopper", "Email": "grace@example.com", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "merge": { "ref": "copy", "as": "m" } },
+    { "expect": { "tracked": { "ref": "m", "is": true } } },
+    { "expect": { "notSame": ["copy", "m"] } },
+    { "expect": { "value": { "ref": "m", "property": "Name", "equals": "Grace Hopper" } } },
+    { "expect": { "dirty": { "ref": "m", "properties": ["Name"] } } },
+    { "get": { "entity": "User", "key": 2, "as": "g" } },
+    { "expect": { "same": ["m", "g"] } },
+    { "flush": { "expectStatements": [ { "op": "update", "entity": "User", "columns": ["Name", "UpdatedAtUtc"] } ], "expectSummary": { "inserted": 0, "updated": 1, "deleted": 0 } } }
+  ]
+}

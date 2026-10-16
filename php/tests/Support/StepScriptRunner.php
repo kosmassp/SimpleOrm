@@ -289,8 +289,8 @@ final class StepScriptRunner
      */
     private static function assertStatements(array $rendered, array $expected, string $context): void
     {
-        // SPEC-GAP: flush-cases fix the statement order but not the order inside an update's `columns` list; compared as sets
-        // (as `expectWritten` is). `entity` is the short class name; `count` reads the relation through a second connection.
+        // An update's `columns` compare as a set, as `expectWritten` does (spec/unit-of-work.md Clarifications, ADR-0036);
+        // `entity` is the short class name; `count` reads the relation through a second connection.
         $normalize = static function (array $statement): string {
             $columns = $statement['columns'] ?? null;
             if (is_array($columns)) {

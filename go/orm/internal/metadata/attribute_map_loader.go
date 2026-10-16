@@ -359,9 +359,11 @@ func parseFieldTag(tagValue string, fieldTarget string, errs *errorCollector) fi
 			prefix := token[len("owned="):]
 			decl.isOwned = true
 			decl.ownedPrefix = &prefix
-		// SPEC-GAP: the declaration is a tag option here (`cascade=persist+remove`), the Go spelling of
-		// [Cascade(CascadeOperations.Persist | Remove)]; an unknown token is MAP-023 (a malformed tag, as for
-		// every other option) rather than MAP-025, and an empty `cascade=` is the same.
+		// The declaration is a tag option (`cascade=persist+remove`, CODING-STANDARD §10): one naming no
+		// operation (`cascade`, `cascade=`) is MAP-025 (spec/unit-of-work.md Clarifications, ADR-0036); an
+		// unknown token is MAP-023, the malformed-tag rule every other option follows.
+		case token == "cascade" || token == "cascade=":
+			errs.add("MAP-025", fieldTarget, "cascade names no operation; write cascade=persist, cascade=remove, or cascade=persist+remove")
 		case strings.HasPrefix(token, "cascade="):
 			operations, ok := core.ParseCascadeOperations(token[len("cascade="):])
 			if !ok {
@@ -458,8 +460,8 @@ func readField(
 		readRelationshipField(entityType, df, fieldTarget, rel, errs, relationships)
 		return
 	}
-	// SPEC-GAP: MAP-025 also covers a cascade beside column/ignore, on an owned navigation, and on an
-	// owned type's member — everything that is not a many_to_one/one_to_one/one_to_many navigation.
+	// MAP-025 covers a cascade beside column/ignore, on an owned navigation, and on an owned type's member —
+	// everything that is not a many_to_one/one_to_one/one_to_many navigation (spec/unit-of-work.md Clarifications).
 	if decl.hasCascade {
 		errs.add("MAP-025", fieldTarget, "cascade is valid only on a many_to_one, one_to_one, or one_to_many navigation")
 		return

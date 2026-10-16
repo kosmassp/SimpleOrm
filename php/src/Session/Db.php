@@ -568,17 +568,22 @@ final class Db
      * Writes the schedule in one explicit step: inserts in foreign-key order with generated keys flowing
      * into dependents, then every dirty tracked instance as a column-list update, then deletes children
      * first — through this session's own `insert`/`update`/`delete`, inside the active transaction, else
-     * one the flush owns (rolled back on failure; the schedule is kept). `UOW-004` for a cycle, before any SQL.
+     * one the flush owns (rolled back on failure). A failed flush keeps the schedule and undoes its in-memory
+     * effects (keys, tracking, snapshots, versions), so it flushes again as it was. `UOW-004` for a cycle,
+     * before any SQL.
      */
     public function flush(): FlushSummary
     {
         return $this->unitOfWork()->flush();
     }
 
-    /** Whether anything is scheduled (dirty tracked instances flush regardless). `UOW-003` in an untracked session. */
+    /**
+     * Whether anything is scheduled (dirty tracked instances flush regardless). A question, not a unit-of-work
+     * call: false on an untracked session, never `UOW-003` (spec/unit-of-work.md Clarifications, ADR-0036).
+     */
     public function hasPendingWork(): bool
     {
-        return $this->unitOfWork()->hasPendingWork();
+        return $this->unitOfWork?->hasPendingWork() ?? false;
     }
 
     private function unitOfWork(): DbUnitOfWork

@@ -220,12 +220,22 @@ final class DbTracking
         return null;
     }
 
-    /** Registers (or re-registers) an instance under its current key with a fresh snapshot — after an insert, or a full-row update of an unknown instance. A key with a null part is never tracked. */
+    /**
+     * Registers (or re-registers) an instance under its current key with a fresh snapshot — after an insert, or a
+     * full-row update of an unknown instance. A key with a null part is never tracked. A re-registration takes a
+     * new position in the registration order (spec/unit-of-work.md Clarifications, ADR-0036: latest registration);
+     * a re-snapshot keeps it.
+     */
     public function register(EntityMap $map, object $entity): void
     {
         $tuple = new KeyTuple($map->getKeyValues($entity));
         if ($tuple->hasNullPart()) {
             return;
+        }
+
+        $previous = $this->byInstance[spl_object_id($entity)] ?? null;
+        if ($previous !== null) {
+            $this->remove($previous);
         }
 
         $this->store(new TrackedInstance($entity, $map, $tuple->token(), $this->snapshot($map, $entity)));
@@ -278,6 +288,24 @@ final class DbTracking
                 $this->remove($entry);
             }
         }
+    }
+
+    /**
+     * A restore point for a failed flush (spec/unit-of-work.md Clarifications, ADR-0036): the identity map and
+     * the snapshots as they are now. Entries are immutable and arrays copy on write, so holding the two maps
+     * is the whole undo of what the flush's statements register, re-snapshot, and forget.
+     *
+     * @return array{0: array<class-string, array<string, TrackedInstance>>, 1: array<int, TrackedInstance>}
+     */
+    public function checkpoint(): array
+    {
+        return [$this->byKey, $this->byInstance];
+    }
+
+    /** @param array{0: array<class-string, array<string, TrackedInstance>>, 1: array<int, TrackedInstance>} $checkpoint */
+    public function rollbackTo(array $checkpoint): void
+    {
+        [$this->byKey, $this->byInstance] = $checkpoint;
     }
 
     /** Drops everything: the session closed. */

@@ -12,14 +12,16 @@ use SimpleOrm\Metadata\RelationshipMap;
 use SplMinHeap;
 use Throwable;
 
+use function array_fill_keys;
+use function array_filter;
 use function array_key_exists;
 use function array_keys;
 use function array_map;
-use function array_shift;
+use function array_values;
 use function count;
+use function implode;
 use function in_array;
 use function is_array;
-use function max;
 use function spl_object_id;
 use function usort;
 
@@ -38,7 +40,8 @@ use function usort;
  * `ReflectionProperty::isInitialized()` so it never fires the `REL-004` guard.
  *
  * A `persist`/`remove` is planned on a clone of the schedule and swapped in only when its whole
- * cascade succeeded: a refusal anywhere schedules nothing.
+ * cascade succeeded: a refusal anywhere schedules nothing. A failed flush keeps the schedule and
+ * undoes its in-memory effects through a {@see FlushJournal} (Clarifications, ADR-0036).
  *
  * @internal
  */
@@ -70,8 +73,9 @@ final class DbUnitOfWork
     /**
      * Schedules an insert for an instance the session does not track (a tracked one is already
      * managed: its changes flush as updates) and cascades over the initialized navigations that
-     * declare `persist`. `UOW-006` for an instance scheduled for removal; `CRUD-003`/`CRUD-002` for one
-     * that is not table-backed or keyed.
+     * declare `persist`. The refusals come in the order of spec/unit-of-work.md Clarifications: the
+     * instance's own shape (`CRUD-003`/`CRUD-002`), `UOW-006` for an instance scheduled for removal,
+     * then the cascade — each target checked the same way; a refusal anywhere schedules nothing.
      */
     public function persist(object $entity): void
     {
@@ -84,7 +88,8 @@ final class DbUnitOfWork
     /**
      * Schedules a delete for a tracked instance (`UOW-001` otherwise), cascading over the navigations
      * that declare `remove`; an instance scheduled for insert is cancelled instead (with the inserts its
-     * persist cascade scheduled). A never-loaded collection under a remove cascade is `UOW-005`.
+     * persist cascade scheduled), and one already scheduled for removal is a no-op. A never-loaded
+     * collection under a remove cascade is `UOW-005`.
      */
     public function remove(object $entity): void
     {
@@ -100,8 +105,6 @@ final class DbUnitOfWork
      */
     private function collectPersist(UnitOfWorkSchedule $draft, object $entity, ?object $owner, ?RelationshipMap $via, array &$visited): void
     {
-        // SPEC-GAP: the order of refusals for persist is not stated; assumed CRUD-003/CRUD-002 (the instance's type), then
-        // UOW-006, then the cascade — each cascaded target passes the same checks, and a failure anywhere schedules nothing.
         $map = $this->db->requireWritableKeyed($entity::class);
         if ($draft->isRemovalScheduled($entity)) {
             throw new SimpleOrmException(
@@ -111,10 +114,9 @@ final class DbUnitOfWork
             );
         }
 
-        // SPEC-GAP: a tracked instance schedules nothing (spec), but whether its persist cascade still runs is not
-        // stated. Assumed yes — unit-of-work.md says "a never-loaded collection of a tracked instance cascades
-        // nothing", which implies a loaded one does. A tracked child a cascade reaches is not scheduled and gets no
-        // owner link, so a flush never rewrites its FK to a freshly inserted owner's key (it is an update's business).
+        // A tracked instance schedules nothing for itself but still cascades over its initialized navigations: a
+        // new child in a loaded collection is scheduled by persisting its loaded owner (Clarifications). A tracked
+        // child a cascade reaches is not scheduled and gets no owner link, so a flush never rewrites its FK.
         if (!$this->tracking->isTracked($entity)) {
             $draft->scheduleInsert($entity, $map, $owner, $via);
         }
@@ -150,33 +152,33 @@ final class DbUnitOfWork
         $visited[$id] = true;
 
         if ($draft->isInsertScheduled($entity)) {
-            // Nothing was written, so nothing is deleted: the insert (and what only its cascade scheduled) goes.
+            // Nothing was written, so nothing is deleted and no remove cascade runs: the insert (and what only
+            // its persist cascade scheduled) goes.
             $draft->cancelInsert($entity);
 
             return;
         }
 
-        $map = $this->db->requireWritableKeyed($entity::class);
-        if (!$draft->isRemovalScheduled($entity)) {
-            // SPEC-GAP: a remove cascade reaching an instance the session neither tracks nor has scheduled for insert
-            // (a stranger in a loaded collection) is not covered; assumed to refuse like a direct remove — UOW-001 —
-            // so the whole cascade schedules nothing, rather than skipping it silently.
-            if (!$this->tracking->isTracked($entity)) {
-                throw DbTracking::notTracked($entity);
-            }
-
-            $draft->scheduleRemoval($entity, $map);
+        if ($draft->isRemovalScheduled($entity)) {
+            return;   // already scheduled for removal: a no-op
         }
+
+        // Shape, then UOW-001 (an instance the session neither tracks nor has scheduled — a stranger in a loaded
+        // collection too, so the whole cascade schedules nothing), then the cascade (Clarifications).
+        $map = $this->db->requireWritableKeyed($entity::class);
+        if (!$this->tracking->isTracked($entity)) {
+            throw DbTracking::notTracked($entity);
+        }
+
+        $draft->scheduleRemoval($entity, $map);
 
         foreach ($map->relationships as $relationship) {
             if (!in_array(CascadeOperation::Remove, $relationship->cascade, true)) {
                 continue;
             }
 
-            // SPEC-GAP: UOW-005 is stated for a never-loaded *collection*; a singular navigation cannot be told apart
-            // from "unloaded" (spec: "null is also what unloaded looks like") and cascades nothing. A remove of an
-            // instance already scheduled for removal runs its cascade again (idempotent for what is already scheduled);
-            // a removed instance scheduled for insert is cancelled without any remove cascade over its navigations.
+            // UOW-005 is for a never-loaded *collection* only; a singular navigation cannot be told apart from
+            // "unloaded" (null is both) and cascades nothing (Clarifications).
             if ($relationship->kind === RelationshipKind::OneToMany
                 && !$map->navigationProperty($relationship)->isInitialized($entity)) {
                 throw new SimpleOrmException(
@@ -223,25 +225,25 @@ final class DbUnitOfWork
 
     /**
      * Writes the schedule: inserts, then every dirty tracked instance, then deletes (unit-of-work.md
-     * "Order of writes"). The order is planned — and a cycle is `UOW-004` — before any SQL. Inside the
-     * session's transaction when one is active, else one this flush begins, commits, and rolls back on
-     * failure; a failed flush keeps the schedule and leaves the map as its statements left it.
+     * "Order of writes"). The order is planned — and a cycle is `UOW-004` — before any SQL. Work already
+     * done immediately is dropped; nothing to write returns the zero summary without a transaction.
+     * Inside the session's transaction when one is active, else one this flush begins, commits, and rolls
+     * back on failure; a failed flush keeps the schedule and undoes its in-memory effects.
      */
     public function flush(): FlushSummary
     {
-        $inserts = $this->schedule->inserts();
-        $removals = $this->schedule->removals();
+        $inserts = $this->pendingInserts();
+        $removals = $this->pendingRemovals();
         $dirty = $this->dirtyEntries($removals);
 
-        $ranks = $this->typeRanks($this->involvedTypes($inserts, $removals, $dirty));
+        $ranks = TypeRanks::of($this->db->maps(), $this->involvedTypes($inserts, $removals, $dirty));
         $insertOrder = $this->order($inserts, $this->insertEdges($inserts), static fn (array $n): int => $ranks[$n['map']->entityType] ?? 0, 'inserts');
         $deleteOrder = $this->order($removals, $this->deleteEdges($removals), static fn (array $n): int => -($ranks[$n['map']->entityType] ?? 0), 'deletes');
         usort($dirty, static fn (TrackedInstance $a, TrackedInstance $b): int => ($ranks[$a->map->entityType] ?? 0) <=> ($ranks[$b->map->entityType] ?? 0));
 
-        // SPEC-GAP: nothing planned at all returns the zero summary without opening a transaction (the spec's
-        // "begins one" does not say whether an empty flush does). The dirty set is decided at plan time, before any
-        // insert runs; inserted instances are registered clean, so deciding earlier or later gives the same list.
         if ($insertOrder === [] && $dirty === [] && $deleteOrder === []) {
+            $this->schedule = new UnitOfWorkSchedule();
+
             return new FlushSummary(0, 0, 0);
         }
 
@@ -251,31 +253,14 @@ final class DbUnitOfWork
             $connection->beginTransaction();
         }
 
+        $journal = new FlushJournal($this->tracking);
         try {
-            foreach ($insertOrder as $id) {
-                $this->flowKeys($inserts[$id]);
-                $this->db->insert($inserts[$id]['instance']);
-            }
-
-            foreach ($dirty as $entry) {
-                $this->db->update($entry->instance);
-            }
-
-            foreach ($deleteOrder as $id) {
-                // SPEC-GAP: by-key or entity form of the delete is not stated; the entity form (identity-gated and, with a
-                // version column, version-checked — CRUD-010) is used so a stale instance is never deleted blindly.
-                $this->db->delete($removals[$id]['map']->entityType, $removals[$id]['instance']);
-            }
-
+            $this->write($inserts, $insertOrder, $dirty, $removals, $deleteOrder, $journal);
             if ($ownsTransaction) {
                 $connection->commit();
             }
         } catch (Throwable $failure) {
-            // SPEC-GAP: "a failed flush ... does not touch the identity map or the snapshots" cannot hold literally when
-            // every statement is the session's own insert/update/delete (they register, re-snapshot, and bump versions as
-            // they run). Assumed: the map is left as the already-run statements left it (spec/session.md "transactions
-            // do not touch the map"); Refresh is the way back. So a retry re-inserts rolled-back inserts (they are still
-            // scheduled) but does not rewrite an update that ran and was rolled back — its snapshot already advanced.
+            $journal->rollback();
             if ($ownsTransaction && $connection->inTransaction()) {
                 $connection->rollBack();
             }
@@ -289,8 +274,66 @@ final class DbUnitOfWork
     }
 
     /**
+     * The statements, in order — each the session's own insert/update/delete, journaled so a failure can undo
+     * what it moved in memory.
+     *
+     * @param array<int, array{instance: object, map: EntityMap, seq: int, direct: bool, links: array<string, array{owner: object, relationship: RelationshipMap}>}> $inserts
+     * @param list<int> $insertOrder
+     * @param list<TrackedInstance> $dirty
+     * @param array<int, array{instance: object, map: EntityMap, seq: int}> $removals
+     * @param list<int> $deleteOrder
+     */
+    private function write(array $inserts, array $insertOrder, array $dirty, array $removals, array $deleteOrder, FlushJournal $journal): void
+    {
+        foreach ($insertOrder as $id) {
+            $entry = $inserts[$id];
+            $this->flowKeys($entry);
+            $journal->recordInsert($entry['map'], $entry['instance']);
+            $this->db->insert($entry['instance']);
+        }
+
+        foreach ($dirty as $entry) {
+            $journal->recordUpdate($entry->map, $entry->instance);
+            $this->db->update($entry->instance);
+        }
+
+        foreach ($deleteOrder as $id) {
+            // The entity form: identity-gated and version-checked (CRUD-010), so a stale instance is never deleted blindly.
+            $this->db->delete($removals[$id]['map']->entityType, $removals[$id]['instance']);
+        }
+    }
+
+    /**
+     * The scheduled inserts still to write: one already inserted immediately (it is tracked now) is done, not
+     * work (Clarifications).
+     *
+     * @return array<int, array{instance: object, map: EntityMap, seq: int, direct: bool, links: array<string, array{owner: object, relationship: RelationshipMap}>}>
+     */
+    private function pendingInserts(): array
+    {
+        return array_filter(
+            $this->schedule->inserts(),
+            fn (array $entry): bool => !$this->tracking->isTracked($entry['instance']),
+        );
+    }
+
+    /**
+     * The scheduled removals still to write: one already deleted immediately (it is no longer tracked) is done.
+     *
+     * @return array<int, array{instance: object, map: EntityMap, seq: int}>
+     */
+    private function pendingRemovals(): array
+    {
+        return array_filter(
+            $this->schedule->removals(),
+            fn (array $entry): bool => $this->tracking->isTracked($entry['instance']),
+        );
+    }
+
+    /**
      * The tracked instances an update would write something for, in registration order: not scheduled
-     * for removal, with at least one dirty column that is not the key, the version, or generated.
+     * for removal, with at least one dirty column that is not the key, the version, or generated. A dirty
+     * instance of a read-only source is not skipped: its update refuses `CRUD-003` and the flush fails.
      *
      * @param array<int, array{instance: object, map: EntityMap, seq: int}> $removals
      * @return list<TrackedInstance>
@@ -311,7 +354,8 @@ final class DbUnitOfWork
     /**
      * Keys flow before each insert (unit-of-work.md): every non-null many-to-one navigation copies its
      * target's key into the FK properties (the navigation is authoritative inside the unit of work), and
-     * a child a persist cascade reached takes its owner's key into the FK its relationship declares.
+     * a child a persist cascade reached through a one-to-many/one-to-one takes its owner's key into the FK
+     * its relationship declares.
      *
      * @param array{instance: object, map: EntityMap, seq: int, direct: bool, links: array<string, array{owner: object, relationship: RelationshipMap}>} $entry
      */
@@ -332,28 +376,33 @@ final class DbUnitOfWork
         }
 
         foreach ($entry['links'] as $link) {
+            if ($link['relationship']->kind === RelationshipKind::ManyToOne) {
+                continue;   // the owner references this parent; the owner's own navigation carries the key
+            }
+
             $ownerMap = $this->db->maps()->load($link['owner']::class);
             $this->copyKey($ownerMap->getKeyValues($link['owner']), $map, $link['relationship']->foreignKeyProperties, $entity);
         }
     }
 
     /**
+     * Copies the key values as they are — a null part included, the database foreign key is the authority
+     * (Clarifications: keys flow only before inserts). The one thing a typed PHP property cannot take is a
+     * null into a non-nullable FK property: that part is left as it is and the insert's own checks
+     * (`CRUD-004`, the database) refuse it (CODING-STANDARD §10).
+     *
      * @param list<mixed> $keyValues
      * @param list<string> $foreignKeyProperties
      */
     private function copyKey(array $keyValues, EntityMap $into, array $foreignKeyProperties, object $entity): void
     {
-        // SPEC-GAP: keys flow only before an insert (spec); a dirty tracked instance's navigation is not copied before its
-        // update, so a navigation that disagrees with its FK there is CRUD-004 as in an immediate update. A target whose key
-        // has no value yet (an untracked, unscheduled instance) copies nothing rather than a null.
-        foreach ($keyValues as $value) {
-            if ($value === null) {
-                return;   // a key not assigned yet (an unscheduled, untracked target): leave the FK to the insert's own checks
-            }
-        }
-
         foreach ($foreignKeyProperties as $i => $name) {
-            $into->property($name)?->setValue($entity, $keyValues[$i]);
+            $property = $into->property($name);
+            if ($property === null || ($keyValues[$i] === null && !$property->nullable)) {
+                continue;
+            }
+
+            $property->setValue($entity, $keyValues[$i]);
         }
     }
 
@@ -361,7 +410,8 @@ final class DbUnitOfWork
 
     /**
      * Instance dependencies of the scheduled inserts: a parent before the child that references it
-     * through a non-null many-to-one navigation, an owner before the child its persist cascade reached.
+     * through a non-null many-to-one navigation, an owner before the child its persist cascade reached
+     * through a one-to-many/one-to-one. Navigations and cascade links only — never FK values.
      *
      * @param array<int, array{instance: object, map: EntityMap, seq: int, direct: bool, links: array<string, array{owner: object, relationship: RelationshipMap}>}> $inserts
      * @return array<int, array<int, int>> from id → ids that must come after it
@@ -382,7 +432,7 @@ final class DbUnitOfWork
             }
 
             foreach ($entry['links'] as $link) {
-                if (isset($inserts[spl_object_id($link['owner'])])) {
+                if ($link['relationship']->kind !== RelationshipKind::ManyToOne && isset($inserts[spl_object_id($link['owner'])])) {
                     self::addEdge($edges, spl_object_id($link['owner']), $id);
                 }
             }
@@ -425,8 +475,7 @@ final class DbUnitOfWork
     /** @param array<int, array<int, int>> $edges */
     private static function addEdge(array &$edges, int $from, int $to): void
     {
-        // SPEC-GAP: an instance referencing itself (a node whose parent is the node) is not a "cycle among the scheduled
-        // instances" the spec describes; the self edge is ignored, so it is ordered like any other instance.
+        // An instance referencing itself is not a cycle among the scheduled instances: the edge is ignored (Clarifications).
         if ($from !== $to) {
             $edges[$from][$to] = $to;
         }
@@ -504,113 +553,5 @@ final class DbUnitOfWork
         }
 
         return array_keys($types);
-    }
-
-    /**
-     * The foreign-key rank of every type reachable from `$types` (unit-of-work.md "Order of writes"):
-     * a type after every type its foreign keys reference — its many-to-one targets and `#[ForeignKey]`
-     * references, the owners whose one-to-many/one-to-one point at it, and (for a link entity) the two
-     * sides it joins. Rank is the longest dependency chain below the type; types in a metadata cycle
-     * ignore the edge that closes it (the instance-level order then decides, and a true instance
-     * cycle is `UOW-004`).
-     *
-     * @param list<class-string> $types
-     * @return array<class-string, int>
-     */
-    private function typeRanks(array $types): array
-    {
-        // SPEC-GAP: "types in foreign-key order" does not say over which set of types or how unrelated types compare.
-        // Assumed: the rank of a type is the length of the longest chain of types it depends on, over every type
-        // reachable from the involved ones through relationships and `#[ForeignKey]` references (so a link entity ranks
-        // after both sides); unrelated types of equal rank interleave by schedule order, and the edge that closes a
-        // metadata cycle between types is ignored.
-        /** @var array<class-string, array<class-string, true>> $dependsOn */
-        $dependsOn = [];
-        $seen = [];
-        $queue = $types;
-        while ($queue !== []) {
-            $type = array_shift($queue);
-            if (isset($seen[$type])) {
-                continue;
-            }
-
-            $seen[$type] = true;
-            $dependsOn[$type] ??= [];
-            $map = $this->db->maps()->load($type);
-
-            foreach ($map->relationships as $relationship) {
-                $queue[] = $relationship->targetType;
-                match ($relationship->kind) {
-                    RelationshipKind::ManyToOne => self::addTypeDependency($dependsOn, $type, $relationship->targetType),
-                    RelationshipKind::OneToOne, RelationshipKind::OneToMany
-                        => self::addTypeDependency($dependsOn, $relationship->targetType, $type),
-                    RelationshipKind::ManyToMany => $this->linkDependencies($dependsOn, $queue, $type, $relationship),
-                };
-            }
-
-            foreach ($map->properties as $property) {
-                if ($property->foreignKeyReferences !== null) {
-                    $queue[] = $property->foreignKeyReferences;
-                    self::addTypeDependency($dependsOn, $type, $property->foreignKeyReferences);
-                }
-            }
-        }
-
-        $ranks = [];
-        foreach (array_keys($dependsOn) as $type) {
-            self::depth($type, $dependsOn, $ranks, []);
-        }
-
-        return $ranks;
-    }
-
-    /**
-     * @param array<class-string, array<class-string, true>> $dependsOn
-     * @param list<class-string> $queue
-     * @param class-string $owner
-     */
-    private function linkDependencies(array &$dependsOn, array &$queue, string $owner, RelationshipMap $relationship): void
-    {
-        if ($relationship->linkType === null) {
-            return;
-        }
-
-        $queue[] = $relationship->linkType;
-        self::addTypeDependency($dependsOn, $relationship->linkType, $owner);
-        self::addTypeDependency($dependsOn, $relationship->linkType, $relationship->targetType);
-    }
-
-    /**
-     * @param array<class-string, array<class-string, true>> $dependsOn
-     * @param class-string $type
-     * @param class-string $dependency
-     */
-    private static function addTypeDependency(array &$dependsOn, string $type, string $dependency): void
-    {
-        if ($type !== $dependency) {
-            $dependsOn[$type][$dependency] = true;
-        }
-    }
-
-    /**
-     * @param array<class-string, array<class-string, true>> $dependsOn
-     * @param array<class-string, int> $ranks
-     * @param array<class-string, true> $stack
-     */
-    private static function depth(string $type, array $dependsOn, array &$ranks, array $stack): int
-    {
-        if (isset($ranks[$type])) {
-            return $ranks[$type];
-        }
-
-        $stack[$type] = true;
-        $depth = 0;
-        foreach (array_keys($dependsOn[$type] ?? []) as $dependency) {
-            if (!isset($stack[$dependency])) {
-                $depth = max($depth, 1 + self::depth($dependency, $dependsOn, $ranks, $stack));
-            }
-        }
-
-        return $ranks[$type] = $depth;
     }
 }

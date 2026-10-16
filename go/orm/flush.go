@@ -38,7 +38,7 @@ func (db *Db) Flush(ctx context.Context) (FlushSummary, error) {
 	if err != nil {
 		return FlushSummary{}, err
 	}
-	// SPEC-GAP: a flush with nothing to write returns the zero summary without beginning a transaction.
+	// An empty flush returns the zero summary and begins no transaction (spec/unit-of-work.md Clarifications, ADR-0036).
 	if plan.empty() {
 		db.schedule().clear()
 		return FlushSummary{}, nil
@@ -52,11 +52,9 @@ func (db *Db) Flush(ctx context.Context) (FlushSummary, error) {
 		defer func() { _ = tx.Rollback(ctx) }() // a no-op once committed; the failure path's rollback
 	}
 
-	// SPEC-GAP: "a failed flush keeps the schedule and does not touch the identity map or the snapshots"
-	// cannot hold for statements that already ran (the CRUD calls register, bump versions, write keys),
-	// so the journal puts the in-memory state back — in the flush's own transaction and in a caller's
-	// alike; rows written before the failure inside a caller's transaction stay in it until the caller
-	// rolls back. A generated key written onto an instance by an undone insert is reset to its prior value.
+	// A failed flush undoes its in-memory effects (Clarifications): the journal puts keys, tracking, snapshots,
+	// and versions back — in the flush's own transaction and in a caller's alike; rows written before the
+	// failure inside a caller's transaction stay in it until the caller rolls back.
 	journal := &flushJournal{}
 	summary, err := db.executeFlush(ctx, plan, journal)
 	if err == nil && tx != nil {
@@ -82,39 +80,10 @@ func (p *flushPlan) empty() bool { return len(p.inserts)+len(p.dirty)+len(p.dele
 
 // planFlush orders the schedule (UOW-004 on a cycle) and finds the dirty tracked instances.
 func (db *Db) planFlush() (*flushPlan, error) {
-	uow := db.schedule()
-
-	// SPEC-GAP: an instance that was inserted (or deleted) immediately after it was scheduled has nothing
-	// left to flush — scheduling is a promise to write, not a second write — so it is dropped silently
-	// instead of inserting a duplicate row or deleting a missing one.
-	var inserts []*scheduledInsert
-	for _, scheduled := range uow.inserts {
-		if db.entryOf(scheduled.ptr) == nil {
-			inserts = append(inserts, scheduled)
-		}
-	}
-	var removes []*scheduledRemove
-	for _, scheduled := range uow.removes {
-		if db.entryOf(scheduled.ptr) != nil {
-			removes = append(removes, scheduled)
-		}
-	}
-
-	// SPEC-GAP: "dirty" for the update phase means a changed column an update would write; an instance
-	// whose only differences are key/version/generated values is clean. A dirty instance of a read-only
-	// source is not skipped: its update refuses CRUD-003 and so does the flush.
-	var dirty []*trackedEntry
-	for _, entry := range db.tracker.all() {
-		if uow.removeOf[entry.ptr.Interface()] != nil {
-			continue
-		}
-		changed, err := db.tracker.changed(entry)
-		if err != nil {
-			return nil, err
-		}
-		if hasWritableColumn(changed) {
-			dirty = append(dirty, entry)
-		}
+	inserts, removes := db.pendingWork()
+	dirty, err := db.dirtyEntries()
+	if err != nil {
+		return nil, err
 	}
 
 	var seeds []reflect.Type
@@ -150,6 +119,48 @@ func (db *Db) planFlush() (*flushPlan, error) {
 	return &flushPlan{inserts: orderedInserts, dirty: dirty, deletes: orderedDeletes}, nil
 }
 
+// pendingWork is the schedule still to write. Work done immediately is dropped (Clarifications): a scheduled
+// insert already written by Insert (it is tracked now) or a scheduled removal already deleted by Delete (it
+// is not) is done, not work.
+func (db *Db) pendingWork() ([]*scheduledInsert, []*scheduledRemove) {
+	uow := db.schedule()
+	var inserts []*scheduledInsert
+	for _, scheduled := range uow.inserts {
+		if db.entryOf(scheduled.ptr) == nil {
+			inserts = append(inserts, scheduled)
+		}
+	}
+	var removes []*scheduledRemove
+	for _, scheduled := range uow.removes {
+		if db.entryOf(scheduled.ptr) != nil {
+			removes = append(removes, scheduled)
+		}
+	}
+	return inserts, removes
+}
+
+// dirtyEntries lists the tracked instances an update would write something for, in registration order, not
+// scheduled for removal. "Dirty" for the update phase means a changed column an update would write: an
+// instance whose only differences are key/version/generated values is clean. A dirty instance of a
+// read-only source is not skipped: its update refuses CRUD-003 and so does the flush (Clarifications).
+func (db *Db) dirtyEntries() ([]*trackedEntry, error) {
+	uow := db.schedule()
+	var dirty []*trackedEntry
+	for _, entry := range db.tracker.all() {
+		if uow.removeOf[entry.ptr.Interface()] != nil {
+			continue
+		}
+		changed, err := db.tracker.changed(entry)
+		if err != nil {
+			return nil, err
+		}
+		if hasWritableColumn(changed) {
+			dirty = append(dirty, entry)
+		}
+	}
+	return dirty, nil
+}
+
 // hasWritableColumn reports whether a change list holds a column an update would
 // write: key, version, and generated values are never in a SET (session.md Clarifications).
 func hasWritableColumn(changed []*core.PropertyMap) bool {
@@ -163,14 +174,11 @@ func hasWritableColumn(changed []*core.PropertyMap) bool {
 
 // --- type order -------------------------------------------------------------
 
-// SPEC-GAP: ranks are computed over the types in the flush plus everything reachable from them through
-// relationships, with every strongly connected component (a reference cycle, a self-reference) sharing
-// one rank so the result does not depend on the order the types arrive in; the schedule decides inside it.
-//
 // typeRanks is the foreign-key rank of each entity type: a type ranks after
 // every type its foreign keys reference — its many-to-one targets, and the
 // owners whose one-to-many/one-to-one navigations point at it. Types in a
-// reference cycle share a rank (the schedule decides among them).
+// reference cycle share a rank (the schedule decides among them; spec/unit-of-work.md Clarifications,
+// ADR-0036: type rank).
 type typeRanks map[reflect.Type]int
 
 // rankTypes ranks the seed types and everything reachable from them through
@@ -283,10 +291,9 @@ func (db *Db) rankTypes(seeds []reflect.Type) (typeRanks, error) {
 // parent it references (a non-nil many-to-one navigation, or the owner that
 // cascaded it); among the rest, type rank then schedule order. UOW-004 on a cycle.
 //
-// SPEC-GAP: "instance dependencies" are the navigations and cascade links only — a foreign-key value
-// that happens to equal a scheduled parent's key is not a dependency (a generated parent key does not
-// exist yet) — and "ties" means: of the instances whose parents are all written, the lowest
-// (type rank, schedule order) goes next.
+// Instance dependencies are navigations and cascade links only — a foreign-key value that happens to equal
+// a scheduled parent's key is not one (a generated parent key does not exist yet) — and among the instances
+// whose parents are all written, the lowest (type rank, schedule order) goes next (Clarifications).
 func (db *Db) orderInserts(inserts []*scheduledInsert, ranks typeRanks) ([]*scheduledInsert, error) {
 	position := map[any]int{}
 	for i, scheduled := range inserts {
@@ -335,10 +342,9 @@ func (db *Db) orderInserts(inserts []*scheduledInsert, ranks typeRanks) ([]*sche
 // orderDeletes is the delete phase's order, children first: a parent after every
 // scheduled child that references it (a non-nil many-to-one navigation to it, or
 // a non-nil one-to-many/one-to-one navigation of it holding the child); among the
-// rest, reversed type rank then schedule order. UOW-004 on a cycle.
-//
-// SPEC-GAP: as for inserts, "references it" means a non-nil navigation (many-to-one child to parent,
-// or a parent's one-to-many/one-to-one holding the child), not a foreign-key value.
+// rest, reversed type rank then schedule order. UOW-004 on a cycle. As for inserts, "references it" means
+// a non-nil navigation (many-to-one child to parent, or a parent's one-to-many/one-to-one holding the
+// child), not a foreign-key value.
 func (db *Db) orderDeletes(removes []*scheduledRemove, ranks typeRanks) ([]*scheduledRemove, error) {
 	position := map[any]int{}
 	for i, scheduled := range removes {
@@ -514,9 +520,9 @@ func (db *Db) executeFlush(ctx context.Context, plan *flushPlan, journal *flushJ
 // reached takes its owner's key into the foreign key the relationship
 // declares, so a database-generated parent key reaches its children.
 func flowKeys(db *Db, scheduled *scheduledInsert) error {
-	// SPEC-GAP: a non-nil many-to-one navigation copies its target's key even when the target is neither
-	// scheduled nor tracked (its key is then whatever it holds, possibly zero) — the spec's "navigation is
-	// authoritative" read literally; the database's foreign key is the authority that refuses it.
+	// A non-nil many-to-one navigation copies its target's key as it is, even when the target is neither
+	// scheduled nor tracked (a zero part included): the database's foreign key is the authority that refuses it
+	// (Clarifications: keys flow only before inserts).
 	for _, relationship := range scheduled.m.Relationships {
 		if relationship.Kind != core.RelationshipManyToOne {
 			continue

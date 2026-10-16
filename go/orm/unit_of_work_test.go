@@ -90,6 +90,50 @@ type uowBadCascadeToken struct {
 	Peers []*uowNode `orm:"one_to_many=ParentID,cascade=sometimes"`
 }
 
+// uowCycleA and uowCycleB reference each other through nullable many-to-one navigations: a metadata
+// cycle between two types, the type-rank fixture (Clarifications: types in a cycle share a rank).
+type uowCycleA struct {
+	ID     int64      `orm:"column,key,generated"`
+	PeerID *int64     `orm:"column"`
+	Peer   *uowCycleB `orm:"many_to_one=PeerID"`
+}
+
+func (uowCycleA) Entity() orm.EntityDef {
+	return orm.EntityDef{Source: orm.Table("uow_cycle_a"), ForeignKeys: []orm.ForeignKeyDef{orm.ForeignKey[uowCycleB]("PeerID")}}
+}
+
+type uowCycleB struct {
+	ID     int64      `orm:"column,key,generated"`
+	PeerID *int64     `orm:"column"`
+	Peer   *uowCycleA `orm:"many_to_one=PeerID"`
+}
+
+func (uowCycleB) Entity() orm.EntityDef {
+	return orm.EntityDef{Source: orm.Table("uow_cycle_b"), ForeignKeys: []orm.ForeignKeyDef{orm.ForeignKey[uowCycleA]("PeerID")}}
+}
+
+// uowCascadingAddress is an owned type whose member declares a cascade.
+type uowCascadingAddress struct {
+	City string `orm:"column,cascade=persist"`
+}
+
+func (uowCascadingAddress) OwnedType() {}
+
+type uowBadOwnedMemberCascade struct {
+	ID      int64                `orm:"column,key,generated"`
+	Address *uowCascadingAddress `orm:"owned"`
+}
+
+type uowBadEmptyCascade struct {
+	ID    int64      `orm:"column,key,generated"`
+	Peers []*uowNode `orm:"one_to_many=ParentID,cascade="`
+}
+
+type uowBadBareCascade struct {
+	ID    int64      `orm:"column,key,generated"`
+	Peers []*uowNode `orm:"one_to_many=ParentID,cascade"`
+}
+
 // --- helpers -----------------------------------------------------------------
 
 func openTrackedWithTables(t *testing.T) *orm.Db {
@@ -107,6 +151,8 @@ func createTestTables(t *testing.T, db *orm.Db) {
 		orm.CreateTable[uowOwner],
 		orm.CreateTable[uowOwnerDetail],
 		orm.CreateTable[uowPersistOnly],
+		orm.CreateTable[uowCycleA],
+		orm.CreateTable[uowCycleB],
 	} {
 		if err := create(ctx, db); err != nil {
 			t.Fatalf("create test table: %v", err)
@@ -181,6 +227,7 @@ func TestCascade_DeclarationsThatAreNotANavigationAreMAP025(t *testing.T) {
 		"a plain column":            loadMap[uowBadColumnCascade](t),
 		"an ignored field":          loadMap[uowBadIgnoreCascade](t),
 		"an owned navigation":       loadMap[uowBadOwnedCascade](t),
+		"an owned type's member":    loadMap[uowBadOwnedMemberCascade](t),
 	}
 	for name, err := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -595,5 +642,294 @@ func TestUnitOfWork_ImmediateOperationsWorkBesideIt(t *testing.T) {
 	}
 	if db.HasPendingWork() {
 		t.Error("the flush emptied the schedule")
+	}
+}
+
+// --- Level 3 M2 review: the Clarifications, pinned (ADR-0036) -------------------
+
+// openRecordingTracked is a tracked session whose dialect records every rendered write.
+func openRecordingTracked(t *testing.T) (*orm.Db, *testsupport.RecordingDialect) {
+	t.Helper()
+	recorder := testsupport.NewRecordingDialect()
+	db := testsupport.OpenSampleWith(t, orm.Options{Dialect: recorder, Tracking: orm.TrackingTracked})
+	createTestTables(t, db)
+	return db, recorder
+}
+
+func TestCascade_ADeclarationNamingNoOperationIsMAP025(t *testing.T) {
+	for name, err := range map[string]error{
+		"cascade=": loadMap[uowBadEmptyCascade](t),
+		"cascade":  loadMap[uowBadBareCascade](t),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !orm.HasCode(err, "MAP-025") {
+				t.Fatalf("expected MAP-025, got %v", err)
+			}
+		})
+	}
+}
+
+func TestUnitOfWork_TheInstancesOwnShapeIsRefusedFirst(t *testing.T) {
+	ctx := context.Background()
+	db := openTrackedWithTables(t)
+	testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+	rows, err := orm.QueryAll[*sample.UserTransactionTotal](ctx, db)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("read the keyed view: %v (%d rows)", err, len(rows))
+	}
+	tracked, stranger := rows[0], &sample.UserTransactionTotal{UserID: 99}
+
+	if err := orm.Persist(db, tracked); orm.CodeOf(err) != "CRUD-003" {
+		t.Errorf("persist of a tracked read-only instance: expected CRUD-003, got %v", err)
+	}
+	if err := orm.Remove(db, tracked); orm.CodeOf(err) != "CRUD-003" {
+		t.Errorf("remove of a tracked read-only instance: expected CRUD-003, got %v", err)
+	}
+	if err := orm.Remove(db, stranger); orm.CodeOf(err) != "CRUD-003" {
+		t.Errorf("remove of an untracked read-only instance: shape first, expected CRUD-003, got %v", err)
+	}
+	if db.HasPendingWork() {
+		t.Error("a refused call schedules nothing")
+	}
+}
+
+func TestFlush_ADirtyTrackedReadOnlyInstanceRefusesCRUD003AndTheFlushIsUndone(t *testing.T) {
+	ctx := context.Background()
+	db := openTrackedWithTables(t)
+	testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+	rows, err := orm.QueryAll[*sample.UserTransactionTotal](ctx, db)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("read the keyed view: %v (%d rows)", err, len(rows))
+	}
+	rows[0].UserName = "changed"
+	fresh := newUser("Linus", "linus@example.com")
+	mustPersist(t, db, fresh)
+
+	if _, err := db.Flush(ctx); orm.CodeOf(err) != "CRUD-003" {
+		t.Fatalf("a dirty read-only instance is never skipped: expected CRUD-003, got %v", err)
+	}
+	if db.IsTracked(fresh) || !db.HasPendingWork() {
+		t.Error("the insert that ran before the refusal is undone and the schedule is kept")
+	}
+	if dirty, err := orm.IsDirty(db, rows[0]); err != nil || !dirty {
+		t.Errorf("the change stays dirty, got %v %v", dirty, err)
+	}
+}
+
+func TestFlush_AFailedFlushPutsInsertsUpdatesAndTheScheduleBackAsTheyWere(t *testing.T) {
+	ctx := context.Background()
+	path := testsupport.TempDatabase(t)
+	db := testsupport.OpenSampleAt(t, path, orm.Options{Tracking: orm.TrackingTracked})
+	other := testsupport.OpenSampleAt(t, path, orm.Options{})
+	ada := testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+
+	fine, duplicate := newUser("Linus", "linus@example.com"), newUser("Impostor", "ada@example.com")
+	mustPersist(t, db, fine)
+	ada.Name = "Ada Lovelace"
+	mustPersist(t, db, duplicate)
+
+	if _, err := db.Flush(ctx); err == nil {
+		t.Fatal("the unique index on users.email must refuse the second insert")
+	}
+	if db.IsTracked(fine) || fine.ID != 0 {
+		t.Errorf("the insert that ran is untracked with its key reset (tracked %v, id %d)", db.IsTracked(fine), fine.ID)
+	}
+	if changes, err := orm.ChangesOf(db, ada); err != nil || len(changes) != 1 || changes[0] != "Name" {
+		t.Errorf("the dirty tracked instance is still dirty, got %v %v", changes, err)
+	}
+	if got := rowCount[sample.User](t, other); got != 1 {
+		t.Errorf("the row count is unchanged, %d users", got)
+	}
+
+	mustRemove(t, db, duplicate)
+	assertSummary(t, mustFlush(t, ctx, db), 1, 1, 0)
+	if !db.IsTracked(fine) || fine.ID == 0 || rowCount[sample.User](t, other) != 2 {
+		t.Error("the schedule flushes again as it was: the insert and the update are written")
+	}
+}
+
+func TestUnitOfWork_AChildReachedByTwoScheduledOwnersSurvivesTheCancellationOfOne(t *testing.T) {
+	ctx := context.Background()
+	db := openTrackedWithTables(t)
+	ada := testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+
+	shared := newDetail(0, "shared")
+	first, second := newTransaction(ada.ID), newTransaction(ada.ID)
+	first.Details = []*sample.TransactionDetail{shared}
+	second.Details = []*sample.TransactionDetail{shared}
+	mustPersist(t, db, first)
+	mustPersist(t, db, second)
+
+	mustRemove(t, db, first)
+	assertSummary(t, mustFlush(t, ctx, db), 2, 0, 0)
+	if db.IsTracked(first) || !db.IsTracked(second) || shared.TransactionID != second.ID {
+		t.Errorf("the shared child takes the remaining owner's key (second %d, fk %d)", second.ID, shared.TransactionID)
+	}
+
+	// With both owners cancelled the child goes too.
+	a, b, orphan := newTransaction(ada.ID), newTransaction(ada.ID), newDetail(0, "orphan")
+	a.Details = []*sample.TransactionDetail{orphan}
+	b.Details = []*sample.TransactionDetail{orphan}
+	mustPersist(t, db, a)
+	mustPersist(t, db, b)
+	mustRemove(t, db, a)
+	mustRemove(t, db, b)
+	if db.HasPendingWork() {
+		t.Error("cancelling every owner cancels the child only their cascade scheduled")
+	}
+}
+
+func TestUnitOfWork_CancellingAnOwnerCancelsTheParentItsManyToOneCascadeScheduled(t *testing.T) {
+	ctx := context.Background()
+	db := openTrackedWithTables(t)
+
+	item := &uowPersistOnly{Node: &uowNode{Name: "cascaded"}}
+	mustPersist(t, db, item)
+	mustRemove(t, db, item)
+	if db.HasPendingWork() {
+		t.Error("the parent only the cascade scheduled is cancelled with its owner")
+	}
+
+	kept := &uowNode{Name: "kept"}
+	other := &uowPersistOnly{Node: kept}
+	mustPersist(t, db, kept) // persisted by name: it stays
+	mustPersist(t, db, other)
+	mustRemove(t, db, other)
+	assertSummary(t, mustFlush(t, ctx, db), 1, 0, 0)
+	if !db.IsTracked(kept) || db.IsTracked(other) {
+		t.Error("the directly persisted parent survives its cancelled owner")
+	}
+}
+
+func TestFlush_WorkDoneImmediatelyIsDroppedNotDoneTwice(t *testing.T) {
+	ctx := context.Background()
+	db, recorder := openRecordingTracked(t)
+
+	scheduled := newUser("Linus", "linus@example.com")
+	mustPersist(t, db, scheduled)
+	if err := orm.Insert(ctx, db, scheduled); err != nil {
+		t.Fatal(err)
+	}
+	removed := testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+	mustRemove(t, db, removed)
+	if err := orm.DeleteEntity(ctx, db, removed); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder.Reset()
+	assertSummary(t, mustFlush(t, ctx, db), 0, 0, 0)
+	if len(recorder.Statements) != 0 || db.HasPendingWork() {
+		t.Errorf("no statement, nothing pending; got %v (pending %v)", recorder.Ops(), db.HasPendingWork())
+	}
+	if got := rowCount[sample.User](t, db); got != 1 {
+		t.Errorf("one user row (Linus, written once), got %d", got)
+	}
+}
+
+func TestFlush_AnEmptyFlushIsTheZeroSummary(t *testing.T) {
+	ctx := context.Background()
+	db, recorder := openRecordingTracked(t)
+	recorder.Reset()
+	assertSummary(t, mustFlush(t, ctx, db), 0, 0, 0)
+	if len(recorder.Statements) != 0 {
+		t.Errorf("nothing to write renders nothing, got %v", recorder.Ops())
+	}
+}
+
+func TestFlush_TypesInADependencyCycleShareARankSoTheScheduleDecides(t *testing.T) {
+	ctx := context.Background()
+	db, recorder := openRecordingTracked(t)
+	for _, order := range [][]string{{"uowCycleA", "uowCycleB"}, {"uowCycleB", "uowCycleA"}} {
+		a, b := &uowCycleA{}, &uowCycleB{}
+		for _, name := range order {
+			if name == "uowCycleA" {
+				mustPersist(t, db, a)
+			} else {
+				mustPersist(t, db, b)
+			}
+		}
+		recorder.Reset()
+		assertSummary(t, mustFlush(t, ctx, db), 2, 0, 0)
+		got := recorder.Ops()
+		if len(got) != 2 || got[0] != "insert "+order[0] || got[1] != "insert "+order[1] {
+			t.Errorf("unrelated instances of two types in a cycle insert in schedule order %v, got %v", order, got)
+		}
+	}
+}
+
+func TestFlush_KeysFlowAsTheyAreAndASelfReferenceIsNotACycle(t *testing.T) {
+	ctx := context.Background()
+	db := openTrackedWithTables(t)
+
+	stale := int64(99)
+	node := &uowNode{Name: "n", ParentID: &stale, Parent: &uowNode{Name: "stranger"}}
+	mustPersist(t, db, node)
+	assertSummary(t, mustFlush(t, ctx, db), 1, 0, 0)
+	if node.ParentID == nil || *node.ParentID != 0 {
+		t.Errorf("an unscheduled, untracked target's key is copied as it is (zero included), got %v", node.ParentID)
+	}
+
+	loop := &uowNode{Name: "loop"}
+	loop.Parent = loop
+	mustPersist(t, db, loop)
+	assertSummary(t, mustFlush(t, ctx, db), 1, 0, 0)
+}
+
+func TestFlush_AnUntrackedInstanceWhoseKeyAnotherHoldsIsUOW002AtFlush(t *testing.T) {
+	ctx := context.Background()
+	db := openTrackedWithTables(t)
+	ada := testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+	role := &sample.Role{Name: "admin"}
+	role.CreatedAtUtc = testsupport.SeedTime
+	if err := orm.Insert(ctx, db, role); err != nil {
+		t.Fatal(err)
+	}
+	link := &sample.UserRole{UserID: ada.ID, RoleID: role.ID}
+	link.CreatedAtUtc = testsupport.SeedTime
+	if err := orm.Insert(ctx, db, link); err != nil {
+		t.Fatal(err)
+	}
+
+	second := &sample.UserRole{UserID: ada.ID, RoleID: role.ID}
+	second.CreatedAtUtc = testsupport.SeedTime
+	mustPersist(t, db, second) // persist cannot tell; the insert's identity gate does
+	if _, err := db.Flush(ctx); orm.CodeOf(err) != "UOW-002" {
+		t.Fatalf("expected UOW-002 from the insert's identity gate, got %v", err)
+	}
+	if !db.HasPendingWork() || db.IsTracked(second) {
+		t.Error("the refusal keeps the schedule and tracks nothing")
+	}
+}
+
+func TestFlush_UpdatesFollowTheLatestRegistrationAndCountStatementsNotInstances(t *testing.T) {
+	ctx := context.Background()
+	db, recorder := openRecordingTracked(t)
+	first := testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+	second := testsupport.InsertUser(t, db, "Grace", "grace@example.com")
+
+	// The first user is deleted and inserted again: its registration is now the latest.
+	if err := orm.DeleteEntity(ctx, db, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := orm.Insert(ctx, db, first); err != nil {
+		t.Fatal(err)
+	}
+	second.Name = "Grace Hopper"
+	first.Email = "ada@new.example.com"
+
+	recorder.Reset()
+	assertSummary(t, mustFlush(t, ctx, db), 0, 2, 0)
+	got := recorder.Statements
+	if len(got) != 2 || got[0].Properties[0] != "Name" || got[1].Properties[0] != "Email" {
+		t.Errorf("registration order is the latest registration: Grace (Name) before Ada (Email), got %+v", got)
+	}
+
+	// An instance whose only difference is its version is clean: no statement, nothing counted.
+	transaction := insertJoinTransaction(t, ctx, db, first.ID, "5")
+	transaction.Version += 5
+	recorder.Reset()
+	assertSummary(t, mustFlush(t, ctx, db), 0, 0, 0)
+	if len(recorder.Statements) != 0 {
+		t.Errorf("a version-only difference writes nothing, got %v", recorder.Ops())
 	}
 }

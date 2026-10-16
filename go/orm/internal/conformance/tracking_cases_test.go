@@ -14,7 +14,6 @@ import (
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/testsupport"
 	"github.com/kosmassp/SimpleOrm/go/orm/sample"
-	"github.com/kosmassp/SimpleOrm/go/orm/sqlite"
 )
 
 // trackingCaseSpec is the conformance/tracking-cases/*.json shape (spec/session.md
@@ -116,61 +115,6 @@ type trackingStep struct {
 		} `json:"tracked"`
 	} `json:"expect"`
 	ExpectError string `json:"expectError"`
-}
-
-// recordingDialect decorates a dialect and records what the four write
-// statements were asked to render, in order, so a case's expectWritten and a
-// flush's expectStatements are observable through the dialect seam: where every
-// implementation renders SQL (spec/session.md, spec/unit-of-work.md). Everything
-// else delegates.
-type recordingDialect struct {
-	orm.Dialect
-	statements []renderedStatement
-}
-
-// renderedStatement is one statement the dialect was asked to render: op is
-// insert, update, or delete; for an update, all=true is the full-row UpdateSQL,
-// otherwise properties are the names the column-list UpdateOnlySQL was given.
-type renderedStatement struct {
-	op         string
-	entity     string
-	all        bool
-	properties []string
-}
-
-func (d *recordingDialect) InsertSQL(m *orm.EntityMap) string {
-	d.statements = append(d.statements, renderedStatement{op: "insert", entity: m.EntityName()})
-	return d.Dialect.InsertSQL(m)
-}
-
-func (d *recordingDialect) UpdateSQL(m *orm.EntityMap) string {
-	d.statements = append(d.statements, renderedStatement{op: "update", entity: m.EntityName(), all: true})
-	return d.Dialect.UpdateSQL(m)
-}
-
-func (d *recordingDialect) UpdateOnlySQL(m *orm.EntityMap, properties []*orm.PropertyMap) string {
-	names := make([]string, len(properties))
-	for i, p := range properties {
-		names[i] = p.PropertyName
-	}
-	d.statements = append(d.statements, renderedStatement{op: "update", entity: m.EntityName(), properties: names})
-	return d.Dialect.UpdateOnlySQL(m, properties)
-}
-
-func (d *recordingDialect) DeleteSQL(m *orm.EntityMap, checkVersion bool) string {
-	d.statements = append(d.statements, renderedStatement{op: "delete", entity: m.EntityName()})
-	return d.Dialect.DeleteSQL(m, checkVersion)
-}
-
-// updates is the update statements among the recorded ones (what expectWritten judges).
-func (d *recordingDialect) updates() []renderedStatement {
-	var updates []renderedStatement
-	for _, statement := range d.statements {
-		if statement.op == "update" {
-			updates = append(updates, statement)
-		}
-	}
-	return updates
 }
 
 // trackingOps is one entity type's session surface, type-erased over `any`
@@ -279,7 +223,7 @@ func runStepCases(t *testing.T, folder string) {
 			default:
 				t.Fatalf("%s: unknown tracking mode %q", spec.Name, spec.Tracking)
 			}
-			dialect := &recordingDialect{Dialect: sqlite.New()}
+			dialect := testsupport.NewRecordingDialect()
 			db, err := orm.Open(ctx, path, orm.Options{Dialect: dialect, Tracking: mode})
 			if err != nil {
 				t.Fatalf("%s: open: %v", spec.Name, err)
@@ -299,7 +243,7 @@ type trackingRun struct {
 	t       *testing.T
 	ctx     context.Context
 	db      *orm.Db
-	dialect *recordingDialect
+	dialect *testsupport.RecordingDialect
 	path    string // the database file, for a row count read outside the session
 	tx      *orm.Tx
 	summary orm.FlushSummary
@@ -315,7 +259,7 @@ func (r *trackingRun) fatalf(i int, format string, args ...any) {
 // step replays one step and judges its error against expectError.
 func (r *trackingRun) step(i int, step trackingStep) {
 	r.t.Helper()
-	r.dialect.statements = nil
+	r.dialect.Reset()
 	err := r.perform(i, step)
 	if step.ExpectError != "" {
 		if core.CodeOf(err) != step.ExpectError {
@@ -677,7 +621,7 @@ func (r *trackingRun) checkWritten(i int, raw json.RawMessage) {
 		if all != "all" {
 			r.fatalf(i, "expectWritten %q is not \"all\" or a list", all)
 		}
-		if updates := r.dialect.updates(); len(updates) != 1 || !updates[0].all {
+		if updates := r.dialect.Updates(); len(updates) != 1 || !updates[0].All {
 			r.fatalf(i, "expected one full-row update, the dialect rendered %+v", updates)
 		}
 		return
@@ -686,14 +630,14 @@ func (r *trackingRun) checkWritten(i int, raw json.RawMessage) {
 	if err := json.Unmarshal(raw, &want); err != nil {
 		r.fatalf(i, "expectWritten is neither \"all\" nor a list: %s", raw)
 	}
-	updates := r.dialect.updates()
+	updates := r.dialect.Updates()
 	if len(want) == 0 {
 		if len(updates) != 0 {
 			r.fatalf(i, "expected no update statement, the dialect rendered %+v", updates)
 		}
 		return
 	}
-	if len(updates) != 1 || updates[0].all || !sameNames(updates[0].properties, want) {
+	if len(updates) != 1 || updates[0].All || !sameNames(updates[0].Properties, want) {
 		r.fatalf(i, "expected one column-list update of %v, the dialect rendered %+v", want, updates)
 	}
 }

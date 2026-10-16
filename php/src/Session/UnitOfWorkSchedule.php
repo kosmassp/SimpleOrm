@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace SimpleOrm\Session;
 
 use SimpleOrm\Metadata\EntityMap;
-use SimpleOrm\Metadata\RelationshipKind;
 use SimpleOrm\Metadata\RelationshipMap;
 
 use function array_key_exists;
@@ -50,10 +49,11 @@ final class UnitOfWorkSchedule
     }
 
     /**
-     * Schedules an insert, or — for an instance already scheduled — records what newly reached it:
-     * the user's own `persist` (no `$via`) marks it direct; a cascade through a one-to-one/one-to-many
-     * navigation records the owner link its key flows over. A many-to-one cascade reaches a parent the
-     * child already references through its navigation, so it needs no link.
+     * Schedules an insert, or — for an instance already scheduled — records what newly reached it: the user's
+     * own `persist` (no `$via`) marks it direct; a persist cascade records the link (owner and navigation) that
+     * reached it. A one-to-many/one-to-one link is where the child takes its owner's key at flush; a many-to-one
+     * link only records that the owner scheduled the parent, so cancelling the owner can cancel the parent too
+     * (spec/unit-of-work.md Clarifications, ADR-0036: cancelling a scheduled insert).
      */
     public function scheduleInsert(object $instance, EntityMap $map, ?object $owner, ?RelationshipMap $via): void
     {
@@ -66,11 +66,10 @@ final class UnitOfWorkSchedule
             'links' => [],
         ];
 
-        // SPEC-GAP: "removing a scheduled parent cancels the inserts its cascade scheduled" does not say what happens
-        // to a child the user also persisted directly. Assumed it stays scheduled (`direct`): the user asked for it.
+        // A child persisted directly by name stays scheduled when its owner is cancelled: the user asked for it.
         if ($via === null) {
             $entry['direct'] = true;
-        } elseif ($owner !== null && $via->kind !== RelationshipKind::ManyToOne) {
+        } elseif ($owner !== null) {
             $entry['links'][spl_object_id($owner) . ':' . $via->propertyName] = ['owner' => $owner, 'relationship' => $via];
         }
 

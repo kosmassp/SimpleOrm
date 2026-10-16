@@ -166,7 +166,9 @@ row count, read outside the session so a rolled-back flush is visible).
   only through a non-null many-to-one navigation to a scheduled instance, or
   a cascade link; a self-referencing edge is ignored. Ties: the lowest (type
   rank, schedule order) among the ready instances goes next.
-- **Type rank** is computed over the flush's types from the relationship
+- **Type rank** is computed over the flush's types **and every type reachable
+  from them through relationships** (a scheduled pair related only through a
+  third, unscheduled type still ranks in dependency order), from the relationship
   metadata (a type after its many-to-one targets and after the owners whose
   one-to-many/one-to-one point at it); **types in a dependency cycle share a
   rank** and the schedule decides inside it.

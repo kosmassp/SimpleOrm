@@ -125,8 +125,10 @@ A flush writes inserts in foreign-key order (a parent first; its generated key f
 child's FK before the child's insert), then every dirty tracked instance as a column-list
 update, then deletes children first — all through the session's own `insert`/`update`/`delete`,
 inside the active transaction or one the flush begins (rolled back on failure; the schedule is
-kept). A cycle among the scheduled instances is `UOW-004`, before any SQL; persisting an instance
-scheduled for removal is `UOW-006`; `hasPendingWork()` tells whether anything is scheduled. Cascades
+kept and the session's keys, tracking, snapshots, and versions are put back, so it flushes again as
+it was). A cycle among the scheduled instances is `UOW-004`, before any SQL; persisting an instance
+scheduled for removal is `UOW-006`; `hasPendingWork()` tells whether anything is scheduled (false,
+never an error, on an untracked session). Cascades
 are declared, never inferred: `#[Cascade(CascadeOperation::Persist, CascadeOperation::Remove)]` on a
 `#[ManyToOne]`/`#[OneToOne]`/`#[OneToMany]` navigation (`MAP-025` anywhere else, or on a
 `#[ManyToMany]`). `persist` cascades over initialized navigations only and records the owner key each

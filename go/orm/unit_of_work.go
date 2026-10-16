@@ -109,8 +109,8 @@ func Persist[T any](db *Db, entity *T) error {
 	if entity == nil {
 		return fmt.Errorf("orm.Persist: entity is nil")
 	}
-	// SPEC-GAP: Persist and Remove take no context and return no summary — the spec says nothing about
-	// their signatures; they do no I/O, so Go's "every I/O function takes a context" rule does not apply.
+	// No context, no summary: Persist and Remove do no I/O, so the "every I/O function takes a context"
+	// rule does not apply (CODING-STANDARD §10).
 	plan := &persistPlan{db: db, visited: map[any]bool{}, added: map[any]*scheduledInsert{}}
 	if err := plan.visit(reflect.TypeFor[T](), entity, nil); err != nil {
 		return err
@@ -137,10 +137,6 @@ type plannedLink struct {
 
 // visit plans one instance; via is the cascade that reached it (nil for the caller's own call).
 func (p *persistPlan) visit(entityType reflect.Type, ptr any, via *cascadeLink) error {
-	m, err := p.db.maps.Load(entityType)
-	if err != nil {
-		return err
-	}
 	uow := p.db.schedule()
 
 	scheduled := uow.insertOf[ptr]
@@ -155,26 +151,21 @@ func (p *persistPlan) visit(entityType reflect.Type, ptr any, via *cascadeLink) 
 	}
 	p.visited[ptr] = true
 
-	// SPEC-GAP: the order of Persist's refusals — UOW-006 (scheduled for removal) before the tracked check
-	// and before CRUD-003/CRUD-002 — is not in the spec; a cascade reaching a removed instance is UOW-006 too.
+	// The order of refusals (spec/unit-of-work.md Clarifications, ADR-0036): the instance's own shape
+	// (CRUD-003, CRUD-002), then UOW-006 — a cascade reaching a removed instance is UOW-006 too — then the cascade.
+	m, err := requireWritableKeyedType(p.db, entityType)
+	if err != nil {
+		return err
+	}
 	if uow.removeOf[ptr] != nil {
 		return core.Errorf("UOW-006", m.EntityName(),
 			"the instance is scheduled for removal; it cannot also be persisted in the same unit of work")
 	}
 
-	// SPEC-GAP: Persist of a tracked instance "schedules nothing" — whether its declared cascades still
-	// walk is unspecified. Here they do (the spec's "a never-loaded collection of a tracked instance
-	// cascades nothing" only has a point if an initialized one cascades), so a new child added to a
-	// loaded collection is scheduled by persisting the loaded owner. Persisting an already-scheduled
-	// instance again is a no-op (it only becomes "direct").
+	// A tracked instance schedules nothing for itself but its declared cascades still walk, so a new child
+	// added to a loaded collection is scheduled by persisting the loaded owner; persisting an instance that
+	// is already scheduled again is a no-op (it only becomes "direct").
 	if scheduled == nil && p.db.entryOf(ptr) == nil {
-		// An untracked, unscheduled instance: a new insert, which must be a keyed table row.
-		if m.Kind != core.RelationTable {
-			return core.Errorf("CRUD-003", m.EntityName(), "is %s-backed and read-only; writes need a table", m.Kind)
-		}
-		if len(m.KeyProperties) == 0 {
-			return core.NewError("CRUD-002", m.EntityName(), "the entity defines no key")
-		}
 		uow.counter++
 		scheduled = &scheduledInsert{ptr: ptr, m: m, order: uow.counter}
 		p.adds = append(p.adds, scheduled)
@@ -182,9 +173,9 @@ func (p *persistPlan) visit(entityType reflect.Type, ptr any, via *cascadeLink) 
 	}
 	p.note(ptr, scheduled, via)
 
-	// SPEC-GAP: schedule order of a cascade is pre-order — the owner first, then its targets in
-	// collection order, depth first; a child already scheduled keeps its earlier position. A many-to-one
-	// persist cascade schedules the referenced parent the same way (the spec shows only one-to-many).
+	// Schedule order is pre-order: the owner, then its targets in navigation order, depth first; a child
+	// already scheduled keeps its earlier position, and a many-to-one persist cascade schedules the
+	// referenced parent the same way (Clarifications).
 	for _, relationship := range m.Relationships {
 		if !relationship.Cascade.Has(core.CascadePersist) {
 			continue
@@ -276,10 +267,6 @@ func (p *removePlan) visit(entityType reflect.Type, ptr any) error {
 	}
 	p.visited[ptr] = true
 
-	m, err := p.db.maps.Load(entityType)
-	if err != nil {
-		return err
-	}
 	uow := p.db.schedule()
 
 	if scheduled := uow.insertOf[ptr]; scheduled != nil {
@@ -287,17 +274,17 @@ func (p *removePlan) visit(entityType reflect.Type, ptr any) error {
 		return nil
 	}
 	if uow.removeOf[ptr] != nil {
-		return nil // already scheduled for removal
+		return nil // already scheduled for removal: a no-op
 	}
-	// SPEC-GAP: a remove cascade reaching an instance the session neither tracks nor has scheduled for
-	// insert is UOW-001 (the spec states UOW-001 only for the caller's own Remove); removing an instance
-	// already scheduled for removal again is a no-op.
+	// The order of refusals (Clarifications): the instance's own shape, then UOW-001 — an instance the session
+	// neither tracks nor has scheduled for insert, a stranger in a loaded collection too — then the cascade.
+	m, err := requireWritableKeyedType(p.db, entityType)
+	if err != nil {
+		return err
+	}
 	if p.db.entryOf(ptr) == nil {
 		return core.NewError("UOW-001", m.EntityName(),
 			"the session does not track this instance, so it knows no row to delete; read it through the session first, or delete by key")
-	}
-	if m.Kind != core.RelationTable {
-		return core.Errorf("CRUD-003", m.EntityName(), "is %s-backed and read-only; writes need a table", m.Kind)
 	}
 
 	uow.counter++
@@ -308,8 +295,8 @@ func (p *removePlan) visit(entityType reflect.Type, ptr any) error {
 			continue
 		}
 		targets, initialized := navigationTargets(ptr, relationship)
-		// SPEC-GAP: UOW-005 is the never-loaded *collection* (a nil slice); a nil singular navigation of
-		// any kind cascades nothing, as the spec says; an empty non-nil slice is loaded-and-empty.
+		// UOW-005 is for a never-loaded collection only (a nil slice); a nil singular navigation cascades nothing
+		// and an empty non-nil slice is loaded-and-empty (spec/unit-of-work.md Clarifications, ADR-0036).
 		if !initialized && relationship.Kind == core.RelationshipOneToMany {
 			return core.Errorf("UOW-005", m.EntityName()+"."+relationship.PropertyName,
 				"the collection was never loaded, so a remove cascade cannot know its members; load it (orm.Load) or remove the children explicitly — nothing loads implicitly")
@@ -339,8 +326,8 @@ func (u *unitOfWork) cancel(initial []*scheduledInsert) {
 	for _, scheduled := range initial {
 		cancelled[scheduled] = true
 	}
-	// SPEC-GAP: "cancels the insert (and the inserts it cascaded)" — a child that was also persisted
-	// directly, or reached by another still-scheduled owner, stays scheduled; the rule is transitive.
+	// Cancelling is transitive; a child that was also persisted directly, or reached by another
+	// still-scheduled owner, stays scheduled (Clarifications: cancelling a scheduled insert).
 	for changed := len(cancelled) > 0; changed; {
 		changed = false
 		for _, scheduled := range u.inserts {

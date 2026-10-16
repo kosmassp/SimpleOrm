@@ -411,11 +411,31 @@ public sealed partial class Db
     /// </summary>
     private Dictionary<Type, int> TypeRanks(IEnumerable<Type> types)
     {
-        var involved = types.Distinct().ToList();
+        // The graph spans every type reachable through relationships from the
+        // flush's own, so two scheduled types related only through a third
+        // (not scheduled this time) still rank in dependency order.
+        var involved = new List<Type>();
+        var pending = new Queue<Type>(types.Distinct());
         var dependencies = new Dictionary<Type, HashSet<Type>>();
-        foreach (var type in involved)
+        while (pending.Count > 0)
         {
+            var type = pending.Dequeue();
+            if (dependencies.ContainsKey(type))
+            {
+                continue;
+            }
+
+            involved.Add(type);
             dependencies[type] = [];
+            foreach (var relationship in Maps.Load(type).Relationships)
+            {
+                if (relationship.Kind is RelationshipKind.ManyToMany)
+                {
+                    continue;
+                }
+
+                pending.Enqueue(relationship.TargetType);
+            }
         }
 
         foreach (var type in involved)
@@ -424,11 +444,10 @@ public sealed partial class Db
             {
                 switch (relationship.Kind)
                 {
-                    case RelationshipKind.ManyToOne when dependencies.ContainsKey(relationship.TargetType):
+                    case RelationshipKind.ManyToOne:
                         dependencies[type].Add(relationship.TargetType);               // type depends on target
                         break;
-                    case RelationshipKind.OneToMany or RelationshipKind.OneToOne
-                        when dependencies.ContainsKey(relationship.TargetType):
+                    case RelationshipKind.OneToMany or RelationshipKind.OneToOne:
                         dependencies[relationship.TargetType].Add(type);               // target depends on this owner
                         break;
                 }

@@ -2611,3 +2611,85 @@ advisory in the meantime; the SQL Server dialect pins the patched version.
 **Next — M2, the unit of work** (§7c), only when the owner says so.
 
 **Status.** Accepted. M1 done in all three implementations.
+
+## ADR-0036 — Level 3 M2: the unit of work, in three implementations (2026-10-16)
+
+The second Level 3 milestone (ADR-0034 §7c M2), by the per-milestone method:
+the reference with `spec/unit-of-work.md` and `conformance/flush-cases/`
+first, then PHP and Go by agents forbidden to read another implementation,
+then a uniformity review, then every gap resolved against the reference and
+written into the spec.
+
+**The shape.** On a tracked session (`UOW-003` otherwise): `Persist(entity)`
+schedules an insert for an instance the session does not track and cascades
+through navigations declared `[Cascade(Persist)]`; `Remove(entity)`
+schedules a delete for a tracked instance, cancels a scheduled insert, and
+cascades `Remove` over loaded collections — a never-loaded one is `UOW-005`
+(nothing loads implicitly), a null singular navigation cascades nothing;
+`FlushAsync` writes inserts in dependency order (a child after the scheduled
+parent its navigation or cascade points at; types in foreign-key order,
+cycles sharing a rank; then schedule order) with **generated keys flowing
+into dependents** before each insert, then every dirty tracked instance as a
+column-list update, then deletes children-first — inside the session's
+transaction or one the flush opens and commits — and returns a summary. A
+cycle is `UOW-004` before any SQL; a conflicting schedule `UOW-006`. **Every
+statement is the existing generated CRUD** (one implementation per concept),
+so the identity gate, the snapshots, `CRUD-004`, and the version rules apply
+unchanged. **Cascades are declared, never inferred**: `[Cascade]` on a
+many-to-one/one-to-one/one-to-many navigation, exported as `"cascade"` only
+when declared, `MAP-025` anywhere else (a many-to-many's link rows are
+entities the unit of work persists explicitly). The fixture
+`Transaction.Details` cascades both. Batching (`DbBatch`) is an execution
+detail the Level 3 exit benchmark decides; the statement sequence is what the
+spec pins.
+
+**The ports.** PHP: `Session\DbUnitOfWork` + `UnitOfWorkSchedule`,
+`#[Cascade(CascadeOperation::Persist, CascadeOperation::Remove)]` (a
+variadic pure enum — PHP has no flags), `ReflectionProperty::isInitialized`
+as the "never loaded" test (the mapper `unset()`s unloaded collections);
+26 new tests, 489 total. Go: `orm:"one_to_many=…,cascade=persist+remove"`,
+`orm.Persist/Remove`, `db.Flush`, an undo journal; 28 new tests. Both share
+one step-script engine with their tracking runners.
+
+**The audit: 13 + 19 gap questions; six reference fixes; one rule taken
+from the ports.** The reference was the weakest of the three on failure:
+a flush that failed after some statements left memory half-applied (an
+inserted instance tracked under a rolled-back key, a moved snapshot), so a
+retry would have inserted twice — **the Go port's undo journal became the
+rule**: a failed flush reverts the in-memory effects of every statement that
+ran, and the whole schedule flushes again as it was. Also fixed in C#: a
+scheduled insert already written immediately inserted a second time at
+flush (now dropped as done), an empty flush opened a transaction, the update
+phase ordered by dictionary enumeration (now a registration sequence), a
+dirty tracked view instance was silently skipped (now `CRUD-003`), an empty
+`[Cascade]` passed (now `MAP-025`), and type ranks broke cycles by
+visitation order (now Tarjan components share a rank). Both ports had
+independently decided that **a child persisted directly by name survives
+its owner's cancellation**; the reference adopted it. The remaining
+questions were silences the reference already answered consistently
+(persist of a tracked instance still cascades; refusal orders; `UOW-005`
+for never-loaded collections only; dependencies are navigations, never FK
+values; keys flow only before inserts, copied as they are; deletes in the
+entity form; `HasPendingWork` is a question; the runner conventions) — all
+written as Clarifications in `spec/unit-of-work.md`.
+
+**The review pass** aligned both ports to the Clarifications — Go's refusal
+order and `MAP-025` for an empty cascade, PHP's undo journal
+(`FlushJournal` + tracking checkpoints), `hasPendingWork` as a question, type
+ranks as Tarjan components in both, as-is key copy, latest-registration
+order — found two real PHP bugs beyond the known deviations (a scheduled
+insert already written immediately inserted again; a parent scheduled by a
+many-to-one persist cascade was not cancelled with its owner) and pinned
+every rule with tests in both ports (16 + 10 new). Its one remaining
+ambiguity — whether type ranks span only the flush's types or everything
+reachable through relationships — was settled on the ports' reading (the
+reachable closure), the reference aligned and the Clarification completed.
+No `SPEC-GAP` comment remains.
+
+**Verification.** C#: 360 passed, 22 skipped (SQL Server LocalDB and the
+Postgres live suite, no server reachable). PHP: 505 tests, 1822 assertions. Go: every package ok.
+
+**Next — M3, detach/merge and declared hooks** (§7c), only when the owner
+says so.
+
+**Status.** Accepted. M2 done in all three implementations.

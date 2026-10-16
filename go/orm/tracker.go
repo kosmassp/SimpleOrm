@@ -77,7 +77,7 @@ func (tr *tracker) register(m *core.EntityMap, ptr reflect.Value, key core.KeyTu
 	if holder := tr.find(m.Type, key); holder != nil {
 		tr.forget(holder)
 	}
-	// SPEC-GAP: "identity-map registration order" is the order of the latest registration: an instance
+	// Registration order is the latest registration (spec/unit-of-work.md Clarifications, ADR-0036): an instance
 	// registered again (a re-insert, a full-row update of an unknown instance) takes a new position.
 	tr.nextSeq++
 	entry := &trackedEntry{ptr: ptr, m: m, key: key, snapshot: snapshot, seq: tr.nextSeq}

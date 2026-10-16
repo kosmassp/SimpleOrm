@@ -15,10 +15,12 @@ use SimpleOrm\Metadata\Attributes\Cascade;
 use SimpleOrm\Metadata\Attributes\Column;
 use SimpleOrm\Metadata\Attributes\ForeignKey;
 use SimpleOrm\Metadata\Attributes\Generated;
+use SimpleOrm\Metadata\Attributes\Ignore;
 use SimpleOrm\Metadata\Attributes\Key;
 use SimpleOrm\Metadata\Attributes\ManyToMany;
 use SimpleOrm\Metadata\Attributes\ManyToOne;
 use SimpleOrm\Metadata\Attributes\OneToOne;
+use SimpleOrm\Metadata\Attributes\Owned;
 use SimpleOrm\Metadata\Attributes\Table;
 use SimpleOrm\Metadata\CascadeOperation;
 use SimpleOrm\Metadata\EntityMapJson;
@@ -26,11 +28,13 @@ use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Session\Db;
 use SimpleOrm\Session\DbOptions;
 use SimpleOrm\Session\TrackingMode;
+use SimpleOrm\Tests\Sample\Models\Address;
 use SimpleOrm\Tests\Sample\Models\Role;
 use SimpleOrm\Tests\Sample\Models\Transaction;
 use SimpleOrm\Tests\Sample\Models\TransactionDetail;
 use SimpleOrm\Tests\Sample\Models\User;
 use SimpleOrm\Tests\Sample\Models\UserRole;
+use SimpleOrm\Tests\Sample\Models\UserTransactionTotal;
 use SimpleOrm\Tests\Support\ConformanceSeed;
 use SimpleOrm\Tests\Support\RecordingUpdateDialect;
 use SimpleOrm\Tests\Support\SampleDatabase;
@@ -63,6 +67,9 @@ final class UnitOfWorkTest extends TestCase
         $this->db->createTable(Node::class);
         $this->db->createTable(Account::class);
         $this->db->createTable(AccountSettings::class);
+        $this->db->createTable(Item::class);
+        $this->db->createTable(CycleA::class);
+        $this->db->createTable(CycleB::class);
         ConformanceSeed::insert($this->fixture);
         $this->observer = Db::open($this->fixture->connectionString(), new DbOptions(new SqliteDialect()));
     }
@@ -170,14 +177,6 @@ final class UnitOfWorkTest extends TestCase
 
         self::assertSame(['persist', 'remove'], $account['relationships'][0]['cascade']);
         self::assertArrayNotHasKey('cascade', $settings['relationships'][0]);
-    }
-
-    // --- the unit of work needs tracking ------------------------------------------------------
-
-    #[Test]
-    public function has_pending_work_on_an_untracked_session_is_uow_003(): void
-    {
-        self::assertSame('UOW-003', $this->code(fn () => $this->observer->hasPendingWork()));
     }
 
     // --- cycles (UOW-004) ----------------------------------------------------------------------
@@ -365,6 +364,329 @@ final class UnitOfWorkTest extends TestCase
         self::assertSame(0, $this->rowsOf(Account::class));
     }
 
+    // --- the Clarifications, pinned (ADR-0036) ---------------------------------------------------------
+
+    /** @return list<string> every write the dialect rendered since the last reset, as `op Entity` */
+    private function ops(): array
+    {
+        return array_map(
+            static fn (array $statement): string => $statement['op'] . ' ' . $statement['entity'],
+            $this->recorder->statements,
+        );
+    }
+
+    #[Test]
+    public function a_cascade_naming_no_operation_is_map025(): void
+    {
+        self::assertContains('MAP-025', $this->codesOf(Map025EmptyFixture::class));
+    }
+
+    #[Test]
+    public function a_cascade_on_an_ignored_property_an_owned_navigation_or_an_owned_member_is_map025(): void
+    {
+        self::assertContains('MAP-025', $this->codesOf(Map025IgnoredFixture::class));
+        self::assertContains('MAP-025', $this->codesOf(Map025OwnedNavigationFixture::class));
+        self::assertContains('MAP-025', $this->codesOf(Map025OwnedMemberFixture::class));
+    }
+
+    #[Test]
+    public function has_pending_work_on_an_untracked_session_is_false_never_uow_003(): void
+    {
+        self::assertFalse($this->observer->hasPendingWork());
+    }
+
+    #[Test]
+    public function the_instances_own_shape_is_refused_before_anything_else(): void
+    {
+        $row = $this->db->queryAll(UserTransactionTotal::class)[0];
+
+        self::assertSame('CRUD-003', $this->code(fn () => $this->db->persist($row)));
+        self::assertSame('CRUD-003', $this->code(fn () => $this->db->remove($row)));
+        self::assertSame('CRUD-003', $this->code(fn () => $this->db->remove(new UserTransactionTotal())));
+        self::assertFalse($this->db->hasPendingWork());
+    }
+
+    #[Test]
+    public function a_dirty_tracked_read_only_instance_refuses_crud003_at_flush_and_the_flush_is_undone(): void
+    {
+        $row = $this->db->queryAll(UserTransactionTotal::class)[0];
+        $row->userName = 'changed';
+        $fresh = self::newUser('Linus', 'linus@example.com');
+        $this->db->persist($fresh);
+
+        self::assertSame('CRUD-003', $this->code(fn () => $this->db->flush()));
+
+        self::assertFalse($this->db->isTracked($fresh));
+        self::assertTrue($this->db->hasPendingWork());
+        self::assertTrue($this->db->isDirty($row));
+        self::assertSame(2, $this->rowsOf(User::class));
+    }
+
+    // --- a failed flush undoes its in-memory effects --------------------------------------------------
+
+    #[Test]
+    public function a_failed_flush_puts_inserts_updates_and_the_schedule_back_as_they_were(): void
+    {
+        $ada = $this->db->get(User::class, 1);
+        $fine = self::newUser('Linus', 'linus@example.com');
+        $duplicate = self::newUser('Impostor', 'ada@example.com');   // users.email is unique
+        $this->db->persist($fine);
+        $ada->name = 'Ada Lovelace';
+        $this->db->persist($duplicate);
+
+        try {
+            $this->db->flush();
+            self::fail('the unique index on users.email should refuse the second insert');
+        } catch (PDOException) {
+            // the provider's own exception propagates (CODING-STANDARD §4)
+        }
+
+        self::assertFalse($this->db->isTracked($fine));
+        self::assertFalse((new ReflectionProperty(User::class, 'id'))->isInitialized($fine), 'the generated key is reset to unset');
+        self::assertSame(['name'], $this->db->changesOf($ada));
+        self::assertSame(2, $this->rowsOf(User::class));
+
+        $this->db->remove($duplicate);
+        $summary = $this->db->flush();
+
+        self::assertSame([1, 1, 0], [$summary->inserted, $summary->updated, $summary->deleted]);
+        self::assertTrue($this->db->isTracked($fine));
+        self::assertSame(3, $this->rowsOf(User::class));
+    }
+
+    #[Test]
+    public function a_failed_flush_undoes_an_update_and_a_delete_that_ran(): void
+    {
+        $stale = $this->db->get(Transaction::class, 1);
+        $this->db->load($stale, 'details');
+        // Another session bumps the row's version: the tracked copy is stale.
+        $elsewhere = $this->observer->get(Transaction::class, 1);
+        $elsewhere->note = 'elsewhere';
+        $this->observer->update($elsewhere);
+
+        $mine = self::newTransaction();
+        $this->db->insert($mine);
+        $mine->note = 'local';
+        $ada = $this->db->get(User::class, 1);
+        $ada->name = 'Ada Lovelace';
+        $this->db->remove($stale);
+
+        self::assertSame('CRUD-010', $this->code(fn () => $this->db->flush()), 'a delete is version-checked');
+
+        self::assertSame(0, $mine->version, 'the version an update bumped is put back');
+        self::assertSame(['note'], $this->db->changesOf($mine));
+        self::assertSame(['name'], $this->db->changesOf($ada));
+        self::assertTrue($this->db->isTracked($stale), 'the delete that failed leaves its instance tracked');
+        self::assertTrue($this->db->hasPendingWork());
+        self::assertSame('Ada', $this->observer->get(User::class, 1)->name);
+    }
+
+    // --- cancelling a scheduled insert -----------------------------------------------------------------
+
+    #[Test]
+    public function a_child_reached_by_two_scheduled_owners_survives_the_cancellation_of_one(): void
+    {
+        $shared = self::newDetail('shared');
+        $first = self::newTransaction();
+        $second = self::newTransaction();
+        self::navigate($first, 'details', [$shared]);
+        self::navigate($second, 'details', [$shared]);
+        $this->db->persist($first);
+        $this->db->persist($second);
+
+        $this->db->remove($first);
+        $summary = $this->db->flush();
+
+        self::assertSame(2, $summary->inserted);
+        self::assertFalse($this->db->isTracked($first));
+        self::assertSame($second->id, $shared->transactionId);
+
+        // With every owner cancelled the child goes too.
+        $orphan = self::newDetail('orphan');
+        $a = self::newTransaction();
+        $b = self::newTransaction();
+        self::navigate($a, 'details', [$orphan]);
+        self::navigate($b, 'details', [$orphan]);
+        $this->db->persist($a);
+        $this->db->persist($b);
+        $this->db->remove($a);
+        $this->db->remove($b);
+
+        self::assertFalse($this->db->hasPendingWork());
+    }
+
+    #[Test]
+    public function cancelling_an_owner_cancels_the_parent_its_many_to_one_cascade_scheduled(): void
+    {
+        $item = new Item();
+        self::navigate($item, 'node', self::newNode('cascaded'));
+        $this->db->persist($item);
+        $this->db->remove($item);
+
+        self::assertFalse($this->db->hasPendingWork());
+
+        $kept = self::newNode('kept');
+        $other = new Item();
+        self::navigate($other, 'node', $kept);
+        $this->db->persist($kept);   // persisted by name: it stays
+        $this->db->persist($other);
+        $this->db->remove($other);
+        $summary = $this->db->flush();
+
+        self::assertSame(1, $summary->inserted);
+        self::assertTrue($this->db->isTracked($kept));
+        self::assertFalse($this->db->isTracked($other));
+    }
+
+    #[Test]
+    public function persisting_a_tracked_owner_still_cascades_to_a_new_child(): void
+    {
+        $transaction = $this->db->get(Transaction::class, 1);
+        $detail = self::newDetail('Widget');
+        self::navigate($transaction, 'details', [$detail]);
+
+        $this->db->persist($transaction);
+        $summary = $this->db->flush();
+
+        self::assertSame(1, $summary->inserted);
+        self::assertSame(1, $detail->transactionId);
+        self::assertTrue($this->db->isTracked($detail));
+    }
+
+    #[Test]
+    public function removing_an_instance_already_scheduled_for_removal_is_a_no_op(): void
+    {
+        $transaction = $this->db->get(Transaction::class, 1);
+        $this->db->load($transaction, 'details');
+        $this->db->remove($transaction);
+
+        // A stranger now sits in the loaded collection; a second remove does not walk the cascade again.
+        self::navigate($transaction, 'details', [self::newDetail('stranger')]);
+        $this->db->remove($transaction);
+        $summary = $this->db->flush();
+
+        self::assertSame(1, $summary->deleted);
+    }
+
+    // --- work done immediately, and the empty flush ----------------------------------------------------------
+
+    #[Test]
+    public function work_done_immediately_is_dropped_not_done_twice(): void
+    {
+        $scheduled = self::newUser('Linus', 'linus@example.com');
+        $this->db->persist($scheduled);
+        $this->db->insert($scheduled);
+        $removed = $this->db->get(User::class, 2);
+        $this->db->remove($removed);
+        $this->db->delete(User::class, $removed);
+
+        $this->recorder->statements = [];
+        $summary = $this->db->flush();
+
+        self::assertSame([0, 0, 0], [$summary->inserted, $summary->updated, $summary->deleted]);
+        self::assertSame([], $this->recorder->statements);
+        self::assertFalse($this->db->hasPendingWork());
+        self::assertSame(2, $this->rowsOf(User::class), 'Ada and Linus: Grace deleted, Linus written once');
+    }
+
+    #[Test]
+    public function an_empty_flush_is_the_zero_summary_and_renders_nothing(): void
+    {
+        $this->recorder->statements = [];
+        $summary = $this->db->flush();
+
+        self::assertSame([0, 0, 0], [$summary->inserted, $summary->updated, $summary->deleted]);
+        self::assertSame([], $this->recorder->statements);
+        self::assertFalse($this->db->connection()->inTransaction());
+    }
+
+    // --- order -------------------------------------------------------------------------------------------------
+
+    #[Test]
+    public function types_in_a_dependency_cycle_share_a_rank_so_the_schedule_decides(): void
+    {
+        foreach ([[CycleA::class, CycleB::class], [CycleB::class, CycleA::class]] as $order) {
+            $instances = [CycleA::class => new CycleA(), CycleB::class => new CycleB()];
+            foreach ($order as $type) {
+                $this->db->persist($instances[$type]);
+            }
+
+            $this->recorder->statements = [];
+            self::assertSame(2, $this->db->flush()->inserted);
+
+            $short = array_map(static fn (string $type): string => 'insert ' . substr($type, strrpos($type, '\\') + 1), $order);
+            self::assertSame($short, $this->ops(), 'unrelated instances of two types in a cycle insert in schedule order');
+        }
+    }
+
+    #[Test]
+    public function updates_follow_the_latest_registration_and_count_statements_not_instances(): void
+    {
+        $ada = $this->db->get(User::class, 1);
+        $grace = $this->db->get(User::class, 2);
+        // Ada is deleted and inserted again: her registration is now the latest.
+        $this->db->delete(User::class, $ada);
+        $this->db->insert($ada);
+        $grace->name = 'Grace Hopper';
+        $ada->email = 'ada@new.example.com';
+
+        $this->recorder->statements = [];
+        $summary = $this->db->flush();
+
+        self::assertSame(2, $summary->updated);
+        self::assertSame(
+            [
+                ['op' => 'update', 'entity' => 'User', 'columns' => ['name']],
+                ['op' => 'update', 'entity' => 'User', 'columns' => ['email']],
+            ],
+            $this->recorder->statements,
+            'Grace (name) before Ada (email): registration order is the latest registration',
+        );
+
+        // A difference in the version alone is clean: no statement, nothing counted.
+        $transaction = $this->db->get(Transaction::class, 1);
+        $transaction->version += 5;
+        $this->recorder->statements = [];
+
+        self::assertSame(0, $this->db->flush()->updated);
+        self::assertSame([], $this->recorder->statements);
+    }
+
+    // --- keys, edges, identity -------------------------------------------------------------------------------------
+
+    #[Test]
+    public function keys_flow_as_they_are_and_a_self_reference_is_not_a_cycle(): void
+    {
+        $node = self::newNode('n');
+        $node->parentId = 99;
+        self::navigate($node, 'parent', self::newNode('stranger'));   // untracked and unscheduled: its key is unset
+        $this->db->persist($node);
+
+        self::assertSame(1, $this->db->flush()->inserted);
+        self::assertNull($node->parentId, 'a null key part is copied as it is, over the stale value');
+
+        $loop = self::newNode('loop');
+        self::navigate($loop, 'parent', $loop);
+        $this->db->persist($loop);
+
+        self::assertSame(1, $this->db->flush()->inserted);
+    }
+
+    #[Test]
+    public function an_untracked_instance_whose_key_another_holds_is_uow_002_at_flush(): void
+    {
+        $held = $this->db->get(UserRole::class, [1, 1]);
+        $second = new UserRole();
+        $second->userId = 1;
+        $second->roleId = 1;
+        $this->db->persist($second);   // persist cannot tell; the insert's identity gate does
+
+        self::assertSame('UOW-002', $this->code(fn () => $this->db->flush()));
+        self::assertTrue($this->db->hasPendingWork());
+        self::assertFalse($this->db->isTracked($second));
+        self::assertTrue($this->db->isTracked($held));
+    }
+
     // --- immediate operations beside the unit of work ----------------------------------------------------
 
     #[Test]
@@ -507,4 +829,118 @@ final class Map025ManyToManyFixture
     #[ManyToMany(Role::class, through: UserRole::class)]
     #[Cascade(CascadeOperation::Persist)]
     public private(set) array $roles = [];
+}
+
+/** Persist-only cascade from a many-to-one: persisting the item schedules the node it references. */
+#[Table('uow_items')]
+final class Item
+{
+    #[Key]
+    #[Generated]
+    #[Column]
+    public int $id;
+
+    #[Column]
+    #[ForeignKey(Node::class)]
+    public ?int $nodeId = null;
+
+    #[ManyToOne('nodeId')]
+    #[Cascade(CascadeOperation::Persist)]
+    public private(set) ?Node $node = null;
+}
+
+/** One of two types that reference each other through nullable many-to-one navigations: a metadata cycle (the type-rank fixture). */
+#[Table('uow_cycle_a')]
+final class CycleA
+{
+    #[Key]
+    #[Generated]
+    #[Column]
+    public int $id;
+
+    #[Column]
+    #[ForeignKey(CycleB::class)]
+    public ?int $peerId = null;
+
+    #[ManyToOne('peerId')]
+    public private(set) ?CycleB $peer = null;
+}
+
+#[Table('uow_cycle_b')]
+final class CycleB
+{
+    #[Key]
+    #[Generated]
+    #[Column]
+    public int $id;
+
+    #[Column]
+    #[ForeignKey(CycleA::class)]
+    public ?int $peerId = null;
+
+    #[ManyToOne('peerId')]
+    public private(set) ?CycleA $peer = null;
+}
+
+#[Table('map025_empty')]
+final class Map025EmptyFixture
+{
+    #[Key]
+    #[Generated]
+    #[Column]
+    public int $id;
+
+    // A declaration naming no operation.
+    #[OneToOne('accountId')]
+    #[Cascade()]
+    public private(set) ?AccountSettings $settings = null;
+}
+
+#[Table('map025_ignored')]
+final class Map025IgnoredFixture
+{
+    #[Key]
+    #[Generated]
+    #[Column]
+    public int $id;
+
+    // An ignored property is not a navigation either.
+    #[Ignore]
+    #[Cascade(CascadeOperation::Remove)]
+    public string $scratch = '';
+}
+
+#[Table('map025_owned_navigation')]
+final class Map025OwnedNavigationFixture
+{
+    #[Key]
+    #[Generated]
+    #[Column]
+    public int $id;
+
+    // An owned navigation is flattened into the owner's columns: nothing to cascade to.
+    #[Owned]
+    #[Cascade(CascadeOperation::Persist)]
+    public ?Address $address = null;
+}
+
+/** An owned type whose member declares a cascade. */
+#[Owned]
+final class CascadingAddress
+{
+    #[Column]
+    #[Cascade(CascadeOperation::Persist)]
+    public string $city = '';
+}
+
+#[Table('map025_owned_member')]
+final class Map025OwnedMemberFixture
+{
+    #[Key]
+    #[Generated]
+    #[Column]
+    public int $id;
+
+    #[Owned]
+    public ?CascadingAddress $address = null;
 }

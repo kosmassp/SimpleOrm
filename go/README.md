@@ -143,7 +143,7 @@ err = orm.Persist(db, user)
 err = orm.Remove(db, existing)                // schedules a delete of a tracked instance (UOW-001 otherwise)
 summary, err := db.Flush(ctx)                 // inserts, dirty updates, deletes — FK order, keys flowed; one transaction
 // summary.Inserted == 2: the user went first and its generated key reached order.UserID
-db.HasPendingWork()                           // anything scheduled? (dirty tracked instances flush regardless)
+db.HasPendingWork()                           // anything scheduled? (dirty tracked instances flush regardless; false when untracked)
 ```
 
 The flush writes **inserts** (each after the scheduled parents it references

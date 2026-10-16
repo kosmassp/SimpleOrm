@@ -10,6 +10,7 @@ import (
 
 	"testing"
 
+	"github.com/kosmassp/SimpleOrm/go/orm/internal/testsupport"
 	"github.com/kosmassp/SimpleOrm/go/orm/sqlite"
 )
 
@@ -39,7 +40,7 @@ func (r *trackingRun) checkFlush(i int, step trackingStep) {
 		if err := json.Unmarshal(raw, &want); err != nil {
 			r.fatalf(i, "expectStatements is not a list of statements: %s", raw)
 		}
-		got := r.dialect.statements
+		got := r.dialect.Statements
 		if len(got) != len(want) {
 			r.fatalf(i, "expected %d statements, the dialect rendered %d: %s", len(want), len(got), describeStatements(got))
 		}
@@ -58,8 +59,8 @@ func (r *trackingRun) checkFlush(i int, step trackingStep) {
 
 // statementMatches compares a rendered statement with an expected one; an
 // update's columns are the property list, or "all" for the full-row update.
-func statementMatches(got renderedStatement, want expectedStatement) bool {
-	if got.op != want.Op || got.entity != want.Entity {
+func statementMatches(got testsupport.RenderedStatement, want expectedStatement) bool {
+	if got.Op != want.Op || got.Entity != want.Entity {
 		return false
 	}
 	if want.Op != "update" || len(want.Columns) == 0 {
@@ -67,27 +68,27 @@ func statementMatches(got renderedStatement, want expectedStatement) bool {
 	}
 	var all string
 	if json.Unmarshal(want.Columns, &all) == nil {
-		return all == "all" && got.all
+		return all == "all" && got.All
 	}
 	var columns []string
 	if json.Unmarshal(want.Columns, &columns) != nil {
 		return false
 	}
-	return !got.all && sameNames(got.properties, columns)
+	return !got.All && sameNames(got.Properties, columns)
 }
 
-func describeStatements(statements []renderedStatement) string {
+func describeStatements(statements []testsupport.RenderedStatement) string {
 	text := "["
 	for n, statement := range statements {
 		if n > 0 {
 			text += ", "
 		}
-		text += statement.op + " " + statement.entity
-		if statement.op == "update" {
-			if statement.all {
+		text += statement.Op + " " + statement.Entity
+		if statement.Op == "update" {
+			if statement.All {
 				text += " all"
 			} else {
-				text += fmt.Sprintf(" %v", statement.properties)
+				text += fmt.Sprintf(" %v", statement.Properties)
 			}
 		}
 	}

@@ -377,8 +377,7 @@ final class AttributeMapLoader
         }
 
         if ($cascade->operations === []) {
-            // SPEC-GAP: spec/errors.md MAP-025 names only "on a property that is not a navigation" and
-            // "a many-to-many navigation"; an empty `#[Cascade()]` is treated as an invalid declaration.
+            // A declaration naming no operation is MAP-025 too (spec/unit-of-work.md Clarifications, ADR-0036).
             $errors[] = new MappingError('MAP-025', $target, '#[Cascade] names no operation; pass CascadeOperation::Persist and/or CascadeOperation::Remove');
 
             return;
@@ -392,7 +391,7 @@ final class AttributeMapLoader
 
     /**
      * `#[Cascade]` on a property that is not a `#[ManyToOne]`/`#[OneToOne]`/`#[OneToMany]` navigation
-     * (a column, an `#[Owned]` navigation, an unmapped property) is `MAP-025`.
+     * (a column, an ignored property, an `#[Owned]` navigation or an owned type's member) is `MAP-025`.
      *
      * @param list<MappingError> $errors
      */
@@ -750,8 +749,14 @@ final class AttributeMapLoader
             $column = self::attr($member, Column::class);
             $ignore = self::attr($member, Ignore::class);
             $enumAsInt = self::attr($member, EnumAsInt::class);
+            if ($member->getAttributes(Cascade::class) !== []) {
+                // A misplaced cascade is MAP-025 wherever it sits, an owned type's member included (spec/unit-of-work.md Clarifications).
+                self::cascadeOnNonNavigation($memberTarget, $errors);
+                continue;
+            }
+
             $forbidden = false;
-            foreach ([Key::class, Generated::class, Version::class, ForeignKey::class, Owned::class, Cascade::class,
+            foreach ([Key::class, Generated::class, Version::class, ForeignKey::class, Owned::class,
                 ManyToOne::class, OneToOne::class, OneToMany::class, ManyToMany::class] as $attribute) {
                 if ($member->getAttributes($attribute) !== []) {
                     $forbidden = true;

@@ -71,6 +71,7 @@ public sealed class UnitOfWorkTests(SqliteFixture fixture)
         db.Persist(fine);
         db.Persist(duplicate);
 
+        ada.Name = "renamed before the failure";
         await Assert.ThrowsAnyAsync<Exception>(() => db.FlushAsync(CancellationToken.None));
         Assert.True(db.HasPendingWork);
         await using (var other = await Db.OpenAsync(fixture.ConnectionString, TestDb.Options, CancellationToken.None))
@@ -78,8 +79,53 @@ public sealed class UnitOfWorkTests(SqliteFixture fixture)
             Assert.Equal(1, await other.QuerySingleAsync(TestDb.CountUsers, EmptyArgs.Value, CancellationToken.None));
         }
 
+        // The statements that ran are undone in memory too: the first insert's key
+        // and tracking, and the update's snapshot — so the retry flushes everything.
+        Assert.False(db.IsTracked(fine));
+        Assert.Equal(0, fine.Id);
+        Assert.True(db.IsDirty(ada));
+
         db.Remove(duplicate);              // cancels the bad insert
-        Assert.Equal(new FlushSummary(1, 0, 0), await db.FlushAsync(CancellationToken.None));
+        Assert.Equal(new FlushSummary(1, 1, 0), await db.FlushAsync(CancellationToken.None));
+        Assert.True(db.IsTracked(fine));
+        Assert.False(db.IsDirty(ada));
+    }
+
+    [Fact]
+    public async Task Work_done_immediately_is_dropped_from_the_schedule_and_an_empty_flush_opens_no_transaction()
+    {
+        await using var db = await OpenTrackedAsync();
+        var user = new User { Name = "now", Email = $"now-{Guid.NewGuid():N}@example.com", CreatedAtUtc = TestDb.SeedTime };
+        db.Persist(user);
+        await db.InsertAsync(user, CancellationToken.None);      // written immediately: the schedule entry is done, not work
+        Assert.Equal(default, await db.FlushAsync(CancellationToken.None));
+        Assert.False(db.HasPendingWork);
+
+        db.Remove(user);
+        await db.DeleteAsync<User>(user, CancellationToken.None);
+        Assert.Equal(default, await db.FlushAsync(CancellationToken.None));
+
+        await using var scope = await db.BeginAsync(CancellationToken.None);
+        Assert.Equal(default, await db.FlushAsync(CancellationToken.None));   // nothing to write: the scope is untouched
+        await scope.CommitAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task A_dirty_tracked_read_only_instance_refuses_the_flush_instead_of_being_skipped()
+    {
+        await using var db = await OpenTrackedAsync();
+        var ada = await TestDb.InsertUserAsync(db, $"U{Guid.NewGuid():N}", $"u-{Guid.NewGuid():N}@example.com");
+        await db.InsertAsync(
+            new Transaction { UserId = ada.Id, Status = TransactionStatus.Completed, Amount = 3m, CreatedAtUtc = TestDb.SeedTime },
+            CancellationToken.None);
+        var total = Assert.Single(await db.Query<UserTransactionTotal>()
+            .Where(Criteria.Eq(nameof(UserTransactionTotal.UserId), ada.Id))
+            .ToListAsync(CancellationToken.None));
+        Assert.True(db.IsTracked(total));
+
+        total.TotalAmount += 1;
+        var refused = await Assert.ThrowsAsync<SimpleOrmException>(() => db.FlushAsync(CancellationToken.None));
+        Assert.Equal("CRUD-003", refused.Code);
     }
 
     [Fact]
@@ -95,6 +141,36 @@ public sealed class UnitOfWorkTests(SqliteFixture fixture)
         db.Remove(transaction);
         Assert.False(db.HasPendingWork);
         Assert.Equal(new FlushSummary(0, 0, 0), await db.FlushAsync(CancellationToken.None));
+
+        // A child persisted by name survives its cancelled owner — the user asked for it.
+        var other = new Transaction { UserId = ada.Id, Status = TransactionStatus.Pending, Amount = 2m, CreatedAtUtc = TestDb.SeedTime };
+        var kept = new TransactionDetail { TransactionId = 0, Description = "kept", Quantity = 1, UnitPrice = 1m, CreatedAtUtc = TestDb.SeedTime };
+        typeof(Transaction).GetProperty(nameof(Transaction.Details))!.SetValue(other, new List<TransactionDetail> { kept });
+        db.Persist(kept);
+        db.Persist(other);
+        db.Remove(other);
+        Assert.True(db.HasPendingWork);
+        db.Remove(kept);              // cancel it too: nothing to flush
+        Assert.False(db.HasPendingWork);
+    }
+
+    [Fact]
+    public void An_empty_cascade_declaration_is_refused()
+    {
+        var error = Assert.Throws<MappingException>(() => new EntityMapLoader().Load<EmptyCascade>());
+        Assert.Contains(error.Errors, e => e.Code == "MAP-025");
+    }
+
+    [Table("uow_empty_cascade")]
+    public sealed class EmptyCascade
+    {
+        [Key]
+        [Column]
+        public long Id { get; set; }
+
+        [OneToMany(nameof(TransactionDetail.TransactionId))]
+        [Cascade(CascadeOperations.None)]
+        public IReadOnlyList<TransactionDetail> Details { get; private set; } = [];
     }
 
     [Fact]

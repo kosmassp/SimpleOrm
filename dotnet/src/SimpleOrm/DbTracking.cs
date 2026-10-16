@@ -247,7 +247,13 @@ public sealed partial class Db
 
     // --- snapshots ---------------------------------------------------------------------
 
+    private long _registrations;
+
     private void Register(EntityMap map, object?[] key, object entity)
+        => Register(map, key, entity, Snapshot(map, entity));
+
+    /// <summary>Registers with a given snapshot (a flush undo re-registers a deleted instance as it was).</summary>
+    private void Register(EntityMap map, object?[] key, object entity, object?[] snapshot)
     {
         var byKey = TrackedOf(map.EntityType);
         if (byKey.TryGetValue(key, out var stale))
@@ -257,7 +263,7 @@ public sealed partial class Db
             _trackedByInstance.Remove(stale.Entity);
         }
 
-        var entry = new TrackedEntry(entity, Snapshot(map, entity));
+        var entry = new TrackedEntry(entity, snapshot, ++_registrations);
         byKey[key] = entry;
         _trackedByInstance[entity] = entry;
     }
@@ -332,11 +338,14 @@ public sealed partial class Db
             _ => left.Equals(right),
         };
 
-    private sealed class TrackedEntry(object entity, object?[] snapshot)
+    private sealed class TrackedEntry(object entity, object?[] snapshot, long sequence)
     {
         public object Entity { get; } = entity;
 
         public object?[] Snapshot { get; set; } = snapshot;
+
+        /// <summary>Registration order within the session — the tie-breaker for the flush's update phase (unit-of-work.md).</summary>
+        public long Sequence { get; } = sequence;
     }
 
     /// <summary>Reference identity for the by-instance index (netstandard2.0 has no <c>ReferenceEqualityComparer</c>).</summary>

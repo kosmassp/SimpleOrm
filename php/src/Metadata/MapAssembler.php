@@ -343,6 +343,7 @@ final class MapAssembler
                 $spec->linkType,
                 $spec->linkForeignKeysToOwner,
                 $spec->linkForeignKeysToTarget,
+                $spec->cascade,
             );
         }
 

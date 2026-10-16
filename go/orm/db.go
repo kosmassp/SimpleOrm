@@ -28,6 +28,8 @@ type Db struct {
 	mapper     *mapping.ResultMapper
 	// tracker is the identity map and snapshots (Level 3 M1); nil in the default untracked session.
 	tracker *tracker
+	// uow is the unit of work's schedule (Level 3 M2), created on first Persist/Remove.
+	uow *unitOfWork
 }
 
 // executor is the surface *sql.Conn and *sql.Tx share — every statement runs

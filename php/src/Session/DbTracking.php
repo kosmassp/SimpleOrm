@@ -137,6 +137,34 @@ final class DbTracking
         return $dirty;
     }
 
+    /**
+     * The dirty properties a column-list update may write — never a key, the version, or a
+     * database-generated column (those are never in a SET). The one filter both the tracked
+     * `Db::update()` and the unit of work's flush use (CODING-STANDARD §8), so "dirty" means the
+     * same thing to both.
+     *
+     * @return list<PropertyMap>
+     */
+    public function writableDirtyProperties(TrackedInstance $entry): array
+    {
+        return array_values(array_filter(
+            $this->dirtyProperties($entry),
+            static fn (PropertyMap $p): bool => !$p->key && !$p->version && !$p->generated,
+        ));
+    }
+
+    /**
+     * Every identity-map entry in registration order (an instance keeps its position when it is
+     * re-snapshotted; a re-registered key or a newly read instance goes last) — the order the flush
+     * writes dirty instances in within one type (unit-of-work.md "Order of writes").
+     *
+     * @return list<TrackedInstance>
+     */
+    public function entries(): array
+    {
+        return array_values($this->byInstance);
+    }
+
     /** The `UOW-001` refusal for an instance this tracked session does not hold. */
     public static function notTracked(object $entity): SimpleOrmException
     {

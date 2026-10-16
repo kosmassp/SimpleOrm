@@ -152,6 +152,8 @@ type RelationshipMap struct {
 	LinkForeignKeysToOwner []string
 	// LinkForeignKeysToTarget: many-to-many only — the link properties referencing the element type, in declaration order.
 	LinkForeignKeysToTarget []string
+	// Cascade is what this navigation cascades in the unit of work (Level 3 M2, spec/unit-of-work.md): declared, never inferred.
+	Cascade CascadeOperations
 }
 
 // PropertyMap is one mapped field ↔ column pair (§7.1). The loader resolves the

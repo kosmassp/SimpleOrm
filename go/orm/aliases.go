@@ -48,6 +48,8 @@ type (
 	KeyStrategy = core.KeyStrategy
 	// RelationshipKind is a navigation's cardinality.
 	RelationshipKind = core.RelationshipKind
+	// CascadeOperations is what a navigation cascades in the unit of work (Level 3 M2): persist, remove, or both.
+	CascadeOperations = core.CascadeOperations
 	// ColumnType is the neutral type token vocabulary.
 	ColumnType = core.ColumnType
 
@@ -130,6 +132,10 @@ const (
 	RelationshipOneToMany  = core.RelationshipOneToMany
 	RelationshipManyToMany = core.RelationshipManyToMany
 	RelationshipOneToOne   = core.RelationshipOneToOne
+
+	// The declarable cascades (Level 3 M2): `orm:"one_to_many=TransactionID,cascade=persist+remove"`.
+	CascadePersist = core.CascadePersist
+	CascadeRemove  = core.CascadeRemove
 
 	TypeInt16          = core.TypeInt16
 	TypeInt32          = core.TypeInt32

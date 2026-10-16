@@ -340,10 +340,17 @@ func QueryAll[T any](ctx context.Context, db *Db) ([]T, error) {
 // its (generated) key, with a fresh snapshot (Level 3 M1); a natural key another
 // tracked instance holds is UOW-002 before any SQL.
 func Insert[T any](ctx context.Context, db *Db, entity *T) error {
-	if err := insertRow(ctx, db, entity); err != nil {
+	return insertEntity(ctx, db, reflect.TypeFor[T](), entity)
+}
+
+// insertEntity is Insert over an instance of a runtime type (entity is a *E):
+// the one insert path — the immediate call and the unit of work's flush both go
+// through it (Level 3 M2: never a second CRUD path).
+func insertEntity(ctx context.Context, db *Db, entityType reflect.Type, entity any) error {
+	if err := insertRow(ctx, db, entityType, entity); err != nil {
 		return err
 	}
-	m, err := db.maps.Load(reflect.TypeFor[T]())
+	m, err := db.maps.Load(entityType)
 	if err != nil {
 		return err
 	}
@@ -352,8 +359,7 @@ func Insert[T any](ctx context.Context, db *Db, entity *T) error {
 }
 
 // insertRow is Insert's write: the statement, the key write-back, no tracking.
-func insertRow[T any](ctx context.Context, db *Db, entity *T) error {
-	entityType := reflect.TypeFor[T]()
+func insertRow(ctx context.Context, db *Db, entityType reflect.Type, entity any) error {
 	m, err := db.maps.Load(entityType)
 	if err != nil {
 		return err
@@ -426,7 +432,11 @@ func insertRow[T any](ctx context.Context, db *Db, entity *T) error {
 
 // requireWritableKeyed is the CRUD-003/CRUD-002 guard shared by Update and Delete.
 func requireWritableKeyed[T any](db *Db) (*core.EntityMap, error) {
-	entityType := reflect.TypeFor[T]()
+	return requireWritableKeyedType(db, reflect.TypeFor[T]())
+}
+
+// requireWritableKeyedType is requireWritableKeyed for a runtime type.
+func requireWritableKeyedType(db *Db, entityType reflect.Type) (*core.EntityMap, error) {
 	m, err := db.maps.Load(entityType)
 	if err != nil {
 		return nil, err
@@ -446,19 +456,28 @@ func requireWritableKeyed[T any](db *Db) (*core.EntityMap, error) {
 // in-memory version is bumped on success. Without one, zero rows is CRUD-001.
 // For a narrower SET see UpdateOnly.
 func Update[T any](ctx context.Context, db *Db, entity *T) error {
-	m, err := requireWritableKeyed[T](db)
+	_, err := updateEntity(ctx, db, reflect.TypeFor[T](), entity)
+	return err
+}
+
+// updateEntity is Update over an instance of a runtime type (entity is a *E):
+// the one update path, shared by the immediate call and the unit of work's
+// flush. It reports whether a statement ran — a clean tracked instance writes
+// nothing — so the flush summary counts statements, not instances.
+func updateEntity(ctx context.Context, db *Db, entityType reflect.Type, entity any) (bool, error) {
+	m, err := requireWritableKeyedType(db, entityType)
 	if err != nil {
-		return err
+		return false, err
 	}
 	// Full-row semantics for validation: every navigation is checked (CRUD-004)
 	// before the identity gate and before the snapshot decides what to write
 	// (spec/session.md Clarifications, ADR-0035).
 	if err := checkNavigationConsistency(db, m, entity, nil); err != nil {
-		return err
+		return false, err
 	}
 	entry, err := db.writeIdentity(m, entity)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if entry != nil {
 		return updateTracked(ctx, db, m, entry, entity)
@@ -472,11 +491,11 @@ func Update[T any](ctx context.Context, db *Db, entity *T) error {
 			bound = append(bound, p)
 		}
 	}
-	if err := executeUpdate(ctx, db, reflect.TypeFor[T](), m, entity, db.options.Dialect.UpdateSQL(m), bound); err != nil {
-		return err
+	if err := executeUpdate(ctx, db, entityType, m, entity, db.options.Dialect.UpdateSQL(m), bound); err != nil {
+		return false, err
 	}
 	// An instance the session did not know is tracked once its full row is written.
-	return db.track(m, entity)
+	return true, db.track(m, entity)
 }
 
 // updateTracked is Update on a tracked instance (Level 3 M1): only the dirty
@@ -484,10 +503,11 @@ func Update[T any](ctx context.Context, db *Db, entity *T) error {
 // column-list statement, and the snapshot moves forward; a clean instance
 // writes nothing at all — no statement, no version bump. A failed write
 // (CRUD-010 included) leaves the snapshot, and so the instance's dirtiness, as it was.
-func updateTracked(ctx context.Context, db *Db, m *core.EntityMap, entry *trackedEntry, entity any) error {
+// It reports whether a statement ran.
+func updateTracked(ctx context.Context, db *Db, m *core.EntityMap, entry *trackedEntry, entity any) (bool, error) {
 	changed, err := db.tracker.changed(entry)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var set []*core.PropertyMap
 	for _, p := range changed {
@@ -498,12 +518,12 @@ func updateTracked(ctx context.Context, db *Db, m *core.EntityMap, entry *tracke
 	if len(set) == 0 {
 		// Only key/version/generated values differing is clean: no statement, no snapshot change
 		// (spec/session.md Clarifications, ADR-0035).
-		return nil
+		return false, nil
 	}
 	if err := executeUpdate(ctx, db, m.Type, m, entity, db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set)); err != nil {
-		return err
+		return false, err
 	}
-	return db.tracker.resnapshot(entry, append(set, versionOf(m)...))
+	return true, db.tracker.resnapshot(entry, append(set, versionOf(m)...))
 }
 
 // updateOnlyBindings is the parameter order of the column-list update: the SET
@@ -703,8 +723,14 @@ func Delete[T any](ctx context.Context, db *Db, key any) error {
 // DeleteEntity is the version-checked delete (§7.16): with a version column,
 // zero rows is a *core.ConcurrencyError (CRUD-010); without one, zero rows is CRUD-001.
 func DeleteEntity[T any](ctx context.Context, db *Db, entity *T) error {
-	entityType := reflect.TypeFor[T]()
-	m, err := requireWritableKeyed[T](db)
+	return deleteEntity(ctx, db, reflect.TypeFor[T](), entity)
+}
+
+// deleteEntity is DeleteEntity over an instance of a runtime type (entity is a
+// *E): the one version-checked delete path, shared by the immediate call and
+// the unit of work's flush.
+func deleteEntity(ctx context.Context, db *Db, entityType reflect.Type, entity any) error {
+	m, err := requireWritableKeyedType(db, entityType)
 	if err != nil {
 		return err
 	}

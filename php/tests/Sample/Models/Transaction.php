@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Tests\Sample\Models;
 
+use SimpleOrm\Metadata\Attributes\Cascade;
 use SimpleOrm\Metadata\Attributes\Column;
 use SimpleOrm\Metadata\Attributes\ForeignKey;
 use SimpleOrm\Metadata\Attributes\Generated;
@@ -13,6 +14,7 @@ use SimpleOrm\Metadata\Attributes\ManyToOne;
 use SimpleOrm\Metadata\Attributes\OneToMany;
 use SimpleOrm\Metadata\Attributes\Table;
 use SimpleOrm\Metadata\Attributes\Version;
+use SimpleOrm\Metadata\CascadeOperation;
 use SimpleOrm\Query\SortOrder;
 use SimpleOrm\Session\Navigations;
 use SimpleOrm\Types\Decimal;
@@ -51,6 +53,8 @@ final class Transaction extends BaseModel
     #[Column]
     public ?string $note = null;
 
+    /** Declared to cascade both operations (unit-of-work.md "The fixture"); pinned by conformance/entities/transaction.json. */
     #[OneToMany(TransactionDetail::class, 'transactionId')]
+    #[Cascade(CascadeOperation::Persist, CascadeOperation::Remove)]
     public private(set) array $details = [];
 }

@@ -316,6 +316,7 @@ func resolveRelationships(
 			LinkType:                spec.LinkType,
 			LinkForeignKeysToOwner:  spec.LinkForeignKeysToOwner,
 			LinkForeignKeysToTarget: spec.LinkForeignKeysToTarget,
+			Cascade:                 spec.Cascade,
 		})
 	}
 	return relationships

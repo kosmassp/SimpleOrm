@@ -164,6 +164,14 @@ func buildRelationships(m *core.EntityMap, maps *Loader) ([]any, error) {
 			obj = obj.Set("linkForeignKeyColumnsToOwner", foreignKeyColumns(linkMap, r.LinkForeignKeysToOwner))
 			obj = obj.Set("linkForeignKeyColumnsToTarget", foreignKeyColumns(linkMap, r.LinkForeignKeysToTarget))
 		}
+		if tokens := r.Cascade.Tokens(); len(tokens) > 0 {
+			// Present only when declared (spec/metadata-model.md): an export without cascades is unchanged.
+			cascade := make([]any, len(tokens))
+			for j, token := range tokens {
+				cascade[j] = token
+			}
+			obj = obj.Set("cascade", cascade)
+		}
 		result[i] = obj
 	}
 	return result, nil

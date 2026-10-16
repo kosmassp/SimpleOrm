@@ -129,6 +129,43 @@ instance that is not the session's instance for its key — another instance
 holds the key, or a tracked instance's key fields were edited — is `UOW-002`
 before any SQL. Insert tracks the new instance; Delete forgets the key.
 
+### Unit of work (Level 3 M2, ADR-0034)
+
+A tracked session schedules writes and flushes them in one go; an untracked one
+refuses every call with `UOW-003`. Nothing is written or loaded before `Flush`:
+
+```go
+user := &User{Name: "Linus", Email: "linus@example.com", CreatedAtUtc: now}
+order := &Transaction{Status: sample.Pending, Amount: orm.MustDecimal("5"), CreatedAtUtc: now, User: user}
+
+err = orm.Persist(db, order)                  // schedules an insert (a tracked instance schedules nothing itself)
+err = orm.Persist(db, user)
+err = orm.Remove(db, existing)                // schedules a delete of a tracked instance (UOW-001 otherwise)
+summary, err := db.Flush(ctx)                 // inserts, dirty updates, deletes — FK order, keys flowed; one transaction
+// summary.Inserted == 2: the user went first and its generated key reached order.UserID
+db.HasPendingWork()                           // anything scheduled? (dirty tracked instances flush regardless)
+```
+
+The flush writes **inserts** (each after the scheduled parents it references
+through a non-nil many-to-one navigation or a persist cascade; otherwise types in
+foreign-key order, then schedule order), then every **dirty tracked instance** as a
+column-list update, then **deletes**, children first. Every statement is the
+session's own `Insert`/`Update`/`DeleteEntity`, so the identity gate, the version
+rules, and the snapshots apply unchanged. Inside `db.Begin` the flush uses your
+transaction and leaves it open; otherwise it owns one, and a failure rolls it back,
+keeps the schedule, and puts the identity map, snapshots, versions, and generated
+keys back as they were.
+
+Cascades are **declared** on the navigation, per operation, with the tag option
+`cascade=persist`, `cascade=remove`, or `cascade=persist+remove`
+(`orm:"one_to_many=TransactionID,cascade=persist+remove"`; `many_to_many` cannot
+cascade, `MAP-025`). A cascade walks only what is in memory: a persist cascade
+schedules the non-nil, initialized navigation's targets (a nil slice is "never
+loaded" and cascades nothing); a remove cascade removes a loaded collection's
+members and is `UOW-005` over a nil slice — `orm.Load` it first, nothing loads
+implicitly. A nil singular navigation cascades nothing. A refusal anywhere in a
+cascade schedules nothing.
+
 Errors are values with a stable code: `errors.As(err, &e)` on an `*orm.Error`,
 or `orm.CodeOf(err)`. Every I/O function takes a `context.Context`.
 

@@ -17,7 +17,9 @@ type Transaction struct {
 	// Note was added by migration V0003.
 	Note *string `orm:"column"`
 	// Details is populated only by the library (Level 2 loading); never a column, never written.
-	Details []*TransactionDetail `orm:"one_to_many=TransactionID"`
+	// It cascades Persist and Remove (Level 3 M2, spec/unit-of-work.md): persisting a transaction schedules
+	// its initialized details, removing it removes them — a never-loaded collection refuses UOW-005.
+	Details []*TransactionDetail `orm:"one_to_many=TransactionID,cascade=persist+remove"`
 }
 
 func (Transaction) Entity() orm.EntityDef {

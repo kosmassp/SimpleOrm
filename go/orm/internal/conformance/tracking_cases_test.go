@@ -19,7 +19,8 @@ import (
 
 // trackingCaseSpec is the conformance/tracking-cases/*.json shape (spec/session.md
 // "Conformance: tracking-cases/", Level 3 M1): a session mode and a step script
-// replayed against named instances.
+// replayed against named instances. conformance/flush-cases/*.json (spec/unit-of-work.md,
+// Level 3 M2) is the same shape with more verbs; one step engine replays both.
 type trackingCaseSpec struct {
 	Name     string         `json:"name"`
 	Tracking string         `json:"tracking"`
@@ -41,6 +42,8 @@ type trackingStep struct {
 		Entity string                     `json:"entity"`
 		As     string                     `json:"as"`
 		Values map[string]json.RawMessage `json:"values"`
+		// Navigations assigns earlier refs (or lists of refs) to navigation fields (flush-cases).
+		Navigations map[string]json.RawMessage `json:"navigations"`
 	} `json:"new"`
 	Set *struct {
 		Ref      string          `json:"ref"`
@@ -70,7 +73,32 @@ type trackingStep struct {
 		Ref        string `json:"ref"`
 		Navigation string `json:"navigation"`
 	} `json:"load"`
-	Expect *struct {
+	Persist *struct {
+		Ref string `json:"ref"`
+	} `json:"persist"`
+	Remove *struct {
+		Ref string `json:"ref"`
+	} `json:"remove"`
+	// Flush replays Db.Flush; expectStatements is the ordered list the dialect was asked to render
+	// (absent: unchecked, [] : none), expectSummary the returned counts.
+	Flush *struct {
+		ExpectStatements json.RawMessage `json:"expectStatements"`
+		ExpectSummary    *struct {
+			Inserted int `json:"inserted"`
+			Updated  int `json:"updated"`
+			Deleted  int `json:"deleted"`
+		} `json:"expectSummary"`
+	} `json:"flush"`
+	Begin    *struct{} `json:"begin"`
+	Commit   *struct{} `json:"commit"`
+	Rollback *struct{} `json:"rollback"`
+	Expect   *struct {
+		Pending   *bool    `json:"pending"`
+		SameValue []string `json:"sameValue"`
+		Count     *struct {
+			Entity string `json:"entity"`
+			Equals int    `json:"equals"`
+		} `json:"count"`
 		Same    []string `json:"same"`
 		NotSame []string `json:"notSame"`
 		Dirty   *struct {
@@ -90,24 +118,33 @@ type trackingStep struct {
 	ExpectError string `json:"expectError"`
 }
 
-// recordingDialect decorates a dialect and records what the two update
-// statements were asked to render, so a case's expectWritten is observable
-// through the dialect seam: where every implementation renders SQL
-// (spec/session.md). Everything else delegates.
+// recordingDialect decorates a dialect and records what the four write
+// statements were asked to render, in order, so a case's expectWritten and a
+// flush's expectStatements are observable through the dialect seam: where every
+// implementation renders SQL (spec/session.md, spec/unit-of-work.md). Everything
+// else delegates.
 type recordingDialect struct {
 	orm.Dialect
-	writes []updateWrite
+	statements []renderedStatement
 }
 
-// updateWrite is one rendered update: all=true for the full-row UpdateSQL,
-// otherwise the property names the column-list UpdateOnlySQL was given.
-type updateWrite struct {
+// renderedStatement is one statement the dialect was asked to render: op is
+// insert, update, or delete; for an update, all=true is the full-row UpdateSQL,
+// otherwise properties are the names the column-list UpdateOnlySQL was given.
+type renderedStatement struct {
+	op         string
+	entity     string
 	all        bool
 	properties []string
 }
 
+func (d *recordingDialect) InsertSQL(m *orm.EntityMap) string {
+	d.statements = append(d.statements, renderedStatement{op: "insert", entity: m.EntityName()})
+	return d.Dialect.InsertSQL(m)
+}
+
 func (d *recordingDialect) UpdateSQL(m *orm.EntityMap) string {
-	d.writes = append(d.writes, updateWrite{all: true})
+	d.statements = append(d.statements, renderedStatement{op: "update", entity: m.EntityName(), all: true})
 	return d.Dialect.UpdateSQL(m)
 }
 
@@ -116,8 +153,24 @@ func (d *recordingDialect) UpdateOnlySQL(m *orm.EntityMap, properties []*orm.Pro
 	for i, p := range properties {
 		names[i] = p.PropertyName
 	}
-	d.writes = append(d.writes, updateWrite{properties: names})
+	d.statements = append(d.statements, renderedStatement{op: "update", entity: m.EntityName(), properties: names})
 	return d.Dialect.UpdateOnlySQL(m, properties)
+}
+
+func (d *recordingDialect) DeleteSQL(m *orm.EntityMap, checkVersion bool) string {
+	d.statements = append(d.statements, renderedStatement{op: "delete", entity: m.EntityName()})
+	return d.Dialect.DeleteSQL(m, checkVersion)
+}
+
+// updates is the update statements among the recorded ones (what expectWritten judges).
+func (d *recordingDialect) updates() []renderedStatement {
+	var updates []renderedStatement
+	for _, statement := range d.statements {
+		if statement.op == "update" {
+			updates = append(updates, statement)
+		}
+	}
+	return updates
 }
 
 // trackingOps is one entity type's session surface, type-erased over `any`
@@ -134,6 +187,8 @@ type trackingOps struct {
 	refresh    func(ctx context.Context, db *orm.Db, entity any) error
 	load       func(ctx context.Context, db *orm.Db, entity any, navigation string) error
 	changes    func(db *orm.Db, entity any) ([]string, error)
+	persist    func(db *orm.Db, entity any) error
+	remove     func(db *orm.Db, entity any) error
 }
 
 func trackingOpsOf[T any]() trackingOps {
@@ -167,6 +222,8 @@ func trackingOpsOf[T any]() trackingOps {
 		changes: func(db *orm.Db, entity any) ([]string, error) {
 			return orm.ChangesOf(db, entity.(*T))
 		},
+		persist: func(db *orm.Db, entity any) error { return orm.Persist(db, entity.(*T)) },
+		remove:  func(db *orm.Db, entity any) error { return orm.Remove(db, entity.(*T)) },
 	}
 }
 
@@ -182,6 +239,8 @@ func trackingOpsFor(entity string) (trackingOps, error) {
 		return trackingOpsOf[sample.Role](), nil
 	case "UserRole":
 		return trackingOpsOf[sample.UserRole](), nil
+	case "TransactionDetail":
+		return trackingOpsOf[sample.TransactionDetail](), nil
 	}
 	return trackingOps{}, fmt.Errorf("tracking_cases_test: unknown entity %q", entity)
 }
@@ -195,10 +254,16 @@ func trackingOpsForInstance(instance any) (trackingOps, error) {
 // (Level 3 M1): the seeded fixture database of the other runners, opened in the
 // case's mode with a recording dialect, then the step script.
 func TestTrackingCases_BehaveAsSpecified(t *testing.T) {
-	for _, name := range testsupport.ConformanceCases(t, "tracking-cases") {
+	runStepCases(t, "tracking-cases")
+}
+
+// runStepCases replays every case file of a step-script folder (tracking-cases,
+// flush-cases): one engine, so the two folders cannot drift apart.
+func runStepCases(t *testing.T, folder string) {
+	for _, name := range testsupport.ConformanceCases(t, folder) {
 		t.Run(name, func(t *testing.T) {
 			var spec trackingCaseSpec
-			if err := json.Unmarshal(testsupport.ReadConformance(t, "tracking-cases", name), &spec); err != nil {
+			if err := json.Unmarshal(testsupport.ReadConformance(t, folder, name), &spec); err != nil {
 				t.Fatalf("parse %s: %v", name, err)
 			}
 
@@ -221,7 +286,7 @@ func TestTrackingCases_BehaveAsSpecified(t *testing.T) {
 			}
 			defer db.Close()
 
-			run := &trackingRun{t: t, ctx: ctx, db: db, dialect: dialect, name: spec.Name, refs: map[string]any{}}
+			run := &trackingRun{t: t, ctx: ctx, db: db, dialect: dialect, path: path, name: spec.Name, refs: map[string]any{}}
 			for i, step := range spec.Steps {
 				run.step(i, step)
 			}
@@ -235,6 +300,9 @@ type trackingRun struct {
 	ctx     context.Context
 	db      *orm.Db
 	dialect *recordingDialect
+	path    string // the database file, for a row count read outside the session
+	tx      *orm.Tx
+	summary orm.FlushSummary
 	name    string
 	refs    map[string]any
 }
@@ -247,7 +315,7 @@ func (r *trackingRun) fatalf(i int, format string, args ...any) {
 // step replays one step and judges its error against expectError.
 func (r *trackingRun) step(i int, step trackingStep) {
 	r.t.Helper()
-	r.dialect.writes = nil
+	r.dialect.statements = nil
 	err := r.perform(i, step)
 	if step.ExpectError != "" {
 		if core.CodeOf(err) != step.ExpectError {
@@ -260,6 +328,9 @@ func (r *trackingRun) step(i int, step trackingStep) {
 	}
 	if step.Update != nil {
 		r.checkWritten(i, step.Update.ExpectWritten)
+	}
+	if step.Flush != nil {
+		r.checkFlush(i, step)
 	}
 }
 
@@ -275,6 +346,11 @@ func (r *trackingRun) perform(i int, step trackingStep) error {
 		entity := ops.new()
 		for property, raw := range step.New.Values {
 			if err := r.setValue(entity, property, raw); err != nil {
+				return err
+			}
+		}
+		for navigation, raw := range step.New.Navigations {
+			if err := r.setNavigation(i, entity, navigation, raw); err != nil {
 				return err
 			}
 		}
@@ -319,6 +395,32 @@ func (r *trackingRun) perform(i int, step trackingStep) error {
 			return err
 		}
 		return ops.load(r.ctx, r.db, entity, step.Load.Navigation)
+	case step.Persist != nil:
+		entity := r.ref(i, step.Persist.Ref)
+		ops, err := trackingOpsForInstance(entity)
+		if err != nil {
+			return err
+		}
+		return ops.persist(r.db, entity)
+	case step.Remove != nil:
+		entity := r.ref(i, step.Remove.Ref)
+		ops, err := trackingOpsForInstance(entity)
+		if err != nil {
+			return err
+		}
+		return ops.remove(r.db, entity)
+	case step.Flush != nil:
+		summary, err := r.db.Flush(r.ctx)
+		r.summary = summary
+		return err
+	case step.Begin != nil:
+		tx, err := r.db.Begin(r.ctx)
+		r.tx = tx
+		return err
+	case step.Commit != nil:
+		return r.tx.Commit(r.ctx)
+	case step.Rollback != nil:
+		return r.tx.Rollback(r.ctx)
 	case step.Expect != nil:
 		return r.expect(i, step)
 	}
@@ -495,6 +597,17 @@ func (r *trackingRun) expect(i int, step trackingStep) error {
 	if e.Value != nil {
 		r.expectValue(i, e.Value.Ref, e.Value.Property, e.Value.Equals)
 	}
+	if e.Pending != nil {
+		if got := r.db.HasPendingWork(); got != *e.Pending {
+			r.fatalf(i, "HasPendingWork() = %v, want %v", got, *e.Pending)
+		}
+	}
+	if len(e.SameValue) == 2 {
+		r.expectSameValue(i, e.SameValue[0], e.SameValue[1])
+	}
+	if e.Count != nil {
+		r.expectCount(i, e.Count.Entity, e.Count.Equals)
+	}
 	return nil
 }
 
@@ -564,8 +677,8 @@ func (r *trackingRun) checkWritten(i int, raw json.RawMessage) {
 		if all != "all" {
 			r.fatalf(i, "expectWritten %q is not \"all\" or a list", all)
 		}
-		if len(r.dialect.writes) != 1 || !r.dialect.writes[0].all {
-			r.fatalf(i, "expected one full-row update, the dialect rendered %+v", r.dialect.writes)
+		if updates := r.dialect.updates(); len(updates) != 1 || !updates[0].all {
+			r.fatalf(i, "expected one full-row update, the dialect rendered %+v", updates)
 		}
 		return
 	}
@@ -573,13 +686,14 @@ func (r *trackingRun) checkWritten(i int, raw json.RawMessage) {
 	if err := json.Unmarshal(raw, &want); err != nil {
 		r.fatalf(i, "expectWritten is neither \"all\" nor a list: %s", raw)
 	}
+	updates := r.dialect.updates()
 	if len(want) == 0 {
-		if len(r.dialect.writes) != 0 {
-			r.fatalf(i, "expected no update statement, the dialect rendered %+v", r.dialect.writes)
+		if len(updates) != 0 {
+			r.fatalf(i, "expected no update statement, the dialect rendered %+v", updates)
 		}
 		return
 	}
-	if len(r.dialect.writes) != 1 || r.dialect.writes[0].all || !sameNames(r.dialect.writes[0].properties, want) {
-		r.fatalf(i, "expected one column-list update of %v, the dialect rendered %+v", want, r.dialect.writes)
+	if len(updates) != 1 || updates[0].all || !sameNames(updates[0].properties, want) {
+		r.fatalf(i, "expected one column-list update of %v, the dialect rendered %+v", want, updates)
 	}
 }

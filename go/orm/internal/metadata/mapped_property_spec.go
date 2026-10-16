@@ -78,4 +78,6 @@ type RelationshipSpec struct {
 	LinkType                reflect.Type
 	LinkForeignKeysToOwner  []string
 	LinkForeignKeysToTarget []string
+	// Cascade is the declared cascade of the navigation (never many-to-many, MAP-025).
+	Cascade core.CascadeOperations
 }

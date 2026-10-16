@@ -24,17 +24,21 @@ type tracker struct {
 	converter *mapping.TypeConverter           // the one conversion every write binds through
 	types     map[reflect.Type][]*trackedEntry // struct type -> entries sorted by key
 	byPtr     map[any]*trackedEntry            // the tracked *E -> its entry
+	nextSeq   uint64                           // registration counter: the unit of work orders updates by it
 }
 
 // trackedEntry is one tracked instance: the pointer the caller holds, the map
 // it was tracked under, the key it was registered with (identity — the live
 // key fields may have been edited since, which a write refuses, UOW-002), and
-// the snapshot (bound values), parallel to m.Properties.
+// the snapshot (bound values), parallel to m.Properties, and the registration
+// sequence number (the identity-map registration order the unit of work's
+// update phase follows, spec/unit-of-work.md "Order of writes").
 type trackedEntry struct {
 	ptr      reflect.Value // *E
 	m        *core.EntityMap
 	key      core.KeyTuple
 	snapshot []any
+	seq      uint64
 }
 
 func newTracker(converter *mapping.TypeConverter) *tracker {
@@ -73,15 +77,47 @@ func (tr *tracker) register(m *core.EntityMap, ptr reflect.Value, key core.KeyTu
 	if holder := tr.find(m.Type, key); holder != nil {
 		tr.forget(holder)
 	}
-	entry := &trackedEntry{ptr: ptr, m: m, key: key, snapshot: snapshot}
-	i, _ := tr.search(m.Type, key)
-	entries := tr.types[m.Type]
+	// SPEC-GAP: "identity-map registration order" is the order of the latest registration: an instance
+	// registered again (a re-insert, a full-row update of an unknown instance) takes a new position.
+	tr.nextSeq++
+	entry := &trackedEntry{ptr: ptr, m: m, key: key, snapshot: snapshot, seq: tr.nextSeq}
+	tr.insertEntry(entry)
+	return entry, nil
+}
+
+// insertEntry adds entry to both indexes at its key's sorted position.
+func (tr *tracker) insertEntry(entry *trackedEntry) {
+	i, _ := tr.search(entry.m.Type, entry.key)
+	entries := tr.types[entry.m.Type]
 	entries = append(entries, nil)
 	copy(entries[i+1:], entries[i:])
 	entries[i] = entry
-	tr.types[m.Type] = entries
-	tr.byPtr[ptr.Interface()] = entry
-	return entry, nil
+	tr.types[entry.m.Type] = entries
+	tr.byPtr[entry.ptr.Interface()] = entry
+}
+
+// restore puts a forgotten entry back exactly as it was — snapshot and
+// registration order included — for a failed flush undoing its deletes (the
+// unit of work, spec/unit-of-work.md "Transactions"). A stale holder of the
+// key, registered since, is dropped.
+func (tr *tracker) restore(entry *trackedEntry) {
+	if holder := tr.find(entry.m.Type, entry.key); holder != nil && holder != entry {
+		tr.forget(holder)
+	}
+	if tr.byPtr[entry.ptr.Interface()] == entry {
+		return
+	}
+	tr.insertEntry(entry)
+}
+
+// all lists every tracked entry in registration order.
+func (tr *tracker) all() []*trackedEntry {
+	entries := make([]*trackedEntry, 0, len(tr.byPtr))
+	for _, entry := range tr.byPtr {
+		entries = append(entries, entry)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].seq < entries[j].seq })
+	return entries
 }
 
 // forget removes entry from both indexes.

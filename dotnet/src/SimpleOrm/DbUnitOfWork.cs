@@ -25,6 +25,7 @@ public sealed partial class Db
 {
     private readonly List<object> _scheduledInserts = [];
     private readonly HashSet<object> _scheduledInsertSet = new(InstanceComparer.Instance);
+    private readonly HashSet<object> _directInserts = new(InstanceComparer.Instance);
     private readonly List<object> _scheduledRemoves = [];
     private readonly HashSet<object> _scheduledRemoveSet = new(InstanceComparer.Instance);
     private readonly List<PendingReference> _pendingReferences = [];
@@ -52,6 +53,10 @@ public sealed partial class Db
         }
 
         _pendingReferences.AddRange(plan.References);
+        if (!IsTracked(entity))
+        {
+            _directInserts.Add(entity);   // asked for by name: survives a cancelled owner
+        }
     }
 
     /// <summary>
@@ -73,6 +78,7 @@ public sealed partial class Db
         {
             _scheduledInsertSet.Remove(cancelled);
             _scheduledInserts.Remove(cancelled);
+            _directInserts.Remove(cancelled);
             _pendingReferences.RemoveAll(r => ReferenceEquals(r.Child, cancelled) || ReferenceEquals(r.Parent, cancelled));
         }
 
@@ -98,29 +104,58 @@ public sealed partial class Db
     public async Task<FlushSummary> FlushAsync(CancellationToken ct)
     {
         RequireUnitOfWork();
-        var inserts = OrderInserts();
-        var removes = OrderRemoves();
+        // A scheduled insert written immediately in the meantime is tracked now, a
+        // scheduled removal deleted immediately is not: both are done, not work.
+        var inserts = OrderInserts().Where(e => !IsTracked(e)).ToList();
+        var removes = OrderRemoves().Where(IsTracked).ToList();
+        var updates = DirtyTrackedInstances();
+        if (inserts.Count == 0 && updates.Count == 0 && removes.Count == 0)
+        {
+            ClearSchedule();
+            return default;   // nothing to write: no statement, no transaction
+        }
 
         var ownsTransaction = _transaction is null;
         var scope = ownsTransaction ? await BeginAsync(ct).ConfigureAwait(false) : null;
+        var undo = new List<Action>();
         try
         {
             foreach (var entity in inserts)
             {
                 var map = Maps.Load(entity.GetType());
                 ApplyReferences(map, entity);
+                var keyBefore = map.KeyProperties.Select(k => k.GetValue(entity)).ToArray();
                 await InvokeWriteAsync(nameof(InsertAsync), map, entity, ct).ConfigureAwait(false);
+                undo.Add(() =>
+                {
+                    Untrack(map, map.GetKeyValues(entity));
+                    for (var i = 0; i < keyBefore.Length; i++)
+                    {
+                        map.KeyProperties[i].SetValue(entity, keyBefore[i]);
+                    }
+                });
             }
 
-            var updates = DirtyTrackedInstances();
             foreach (var entity in updates)
             {
-                await InvokeWriteAsync(nameof(UpdateAsync), Maps.Load(entity.GetType()), entity, ct).ConfigureAwait(false);
+                var map = Maps.Load(entity.GetType());
+                var entry = _trackedByInstance[entity];
+                var snapshotBefore = (object?[])entry.Snapshot.Clone();
+                var versionBefore = map.VersionProperty?.GetValue(entity);
+                await InvokeWriteAsync(nameof(UpdateAsync), map, entity, ct).ConfigureAwait(false);
+                undo.Add(() =>
+                {
+                    entry.Snapshot = snapshotBefore;
+                    map.VersionProperty?.SetValue(entity, versionBefore);
+                });
             }
 
             foreach (var entity in removes)
             {
-                await InvokeWriteAsync(nameof(DeleteAsync), Maps.Load(entity.GetType()), entity, ct).ConfigureAwait(false);
+                var map = Maps.Load(entity.GetType());
+                var snapshotBefore = _trackedByInstance[entity].Snapshot;
+                await InvokeWriteAsync(nameof(DeleteAsync), map, entity, ct).ConfigureAwait(false);
+                undo.Add(() => Register(map, map.GetKeyValues(entity), entity, snapshotBefore));
             }
 
             if (scope is not null)
@@ -130,6 +165,19 @@ public sealed partial class Db
 
             ClearSchedule();
             return new FlushSummary(inserts.Count, updates.Count, removes.Count);
+        }
+        catch
+        {
+            // The in-memory effects of the statements that ran are undone — keys,
+            // snapshots, versions, tracking — so the schedule can flush again as
+            // it was; the database is rolled back below when the flush owns the
+            // transaction, and is the caller's to roll back otherwise.
+            for (var i = undo.Count - 1; i >= 0; i--)
+            {
+                undo[i]();
+            }
+
+            throw;
         }
         finally
         {
@@ -209,13 +257,17 @@ public sealed partial class Db
         var map = RequireWritableKeyed(entity.GetType());
         if (_scheduledInsertSet.Contains(entity))
         {
-            // A cancelled insert: nothing to delete; the inserts it cascaded go with it.
+            // A cancelled insert: nothing to delete; the inserts its persist cascade
+            // scheduled go with it — except a child persisted directly by name, or
+            // one another scheduled owner still points at.
             plan.Cancellations.Add(entity);
             foreach (var relationship in map.Relationships.Where(r => r.Cascade.HasFlag(CascadeOperations.Persist)))
             {
                 foreach (var child in NavigationMembers(map, relationship, entity))
                 {
-                    if (_scheduledInsertSet.Contains(child))
+                    if (_scheduledInsertSet.Contains(child) && !_directInserts.Contains(child)
+                        && !_pendingReferences.Any(r => ReferenceEquals(r.Child, child)
+                            && !ReferenceEquals(r.Parent, entity) && !plan.Cancellations.Contains(r.Parent)))
                     {
                         RemoveCore(child, visited, plan);
                     }
@@ -271,6 +323,7 @@ public sealed partial class Db
     {
         _scheduledInserts.Clear();
         _scheduledInsertSet.Clear();
+        _directInserts.Clear();
         _scheduledRemoves.Clear();
         _scheduledRemoveSet.Clear();
         _pendingReferences.Clear();
@@ -351,16 +404,18 @@ public sealed partial class Db
     /// <summary>
     /// Type dependency ranks from the metadata: a type ranks after every type its
     /// foreign keys reference (its many-to-one targets, and the owners whose
-    /// one-to-many/one-to-one point at it). Cycles at type level (self-reference,
-    /// mutual) break by first appearance; instance edges decide the rest.
+    /// one-to-many/one-to-one point at it). Types in a dependency cycle
+    /// (self-reference, mutual) share one rank — Tarjan's strongly connected
+    /// components, emitted dependencies-first — and the schedule decides inside
+    /// it; instance edges decide the rest.
     /// </summary>
     private Dictionary<Type, int> TypeRanks(IEnumerable<Type> types)
     {
         var involved = types.Distinct().ToList();
-        var referencedBy = new Dictionary<Type, HashSet<Type>>();
+        var dependencies = new Dictionary<Type, HashSet<Type>>();
         foreach (var type in involved)
         {
-            referencedBy[type] = [];
+            dependencies[type] = [];
         }
 
         foreach (var type in involved)
@@ -369,38 +424,66 @@ public sealed partial class Db
             {
                 switch (relationship.Kind)
                 {
-                    case RelationshipKind.ManyToOne when involved.Contains(relationship.TargetType):
-                        referencedBy[type].Add(relationship.TargetType);               // type depends on target
+                    case RelationshipKind.ManyToOne when dependencies.ContainsKey(relationship.TargetType):
+                        dependencies[type].Add(relationship.TargetType);               // type depends on target
                         break;
                     case RelationshipKind.OneToMany or RelationshipKind.OneToOne
-                        when involved.Contains(relationship.TargetType):
-                        referencedBy[relationship.TargetType].Add(type);               // target depends on this owner
+                        when dependencies.ContainsKey(relationship.TargetType):
+                        dependencies[relationship.TargetType].Add(type);               // target depends on this owner
                         break;
                 }
             }
         }
 
+        // Tarjan: components complete in dependencies-first order, so the first
+        // component found gets rank 0.
         var ranks = new Dictionary<Type, int>();
-        var visiting = new HashSet<Type>();
-        void Visit(Type type)
+        var index = new Dictionary<Type, int>();
+        var lowLink = new Dictionary<Type, int>();
+        var stack = new Stack<Type>();
+        var onStack = new HashSet<Type>();
+        var next = 0;
+        var componentRank = 0;
+        void StrongConnect(Type type)
         {
-            if (ranks.ContainsKey(type) || !visiting.Add(type))
+            index[type] = lowLink[type] = next++;
+            stack.Push(type);
+            onStack.Add(type);
+            foreach (var dependency in dependencies[type])
+            {
+                if (!index.ContainsKey(dependency))
+                {
+                    StrongConnect(dependency);
+                    lowLink[type] = Math.Min(lowLink[type], lowLink[dependency]);
+                }
+                else if (onStack.Contains(dependency))
+                {
+                    lowLink[type] = Math.Min(lowLink[type], index[dependency]);
+                }
+            }
+
+            if (lowLink[type] != index[type])
             {
                 return;
             }
 
-            foreach (var dependency in referencedBy[type])
+            Type member;
+            do
             {
-                Visit(dependency);
+                member = stack.Pop();
+                onStack.Remove(member);
+                ranks[member] = componentRank;
             }
-
-            visiting.Remove(type);
-            ranks[type] = ranks.Count;
+            while (!ReferenceEquals(member, type));
+            componentRank++;
         }
 
         foreach (var type in involved)
         {
-            Visit(type);
+            if (!index.ContainsKey(type))
+            {
+                StrongConnect(type);
+            }
         }
 
         return ranks;
@@ -514,30 +597,29 @@ public sealed partial class Db
         return Convert.ChangeType(value, underlying, System.Globalization.CultureInfo.InvariantCulture);
     }
 
+    /// <summary>Every tracked instance with a writable change, not scheduled for removal: types in dependency order, then registration order. A dirty read-only instance is not skipped — its update refuses (<c>CRUD-003</c>), never silently.</summary>
     private List<object> DirtyTrackedInstances()
     {
         var ranks = TypeRanks(_trackedByKey.Keys);
-        var dirty = new List<(int Rank, int Order, object Entity)>();
-        var order = 0;
+        var dirty = new List<(int Rank, long Sequence, object Entity)>();
         foreach (var byKey in _trackedByKey)
         {
             var map = Maps.Load(byKey.Key);
             foreach (var entry in byKey.Value.Values)
             {
-                order++;
-                if (_scheduledRemoveSet.Contains(entry.Entity) || map.Kind != RelationKind.Table)
+                if (_scheduledRemoveSet.Contains(entry.Entity))
                 {
                     continue;
                 }
 
                 if (DirtyProperties(map, entry.Entity, entry.Snapshot).Any(p => !p.IsKey && !p.IsVersion && !p.IsGenerated))
                 {
-                    dirty.Add((ranks[byKey.Key], order, entry.Entity));
+                    dirty.Add((ranks[byKey.Key], entry.Sequence, entry.Entity));
                 }
             }
         }
 
-        return dirty.OrderBy(d => d.Rank).ThenBy(d => d.Order).Select(d => d.Entity).ToList();
+        return dirty.OrderBy(d => d.Rank).ThenBy(d => d.Sequence).Select(d => d.Entity).ToList();
     }
 
     private async Task InvokeWriteAsync(string method, EntityMap map, object entity, CancellationToken ct)

@@ -107,6 +107,33 @@ session's instance for its key — a second copy, or a tracked instance whose ke
 was changed — is `UOW-002` before any SQL. DTO results, keyless entities, and
 rows with a null key part are never tracked.
 
+### Unit of work (Level 3 M2, ADR-0034)
+
+A tracked session can schedule writes and flush them in one explicit step
+(`UOW-003` on an untracked session). Nothing is written, and nothing loads, until
+`flush()`:
+
+```php
+$order->setUser($user);                // however your model assigns the navigation; the FK follows at flush
+$db->persist($order);                  // schedules an insert (a tracked instance schedules nothing)
+$db->persist($user);
+$db->remove($oldLine);                 // schedules a delete of a tracked instance (UOW-001 otherwise)
+$summary = $db->flush();               // FlushSummary: ->inserted, ->updated, ->deleted
+```
+
+A flush writes inserts in foreign-key order (a parent first; its generated key flows into the
+child's FK before the child's insert), then every dirty tracked instance as a column-list
+update, then deletes children first — all through the session's own `insert`/`update`/`delete`,
+inside the active transaction or one the flush begins (rolled back on failure; the schedule is
+kept). A cycle among the scheduled instances is `UOW-004`, before any SQL; persisting an instance
+scheduled for removal is `UOW-006`; `hasPendingWork()` tells whether anything is scheduled. Cascades
+are declared, never inferred: `#[Cascade(CascadeOperation::Persist, CascadeOperation::Remove)]` on a
+`#[ManyToOne]`/`#[OneToOne]`/`#[OneToMany]` navigation (`MAP-025` anywhere else, or on a
+`#[ManyToMany]`). `persist` cascades over initialized navigations only and records the owner key each
+cascaded child takes; `remove` cascades over loaded ones and refuses a never-loaded collection
+(`UOW-005` — load it first, nothing loads implicitly). `remove` of an instance scheduled for insert
+cancels the insert and the inserts its cascade scheduled.
+
 ## The CLI
 
 `bin/simpleorm` has no assembly to load, so it takes a PSR-4 root instead:

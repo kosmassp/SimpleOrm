@@ -630,6 +630,12 @@ internal static class AttributeMapLoader
             return;
         }
 
+        if (cascade.Operations == CascadeOperations.None)
+        {
+            errors.Add(new MappingError("MAP-025", target, "[Cascade] declares no operation; name Persist, Remove, or All"));
+            return;
+        }
+
         var spec = relationships.LastOrDefault(r => r.PropertyName == propertyName);
         if (spec is not null)
         {

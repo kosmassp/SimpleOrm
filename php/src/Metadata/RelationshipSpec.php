@@ -18,6 +18,7 @@ final readonly class RelationshipSpec
      * @param class-string|null $linkType
      * @param list<string> $linkForeignKeysToOwner
      * @param list<string> $linkForeignKeysToTarget
+     * @param list<CascadeOperation> $cascade
      */
     public function __construct(
         public string $propertyName,
@@ -27,6 +28,26 @@ final readonly class RelationshipSpec
         public ?string $linkType = null,
         public array $linkForeignKeysToOwner = [],
         public array $linkForeignKeysToTarget = [],
+        public array $cascade = [],
     ) {
+    }
+
+    /**
+     * The same navigation with its declared cascades (`#[Cascade]`, Level 3 M2).
+     *
+     * @param list<CascadeOperation> $cascade
+     */
+    public function withCascade(array $cascade): self
+    {
+        return new self(
+            $this->propertyName,
+            $this->kind,
+            $this->targetType,
+            $this->foreignKeyProperties,
+            $this->linkType,
+            $this->linkForeignKeysToOwner,
+            $this->linkForeignKeysToTarget,
+            $cascade,
+        );
     }
 }

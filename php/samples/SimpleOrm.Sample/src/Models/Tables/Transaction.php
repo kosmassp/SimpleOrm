@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Sample\Models\Tables;
 
+use SimpleOrm\Metadata\Attributes\Cascade;
 use SimpleOrm\Metadata\Attributes\Column;
 use SimpleOrm\Metadata\Attributes\ForeignKey;
 use SimpleOrm\Metadata\Attributes\Generated;
@@ -13,6 +14,7 @@ use SimpleOrm\Metadata\Attributes\ManyToOne;
 use SimpleOrm\Metadata\Attributes\OneToMany;
 use SimpleOrm\Metadata\Attributes\Table;
 use SimpleOrm\Metadata\Attributes\Version;
+use SimpleOrm\Metadata\CascadeOperation;
 use SimpleOrm\Query\SortOrder;
 use SimpleOrm\Types\Decimal;
 
@@ -55,5 +57,6 @@ final class Transaction extends BaseModel
 
     /** Populated only by the library (Level 2 loading); never a column, never written. */
     #[OneToMany(TransactionDetail::class, 'transactionId')]
+    #[Cascade(CascadeOperation::Persist, CascadeOperation::Remove)]
     public private(set) array $details = [];
 }

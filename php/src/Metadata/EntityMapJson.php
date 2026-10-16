@@ -155,8 +155,7 @@ final class EntityMapJson
     private static function relationships(EntityMap $map, EntityMapLoader $maps): array
     {
         return array_map(static function (RelationshipMap $relationship) use ($map, $maps): array {
-            /** @var array<string, mixed> */
-            return match ($relationship->kind) {
+            $entry = match ($relationship->kind) {
                 RelationshipKind::ManyToOne => [
                     'kind' => 'many_to_one',
                     'foreignKeyColumns' => self::columnNames($map, $relationship->foreignKeyProperties),
@@ -177,6 +176,13 @@ final class EntityMapJson
                     'linkForeignKeyColumnsToTarget' => self::columnNames($maps->load((string) $relationship->linkType), $relationship->linkForeignKeysToTarget),
                 ],
             };
+
+            // Declared cascades only (spec/metadata-model.md): an export without cascades is unchanged.
+            if ($relationship->cascade !== []) {
+                $entry['cascade'] = array_map(static fn (CascadeOperation $operation): string => $operation->value, $relationship->cascade);
+            }
+
+            return $entry;
         }, $map->relationships);
     }
 

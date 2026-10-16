@@ -54,6 +54,9 @@ final class Db
     /** The identity map and snapshots; null in an untracked session (the default, ADR-0034 add.1). */
     private readonly ?DbTracking $tracking;
 
+    /** The schedule and the ordered flush; null in an untracked session — the unit of work needs the map and the snapshots (ADR-0034 §7c M2). */
+    private readonly ?DbUnitOfWork $unitOfWork;
+
     private function __construct(
         PDO $connection,
         private readonly DbOptions $options,
@@ -65,6 +68,7 @@ final class Db
         $this->loading = new DbLoading($this);
         $this->eagerJoin = new DbEagerJoin($this);
         $this->tracking = $options->tracking === TrackingMode::Tracked ? new DbTracking($this->maps, $this->converter) : null;
+        $this->unitOfWork = $this->tracking !== null ? new DbUnitOfWork($this, $this->tracking) : null;
     }
 
     /** Opens the connection now (§7.17): a failed open leaves nothing behind. */
@@ -537,6 +541,55 @@ final class Db
         }
     }
 
+    // --- the unit of work (Level 3 M2, spec/unit-of-work.md) ----------------------
+
+    /**
+     * Schedules an insert for an instance the session does not track (a tracked one is already managed:
+     * its changes flush as updates), cascading over the initialized navigations that declare `persist`.
+     * Nothing is written until {@see flush()}. `UOW-003` in an untracked session; `UOW-006` for an
+     * instance scheduled for removal; `CRUD-003`/`CRUD-002` for one that is not table-backed and keyed.
+     */
+    public function persist(object $entity): void
+    {
+        $this->unitOfWork()->persist($entity);
+    }
+
+    /**
+     * Schedules a delete for a tracked instance (`UOW-001` for any other), cascading over the navigations
+     * that declare `remove`; removing an instance scheduled for insert cancels the insert. A never-loaded
+     * collection under a remove cascade is `UOW-005`; a refusal anywhere in the cascade schedules nothing.
+     */
+    public function remove(object $entity): void
+    {
+        $this->unitOfWork()->remove($entity);
+    }
+
+    /**
+     * Writes the schedule in one explicit step: inserts in foreign-key order with generated keys flowing
+     * into dependents, then every dirty tracked instance as a column-list update, then deletes children
+     * first — through this session's own `insert`/`update`/`delete`, inside the active transaction, else
+     * one the flush owns (rolled back on failure; the schedule is kept). `UOW-004` for a cycle, before any SQL.
+     */
+    public function flush(): FlushSummary
+    {
+        return $this->unitOfWork()->flush();
+    }
+
+    /** Whether anything is scheduled (dirty tracked instances flush regardless). `UOW-003` in an untracked session. */
+    public function hasPendingWork(): bool
+    {
+        return $this->unitOfWork()->hasPendingWork();
+    }
+
+    private function unitOfWork(): DbUnitOfWork
+    {
+        return $this->unitOfWork ?? throw new SimpleOrmException(
+            'UOW-003',
+            'session',
+            'the unit of work needs the identity map and the snapshots: open the session with TrackingMode::Tracked',
+        );
+    }
+
     /** Applies every mapped value of `$source` onto `$target`; an owned navigation is replaced as a whole (null stays null, ADR-0030). */
     private static function copyMappedValues(EntityMap $map, object $source, object $target): void
     {
@@ -734,10 +787,7 @@ final class Db
      */
     private function updateDirty(EntityMap $map, TrackedInstance $entry): void
     {
-        $dirty = array_values(array_filter(
-            $this->tracking?->dirtyProperties($entry) ?? [],
-            static fn (PropertyMap $p): bool => !$p->key && !$p->version && !$p->generated,
-        ));
+        $dirty = $this->tracking?->writableDirtyProperties($entry) ?? [];
         // Only key/version/generated values differing is clean: no statement, no snapshot change
         // (spec/session.md Clarifications, ADR-0035). The CRUD-004 check likewise covers only the
         // FK properties actually written, so a clean instance is never refused.
@@ -967,7 +1017,13 @@ final class Db
         );
     }
 
-    private function requireWritableKeyed(string $entityType): EntityMap
+    /**
+     * The map of a table-backed, keyed entity — `CRUD-003` for a read-only source, `CRUD-002` for no key.
+     * The one writability check the immediate operations and the unit of work share (CODING-STANDARD §8).
+     *
+     * @internal
+     */
+    public function requireWritableKeyed(string $entityType): EntityMap
     {
         $map = $this->maps->load($entityType);
         if (!$map->kind->isWritable()) {
@@ -1285,6 +1341,7 @@ final class Db
 
         $this->connection = null;
         $this->tracking?->clear();
+        $this->unitOfWork?->clear();
     }
 
     public function __destruct()

@@ -9,6 +9,7 @@ use ReflectionNamedType;
 use ReflectionProperty;
 use SimpleOrm\Errors\MappingError;
 use SimpleOrm\Errors\MappingException;
+use SimpleOrm\Metadata\Attributes\Cascade;
 use SimpleOrm\Metadata\Attributes\Column;
 use SimpleOrm\Metadata\Attributes\EnumAsInt;
 use SimpleOrm\Metadata\Attributes\ForeignKey;
@@ -238,11 +239,16 @@ final class AttributeMapLoader
             $enumAsInt = self::attr($property, EnumAsInt::class);
             $foreignKey = self::attr($property, ForeignKey::class);
             $owned = self::attr($property, Owned::class);
+            $cascade = self::attr($property, Cascade::class);
 
             $navigationCount = ($manyToOne !== null ? 1 : 0) + ($oneToOne !== null ? 1 : 0)
                 + ($oneToMany !== null ? 1 : 0) + ($manyToMany !== null ? 1 : 0);
 
             if ($owned !== null) {
+                if ($cascade !== null) {
+                    self::cascadeOnNonNavigation($target, $errors);
+                }
+
                 if ($column !== null || $ignore !== null || $key !== null || $generated !== null || $version !== null
                     || $enumAsInt !== null || $foreignKey !== null || $navigationCount > 0) {
                     $errors[] = new MappingError('MAP-019', $target, '#[Owned] cannot combine with any other mapping attribute');
@@ -271,6 +277,7 @@ final class AttributeMapLoader
                     );
                 }
 
+                $declared = count($relationships);
                 if ($manyToOne !== null) {
                     self::readManyToOne($property, $target, $manyToOne, $relationships, $errors);
                 } elseif ($oneToOne !== null) {
@@ -279,7 +286,15 @@ final class AttributeMapLoader
                     self::readCollectionNavigation($class, $property, $target, $oneToMany, $manyToMany, $relationships, $errors);
                 }
 
+                if ($cascade !== null) {
+                    self::attachCascade($target, $cascade, $manyToMany !== null, $declared, $relationships, $errors);
+                }
+
                 continue;
+            }
+
+            if ($cascade !== null) {
+                self::cascadeOnNonNavigation($target, $errors);
             }
 
             if ($ignore !== null) {
@@ -333,6 +348,61 @@ final class AttributeMapLoader
                 foreignKeyReferences: $foreignKey?->references,
             );
         }
+    }
+
+    /**
+     * Applies a `#[Cascade]` to the navigation just read (Level 3 M2): a many-to-many navigation
+     * cannot cascade and an empty declaration names nothing — both `MAP-025`. A navigation that
+     * failed its own validation produced no spec (`$declared` unchanged) and has nothing to attach to.
+     *
+     * @param list<RelationshipSpec> $relationships
+     * @param list<MappingError> $errors
+     */
+    private static function attachCascade(
+        string $target,
+        Cascade $cascade,
+        bool $isManyToMany,
+        int $declared,
+        array &$relationships,
+        array &$errors,
+    ): void {
+        if ($isManyToMany) {
+            $errors[] = new MappingError(
+                'MAP-025',
+                $target,
+                '#[Cascade] cannot be declared on a #[ManyToMany] navigation: its link rows are entities the unit of work persists and removes explicitly',
+            );
+
+            return;
+        }
+
+        if ($cascade->operations === []) {
+            // SPEC-GAP: spec/errors.md MAP-025 names only "on a property that is not a navigation" and
+            // "a many-to-many navigation"; an empty `#[Cascade()]` is treated as an invalid declaration.
+            $errors[] = new MappingError('MAP-025', $target, '#[Cascade] names no operation; pass CascadeOperation::Persist and/or CascadeOperation::Remove');
+
+            return;
+        }
+
+        if (count($relationships) > $declared) {
+            $last = count($relationships) - 1;
+            $relationships[$last] = $relationships[$last]->withCascade($cascade->operations);
+        }
+    }
+
+    /**
+     * `#[Cascade]` on a property that is not a `#[ManyToOne]`/`#[OneToOne]`/`#[OneToMany]` navigation
+     * (a column, an `#[Owned]` navigation, an unmapped property) is `MAP-025`.
+     *
+     * @param list<MappingError> $errors
+     */
+    private static function cascadeOnNonNavigation(string $target, array &$errors): void
+    {
+        $errors[] = new MappingError(
+            'MAP-025',
+            $target,
+            '#[Cascade] is valid on a #[ManyToOne], #[OneToOne], or #[OneToMany] navigation only',
+        );
     }
 
     /**
@@ -681,7 +751,7 @@ final class AttributeMapLoader
             $ignore = self::attr($member, Ignore::class);
             $enumAsInt = self::attr($member, EnumAsInt::class);
             $forbidden = false;
-            foreach ([Key::class, Generated::class, Version::class, ForeignKey::class, Owned::class,
+            foreach ([Key::class, Generated::class, Version::class, ForeignKey::class, Owned::class, Cascade::class,
                 ManyToOne::class, OneToOne::class, OneToMany::class, ManyToMany::class] as $attribute) {
                 if ($member->getAttributes($attribute) !== []) {
                     $forbidden = true;
@@ -766,6 +836,7 @@ final class AttributeMapLoader
         $propertyAttributes = [
             Column::class, Ignore::class, Key::class, Generated::class, Version::class, EnumAsInt::class,
             ForeignKey::class, ManyToOne::class, OneToOne::class, OneToMany::class, ManyToMany::class, Owned::class,
+            Cascade::class,
         ];
         foreach (PropertyDiscovery::propertiesInDeclarationOrder($class) as $property) {
             foreach ($propertyAttributes as $attribute) {

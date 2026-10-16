@@ -290,6 +290,8 @@ func sliceEntityElem(t reflect.Type) (reflect.Type, bool) {
 type parsedRelationship struct {
 	kind         core.RelationshipKind
 	fkProperties []string // nil for many_to_many, resolved through the descriptor instead
+	// cascade is the field's `cascade=` option, copied on by readField (Level 3 M2).
+	cascade core.CascadeOperations
 }
 
 // fieldDeclaration is the parsed `orm` tag of one field (CODING-STANDARD §10,
@@ -312,6 +314,11 @@ type fieldDeclaration struct {
 	ownedPrefix *string
 
 	relationships []parsedRelationship
+
+	// hasCascade is the `cascade=` option (Level 3 M2, spec/unit-of-work.md): valid only
+	// beside a many_to_one, one_to_one, or one_to_many declaration (MAP-025).
+	hasCascade bool
+	cascade    core.CascadeOperations
 }
 
 // parseFieldTag tokenizes one `orm` tag value. An unknown option, an unknown
@@ -352,6 +359,17 @@ func parseFieldTag(tagValue string, fieldTarget string, errs *errorCollector) fi
 			prefix := token[len("owned="):]
 			decl.isOwned = true
 			decl.ownedPrefix = &prefix
+		// SPEC-GAP: the declaration is a tag option here (`cascade=persist+remove`), the Go spelling of
+		// [Cascade(CascadeOperations.Persist | Remove)]; an unknown token is MAP-023 (a malformed tag, as for
+		// every other option) rather than MAP-025, and an empty `cascade=` is the same.
+		case strings.HasPrefix(token, "cascade="):
+			operations, ok := core.ParseCascadeOperations(token[len("cascade="):])
+			if !ok {
+				errs.add("MAP-023", fieldTarget, "unknown cascade operation in '%s' (persist, remove, or persist+remove)", token)
+				continue
+			}
+			decl.hasCascade = true
+			decl.cascade = operations
 		case token == "many_to_many":
 			decl.relationships = append(decl.relationships, parsedRelationship{kind: core.RelationshipManyToMany})
 		case strings.HasPrefix(token, "many_to_one="):
@@ -410,6 +428,10 @@ func readField(
 	decl := parseFieldTag(tagValue, fieldTarget, errs)
 
 	if decl.isOwned {
+		if decl.hasCascade {
+			errs.add("MAP-025", fieldTarget, "cascade is declared on a navigation to an entity; an owned value type is flattened into its owner and has nothing to cascade")
+			return
+		}
 		if decl.isColumn || decl.isIgnore || decl.isKey || decl.isGenerated || decl.isVersion ||
 			decl.isEnumInt || decl.typeOverride != nil || len(decl.relationships) > 0 {
 			errs.add("MAP-019", fieldTarget, "owned cannot combine with any other mapping option")
@@ -427,7 +449,19 @@ func readField(
 		if decl.isColumn || decl.isIgnore {
 			errs.add("MAP-019", fieldTarget, "a navigation cannot combine with column or ignore")
 		}
-		readRelationshipField(entityType, df, fieldTarget, decl.relationships[0], errs, relationships)
+		rel := decl.relationships[0]
+		rel.cascade = decl.cascade
+		if decl.hasCascade && rel.kind == core.RelationshipManyToMany {
+			errs.add("MAP-025", fieldTarget, "a many_to_many navigation cannot cascade: its link rows are entities the unit of work persists and removes explicitly")
+			return
+		}
+		readRelationshipField(entityType, df, fieldTarget, rel, errs, relationships)
+		return
+	}
+	// SPEC-GAP: MAP-025 also covers a cascade beside column/ignore, on an owned navigation, and on an
+	// owned type's member — everything that is not a many_to_one/one_to_one/one_to_many navigation.
+	if decl.hasCascade {
+		errs.add("MAP-025", fieldTarget, "cascade is valid only on a many_to_one, one_to_one, or one_to_many navigation")
 		return
 	}
 
@@ -516,6 +550,10 @@ func readOwnedType(
 			continue
 		}
 		decl := parseFieldTag(tagValue, memberTarget, errs)
+		if decl.hasCascade {
+			errs.add("MAP-025", memberTarget, "cascade is valid only on a navigation to an entity, not on a member of an owned type")
+			continue
+		}
 		if decl.isKey || decl.isGenerated || decl.isVersion || decl.isOwned || len(decl.relationships) > 0 {
 			errs.add("MAP-024", memberTarget, "an owned type's fields carry only column, enum_int, type=, or ignore: no key, version, generated column, relationship, or nested owned")
 			continue
@@ -580,7 +618,7 @@ func readRelationshipField(
 		}
 		*relationships = append(*relationships, &RelationshipSpec{
 			PropertyName: df.Field.Name, Kind: core.RelationshipManyToOne,
-			TargetType: targetType, ForeignKeyProperties: rel.fkProperties,
+			TargetType: targetType, ForeignKeyProperties: rel.fkProperties, Cascade: rel.cascade,
 		})
 
 	case core.RelationshipOneToOne:
@@ -594,7 +632,7 @@ func readRelationshipField(
 		}
 		*relationships = append(*relationships, &RelationshipSpec{
 			PropertyName: df.Field.Name, Kind: core.RelationshipOneToOne,
-			TargetType: targetType, ForeignKeyProperties: rel.fkProperties,
+			TargetType: targetType, ForeignKeyProperties: rel.fkProperties, Cascade: rel.cascade,
 		})
 
 	case core.RelationshipOneToMany:
@@ -608,7 +646,7 @@ func readRelationshipField(
 		}
 		*relationships = append(*relationships, &RelationshipSpec{
 			PropertyName: df.Field.Name, Kind: core.RelationshipOneToMany,
-			TargetType: elementType, ForeignKeyProperties: rel.fkProperties,
+			TargetType: elementType, ForeignKeyProperties: rel.fkProperties, Cascade: rel.cascade,
 		})
 
 	case core.RelationshipManyToMany:

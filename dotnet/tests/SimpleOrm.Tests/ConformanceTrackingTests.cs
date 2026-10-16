@@ -42,9 +42,13 @@ public sealed class ConformanceTrackingTests
             await ConformanceDatabase.BuildAsync(path, StepScript.ConformanceDirectory());
             var dialect = new RecordingDialect(new SqliteDialect());
             var mode = root.GetProperty("tracking").GetString() == "tracked" ? TrackingMode.Tracked : TrackingMode.Untracked;
-            await using var db = await Db.OpenAsync(
-                $"Data Source={path}", new DbOptions { Dialect = dialect, Tracking = mode }, CancellationToken.None);
-            await new StepScript(db, dialect, path).RunAsync(root);
+            // No pooling: the file is deleted right after, and a pool shared with the
+            // other runners (which clear it) is one more thing to race against.
+            await using (var db = await Db.OpenAsync(
+                $"Data Source={path};Pooling=False", new DbOptions { Dialect = dialect, Tracking = mode }, CancellationToken.None))
+            {
+                await new StepScript(db, dialect, path).RunAsync(root);
+            }
         }
         finally
         {

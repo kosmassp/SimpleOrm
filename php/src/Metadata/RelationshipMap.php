@@ -20,6 +20,7 @@ final readonly class RelationshipMap
      * @param class-string|null $linkType many-to-many only: the link entity
      * @param list<string> $linkForeignKeysToOwner many-to-many only: link properties referencing this class, in declaration order
      * @param list<string> $linkForeignKeysToTarget many-to-many only: link properties referencing the element type
+     * @param list<CascadeOperation> $cascade the declared cascades (`#[Cascade]`), in export order; empty when none (unit-of-work.md)
      */
     public function __construct(
         public string $propertyName,
@@ -29,6 +30,7 @@ final readonly class RelationshipMap
         public ?string $linkType = null,
         public array $linkForeignKeysToOwner = [],
         public array $linkForeignKeysToTarget = [],
+        public array $cascade = [],
     ) {
     }
 }

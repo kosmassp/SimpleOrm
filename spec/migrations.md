@@ -226,3 +226,31 @@ two shapes (snapshot form) plus declared renames through the diff and checks the
 resulting change exactly — no database; `conformance/snapshot-cases/` pins a
 fixture entity, version, and generation time and expects the exact exported
 snapshot document. See `conformance/README.md` for both schemas.
+
+## Draft migrations (Level 3 M5, ADR-0034 §7c)
+
+Two additions to the generator, both declared, nothing inferred:
+
+- **`[RenamedFrom("old_column")]`** on a `[Column]` property (metadata-model.md:
+  exported as `"renamedFrom"`) is a declared rename the generator reads
+  exactly as a `--rename table.old=new` flag — one data-preserving
+  `RenameColumn` instead of a drop and an add — but kept with the model, so
+  the intent survives the one `diff` run. The declaration is **permanent and
+  harmless once applied**: when the latest snapshot already has the new
+  column, or has neither, it declares nothing (the column is then simply
+  new, or already renamed). An explicit `--rename` stays strict — an unknown
+  side is unsupported — and wins over a declaration of the same old column.
+  `MAP-027` for a declaration without `[Column]` or without a name. Table
+  renames are not declared this way (a table's rename is a step the author
+  writes).
+- **`diff --draft`** emits the version with a draft marker (C# `[Draft]` on
+  the root class; PHP/Go their own marker) that the runner refuses to apply
+  or baseline — **`MIG-013`, the whole plan, before anything executes** —
+  until the author has reviewed the generated code and removed it. A draft
+  still composes, renders, `status` reports it as `Draft`, and `shadow`
+  replays it: it is a version in every respect but applicability.
+  `--amend` regenerates a draft like any generated version.
+
+Conformance: `diff-cases/` current columns may carry `"renamedFrom"`;
+`migrations-cases/` versions may carry `"draft": true`; `entities/role.json`
+pins the export (`Role.Name` was `name` until V0004).

@@ -197,6 +197,11 @@ public static class EntityMapJson
                 writer.WriteBoolean("softDelete", true);
             }
 
+            if (property.RenamedFrom is not null)
+            {
+                writer.WriteString("renamedFrom", property.RenamedFrom);   // a declared rename (Level 3 M5)
+            }
+
             writer.WriteEndObject();
         }
 

@@ -23,6 +23,9 @@ internal sealed class MappedPropertySpec
     /// <summary>Whether <c>[SoftDelete]</c> names this property as the delete flag (Level 3 M3).</summary>
     public bool IsSoftDelete { get; set; }
 
+    /// <summary>The previous column name declared by <c>[RenamedFrom]</c> (Level 3 M5).</summary>
+    public string? RenamedFrom { get; set; }
+
     public bool EnumAsInt { get; set; }
 
     public Type? ForeignKeyReferences { get; set; }

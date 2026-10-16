@@ -43,8 +43,12 @@ public sealed class ConformanceDiffTests
         var renames = spec.TryGetProperty("renames", out var declared)
             ? declared.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString()!)
             : [];
+        // The model's [RenamedFrom] declarations (Level 3 M5): "renamedFrom" on a current column.
+        var renamedFrom = spec.GetProperty("current").GetProperty("columns").EnumerateArray()
+            .Where(c => c.TryGetProperty("renamedFrom", out _))
+            .ToDictionary(c => c.GetProperty("renamedFrom").GetString()!, c => c.GetProperty("column").GetString()!);
 
-        var diff = MigrationGenerator.Diff(current, snapshot, renames);
+        var diff = MigrationGenerator.Diff(current, snapshot, renames, renamedFrom);
         var expect = spec.GetProperty("expect");
 
         Assert.Equal(Flag(expect, "isNew"), diff.IsNew);

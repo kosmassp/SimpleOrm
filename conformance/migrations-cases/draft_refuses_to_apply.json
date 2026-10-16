@@ -1,0 +1,22 @@
+{
+  "name": "draft_refuses_to_apply",
+  "comment": "A version marked draft (diff --draft; \"draft\": true here) never applies or baselines: MIG-013 before anything executes, the whole plan refused — V0001 stays unapplied too. Without the marker the same plan applies.",
+  "versions": [
+    { "version": 1, "steps": [ { "object": "widgets", "description": "create",
+        "up": ["create table widgets (id INTEGER PRIMARY KEY) STRICT"] } ] },
+    { "version": 2, "draft": true, "steps": [ { "object": "widgets", "description": "add_note",
+        "up": ["alter table widgets add column note TEXT"] } ] }
+  ],
+  "run": [
+    { "command": "migrate", "expect": { "error": "MIG-013" } },
+    { "command": "baseline", "version": 2, "expect": { "error": "MIG-013" } },
+    { "command": "migrate",
+      "versions": [
+        { "version": 1, "steps": [ { "object": "widgets", "description": "create",
+            "up": ["create table widgets (id INTEGER PRIMARY KEY) STRICT"] } ] },
+        { "version": 2, "steps": [ { "object": "widgets", "description": "add_note",
+            "up": ["alter table widgets add column note TEXT"] } ] }
+      ],
+      "expect": { "applied": [[1, "widgets"], [2, "widgets"]] } }
+  ]
+}

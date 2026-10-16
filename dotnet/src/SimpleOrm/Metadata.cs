@@ -163,8 +163,10 @@ public sealed class PropertyMap
         Type? foreignKeyReferences,
         OwnedMap? owner = null,
         AuditRole audit = AuditRole.None,
-        bool isSoftDelete = false)
+        bool isSoftDelete = false,
+        string? renamedFrom = null)
     {
+        RenamedFrom = renamedFrom;
         Property = property;
         ColumnName = columnName;
         IsNullable = isNullable;
@@ -183,6 +185,9 @@ public sealed class PropertyMap
 
     /// <summary>Whether this column is the soft-delete flag (Level 3 M3): a delete sets it instead of removing the row.</summary>
     public bool IsSoftDelete { get; }
+
+    /// <summary>The column this one was previously stored under (Level 3 M5, <c>[RenamedFrom]</c>): a declared rename the diff generator reads; null when none.</summary>
+    public string? RenamedFrom { get; }
 
     /// <summary>The member itself — on the entity, or on the owned type when <see cref="Owner"/> is set.</summary>
     public PropertyInfo Property { get; }

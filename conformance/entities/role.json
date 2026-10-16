@@ -21,7 +21,8 @@
     {
       "column": "role_name",
       "type": "string",
-      "nullable": false
+      "nullable": false,
+      "renamedFrom": "name"
     },
     {
       "column": "is_deleted",

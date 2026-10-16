@@ -1,0 +1,15 @@
+{
+  "name": "renamed_from_of_a_new_column_is_an_add",
+  "comment": "When the snapshot has neither the old nor the new column, the declaration describes a rename that never happened here: the column is simply new and adds. An explicit --rename of the same pair would be unsupported.",
+  "current": { "object": "widgets", "asOfVersion": 0,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+      { "column": "note", "type": "TEXT", "nullable": true, "renamedFrom": "remark" } ],
+    "indexes": [] },
+  "snapshot": { "object": "widgets", "asOfVersion": 1,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true } ],
+    "indexes": [] },
+  "renames": {},
+  "expect": { "added": ["note"] }
+}

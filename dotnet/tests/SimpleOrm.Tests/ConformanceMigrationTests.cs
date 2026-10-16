@@ -170,7 +170,10 @@ public sealed class ConformanceMigrationTests
                                 .ToArray()
                             : null,
                         s.TryGetProperty("expectDefinition", out var guard) ? guard.GetString() : null))
-                    .ToArray()))
+                    .ToArray())
+            {
+                Draft = v.TryGetProperty("draft", out var draft) && draft.GetBoolean(),   // Level 3 M5
+            })
             .ToArray();
 
     private static async Task<(long, string)[]> ReadAppliedAsync(Db db)

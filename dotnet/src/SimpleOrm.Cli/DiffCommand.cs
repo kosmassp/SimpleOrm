@@ -33,6 +33,9 @@ public sealed class DiffOptions
     /// <summary>Destructive changes (<c>DDL-003</c>) are emitted only when set.</summary>
     public bool AllowRemove { get; init; }
 
+    /// <summary>Emit the version as a draft (Level 3 M5): <c>[Draft]</c> on the root, which the runner refuses to apply (<c>MIG-013</c>) until removed.</summary>
+    public bool Draft { get; init; }
+
     /// <summary>Regenerate the newest version in place instead of emitting the next one (ADR-0017 add.3).</summary>
     public bool Amend { get; init; }
 
@@ -233,7 +236,7 @@ public static class DiffCommand
 
             planned.Add((
                 Path.Combine(options.OutDir, $"{prefix}.cs"),
-                MigrationGenerator.EmitRoot(options.RootNamespace, version, stepRefs, options.DialectLabel)));
+                MigrationGenerator.EmitRoot(options.RootNamespace, version, stepRefs, options.DialectLabel, options.Draft)));
         }
 
         // A file that exists and is not the tool's own for this version is never overwritten.

@@ -1,0 +1,15 @@
+{
+  "name": "renamed_from_declares_the_rename",
+  "comment": "A [RenamedFrom] declaration on the model (\"renamedFrom\" on a current column) is a declared rename like --rename: with the old column in the snapshot and the new one absent, the diff is one data-preserving rename.",
+  "current": { "object": "widgets", "asOfVersion": 0,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+      { "column": "note", "type": "TEXT", "nullable": true, "renamedFrom": "remark" } ],
+    "indexes": [] },
+  "snapshot": { "object": "widgets", "asOfVersion": 1,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+      { "column": "remark", "type": "TEXT", "nullable": true } ],
+    "indexes": [] },
+  "expect": { "renamed": [["remark", "note"]] }
+}

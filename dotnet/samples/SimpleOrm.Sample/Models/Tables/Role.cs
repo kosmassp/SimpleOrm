@@ -11,7 +11,9 @@ public sealed class Role : BaseModel
     public long Id { get; set; }
 
     /// <summary>Column renamed to <c>role_name</c> by migration V0004.</summary>
+    /// <summary>Stored as <c>name</c> until V0004 renamed it: the declared rename the generator reads (Level 3 M5), harmless now that the history has it.</summary>
     [Column("role_name")]
+    [RenamedFrom("name")]
     public required string Name { get; set; }
 
     /// <summary>The soft-delete flag (Level 3 M3, migration V0011): a delete sets it; reads filter on it explicitly, never implicitly.</summary>

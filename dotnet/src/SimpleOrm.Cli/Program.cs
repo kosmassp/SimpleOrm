@@ -91,7 +91,10 @@ int Usage()
                                       columns; views by DDL), versioned and timestamped
           diff --out <MigrationsDir> --namespace <ns>
                [--name <Description>] [--rename table.old=new]... [--allow-remove]
-               [--amend [--force] [--db <value>]]
+               [--draft] [--amend [--force] [--db <value>]]
+                                      [RenamedFrom] on a column declares a rename like --rename;
+                                      --draft marks the version [Draft]: migrate/baseline refuse it
+                                      (MIG-013) until the attribute is removed after review
                                       generate the next migration version from the model vs
                                       the latest snapshots (tables by columns, views by
                                       DDL); no database needed; removals need
@@ -391,6 +394,7 @@ async Task<int> DiffAsync()
             Renames = renames.ToDictionary(
                 p => p.Key, p => (IReadOnlyDictionary<string, string>)p.Value, StringComparer.OrdinalIgnoreCase),
             AllowRemove = Flag("allow-remove"),
+            Draft = Flag("draft"),
             Amend = Flag("amend"),
             Force = Flag("force"),
             // --db is optional when amending: an applied draft gets a MIG-010 heads-up.

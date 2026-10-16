@@ -1,0 +1,15 @@
+{
+  "name": "renamed_from_already_applied_declares_nothing",
+  "comment": "The declaration is permanent: once the history has the new column, [RenamedFrom] declares nothing — no rename, no unsupported change, no diff (unlike an explicit --rename, which must hold).",
+  "current": { "object": "widgets", "asOfVersion": 0,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+      { "column": "note", "type": "TEXT", "nullable": true, "renamedFrom": "remark" } ],
+    "indexes": [] },
+  "snapshot": { "object": "widgets", "asOfVersion": 2,
+    "columns": [
+      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+      { "column": "note", "type": "TEXT", "nullable": true } ],
+    "indexes": [] },
+  "expect": { }
+}

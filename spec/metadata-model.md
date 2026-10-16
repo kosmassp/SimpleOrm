@@ -249,3 +249,10 @@ A column may carry one hook, exported only when declared: `"audit":
 with its clock), and `"softDelete": true` (a delete sets it). Declaration
 errors are `MAP-026`. The fixture declares both audit roles on every
 `BaseModel` table and the soft-delete flag on `roles.is_deleted` (V0011).
+
+### Declared renames (Level 3 M5, migrations.md "Draft migrations")
+
+A column may declare the column it was previously stored under, exported
+only when declared: `"renamedFrom": "name"`. The diff generator reads it as
+a declared rename; the mapper and the session ignore it. `MAP-027` when
+declared without `[Column]` or without a name.

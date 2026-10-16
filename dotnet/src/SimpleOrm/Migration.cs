@@ -32,6 +32,13 @@ public abstract class MigrationVersion
 
     /// <summary>Applies this version's object steps in order (FK order across tables is the author's/generator's job).</summary>
     public abstract void Compose(VersionBuilder version);
+
+    /// <summary>
+    /// Whether this version is a draft (Level 3 M5): emitted by <c>diff --draft</c>,
+    /// carrying <see cref="DraftAttribute"/>; the runner refuses to apply or
+    /// baseline it (<c>MIG-013</c>) until the marker is removed.
+    /// </summary>
+    public virtual bool IsDraft => GetType().IsDefined(typeof(DraftAttribute), inherit: false);
 }
 
 /// <summary>Collects a version's object steps in explicit order.</summary>
@@ -457,6 +464,11 @@ public sealed class ViewActions
 public sealed class SqlVersion(long version, params SqlVersion.Step[] steps) : MigrationVersion
 {
     public override long Version => version;
+
+    /// <summary>The data-driven form of the draft marker (conformance <c>"draft": true</c>).</summary>
+    public bool Draft { get; init; }
+
+    public override bool IsDraft => Draft;
 
     public override void Compose(VersionBuilder builder)
     {

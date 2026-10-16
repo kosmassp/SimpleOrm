@@ -189,6 +189,7 @@ internal static class AttributeMapLoader
             var createdAt = property.GetCustomAttribute<CreatedAtAttribute>();
             var updatedAt = property.GetCustomAttribute<UpdatedAtAttribute>();
             var softDelete = property.GetCustomAttribute<SoftDeleteAttribute>();
+            var renamedFrom = property.GetCustomAttribute<RenamedFromAttribute>();
 
             if (owned is not null)
             {
@@ -276,6 +277,11 @@ internal static class AttributeMapLoader
 
             if (column is null)
             {
+                if (renamedFrom is not null)
+                {
+                    errors.Add(new MappingError("MAP-027", target, "[RenamedFrom] belongs on a [Column] property"));
+                }
+
                 if (createdAt is not null || updatedAt is not null || softDelete is not null)
                 {
                     errors.Add(new MappingError(
@@ -321,9 +327,15 @@ internal static class AttributeMapLoader
                 errors.Add(new MappingError("MAP-026", target, "a property carries at most one of [CreatedAt], [UpdatedAt], [SoftDelete]"));
             }
 
+            if (renamedFrom is not null && string.IsNullOrWhiteSpace(renamedFrom.PreviousColumn))
+            {
+                errors.Add(new MappingError("MAP-027", target, "[RenamedFrom] needs the previous column's name"));
+            }
+
             specs.Add(new MappedPropertySpec(property)
             {
                 ExplicitColumn = column.Name,
+                RenamedFrom = renamedFrom?.PreviousColumn,
                 IsKey = key is not null,
                 IsGenerated = generated is not null,
                 IsVersion = version is not null,

@@ -44,6 +44,7 @@ these codes.
 | `MAP-024` | invalid owned-type declaration: the navigation is not a single class-typed value or has no setter; the owned type is an entity (carries a relation source or index), is not declared owned at class level, has no parameterless constructor, maps no columns, or carries a key, version, generated column, foreign key, relationship, or nested owned type; or an owned type is loaded as if it were an entity | ADR-0030 | L2 exit |
 | `MAP-025` | invalid cascade declaration: `[Cascade]` on a property that is not a `[ManyToOne]`/`[OneToOne]`/`[OneToMany]` navigation — a `[ManyToMany]` navigation cannot cascade (its link rows are entities the unit of work persists explicitly) | ADR-0034 §7c M2 | L3 milestone 2 |
 | `MAP-026` | invalid hook declaration (hooks.md): `[CreatedAt]`/`[UpdatedAt]` on a non-temporal property, `[SoftDelete]` on a non-`bool` or nullable property, a hook on a key, version, or generated column or without `[Column]`, a property carrying more than one hook, or a role declared on more than one property of an entity | ADR-0034 §7c M3 | L3 milestone 3 |
+| `MAP-027` | invalid `[RenamedFrom]` declaration: on a property without `[Column]`, or naming no previous column | ADR-0034 §7c M5 | L3 milestone 5 |
 | `MAP-030` | no conversion or handler between the CLR type and the database value (either direction) | §7.9 | milestone 4 |
 | `MAP-031` | value conversion failed (format, overflow, unknown enum name) | §7.9 | milestone 4 |
 
@@ -114,6 +115,7 @@ these codes.
 | `MIG-010` | applied migration checksum changed (checksum = SHA-256 of the rendered Up SQL) | §7.23 |
 | `MIG-011` | an applied version is unknown to the code | ADR-0013 |
 | `MIG-012` | a view's live definition does not match the step's expected previous definition (changed outside migrations); `--force` recreates it | ADR-0017 add.1 |
+| `MIG-013` | `migrate`/`baseline` reached a version marked `[Draft]` (emitted by `diff --draft`): review it and remove the marker; the whole plan refuses before anything executes | ADR-0034 §7c M5 | L3 milestone 5 |
 | `MIG-020` | `migrate down` past a step whose rollback cannot be derived from the snapshots (none embedded/found, or a type/nullability change) and no `Down()` override | ADR-0018 |
 | `MIG-021` | a migration statement failed to execute; the message names the statement | ADR-0018 |
 | `MIG-030` | pending migrations at validation time | §7.24 (milestone 6) |

@@ -2523,3 +2523,91 @@ Owner rulings taken at the start of Level 3 M1:
 2. **A re-read of a key the session already tracks returns the tracked
    instance and does not apply the row's values** — the tracked instance
    wins, dirty or not; an explicit `Refresh` overwrites it from the row.
+
+## ADR-0035 — Level 3 M1: the identity map and snapshot change tracking, in three implementations (2026-10-16)
+
+The first Level 3 milestone (ADR-0034 §7c M1), done by the per-milestone
+method ADR-0034 fixed: the reference first with its spec section and
+conformance folder, then PHP and Go by agents forbidden to read another
+implementation, then a uniformity review, then every gap resolved against
+the reference and written into the spec. The two owner rulings of ADR-0034
+add.1 — tracking is a session mode, default untracked; a re-read of a
+tracked key returns the tracked instance without applying the row — are
+what everything below builds on.
+
+**The shape.** `DbOptions.Tracking = TrackingMode.Tracked` (PHP
+`new DbOptions(…, tracking: TrackingMode::Tracked)`, Go
+`orm.Options{Tracking: orm.TrackingTracked}`). A tracked session keeps one
+instance per (entity type, key) — the §7.4 identity, value-wise — and a
+snapshot of each instance's mapped values **in database-bound form** (the
+type converter's output), so "dirty" means "the database would receive a
+different value". Every read path that materializes a keyed entity
+consults the map — registry queries and streams, key reads, criteria,
+select-all, explicit and batch loading (link rows included), eager loading
+in every fetch mode with join-mode roots and children. `IsTracked`,
+`ChangesOf` (metadata order, dotted for owned members), `IsDirty`
+(`UOW-001` for an instance the session does not track — every instance of
+an untracked session), `RefreshAsync` (the explicit overwrite; `CRUD-001`
+when the row is gone; both modes). Writes keep the map honest: `Insert`
+and a full-row `Update` register with a snapshot of every column;
+`Update` on a tracked instance writes only the dirty non-key/version/
+generated columns through the ADR-0028 column-list path and **nothing at
+all when clean**; `UpdateOnly` moves the snapshot for the written columns
+and the version only (an unwritten change stays dirty) and does not
+register an unknown instance; `Delete` forgets the key; every write and
+the refresh pass the identity gate — an instance that is not the
+session's instance for its key is `UOW-002` before any SQL (a key is
+identity; it never updates). Nothing adds a round trip. `spec/session.md`
+"Tracking", `spec/errors.md` `UOW-`, `conformance/tracking-cases/` (11
+step scripts replayed in the declared mode; what an update wrote is
+observed through the dialect seam, the one place every implementation
+renders SQL).
+
+**The ports.** PHP: `Session\DbTracking` + `TrackedInstance` beside the
+Level 2 collaborators, `KeyTuple` as the one identity, `lcfirst` per
+dotted segment in the runner; 32 new tests, 450 total. Go: `orm/tracker.go`
++ `orm/tracking.go`; **the pointer is the tracked shape** — `From[*T]`,
+`Get[*T]`, `[]*T` navigations return the tracked instance, value-shaped
+results are copies and never registered (a §10 row and now a spec
+Clarification); 28 new tests. Both ports' default suites unchanged.
+
+**The audit: 15 + 19 gap questions, one rule changed, four reference
+fixes.** The PHP list found the reference less careful than the port in
+four places, fixed in C# and pinned before the review ran: `UpdateOnly`
+re-snapshotted the whole row (an unwritten change read as clean), the
+entity form of `Delete` and `Refresh` skipped the identity gate, a key
+reused after an external delete left a stale holder indexed, and the
+snapshot held raw values so a JSON list mutated in place read as clean —
+that last one became the rule: **snapshots hold the database-bound form**.
+Every remaining question was a silence the reference already answered
+consistently; the answers are the Clarifications in `spec/session.md`
+(link rows tracked; live values in loading; the order of refusals on a
+column-list update; a failing read keeps what it resolved; metadata order;
+transactions leave the map alone; navigations are not dirty state; keyed
+views tracked; re-reads still map the row; value-shaped results).
+
+**The review pass** aligned both ports to the Clarifications — snapshots in
+bound form (PHP dropped its `serialize` deep copy, Go its `reflect.DeepEqual`),
+Go's `Refresh` through the identity gate and its link rows through the map,
+Go's insert gate widened to every caller-supplied key — found one real bug
+(PHP ran the identity gate before the list validation on `UpdateOnly`, so a
+foreign instance with an unmapped name was `UOW-002` instead of `CRUD-005`),
+and pinned the rest with 12 + 12 tests. Its one open finding became the last
+Clarification: **a full-row `Update` validates every navigation (`CRUD-004`)
+before the identity gate and before the snapshot** — the reference's order,
+now in PHP and Go too, pinned in all three. Left as known: PHP cannot bind an
+`array`-typed entity member read through its list JSON handler, so such a
+member on a keyed entity refuses `MAP-030` at read time in a tracked session
+(it could never be written either; no fixture has one); Go's tracker is a
+sorted slice with O(n) registration, fine until the Level 3 exit benchmark
+says otherwise.
+
+**Verification.** C#: 340 passed, 22 skipped (SQL Server LocalDB and the
+Postgres live suite, no server reachable). PHP: 463 tests, 1571 assertions. Go: every package ok (27 tracking tests + the
+11 cases). The NuGet
+audit started failing the build on a transitive `System.Security.Cryptography.Pkcs`
+advisory in the meantime; the SQL Server dialect pins the patched version.
+
+**Next — M2, the unit of work** (§7c), only when the owner says so.
+
+**Status.** Accepted. M1 done in all three implementations.

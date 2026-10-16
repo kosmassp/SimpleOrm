@@ -26,8 +26,9 @@ func TestUpdate_WritesTheFullRowByKey(t *testing.T) {
 	ada := testsupport.InsertUser(t, db, "Ada", "ada@example.com")
 
 	ada.Name = "Ada Lovelace"
-	updated := testsupport.SeedTime
-	ada.UpdatedAtUtc = &updated
+	// The updated_at hook (Level 3 M3) is the column's writer: a caller's value is overwritten with the clock.
+	callerValue := testsupport.SeedTime
+	ada.UpdatedAtUtc = &callerValue
 	if err := orm.Update(ctx, db, ada); err != nil {
 		t.Fatal(err)
 	}
@@ -39,8 +40,8 @@ func TestUpdate_WritesTheFullRowByKey(t *testing.T) {
 	if loaded.Name != "Ada Lovelace" {
 		t.Errorf("expected updated name, got %s", loaded.Name)
 	}
-	if loaded.UpdatedAtUtc == nil || !loaded.UpdatedAtUtc.Equal(testsupport.SeedTime) {
-		t.Errorf("expected updated_at, got %v", loaded.UpdatedAtUtc)
+	if loaded.UpdatedAtUtc == nil || !loaded.UpdatedAtUtc.Equal(testsupport.ClockNow) {
+		t.Errorf("expected updated_at to be the session clock, got %v", loaded.UpdatedAtUtc)
 	}
 }
 

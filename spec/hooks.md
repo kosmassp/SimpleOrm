@@ -74,3 +74,48 @@ unit-of-work.md), run with the clock fixed; the runner observes the
 statements through the dialect seam. Expectations on the audit columns use
 `value` with the fixed clock; a soft delete shows as an `update` statement
 whose columns are the flag and the stamp.
+
+## Clarifications (the PHP and Go M3 ports asked; ADR-0037)
+
+- **"UTC" is the language's notion of it**: a `DateTimeKind.Utc` instant in C#,
+  a `DateTimeImmutable` whose zone is `UTC`/`Z`/`+00:00` in PHP, a zero-offset
+  `time.Time` in Go. Any
+  other instant from the clock is `VAL-020` at the write that would use it.
+- **The clock is read per write** — once per statement that fills or stamps —
+  so a multi-row flush may stamp different instants; the conformance runners
+  fix it, so cases never depend on that.
+- **A failed immediate write leaves the instance as it was**: the stamp (and a
+  soft delete's flag) go back to their previous values when the statement
+  fails (`CRUD-010`, a provider error). A flush's undo journal does the same
+  for every statement it ran — the stamp of an undone update, the flag,
+  stamp, and version of an undone soft delete, and the fill of an undone
+  insert's `[CreatedAt]`.
+- **Hooks run after the gates**: the clock is consulted after the list
+  validation, the navigation consistency check, and the identity gate, so
+  `CRUD-005`/`CRUD-004`/`UOW-002` outrank a `VAL-020` from the clock.
+- **Listing the stamp column in a column-list update** changes nothing: it is
+  stamped with the clock and written once.
+- **A by-key soft delete** sets nothing on any instance (there is none); it
+  forgets the tracked instance for that key. `CRUD-012` is decided before the
+  key validates, so it outranks `CRUD-002` on a versioned entity.
+- **`[CreatedAt]` "unset"** means null, the type's zero instant, or (in a
+  language where the property may be uninitialized) not initialized.
+- **Hooks are only valid on a table-backed entity** (`MAP-026` on a view,
+  statement, or procedure — a hook that could never act is a declaration
+  error, as `[Generated]`/`[Version]` are there, `MAP-013`). The manual map builder declares hooks like the
+  attribute loader does, and the same `MAP-026` rules apply to both.
+- **`MAP-026` covers every misplaced hook**: on a navigation, an ignored or
+  unmapped property, an owned navigation or an owned type's member — never
+  `MAP-019`/`MAP-024` for those. A duplicate hook token on one declaration
+  (Go `created_at,created_at`) is the port's own malformed-declaration rule.
+- **A null/nil entity** passed to a hook-bearing write, `Detach`, or `Merge`
+  is the language's argument error where the language has one (C#
+  `ArgumentNullException`, PHP `TypeError`); Go, which cannot refuse a nil
+  pointer by type, reports `UOW-001` for `Detach` and `CRUD-002` for `Merge`.
+- **A copy's uninitialized property** (PHP: a typed property never assigned)
+  is not merged — there is no value to copy; everything else is copied as is.
+- **Refusal order on a by-key soft delete**: `CRUD-012` (a versioned entity)
+  is decided before the key validates — the call can never succeed there.
+- **A zero database-generated key is unset** everywhere it matters (merge,
+  the identity map's null-part rule aside): an explicit `0` on a generated
+  key is not a key value.

@@ -162,10 +162,11 @@ func (db *Db) dirtyEntries() ([]*trackedEntry, error) {
 }
 
 // hasWritableColumn reports whether a change list holds a column an update would
-// write: key, version, and generated values are never in a SET (session.md Clarifications).
+// write: key, version, and generated values are never in a SET (session.md Clarifications), and the
+// [UpdatedAt] stamp never makes an instance dirty (spec/hooks.md).
 func hasWritableColumn(changed []*core.PropertyMap) bool {
 	for _, p := range changed {
-		if !p.IsKey && !p.IsVersion && !p.IsGenerated {
+		if isWritableChange(p) {
 			return true
 		}
 	}
@@ -595,7 +596,17 @@ func (j *flushJournal) recordInsert(db *Db, scheduled *scheduledInsert) {
 	if key, ok := keyOf(m, scheduled.ptr); ok {
 		displaced = db.tracker.find(m.Type, key)
 	}
+	// The [CreatedAt] hook fills an unset value as the insert runs; a retried flush fills it afresh.
+	// SPEC-GAP: the spec names the stamp of an undone update and the flag of an undone soft delete, not this.
+	createdAt := m.CreatedAtProperty
+	var priorCreatedAt any
+	if createdAt != nil {
+		priorCreatedAt = createdAt.Get(scheduled.ptr)
+	}
 	j.undo = append(j.undo, func() {
+		if createdAt != nil {
+			_ = createdAt.Set(scheduled.ptr, priorCreatedAt) // the value came from Get, so it always assigns back
+		}
 		if entry := db.entryOf(scheduled.ptr); entry != nil {
 			db.tracker.forget(entry)
 		}
@@ -616,18 +627,44 @@ func (j *flushJournal) recordUpdate(entry *trackedEntry) {
 	if version != nil {
 		versionValue = version.Get(entry.ptr.Interface())
 	}
+	// The [UpdatedAt] stamp the update wrote goes back with the snapshot and the version (spec/hooks.md).
+	stamp := entry.m.UpdatedAtProperty
+	var stampValue any
+	if stamp != nil {
+		stampValue = stamp.Get(entry.ptr.Interface())
+	}
 	j.undo = append(j.undo, func() {
 		copy(entry.snapshot, snapshot)
 		if version != nil {
 			_ = version.Set(entry.ptr.Interface(), versionValue) // the value came from Get, so it always assigns back
 		}
+		if stamp != nil {
+			_ = stamp.Set(entry.ptr.Interface(), stampValue)
+		}
 	})
 }
 
-// recordDelete re-registers the instance a delete forgot, exactly as it was.
+// recordDelete re-registers the instance a delete forgot, exactly as it was. A soft delete (spec/hooks.md)
+// also changed the instance — the flag, the stamp, and the bumped version — and those go back too.
 func (j *flushJournal) recordDelete(db *Db, scheduled *scheduledRemove) {
 	entry := db.entryOf(scheduled.ptr)
+	m := scheduled.m
+	var restoreValues []func()
+	if m.SoftDeleteProperty != nil {
+		for _, property := range []*core.PropertyMap{m.SoftDeleteProperty, m.UpdatedAtProperty, m.VersionProperty} {
+			if property == nil {
+				continue
+			}
+			prior := property.Get(scheduled.ptr)
+			restoreValues = append(restoreValues, func() {
+				_ = property.Set(scheduled.ptr, prior) // the value came from Get, so it always assigns back
+			})
+		}
+	}
 	j.undo = append(j.undo, func() {
+		for _, restore := range restoreValues {
+			restore()
+		}
 		if entry != nil {
 			db.tracker.restore(entry)
 		}

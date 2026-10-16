@@ -134,3 +134,24 @@ func (c *PropertyConfiguration) Type(columnType core.ColumnType) *PropertyConfig
 	c.spec.ColumnTypeOverride = &columnType
 	return c
 }
+
+// SPEC-GAP: the spec does not say whether the manual builder takes hooks; it does (CreatedAt, UpdatedAt, SoftDelete),
+// validated by the same assembler as the tag (MAP-026), so every loader can declare them.
+
+// CreatedAt declares the created-at hook (spec/hooks.md): the session fills the column on insert when unset.
+func (c *PropertyConfiguration) CreatedAt() *PropertyConfiguration {
+	c.spec.CreatedAt = true
+	return c
+}
+
+// UpdatedAt declares the updated-at hook (spec/hooks.md): the session stamps the column on every write that changes a row.
+func (c *PropertyConfiguration) UpdatedAt() *PropertyConfiguration {
+	c.spec.UpdatedAt = true
+	return c
+}
+
+// SoftDelete declares the soft-delete flag (spec/hooks.md): a delete sets this non-nullable bool column instead of removing the row.
+func (c *PropertyConfiguration) SoftDelete() *PropertyConfiguration {
+	c.spec.SoftDelete = true
+	return c
+}

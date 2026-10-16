@@ -1,0 +1,143 @@
+package orm
+
+import (
+	"context"
+	"reflect"
+	"time"
+
+	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
+)
+
+// The declared hooks in the session (Level 3 M3, ADR-0034 §7c, spec/hooks.md): audit columns and soft
+// delete are metadata the session acts on, never registered callbacks. One implementation serves the
+// immediate operations and the unit of work's flush, because both run the same generated CRUD
+// (insertRow, updateEntity, UpdateOnly, deleteEntity). Reads never filter on the soft-delete flag.
+
+// now is the session clock (spec/hooks.md "The session clock"): Options.Clock, the wall clock by
+// default. An instant whose zone offset is not zero is VAL-020 — the §7.9 UTC rule.
+func (db *Db) now() (time.Time, error) {
+	clock := db.options.Clock
+	if clock == nil {
+		return time.Now().UTC(), nil
+	}
+	instant := clock()
+	// SPEC-GAP: the spec says "a non-UTC instant is VAL-020" without saying how Go decides that; a
+	// time.Time always carries a location, so the rule here is the zone offset (a fixed zone with
+	// offset zero is UTC, time.Local on a UTC machine passes).
+	if _, offset := instant.Zone(); offset != 0 {
+		return time.Time{}, core.Errorf("VAL-020", "Options.Clock",
+			"the session clock returned %s, which is not UTC; return an instant in UTC (time.Now().UTC())",
+			instant.Format(time.RFC3339))
+	}
+	return instant.UTC(), nil
+}
+
+// fillCreatedAt is the [CreatedAt] hook (spec/hooks.md): on insert the column takes the clock when its
+// value is unset — nil, or the zero instant — and keeps a value the caller set. It writes the value
+// onto the entity, so the instance reads back what the row holds.
+func (db *Db) fillCreatedAt(m *core.EntityMap, entity any) error {
+	property := m.CreatedAtProperty
+	if property == nil || !isUnsetInstant(property.Get(entity)) {
+		return nil
+	}
+	instant, err := db.now()
+	if err != nil {
+		return err
+	}
+	return property.Set(entity, instant)
+}
+
+// isUnsetInstant is "null, or the type's default instant" (spec/hooks.md "[CreatedAt]").
+func isUnsetInstant(value any) bool {
+	if value == nil {
+		return true
+	}
+	instant, ok := value.(time.Time)
+	return ok && instant.IsZero()
+}
+
+// stampSet is the [UpdatedAt] hook (spec/hooks.md): the library is the column's writer, so every write
+// that changes a row writes the clock — the column joins the SET after the caller's columns (when not
+// already listed) and the value lands on the entity. It returns the (possibly extended) set and a
+// function putting the entity's previous value back when the statement then fails. An entity with no
+// updated-at column gets its set back untouched.
+func (db *Db) stampSet(m *core.EntityMap, entity any, set []*core.PropertyMap) ([]*core.PropertyMap, func(), error) {
+	property := m.UpdatedAtProperty
+	if property == nil {
+		return set, func() {}, nil
+	}
+	// SPEC-GAP: the clock is read once per hook write, so a flush of several rows reads it once per row (a moving
+	// clock stamps different instants within one flush); the spec does not say whether a flush shares one instant.
+	instant, err := db.now()
+	if err != nil {
+		return nil, nil, err
+	}
+	// SPEC-GAP: the spec does not say what a failed write leaves on the instance; the stamp is put back so a
+	// refused or conflicting write changes nothing observable (and a retry stamps afresh).
+	prior := property.Get(entity)
+	if err := property.Set(entity, instant); err != nil {
+		return nil, nil, err
+	}
+	restore := func() { _ = property.Set(entity, prior) } // the value came from Get, so it always assigns back
+
+	for _, listed := range set {
+		if listed == property {
+			return set, restore, nil
+		}
+	}
+	// SPEC-GAP: a caller who lists the updated-at column in UpdateOnly still gets the clock, not their value
+	// (the library is the column's writer); it is not listed twice.
+	return append(append([]*core.PropertyMap{}, set...), property), restore, nil
+}
+
+// isWritableChange reports whether a changed column is one a tracked update writes: key, version, and
+// generated values never are, and the [UpdatedAt] column is never what makes an instance dirty — the
+// session writes it, and only when something else changed (spec/hooks.md "[UpdatedAt]").
+func isWritableChange(p *core.PropertyMap) bool {
+	return !p.IsKey && !p.IsVersion && !p.IsGenerated && p.Audit != core.AuditUpdatedAt
+}
+
+// softDeleteEntity is the entity form of a delete on a [SoftDelete] entity (spec/hooks.md): the
+// column-list update that sets the flag true with the [UpdatedAt] stamp and the version rules of an
+// update — CRUD-010 on a stale version (the version bumps on success), CRUD-001 on zero rows without
+// one. The flag and the stamp are set on the instance; a failed statement puts them back.
+func softDeleteEntity(ctx context.Context, db *Db, entityType reflect.Type, m *core.EntityMap, entity any) error {
+	flag := m.SoftDeleteProperty
+	priorFlag := flag.Get(entity)
+	if err := flag.Set(entity, true); err != nil {
+		return err
+	}
+	set, restoreStamp, err := db.stampSet(m, entity, []*core.PropertyMap{flag})
+	if err != nil {
+		_ = flag.Set(entity, priorFlag) // the value came from Get, so it always assigns back
+		return err
+	}
+	if err := executeUpdate(ctx, db, entityType, m, entity, db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set)); err != nil {
+		_ = flag.Set(entity, priorFlag)
+		restoreStamp()
+		return err
+	}
+	return nil
+}
+
+// softDeleteByKey is the by-key form (spec/hooks.md): the same column-list update, keyed. Delete has
+// already refused a versioned entity (CRUD-012) — the version it does not know cannot be bumped
+// blindly. There is no instance to carry the values, so a scratch one holds the key, the flag, and the
+// stamp for the one update path to bind; zero rows is CRUD-001.
+func softDeleteByKey(ctx context.Context, db *Db, entityType reflect.Type, m *core.EntityMap, keyValues []any) error {
+	scratch := reflect.New(entityType).Interface()
+	for i, key := range m.KeyProperties {
+		if err := key.Set(scratch, keyValues[i]); err != nil {
+			return err
+		}
+	}
+	flag := m.SoftDeleteProperty
+	if err := flag.Set(scratch, true); err != nil {
+		return err
+	}
+	set, _, err := db.stampSet(m, scratch, []*core.PropertyMap{flag})
+	if err != nil {
+		return err
+	}
+	return executeUpdate(ctx, db, entityType, m, scratch, db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set))
+}

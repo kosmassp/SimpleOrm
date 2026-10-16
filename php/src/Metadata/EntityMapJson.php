@@ -107,6 +107,15 @@ final class EntityMapJson
                 $entry['generated'] = true;
             }
 
+            // Declared hooks only (spec/metadata-model.md "Declared hooks"): an undeclared export is unchanged.
+            if ($property->audit !== AuditRole::None) {
+                $entry['audit'] = $property->audit->value;
+            }
+
+            if ($property->softDelete) {
+                $entry['softDelete'] = true;
+            }
+
             $columns[] = $entry;
         }
 

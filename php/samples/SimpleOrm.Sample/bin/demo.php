@@ -87,7 +87,7 @@ try {
     $runner = new MigrationRunner($db->connection(), $db->options()->dialect, $db->maps(), $set, $snapshots);
 
     $applied = $runner->migrate();
-    expect($applied === 9, "9 versions applied, got {$applied}");
+    expect($applied === 11, "11 versions applied, got {$applied}");
     ok('migrate', "{$applied} versions applied");
     expect($runner->migrate() === 0, 'a second migrate applies nothing');
     ok('migrate again', 'nothing pending');
@@ -240,11 +240,11 @@ try {
 
     // --- derived rollbacks (ADR-0018): no Down() anywhere in the sample -------------
     $reverted = $runner->migrateDown(3);
-    expect($reverted === 6, "6 versions reverted, got {$reverted}");
+    expect($reverted === 8, "8 versions reverted, got {$reverted}");
     $columns = $db->connection()->query("select name from pragma_table_info('roles') order by name")->fetchAll(PDO::FETCH_COLUMN);
     expect(in_array('name', $columns, true) && !in_array('role_name', $columns, true), 'V0004 rename inverted data-preservingly');
     $reapplied = $runner->migrate();
-    expect($reapplied === 6, "6 versions re-applied, got {$reapplied}");
+    expect($reapplied === 8, "8 versions re-applied, got {$reapplied}");
     $roleNames = array_map(static fn (Role $role): string => $role->name, $db->queryAll(Role::class));
     expect($roleNames === ['admin', 'user'], 'seeds survive the round trip');
     ok('migrate down --to 3, then up', 'rename inverted, columns/indexes/view restored, seeds intact');

@@ -20,7 +20,7 @@ func TestSampleSet_BuildsWithVersionsInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := set.VersionNumbers()
-	want := []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	want := []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
 	if len(got) != len(want) {
 		t.Fatalf("expected %d versions, got %d: %v", len(want), len(got), got)
 	}
@@ -36,8 +36,8 @@ func TestSampleSet_SnapshotsEmbedTheExpectedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := set.Count(); got != 16 {
-		t.Fatalf("expected 16 embedded snapshot files, got %d", got)
+	if got := set.Count(); got != 17 {
+		t.Fatalf("expected 17 embedded snapshot files, got %d", got)
 	}
 
 	cases := []struct {
@@ -45,7 +45,7 @@ func TestSampleSet_SnapshotsEmbedTheExpectedFiles(t *testing.T) {
 		version int64
 	}{
 		{"users", 1}, {"users", 2}, {"users", 7},
-		{"roles", 1}, {"roles", 4}, {"roles", 5}, {"roles", 8},
+		{"roles", 1}, {"roles", 4}, {"roles", 5}, {"roles", 8}, {"roles", 11},
 		{"user_roles", 1}, {"user_roles", 5},
 		{"transactions", 1}, {"transactions", 3},
 		{"transaction_details", 1},
@@ -71,8 +71,8 @@ func TestSampleSet_Renders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rendered) != 10 {
-		t.Fatalf("expected 10 rendered versions, got %d", len(rendered))
+	if len(rendered) != 11 {
+		t.Fatalf("expected 11 rendered versions, got %d", len(rendered))
 	}
 
 	find := func(version int64) migrations.RenderedVersion {

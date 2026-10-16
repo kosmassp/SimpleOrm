@@ -27,6 +27,11 @@ type MappedPropertySpec struct {
 	IsGenerated        bool
 	IsVersion          bool
 	EnumAsInt          bool
+	// CreatedAt, UpdatedAt, and SoftDelete are the declared hooks (Level 3 M3, spec/hooks.md); the
+	// assembler validates them (MAP-026) and resolves them into PropertyMap.Audit / IsSoftDelete.
+	CreatedAt  bool
+	UpdatedAt  bool
+	SoftDelete bool
 	// ForeignKeyReferences is set from the descriptor's EntityDef.ForeignKeys,
 	// after every spec's PropertyName is known (ADR-0027, CODING-STANDARD §10).
 	ForeignKeyReferences reflect.Type

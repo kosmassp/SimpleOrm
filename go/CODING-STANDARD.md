@@ -285,6 +285,9 @@ Mirror the C# member names when porting, then apply the initialism rule:
 | a flush batches with `DbBatch` where the provider has it (an execution detail) | one statement per row through the session's connection; no batching | `database/sql` has no batch API; observable behavior is identical |
 | "a failed flush keeps the schedule and does not touch the identity map or the snapshots" (spec/unit-of-work.md "Transactions") | a failed flush keeps the schedule and **restores** what its already-run statements changed in memory (identity map entries, snapshots, versions, generated keys) from an undo journal; rows written inside a caller's transaction stay in it until the caller rolls back | the CRUD calls register, snapshot, bump versions, and write keys as they run, so "untouched" needs an undo; the observable result is the spec's |
 | the unit-of-work statements are the generated CRUD (`Insert`, `Update`, `DeleteEntity`) | the same: `Insert[T]`/`Update[T]`/`DeleteEntity[T]` are thin wrappers over the type-erased `insertEntity`/`updateEntity`/`deleteEntity` the flush calls with the instance's runtime type | one CRUD path; the flush holds `any` pointers, and Go methods cannot take type parameters |
+| `[CreatedAt]`, `[UpdatedAt]`, `[SoftDelete]` on a property (Level 3 M3, spec/hooks.md, `MAP-026`) | the tag options `created_at`, `updated_at`, `soft_delete` beside `column` (`orm:"column=created_at,created_at"`, `orm:"column,soft_delete"`); the manual builder's `Property(...).CreatedAt()/.UpdatedAt()/.SoftDelete()`; `PropertyMap.Audit` (`core.AuditCreatedAt`/`AuditUpdatedAt`) and `PropertyMap.IsSoftDelete`, `EntityMap.CreatedAtProperty/UpdatedAtProperty/SoftDeleteProperty`; a hook option without `column`, beside `ignore`, on a navigation, on the owned navigation, or on an owned type's member is `MAP-026` (the reference's attributes need a `[Column]` on the same property); an unknown option stays `MAP-023` | per-field annotations are the tag |
+| `DbOptions.Clock` — the instant the hooks write, UTC, `VAL-020` otherwise | `orm.Options{Clock: func() time.Time}`; nil is `time.Now().UTC()`; "UTC" is a zone offset of zero (a `time.Time` always carries a location, so `FixedZone("GMT", 0)` and `time.Local` on a UTC machine pass) and any other offset is `VAL-020`, raised when a hook reads the clock | Go has no `DateTimeKind` |
+| `db.Detach(entity)` and `db.MergeAsync(entity, ct)` (Level 3 M3, spec/unit-of-work.md "Detach and merge") | `orm.Detach(db, &e) error` and `orm.Merge(ctx, db, &e) (*T, error)` — generic package functions over pointers; `Merge` returns the session's own pointer (the tracked instance, or the row it read and registered); `Detach` does no I/O and takes no context | methods cannot take type parameters; the pointer is the tracked shape |
 
 Everything not in this table is identical to the reference. If you find something
 that cannot be, stop and add a row here — with the reason — before coding around it.
@@ -308,10 +311,14 @@ orm:"one_to_one=UserID"           navigation; FK fields on the target (the point
 orm:"many_to_many"                navigation resolved through the descriptor's ManyToMany entry
 orm:"one_to_many=TransactionID,cascade=persist+remove"
                                   cascade (Level 3 M2): persist, remove, or both joined with +; navigations only (MAP-025)
+orm:"column=created_at,created_at"  created-at hook (Level 3 M3): filled on insert when unset; a datetime/datetimeoffset field (MAP-026)
+orm:"column=updated_at,updated_at"  updated-at hook: stamped on every write that changes the row; same field rule
+orm:"column,soft_delete"          soft-delete flag: a non-nullable bool; a delete sets it (MAP-026)
 ```
 
 Options are comma-separated; a value follows `=`; an unknown option, token, or
-value is `MAP-023`. An exported field with no `orm` tag on a type that carries
+value is `MAP-023`. A hook option (`created_at`, `updated_at`, `soft_delete`) needs
+`column` on the same field and none of `key`, `generated`, `version` (`MAP-026`). An exported field with no `orm` tag on a type that carries
 any declaration is `MAP-010`; unexported fields are invisible.
 
 ## 11. Checklist before you say "done"

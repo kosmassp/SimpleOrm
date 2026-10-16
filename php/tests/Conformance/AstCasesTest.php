@@ -159,7 +159,7 @@ final class AstCasesTest extends TestCase
         );
     }
 
-    /** Column list pinned by `conformance/ast/select_all.json`: id, role_name, created_at, updated_at. */
+    /** Column list pinned by `conformance/ast/select_all.json`: id, role_name, is_deleted, created_at, updated_at. */
     private static function roleMap(): EntityMap
     {
         return new EntityMap(
@@ -172,6 +172,7 @@ final class AstCasesTest extends TestCase
             [
                 self::prop(Role::class, 'id', 'id', ColumnType::Int64, 'int', key: true, generated: true),
                 self::prop(Role::class, 'name', 'role_name', ColumnType::String, 'string'),
+                self::prop(Role::class, 'isDeleted', 'is_deleted', ColumnType::Bool, 'bool'),
                 self::prop(Role::class, 'createdAtUtc', 'created_at', ColumnType::DateTime, DateTimeImmutable::class),
                 self::prop(Role::class, 'updatedAtUtc', 'updated_at', ColumnType::DateTime, DateTimeImmutable::class, nullable: true),
             ],

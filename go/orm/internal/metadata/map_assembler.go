@@ -54,6 +54,7 @@ func assemble(
 ) (*core.EntityMap, error) {
 	properties, byProperty := buildProperties(entityType, specs, convention, errs)
 	validateVersion(entityType, properties, errs)
+	validateHooks(properties, errs)
 	keyStrategy := resolveKeyStrategy(entityType, kind, properties, errs)
 	indexes := resolveIndexColumns(entityType, relationName, indexSpecs, byProperty, convention, errs)
 	relationships := resolveRelationships(entityType, relationshipSpecs, byProperty, errs)
@@ -123,6 +124,17 @@ func buildProperties(
 			columnType = core.TypeEnumInt
 		}
 
+		audit := core.AuditNone
+		switch {
+		case spec.CreatedAt:
+			audit = core.AuditCreatedAt
+		case spec.UpdatedAt:
+			audit = core.AuditUpdatedAt
+		}
+		if hooks := countHooks(spec); hooks > 1 {
+			errs.add("MAP-026", target(entityType, propertyName), "a property carries at most one hook; %d are declared", hooks)
+		}
+
 		property := &core.PropertyMap{
 			Field:                spec.Field,
 			Index:                spec.Index,
@@ -135,6 +147,8 @@ func buildProperties(
 			IsKey:                spec.IsKey,
 			IsGenerated:          spec.IsGenerated,
 			IsVersion:            spec.IsVersion,
+			Audit:                audit,
+			IsSoftDelete:         spec.SoftDelete,
 			ForeignKeyReferences: spec.ForeignKeyReferences,
 			Owner:                owner,
 		}
@@ -146,6 +160,63 @@ func buildProperties(
 	}
 
 	return properties, byProperty
+}
+
+// countHooks is how many of the three hooks a spec declares.
+func countHooks(spec *MappedPropertySpec) int {
+	count := 0
+	for _, declared := range []bool{spec.CreatedAt, spec.UpdatedAt, spec.SoftDelete} {
+		if declared {
+			count++
+		}
+	}
+	return count
+}
+
+// SPEC-GAP: hooks declared on a view-, statement-, or procedure-backed entity are accepted (their column rules hold) and
+// never acted on — those sources refuse every write (CRUD-003); the spec limits hooks to no particular source.
+//
+// validateHooks is MAP-026 (spec/hooks.md "Declaration rules"): created-at/updated-at on a datetime
+// or datetimeoffset property (nullable or not), soft-delete on a non-nullable bool, no hook on a key,
+// version, or generated column, and at most one property per role. (A property carrying more than one
+// hook is reported where the specs are still visible, in buildProperties.)
+func validateHooks(properties []*core.PropertyMap, errs *errorCollector) {
+	roles := map[string]*core.PropertyMap{}
+	for _, p := range properties {
+		role := ""
+		switch {
+		case p.Audit == core.AuditCreatedAt:
+			role = "created_at"
+		case p.Audit == core.AuditUpdatedAt:
+			role = "updated_at"
+		case p.IsSoftDelete:
+			role = "soft_delete"
+		default:
+			continue
+		}
+
+		switch {
+		case p.Audit != core.AuditNone && p.ColumnType != core.TypeDateTime && p.ColumnType != core.TypeDateTimeOffset:
+			errs.add("MAP-026", p.Target(), "%s needs a datetime or datetimeoffset property, found %s", role, p.ColumnType)
+		case p.IsSoftDelete && (p.ColumnType != core.TypeBool || p.IsNullable):
+			errs.add("MAP-026", p.Target(), "soft_delete needs a non-nullable bool property, found %s%s", p.ColumnType, nullableSuffix(p))
+		}
+		if p.IsKey || p.IsVersion || p.IsGenerated {
+			errs.add("MAP-026", p.Target(), "a %s column is written by the library as data; it cannot be a key, version, or generated column", role)
+		}
+		if first, exists := roles[role]; exists {
+			errs.add("MAP-026", p.Target(), "%s is already declared on '%s'; one property per role", role, first.PropertyName)
+			continue
+		}
+		roles[role] = p
+	}
+}
+
+func nullableSuffix(p *core.PropertyMap) string {
+	if p.IsNullable {
+		return " (nullable)"
+	}
+	return ""
 }
 
 func validateVersion(entityType reflect.Type, properties []*core.PropertyMap, errs *errorCollector) {

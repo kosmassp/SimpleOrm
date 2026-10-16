@@ -33,19 +33,32 @@ final class FlushJournal
         $this->checkpoint = $tracking->checkpoint();
     }
 
-    /** Remembers the key values an insert is about to assign (or leave unset). */
+    /** Remembers the key values an insert is about to assign (or leave unset) and the `#[CreatedAt]` value it may fill. */
     public function recordInsert(EntityMap $map, object $entity): void
     {
         foreach ($map->keyProperties as $key) {
             $this->recordValue($key, $entity);
         }
+
+        // SPEC-GAP: spec/hooks.md names the flag/stamp/version of an undone soft delete and the stamp of an undone update; the
+        // #[CreatedAt] value an undone insert filled goes back to unset too, so the retry takes the clock again ("flushes as it was").
+        $this->recordProperties([$map->createdAtProperty()], $entity);
     }
 
-    /** Remembers the version an update is about to bump. */
+    /** Remembers the version an update is about to bump and the `#[UpdatedAt]` stamp it takes. */
     public function recordUpdate(EntityMap $map, object $entity): void
     {
-        if ($map->versionProperty !== null) {
-            $this->recordValue($map->versionProperty, $entity);
+        $this->recordProperties([$map->versionProperty, $map->updatedAtProperty()], $entity);
+    }
+
+    /**
+     * Remembers what a delete may move on the instance: nothing for a hard delete, the flag, the stamp, and the
+     * version for a soft delete (spec/hooks.md) — all three are set on the instance by the statement.
+     */
+    public function recordDelete(EntityMap $map, object $entity): void
+    {
+        if ($map->softDeleteProperty() !== null) {
+            $this->recordProperties([$map->softDeleteProperty(), $map->updatedAtProperty(), $map->versionProperty], $entity);
         }
     }
 
@@ -57,6 +70,16 @@ final class FlushJournal
         }
 
         $this->undo = [];
+    }
+
+    /** @param list<PropertyMap|null> $properties */
+    private function recordProperties(array $properties, object $entity): void
+    {
+        foreach ($properties as $property) {
+            if ($property !== null) {
+                $this->recordValue($property, $entity);
+            }
+        }
     }
 
     /** An uninitialized property goes back to uninitialized (an `int $id` has no value before its insert), not to null. */

@@ -230,3 +230,19 @@ The simple rules, no deep graph merge; both need a tracked session
 
 Conformance: `merge-cases/`, the same step vocabulary plus `detach` (`ref`)
 and `merge` (`ref`, `as` — the returned instance).
+
+**Clarifications on detach and merge** (the PHP and Go M3 ports asked; ADR-0037):
+
+- **Detach of a tracked owner cancels nothing it scheduled**: children its
+  persist cascade scheduled stay scheduled and still take its key at flush.
+  Detach of an instance scheduled for removal drops that removal only; the
+  removals its remove cascade scheduled stay. Detach of a scheduled insert
+  cancels it with what its persist cascade scheduled, by the cancel rule.
+- **Merge needs a table-backed, keyed entity** (`CRUD-003`, `CRUD-002`),
+  decided at merge time — a view's copy cannot be merged. The session's own
+  instance merges as a no-op before any key check. A scheduled-but-untracked
+  instance is an ordinary copy; a tracked target scheduled for removal still
+  takes the copy's values. Audit columns merge like any other non-key value;
+  owned members are copied member by member; nothing is aliased.
+- **"Unset key"** for merge: null, a database-generated key at its default, or
+  an empty client-generated GUID — a natural key's default value is a key.

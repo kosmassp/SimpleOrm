@@ -17,6 +17,7 @@ use SimpleOrm\Session\DbOptions;
 use SimpleOrm\Tests\Sample\Models\Transaction;
 use SimpleOrm\Tests\Sample\Models\User;
 use SimpleOrm\Tests\Sample\Models\UserProfile;
+use SimpleOrm\Tests\Support\ConformanceClock;
 use SimpleOrm\Tests\Support\ConformancePaths;
 use SimpleOrm\Tests\Support\ConformanceValues;
 use SimpleOrm\Tests\Support\TempDatabase;
@@ -58,7 +59,7 @@ final class CrudCasesTest extends TestCase
 
         $fixture = TempDatabase::create();
         try {
-            $db = Db::open($fixture->connectionString(), new DbOptions(new SqliteDialect()));
+            $db = Db::open($fixture->connectionString(), new DbOptions(new SqliteDialect(), clock: ConformanceClock::fixed()));
             $db->createTable(User::class);
             $db->createTable(Transaction::class);
             $db->createTable(UserProfile::class);

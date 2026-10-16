@@ -125,6 +125,7 @@ public sealed partial class Db
                 var map = Maps.Load(entity.GetType());
                 ApplyReferences(map, entity);
                 var keyBefore = map.KeyProperties.Select(k => k.GetValue(entity)).ToArray();
+                var createdBefore = map.CreatedAtProperty?.GetValue(entity);
                 await InvokeWriteAsync(nameof(InsertAsync), map, entity, ct).ConfigureAwait(false);
                 undo.Add(() =>
                 {
@@ -133,6 +134,8 @@ public sealed partial class Db
                     {
                         map.KeyProperties[i].SetValue(entity, keyBefore[i]);
                     }
+
+                    map.CreatedAtProperty?.SetValue(entity, createdBefore);   // the hook's fill goes back too
                 });
             }
 

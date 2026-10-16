@@ -66,12 +66,13 @@ final class CrudTest extends TestCase
         $ada = SampleDatabase::insertUser($this->db, 'Ada', 'ada@example.com');
 
         $ada->name = 'Ada Lovelace';
-        $ada->updatedAtUtc = SampleDatabase::seedTime();
         $this->db->update($ada);
 
         $loaded = $this->db->get(User::class, $ada->id);
         self::assertSame('Ada Lovelace', $loaded->name);
-        self::assertEquals(SampleDatabase::seedTime(), $loaded->updatedAtUtc);
+        // The library is the [UpdatedAt] column's writer (spec/hooks.md): the row holds the stamp the update took.
+        self::assertNotNull($ada->updatedAtUtc);
+        self::assertEquals($ada->updatedAtUtc, $loaded->updatedAtUtc);
     }
 
     #[Test]

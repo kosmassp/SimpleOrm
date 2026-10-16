@@ -205,7 +205,7 @@ final class TrackingTest extends TestCase
 
         $this->db->update($transaction);
 
-        self::assertSame([['note']], $this->recorder->updates);
+        self::assertSame([['note', 'updatedAtUtc']], $this->recorder->updates);
         self::assertSame(1, $transaction->version);
         self::assertFalse($this->db->isDirty($transaction));
 

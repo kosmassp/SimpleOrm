@@ -636,8 +636,8 @@ final class UnitOfWorkTest extends TestCase
         self::assertSame(2, $summary->updated);
         self::assertSame(
             [
-                ['op' => 'update', 'entity' => 'User', 'columns' => ['name']],
-                ['op' => 'update', 'entity' => 'User', 'columns' => ['email']],
+                ['op' => 'update', 'entity' => 'User', 'columns' => ['name', 'updatedAtUtc']],
+                ['op' => 'update', 'entity' => 'User', 'columns' => ['email', 'updatedAtUtc']],
             ],
             $this->recorder->statements,
             'Grace (name) before Ada (email): registration order is the latest registration',
@@ -740,7 +740,7 @@ final class UnitOfWorkTest extends TestCase
         self::assertSame(
             [
                 ['op' => 'insert', 'entity' => 'User'],
-                ['op' => 'update', 'entity' => 'User', 'columns' => ['name']],
+                ['op' => 'update', 'entity' => 'User', 'columns' => ['name', 'updatedAtUtc']],
             ],
             $this->recorder->statements,
         );

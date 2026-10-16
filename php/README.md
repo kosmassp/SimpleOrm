@@ -42,7 +42,7 @@ tests/Conformance one data-driven runner per conformance folder
 tests/Samples     drives samples/SimpleOrm.Sample the way dotnet/tests drive the C# sample
 samples/SimpleOrm.Sample
                   a standalone consumer project (own composer.json, path repository to ../..):
-                  the sample model, its V0001–V0009 migrations + snapshots, repositories, a
+                  the sample model, its V0001–V0011 migrations + snapshots, repositories, a
                   registry, and bin/demo.php — see its README
 ```
 
@@ -135,6 +135,30 @@ are declared, never inferred: `#[Cascade(CascadeOperation::Persist, CascadeOpera
 cascaded child takes; `remove` cascades over loaded ones and refuses a never-loaded collection
 (`UOW-005` — load it first, nothing loads implicitly). `remove` of an instance scheduled for insert
 cancels the insert and the inserts its cascade scheduled.
+
+`detach($entity)` makes a tracked session forget an instance (its values stay; a scheduled insert is cancelled
+with the inserts its cascade scheduled, a scheduled removal dropped; `UOW-001` for an instance the session neither
+tracks nor has scheduled), and `merge($detached)` brings a detached copy back: it returns the session's instance for
+the copy's key — the tracked one, else the row read now (`CRUD-001` when there is none; `CRUD-002` for a copy with no
+complete key) — with every mapped non-key value of the copy (the version included) written onto it, so it is dirty
+where they differed; navigations are not merged and the copy stays untracked. Both are `UOW-003` on an untracked session.
+
+### Hooks (Level 3 M3, ADR-0034)
+
+Declared metadata the session acts on, never callbacks (`spec/hooks.md`). `#[CreatedAt]` and `#[UpdatedAt]` mark
+`DateTimeImmutable` columns (each with `#[Column]`, never a key, version, or generated column; at most one of each role per
+entity, `MAP-026` otherwise): `insert` fills `#[CreatedAt]` when it is unset (null or uninitialized) and keeps a value you
+set; every write that changes a row stamps `#[UpdatedAt]` — a full-row `update`, `updateOnly` (the column joins the SET even
+when not listed), a tracked dirty update — but the stamp alone never makes an instance dirty, so a clean instance still
+writes nothing. `#[SoftDelete]` marks a non-nullable `bool` column: `delete` then sets the flag (and the stamp) with the
+update rules — the entity form is version-checked (`CRUD-010`), the by-key form of a versioned entity is `CRUD-012`, a missing
+row `CRUD-001` — and a flushed `remove` does the same. Reads never filter on the flag: filter in a criteria query yourself
+(`Criteria::eq('isDeleted', false)`). The instant is `DbOptions` `clock:` — a `Closure` returning a UTC
+`DateTimeImmutable` (a non-UTC one is `VAL-020`), the wall clock by default:
+
+```php
+new DbOptions(new SqliteDialect(), tracking: TrackingMode::Tracked, clock: fn () => new DateTimeImmutable('2026-08-29T00:00:00Z'));
+```
 
 ## The CLI
 

@@ -519,21 +519,19 @@ public sealed partial class Db : IAsyncDisposable
                 return;
             }
 
-            StampUpdatedAt(map, entity);
             var set = WithUpdatedAt(map, dirty);
-            await ExecuteUpdateAsync(
+            await StampedAsync(map, entity, () => ExecuteUpdateAsync(
                 map, entity, Options.Dialect.UpdateOnlySql(map, set),
-                BoundForUpdate(map, set), ct).ConfigureAwait(false);
+                BoundForUpdate(map, set), ct)).ConfigureAwait(false);
             TrackWrittenColumns(tracked, map, set);
             return;
         }
 
         // Bind SET values, key values, and the current version for the WHERE;
         // database-generated non-key columns are never written.
-        StampUpdatedAt(map, entity);
-        await ExecuteUpdateAsync(
+        await StampedAsync(map, entity, () => ExecuteUpdateAsync(
             map, entity, Options.Dialect.UpdateSql(map),
-            map.Properties.Where(p => p.IsKey || p.IsVersion || !p.IsGenerated), ct).ConfigureAwait(false);
+            map.Properties.Where(p => p.IsKey || p.IsVersion || !p.IsGenerated), ct)).ConfigureAwait(false);
         TrackWritten(map, entity);
     }
 
@@ -563,9 +561,8 @@ public sealed partial class Db : IAsyncDisposable
         CheckNavigationConsistency(map, entity, listed.Contains);
         var tracked = CheckIdentity(map, entity);
 
-        StampUpdatedAt(map, entity);
-        await ExecuteUpdateAsync(
-            map, entity, Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set), ct).ConfigureAwait(false);
+        await StampedAsync(map, entity, () => ExecuteUpdateAsync(
+            map, entity, Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set), ct)).ConfigureAwait(false);
         TrackWrittenColumns(tracked, map, set);
     }
 

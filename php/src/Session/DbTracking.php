@@ -7,6 +7,7 @@ namespace SimpleOrm\Session;
 use ReflectionClass;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Mapping\TypeConverter;
+use SimpleOrm\Metadata\AuditRole;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Metadata\KeyTuple;
@@ -138,8 +139,9 @@ final class DbTracking
     }
 
     /**
-     * The dirty properties a column-list update may write — never a key, the version, or a
-     * database-generated column (those are never in a SET). The one filter both the tracked
+     * The dirty properties a column-list update may write — never a key, the version, a
+     * database-generated column (those are never in a SET), or the `#[UpdatedAt]` stamp: the library writes
+     * that one itself and it never makes an instance dirty on its own (spec/hooks.md). The one filter both the tracked
      * `Db::update()` and the unit of work's flush use (CODING-STANDARD §8), so "dirty" means the
      * same thing to both.
      *
@@ -149,8 +151,39 @@ final class DbTracking
     {
         return array_values(array_filter(
             $this->dirtyProperties($entry),
-            static fn (PropertyMap $p): bool => !$p->key && !$p->version && !$p->generated,
+            static fn (PropertyMap $p): bool => !$p->key && !$p->version && !$p->generated && $p->audit !== AuditRole::UpdatedAt,
         ));
+    }
+
+    /**
+     * The session's instance for a key, or null — what `Db::merge()` copies onto. The key compares value-wise
+     * ({@see KeyTuple}); a key with a null part is never held.
+     *
+     * @param list<mixed> $keyValues
+     */
+    public function heldInstance(EntityMap $map, array $keyValues): ?object
+    {
+        $tuple = new KeyTuple($keyValues);
+
+        return $tuple->hasNullPart() ? null : ($this->byKey[$map->entityType][$tuple->token()]->instance ?? null);
+    }
+
+    /**
+     * Forgets exactly this instance (detach): its entry only — never whichever instance now holds a key it once had.
+     * False when the session did not track it.
+     */
+    public function detach(object $entity): bool
+    {
+        // SPEC-GAP: detach is by instance, not by key: an instance whose key was changed after it was tracked is still forgotten
+        // (under the key it was registered with), and an instance that only shares a key with a tracked one is UOW-001.
+        $entry = $this->byInstance[spl_object_id($entity)] ?? null;
+        if ($entry === null) {
+            return false;
+        }
+
+        $this->remove($entry);
+
+        return true;
     }
 
     /**

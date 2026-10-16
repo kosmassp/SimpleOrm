@@ -78,6 +78,15 @@ type trackingStep struct {
 	Remove *struct {
 		Ref string `json:"ref"`
 	} `json:"remove"`
+	// Detach and Merge are the Level 3 M3 verbs (spec/unit-of-work.md "Detach and merge"): detach forgets
+	// the instance; merge copies a detached copy onto the session's instance and names what it returns.
+	Detach *struct {
+		Ref string `json:"ref"`
+	} `json:"detach"`
+	Merge *struct {
+		Ref string `json:"ref"`
+		As  string `json:"as"`
+	} `json:"merge"`
 	// Flush replays Db.Flush; expectStatements is the ordered list the dialect was asked to render
 	// (absent: unchecked, [] : none), expectSummary the returned counts.
 	Flush *struct {
@@ -133,6 +142,8 @@ type trackingOps struct {
 	changes    func(db *orm.Db, entity any) ([]string, error)
 	persist    func(db *orm.Db, entity any) error
 	remove     func(db *orm.Db, entity any) error
+	detach     func(db *orm.Db, entity any) error
+	merge      func(ctx context.Context, db *orm.Db, entity any) (any, error)
 }
 
 func trackingOpsOf[T any]() trackingOps {
@@ -168,6 +179,10 @@ func trackingOpsOf[T any]() trackingOps {
 		},
 		persist: func(db *orm.Db, entity any) error { return orm.Persist(db, entity.(*T)) },
 		remove:  func(db *orm.Db, entity any) error { return orm.Remove(db, entity.(*T)) },
+		detach:  func(db *orm.Db, entity any) error { return orm.Detach(db, entity.(*T)) },
+		merge: func(ctx context.Context, db *orm.Db, entity any) (any, error) {
+			return orm.Merge(ctx, db, entity.(*T))
+		},
 	}
 }
 
@@ -224,7 +239,7 @@ func runStepCases(t *testing.T, folder string) {
 				t.Fatalf("%s: unknown tracking mode %q", spec.Name, spec.Tracking)
 			}
 			dialect := testsupport.NewRecordingDialect()
-			db, err := orm.Open(ctx, path, orm.Options{Dialect: dialect, Tracking: mode})
+			db, err := orm.Open(ctx, path, orm.Options{Dialect: dialect, Tracking: mode, Clock: testsupport.FixedClock})
 			if err != nil {
 				t.Fatalf("%s: open: %v", spec.Name, err)
 			}
@@ -353,6 +368,25 @@ func (r *trackingRun) perform(i int, step trackingStep) error {
 			return err
 		}
 		return ops.remove(r.db, entity)
+	case step.Detach != nil:
+		entity := r.ref(i, step.Detach.Ref)
+		ops, err := trackingOpsForInstance(entity)
+		if err != nil {
+			return err
+		}
+		return ops.detach(r.db, entity)
+	case step.Merge != nil:
+		entity := r.ref(i, step.Merge.Ref)
+		ops, err := trackingOpsForInstance(entity)
+		if err != nil {
+			return err
+		}
+		merged, err := ops.merge(r.ctx, r.db, entity)
+		if err != nil {
+			return err
+		}
+		r.refs[step.Merge.As] = merged
+		return nil
 	case step.Flush != nil:
 		summary, err := r.db.Flush(r.ctx)
 		r.summary = summary

@@ -308,6 +308,11 @@ type fieldDeclaration struct {
 	isEnumInt    bool
 	typeOverride *core.ColumnType
 
+	// The declared hooks (Level 3 M3, spec/hooks.md): tag options created_at, updated_at, soft_delete.
+	isCreatedAt  bool
+	isUpdatedAt  bool
+	isSoftDelete bool
+
 	// isOwned is the `owned` option (ADR-0030); ownedPrefix its `owned=<prefix>`
 	// value when given (an empty value disables prefixing), nil for the default.
 	isOwned     bool
@@ -320,6 +325,9 @@ type fieldDeclaration struct {
 	hasCascade bool
 	cascade    core.CascadeOperations
 }
+
+// hasHook reports whether the field declares any of the three hooks.
+func (d fieldDeclaration) hasHook() bool { return d.isCreatedAt || d.isUpdatedAt || d.isSoftDelete }
 
 // parseFieldTag tokenizes one `orm` tag value. An unknown option, an unknown
 // `type=` token, or an empty token (a malformed tag) is MAP-023 (ADR-0027).
@@ -346,6 +354,12 @@ func parseFieldTag(tagValue string, fieldTarget string, errs *errorCollector) fi
 			decl.isVersion = true
 		case token == "enum_int":
 			decl.isEnumInt = true
+		case token == "created_at":
+			decl.isCreatedAt = true
+		case token == "updated_at":
+			decl.isUpdatedAt = true
+		case token == "soft_delete":
+			decl.isSoftDelete = true
 		case strings.HasPrefix(token, "type="):
 			columnType, ok := core.ParseColumnType(token[len("type="):])
 			if !ok {
@@ -430,6 +444,13 @@ func readField(
 	decl := parseFieldTag(tagValue, fieldTarget, errs)
 
 	if decl.isOwned {
+		// SPEC-GAP: MAP-026 lists "without [Column]" among its causes; a hook beside ignore, on a navigation, on
+		// the owned navigation itself, or on an owned type's member is read as the same rule (a hook needs the
+		// entity's own mapped column) and reported as MAP-026 rather than MAP-019/MAP-024.
+		if decl.hasHook() {
+			errs.add("MAP-026", fieldTarget, "a hook is declared on a mapped column; an owned navigation is flattened into its owner and carries none")
+			return
+		}
 		if decl.hasCascade {
 			errs.add("MAP-025", fieldTarget, "cascade is declared on a navigation to an entity; an owned value type is flattened into its owner and has nothing to cascade")
 			return
@@ -451,6 +472,9 @@ func readField(
 		if decl.isColumn || decl.isIgnore {
 			errs.add("MAP-019", fieldTarget, "a navigation cannot combine with column or ignore")
 		}
+		if decl.hasHook() {
+			errs.add("MAP-026", fieldTarget, "a hook is declared on a mapped column; a navigation has none")
+		}
 		rel := decl.relationships[0]
 		rel.cascade = decl.cascade
 		if decl.hasCascade && rel.kind == core.RelationshipManyToMany {
@@ -471,7 +495,14 @@ func readField(
 		if decl.isColumn {
 			errs.add("MAP-019", fieldTarget, "ignore cannot combine with column")
 		}
+		if decl.hasHook() {
+			errs.add("MAP-026", fieldTarget, "a hook needs a mapped column; an ignored field has none")
+		}
 		return
+	}
+
+	if decl.hasHook() && !decl.isColumn {
+		errs.add("MAP-026", fieldTarget, "a hook needs a mapped column: add 'column' to the same orm tag")
 	}
 
 	if !decl.isColumn {
@@ -509,6 +540,9 @@ func readField(
 		IsGenerated:        decl.isGenerated,
 		IsVersion:          decl.isVersion,
 		EnumAsInt:          decl.isEnumInt,
+		CreatedAt:          decl.isCreatedAt,
+		UpdatedAt:          decl.isUpdatedAt,
+		SoftDelete:         decl.isSoftDelete,
 	})
 }
 
@@ -554,6 +588,10 @@ func readOwnedType(
 		decl := parseFieldTag(tagValue, memberTarget, errs)
 		if decl.hasCascade {
 			errs.add("MAP-025", memberTarget, "cascade is valid only on a navigation to an entity, not on a member of an owned type")
+			continue
+		}
+		if decl.hasHook() {
+			errs.add("MAP-026", memberTarget, "a hook is declared on a column of the entity itself; an owned type's members carry none")
 			continue
 		}
 		if decl.isKey || decl.isGenerated || decl.isVersion || decl.isOwned || len(decl.relationships) > 0 {

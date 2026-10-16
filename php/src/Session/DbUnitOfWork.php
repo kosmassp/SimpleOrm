@@ -100,6 +100,29 @@ final class DbUnitOfWork
     }
 
     /**
+     * Forgets the instance and cancels what is scheduled for it (Level 3 M3, spec/unit-of-work.md "Detach and merge"):
+     * a scheduled insert goes with the inserts only its persist cascade scheduled, a scheduled removal is dropped, a
+     * tracked instance leaves the identity map. `UOW-001` for an instance the session neither tracks nor has scheduled.
+     */
+    public function detach(object $entity): void
+    {
+        $known = false;
+        if ($this->schedule->isInsertScheduled($entity)) {
+            $this->schedule->cancelInsert($entity);
+            $known = true;
+        }
+
+        if ($this->schedule->isRemovalScheduled($entity)) {
+            $this->schedule->cancelRemoval($entity);
+            $known = true;
+        }
+
+        if (!$this->tracking->detach($entity) && !$known) {
+            throw DbTracking::notTracked($entity);
+        }
+    }
+
+    /**
      * @param array<int, true> $visited
      * @param-out array<int, true> $visited
      */
@@ -299,6 +322,8 @@ final class DbUnitOfWork
 
         foreach ($deleteOrder as $id) {
             // The entity form: identity-gated and version-checked (CRUD-010), so a stale instance is never deleted blindly.
+            // A soft delete (spec/hooks.md) also moves the flag, stamp, and version on the instance: journaled like an update.
+            $journal->recordDelete($removals[$id]['map'], $removals[$id]['instance']);
             $this->db->delete($removals[$id]['map']->entityType, $removals[$id]['instance']);
         }
     }

@@ -276,9 +276,13 @@ internal static class AttributeMapLoader
 
             if (column is null)
             {
-                if (key is not null || generated is not null || version is not null
-                    || enumAsInt is not null || foreignKey is not null
-                    || createdAt is not null || updatedAt is not null || softDelete is not null)
+                if (createdAt is not null || updatedAt is not null || softDelete is not null)
+                {
+                    errors.Add(new MappingError(
+                        "MAP-026", target, "a hook belongs on a [Column] property, never on a navigation, an [Ignore]d or unmapped property"));
+                }
+                else if (key is not null || generated is not null || version is not null
+                    || enumAsInt is not null || foreignKey is not null)
                 {
                     errors.Add(new MappingError(
                         "MAP-019", target, "mapping attributes require [Column] on the same property"));
@@ -311,7 +315,11 @@ internal static class AttributeMapLoader
                     "MAP-013", target, $"[Key] is not valid on a {kind}-backed entity"));
             }
 
-            ValidateHooks(property, target, createdAt, updatedAt, softDelete, key, generated, version, errors);
+            if (createdAt is not null && updatedAt is not null)
+            {
+                // Two audit roles collapse into one spec field; the assembler could not see the conflict.
+                errors.Add(new MappingError("MAP-026", target, "a property carries at most one of [CreatedAt], [UpdatedAt], [SoftDelete]"));
+            }
 
             specs.Add(new MappedPropertySpec(property)
             {
@@ -324,65 +332,6 @@ internal static class AttributeMapLoader
                 Audit = createdAt is not null ? AuditRole.CreatedAt : updatedAt is not null ? AuditRole.UpdatedAt : AuditRole.None,
                 IsSoftDelete = softDelete is not null,
             });
-        }
-
-        // At most one column per hook role (MAP-026): the session writes exactly one.
-        foreach (var (role, name) in new[] { (AuditRole.CreatedAt, "[CreatedAt]"), (AuditRole.UpdatedAt, "[UpdatedAt]") })
-        {
-            if (specs.Count(s => s.Audit == role) > 1)
-            {
-                errors.Add(new MappingError("MAP-026", entityType.Name, $"{name} is declared on more than one property"));
-            }
-        }
-
-        if (specs.Count(s => s.IsSoftDelete) > 1)
-        {
-            errors.Add(new MappingError("MAP-026", entityType.Name, "[SoftDelete] is declared on more than one property"));
-        }
-    }
-
-    /// <summary>
-    /// The declared hooks' shape (Level 3 M3, spec/hooks.md — MAP-026): an audit
-    /// column is a DateTime/DateTimeOffset (nullable or not), the soft-delete flag
-    /// a non-nullable bool, each at most one role, never a key, version, or
-    /// generated column. "At most one per entity" is checked at assembly.
-    /// </summary>
-    private static void ValidateHooks(
-        PropertyInfo property, string target,
-        CreatedAtAttribute? createdAt, UpdatedAtAttribute? updatedAt, SoftDeleteAttribute? softDelete,
-        KeyAttribute? key, GeneratedAttribute? generated, VersionAttribute? version,
-        List<MappingError> errors)
-    {
-        var hooks = (createdAt is null ? 0 : 1) + (updatedAt is null ? 0 : 1) + (softDelete is null ? 0 : 1);
-        if (hooks == 0)
-        {
-            return;
-        }
-
-        if (hooks > 1)
-        {
-            errors.Add(new MappingError("MAP-026", target, "a property carries at most one of [CreatedAt], [UpdatedAt], [SoftDelete]"));
-            return;
-        }
-
-        if (key is not null || generated is not null || version is not null)
-        {
-            errors.Add(new MappingError(
-                "MAP-026", target, "a hook column cannot be a key, version, or generated column — the library writes it as data"));
-        }
-
-        var type = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
-        if (softDelete is not null)
-        {
-            if (property.PropertyType != typeof(bool))
-            {
-                errors.Add(new MappingError("MAP-026", target, "[SoftDelete] needs a non-nullable bool property"));
-            }
-        }
-        else if (type != typeof(DateTime) && type != typeof(DateTimeOffset))
-        {
-            errors.Add(new MappingError(
-                "MAP-026", target, "[CreatedAt]/[UpdatedAt] need a DateTime or DateTimeOffset property (nullable or not)"));
         }
     }
 
@@ -450,6 +399,13 @@ internal static class AttributeMapLoader
             var column = member.GetCustomAttribute<ColumnAttribute>();
             var ignore = member.GetCustomAttribute<IgnoreAttribute>();
             var enumAsInt = member.GetCustomAttribute<EnumAsIntAttribute>();
+            if (member.GetCustomAttributes().Any(a => a is CreatedAtAttribute or UpdatedAtAttribute or SoftDeleteAttribute))
+            {
+                errors.Add(new MappingError(
+                    "MAP-026", memberTarget, "a hook belongs on an entity's own column, not on an owned type's member"));
+                continue;
+            }
+
             if (member.GetCustomAttributes().Any(a => a is KeyAttribute or GeneratedAttribute or VersionAttribute
                     or ForeignKeyAttribute or OwnedAttribute or ManyToOneAttribute or OneToOneAttribute
                     or OneToManyAttribute or ManyToManyAttribute))

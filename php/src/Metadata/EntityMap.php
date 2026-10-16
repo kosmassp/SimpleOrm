@@ -21,6 +21,9 @@ final readonly class EntityMap
 
     public ?PropertyMap $versionProperty;
 
+    /** @var array{created: ?PropertyMap, updated: ?PropertyMap, softDelete: ?PropertyMap} the declared hook columns (spec/hooks.md), derived once */
+    private array $hooks;
+
     /** @var list<OwnedMap> the owned value types flattened into this entity (ADR-0030), in declaration order */
     public array $ownedTypes;
 
@@ -49,6 +52,13 @@ final readonly class EntityMap
         $version = array_values(array_filter($properties, static fn (PropertyMap $p): bool => $p->version));
         $this->versionProperty = $version[0] ?? null;
 
+        $hook = static fn (callable $matches): ?PropertyMap => array_values(array_filter($properties, $matches))[0] ?? null;
+        $this->hooks = [
+            'created' => $hook(static fn (PropertyMap $p): bool => $p->audit === AuditRole::CreatedAt),
+            'updated' => $hook(static fn (PropertyMap $p): bool => $p->audit === AuditRole::UpdatedAt),
+            'softDelete' => $hook(static fn (PropertyMap $p): bool => $p->softDelete),
+        ];
+
         $owned = [];
         foreach ($properties as $property) {
             if ($property->owner !== null && !in_array($property->owner, $owned, true)) {
@@ -57,6 +67,24 @@ final readonly class EntityMap
         }
 
         $this->ownedTypes = $owned;
+    }
+
+    /** The `#[CreatedAt]` column (filled on insert when unset), or null (Level 3 M3, spec/hooks.md). */
+    public function createdAtProperty(): ?PropertyMap
+    {
+        return $this->hooks['created'];
+    }
+
+    /** The `#[UpdatedAt]` column (stamped by every write that changes a row), or null. */
+    public function updatedAtProperty(): ?PropertyMap
+    {
+        return $this->hooks['updated'];
+    }
+
+    /** The `#[SoftDelete]` flag (a delete sets it instead of removing the row), or null. */
+    public function softDeleteProperty(): ?PropertyMap
+    {
+        return $this->hooks['softDelete'];
     }
 
     /** The unqualified class name: the export's `entity` and the target of error messages. */

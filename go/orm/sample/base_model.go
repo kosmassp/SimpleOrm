@@ -13,8 +13,9 @@ import "time"
 // while matching the actual columns (convention alone would give
 // created_at_utc).
 type BaseModel struct {
-	// CreatedAtUtc is ISO-8601 UTC TEXT in the database (§7.9): a time.Time in UTC.
-	CreatedAtUtc time.Time `orm:"column=created_at"`
-	// UpdatedAtUtc is null until the row is first updated.
-	UpdatedAtUtc *time.Time `orm:"column=updated_at"`
+	// CreatedAtUtc is ISO-8601 UTC TEXT in the database (§7.9): a time.Time in UTC. The created_at hook (Level 3 M3,
+	// spec/hooks.md) fills it on insert when unset.
+	CreatedAtUtc time.Time `orm:"column=created_at,created_at"`
+	// UpdatedAtUtc is null until the row is first updated; the updated_at hook stamps it on every write that changes the row.
+	UpdatedAtUtc *time.Time `orm:"column=updated_at,updated_at"`
 }

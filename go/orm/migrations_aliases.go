@@ -36,11 +36,17 @@ type (
 	SQLVersion = migrations.SQLVersion
 	// SQLVersionStep is one SQLVersion step's data.
 	SQLVersionStep = migrations.SQLVersionStep
+	// ColumnOption configures AddColumn (NotNull); Go has no optional parameters.
+	ColumnOption = migrations.ColumnOption
 	// ColumnRename is a step's declared column rename, kept structurally for a future derived rollback.
 	ColumnRename = migrations.ColumnRename
 	// SnapshotSet is every committed schema snapshot of a migrations tree, indexed by (object, version).
 	SnapshotSet = migrations.SnapshotSet
 )
+
+// NotNull marks an added column NOT NULL, with defaultSQL ("" for none) as its DEFAULT clause —
+// `actions.AddColumn("is_deleted", "INTEGER", orm.NotNull("0"))` (the sample's V0011).
+func NotNull(defaultSQL string) ColumnOption { return migrations.NotNull(defaultSQL) }
 
 // NewMigrationSet builds a validated Set from explicit root versions, sorted
 // by version number (MIG-001/002/003 checked eagerly; see migrations.NewSet).

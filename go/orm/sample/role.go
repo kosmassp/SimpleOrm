@@ -8,6 +8,9 @@ type Role struct {
 	ID int64 `orm:"column,key,generated"`
 	// Name's column was renamed to role_name by migration V0004.
 	Name string `orm:"column=role_name"`
+	// IsDeleted is the soft-delete flag (Level 3 M3, spec/hooks.md): a delete sets it instead of removing the
+	// row; added by migration V0011.
+	IsDeleted bool `orm:"column,soft_delete"`
 	// Users is the reverse side of User.Roles, through the same link (ADR-0019).
 	Users []*User `orm:"many_to_many"`
 }

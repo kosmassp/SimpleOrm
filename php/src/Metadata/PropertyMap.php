@@ -11,7 +11,8 @@ use ReflectionProperty;
  * `ColumnType` once; conversion, storage types, and the export read `$type` and
  * never re-derive it from the PHP type. `$phpType` is kept for construction and
  * handler lookup (`class-string` for enums, `Decimal`, `DateTimeImmutable`;
- * a builtin name otherwise; null when the property is untyped).
+ * a builtin name otherwise; null when the property is untyped). `$audit` and `$softDelete` carry the
+ * declared hooks (Level 3 M3, spec/hooks.md) — at most one per property.
  */
 final readonly class PropertyMap
 {
@@ -27,6 +28,8 @@ final readonly class PropertyMap
         public bool $version = false,
         public ?string $foreignKeyReferences = null,
         public ?OwnedMap $owner = null,
+        public AuditRole $audit = AuditRole::None,
+        public bool $softDelete = false,
     ) {
     }
 

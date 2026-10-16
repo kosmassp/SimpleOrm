@@ -56,7 +56,11 @@ final class EntityMapBuilder
         return $this;
     }
 
-    /** Maps one property; `$name` overrides the convention-derived column name. */
+    /**
+     * Maps one property; `$name` overrides the convention-derived column name. `$audit` and `$softDelete`
+     * declare the hooks (Level 3 M3, spec/hooks.md) the attributes `#[CreatedAt]`, `#[UpdatedAt]`, and
+     * `#[SoftDelete]` declare on annotated types — a property carries at most one (`MAP-026`).
+     */
     public function column(
         string $property,
         ?string $name = null,
@@ -65,7 +69,11 @@ final class EntityMapBuilder
         bool $version = false,
         ?ColumnType $type = null,
         bool $enumAsInt = false,
+        AuditRole $audit = AuditRole::None,
+        bool $softDelete = false,
     ): self {
+        // SPEC-GAP: spec/hooks.md says hooks are "read by the same loaders" without naming the manual builder's spelling; the
+        // port adds `audit:`/`softDelete:` named arguments here. The convention loader (no markers at all) cannot declare hooks.
         $reflection = new ReflectionProperty($this->entityType, $property);
         $resolved = PropertyTypes::resolve($reflection, $type, $enumAsInt);
         $this->specs[] = new MappedPropertySpec(
@@ -77,6 +85,8 @@ final class EntityMapBuilder
             isKey: $key,
             isGenerated: $generated,
             isVersion: $version,
+            audit: $audit,
+            isSoftDelete: $softDelete,
         );
 
         return $this;

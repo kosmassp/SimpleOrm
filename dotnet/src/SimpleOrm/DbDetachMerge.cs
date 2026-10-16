@@ -78,8 +78,10 @@ public sealed partial class Db
         }
 
         var key = map.GetKeyValues(detached);
+        // Unset: null, a database-generated key at its default, or an empty client GUID; a natural key's default is a key.
         var unset = key.Select((value, i) => value is null
-            || (map.KeyProperties[i].IsGenerated && Equals(value, Activator.CreateInstance(map.KeyProperties[i].ClrType))))
+            || (map.KeyProperties[i].IsGenerated && Equals(value, Activator.CreateInstance(map.KeyProperties[i].ClrType)))
+            || (map.KeyStrategy == KeyStrategy.ClientGuid && Equals(value, Guid.Empty)))
             .Any(missing => missing);
         if (unset)
         {

@@ -49,7 +49,7 @@ func TestLoadCases_BehaveAsSpecified(t *testing.T) {
 			path := testsupport.TempDatabase(t)
 			buildCaseFixture(t, ctx, path)
 
-			db, err := orm.Open(ctx, path, orm.Options{Dialect: sqlite.New()})
+			db, err := orm.Open(ctx, path, orm.Options{Dialect: sqlite.New(), Clock: testsupport.FixedClock})
 			if err != nil {
 				t.Fatalf("%s: open: %v", name, err)
 			}

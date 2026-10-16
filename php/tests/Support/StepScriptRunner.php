@@ -22,9 +22,10 @@ use SimpleOrm\Tests\Sample\Models\UserProfile;
 use SimpleOrm\Tests\Sample\Models\UserRole;
 
 /**
- * The ONE step-script engine behind `Conformance\TrackingCasesTest` and `Conformance\FlushCasesTest`
- * (CODING-STANDARD §8; spec/session.md "Conformance: tracking-cases/", spec/unit-of-work.md
- * "Conformance: flush-cases/"): a case file runs against the seeded fixture database in the
+ * The ONE step-script engine behind `Conformance\TrackingCasesTest`, `FlushCasesTest`, `HookCasesTest`, and
+ * `MergeCasesTest` (CODING-STANDARD §8; spec/session.md "Conformance: tracking-cases/", spec/unit-of-work.md
+ * "Conformance: flush-cases/" and "Detach and merge", spec/hooks.md "Conformance: hook-cases/"); the session clock
+ * is fixed at {@see ConformanceClock::INSTANT}: a case file runs against the seeded fixture database in the
  * declared tracking mode, through a {@see RecordingUpdateDialect} so what the session asked the
  * dialect to render — an update's columns (`expectWritten`), a flush's ordered statements
  * (`expectStatements`) — is observable at the one seam every implementation renders SQL through.
@@ -77,7 +78,7 @@ final class StepScriptRunner
         };
 
         $fixture = TempDatabase::create();
-        $db = SampleDatabase::open($fixture, new DbOptions($recorder, tracking: $mode));
+        $db = SampleDatabase::open($fixture, new DbOptions($recorder, tracking: $mode, clock: ConformanceClock::fixed()));
         ConformanceSeed::insert($fixture);
         $runner = new self($db, $recorder, $fixture);
 
@@ -137,6 +138,10 @@ final class StepScriptRunner
             } else {
                 $this->db->delete(self::entityType($delete['entity']), $delete['key']);
             }
+        } elseif (isset($step['detach'])) {
+            $this->db->detach($this->resolve($step['detach']['ref']));
+        } elseif (isset($step['merge'])) {
+            $this->refs[$step['merge']['as']] = $this->db->merge($this->resolve($step['merge']['ref']));
         } elseif (isset($step['refresh'])) {
             $this->db->refresh($this->resolve($step['refresh']['ref']));
         } elseif (isset($step['load'])) {

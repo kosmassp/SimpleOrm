@@ -39,6 +39,22 @@ public sealed partial class Db
         }
     }
 
+    /// <summary>Stamps, runs the write, and on failure puts the previous stamp back: a failed write leaves the instance as it was.</summary>
+    private async Task StampedAsync(EntityMap map, object entity, Func<Task> write)
+    {
+        var before = map.UpdatedAtProperty?.GetValue(entity);
+        StampUpdatedAt(map, entity);
+        try
+        {
+            await write().ConfigureAwait(false);
+        }
+        catch
+        {
+            map.UpdatedAtProperty?.SetValue(entity, before);
+            throw;
+        }
+    }
+
     /// <summary>The SET of a column-list update gains the stamp column when it is mapped and not already listed.</summary>
     private static IReadOnlyList<PropertyMap> WithUpdatedAt(EntityMap map, IReadOnlyList<PropertyMap> set)
     {
@@ -84,10 +100,19 @@ public sealed partial class Db
         if (byEntity)
         {
             CheckIdentity(map, keyOrEntity);
+            var flagBefore = flag.GetValue(keyOrEntity);
             flag.SetValue(keyOrEntity, true);
-            StampUpdatedAt(map, keyOrEntity);
-            await ExecuteUpdateAsync(map, keyOrEntity, Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set), ct)
-                .ConfigureAwait(false);
+            try
+            {
+                await StampedAsync(map, keyOrEntity, () => ExecuteUpdateAsync(
+                    map, keyOrEntity, Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set), ct)).ConfigureAwait(false);
+            }
+            catch
+            {
+                flag.SetValue(keyOrEntity, flagBefore);
+                throw;
+            }
+
             Untrack(map, map.GetKeyValues(keyOrEntity));
             return;
         }

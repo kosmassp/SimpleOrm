@@ -11,6 +11,72 @@ namespace SimpleOrm;
 /// </summary>
 internal static class MapAssembler
 {
+    /// <summary>
+    /// The declared hooks' shape (Level 3 M3, spec/hooks.md — MAP-026), checked
+    /// here so the attribute loader and the manual builder share one rule: an
+    /// audit column is a DateTime/DateTimeOffset (nullable or not), the
+    /// soft-delete flag a non-nullable bool, each spec at most one role, never a
+    /// key, version, or generated column, and at most one property per role.
+    /// </summary>
+    private static void ValidateHooks(Type entityType, RelationKind kind, IReadOnlyList<MappedPropertySpec> specs, List<MappingError> errors)
+    {
+        foreach (var spec in specs)
+        {
+            var hooks = (spec.Audit == AuditRole.None ? 0 : 1) + (spec.IsSoftDelete ? 1 : 0);
+            if (hooks == 0)
+            {
+                continue;
+            }
+
+            var target = $"{entityType.Name}.{spec.Property.Name}";
+            if (kind != RelationKind.Table)
+            {
+                // A hook that could never act is a declaration error, like [Generated]/[Version] off a table (MAP-013).
+                errors.Add(new MappingError("MAP-026", target, $"a hook is only valid on a table-backed entity, not a {kind}"));
+                continue;
+            }
+
+            if (hooks > 1)
+            {
+                errors.Add(new MappingError("MAP-026", target, "a property carries at most one of [CreatedAt], [UpdatedAt], [SoftDelete]"));
+                continue;
+            }
+
+            if (spec.IsKey || spec.IsGenerated || spec.IsVersion)
+            {
+                errors.Add(new MappingError(
+                    "MAP-026", target, "a hook column cannot be a key, version, or generated column — the library writes it as data"));
+            }
+
+            var type = Nullable.GetUnderlyingType(spec.Property.PropertyType) ?? spec.Property.PropertyType;
+            if (spec.IsSoftDelete)
+            {
+                if (spec.Property.PropertyType != typeof(bool))
+                {
+                    errors.Add(new MappingError("MAP-026", target, "[SoftDelete] needs a non-nullable bool property"));
+                }
+            }
+            else if (type != typeof(DateTime) && type != typeof(DateTimeOffset))
+            {
+                errors.Add(new MappingError(
+                    "MAP-026", target, "[CreatedAt]/[UpdatedAt] need a DateTime or DateTimeOffset property (nullable or not)"));
+            }
+        }
+
+        foreach (var (role, name) in new[] { (AuditRole.CreatedAt, "[CreatedAt]"), (AuditRole.UpdatedAt, "[UpdatedAt]") })
+        {
+            if (specs.Count(s => s.Audit == role) > 1)
+            {
+                errors.Add(new MappingError("MAP-026", entityType.Name, $"{name} is declared on more than one property"));
+            }
+        }
+
+        if (specs.Count(s => s.IsSoftDelete) > 1)
+        {
+            errors.Add(new MappingError("MAP-026", entityType.Name, "[SoftDelete] is declared on more than one property"));
+        }
+    }
+
     public static EntityMap? Assemble(
         Type entityType,
         RelationKind kind,
@@ -28,6 +94,7 @@ internal static class MapAssembler
         var byProperty = new Dictionary<string, PropertyMap>();
         var seenColumns = new Dictionary<string, string>();
         var ownedMaps = new Dictionary<OwnedSpec, OwnedMap>();
+        ValidateHooks(entityType, kind, specs, errors);
 
         foreach (var spec in specs)
         {

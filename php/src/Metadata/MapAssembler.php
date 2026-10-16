@@ -93,6 +93,8 @@ final class MapAssembler
                 version: $spec->isVersion,
                 foreignKeyReferences: $spec->foreignKeyReferences,
                 owner: $owner,
+                audit: $spec->audit,
+                softDelete: $spec->isSoftDelete,
             );
             $owner?->addMember($property);
             $properties[] = $property;
@@ -100,6 +102,7 @@ final class MapAssembler
         }
 
         self::validateVersion($shortName, $properties, $errors);
+        self::validateHooks($shortName, $kind, $properties, $errors);
         $keyStrategy = self::resolveKeyStrategy($shortName, $kind, $properties, $errors);
         $indexes = self::resolveIndexes($shortName, $relationName, $indexSpecs, $byProperty, $errors);
         $relationships = self::resolveRelationships($shortName, $relationshipSpecs, $byProperty, $errors);
@@ -156,6 +159,80 @@ final class MapAssembler
                 $errors[] = new MappingError('MAP-019', "{$shortName}.{$property->propertyName()}", '#[Version] cannot be part of the key');
             }
         }
+    }
+
+    /**
+     * The declared hooks (Level 3 M3, spec/hooks.md "Declaration rules"), every violation `MAP-026`:
+     * the audit roles need a `DateTimeImmutable` property, the soft-delete flag a non-nullable `bool`;
+     * none may be a key, version, or generated column; a property carries at most one hook and an
+     * entity at most one property per role. A hook on a source other than a table could never act
+     * (writes exist only for tables), so declaring one is refused rather than silently ignored.
+     *
+     * @param list<PropertyMap> $properties
+     * @param list<MappingError> $errors
+     */
+    private static function validateHooks(string $shortName, RelationKind $kind, array $properties, array &$errors): void
+    {
+        /** @var array<string, PropertyMap> $claimed role token => the first property declaring it */
+        $claimed = [];
+        foreach ($properties as $property) {
+            $role = match (true) {
+                $property->audit !== AuditRole::None && $property->softDelete => null,
+                $property->audit !== AuditRole::None => $property->audit->value,
+                $property->softDelete => 'soft_delete',
+                default => '',
+            };
+            if ($role === '') {
+                continue;
+            }
+
+            $target = "{$shortName}.{$property->propertyName()}";
+            if ($role === null) {
+                $errors[] = new MappingError('MAP-026', $target, 'carries more than one hook; a property is the audit column or the soft-delete flag, not both');
+                continue;
+            }
+
+            $problem = self::hookProblem($kind, $property, $role);
+            if ($problem !== null) {
+                $errors[] = new MappingError('MAP-026', $target, $problem);
+                continue;
+            }
+
+            if (isset($claimed[$role])) {
+                $errors[] = new MappingError(
+                    'MAP-026',
+                    $target,
+                    "the {$role} hook is already declared on '{$claimed[$role]->propertyName()}'; an entity has at most one per role",
+                );
+                continue;
+            }
+
+            $claimed[$role] = $property;
+        }
+    }
+
+    /** What is wrong with one declared hook on `$property`, or null. */
+    private static function hookProblem(RelationKind $kind, PropertyMap $property, string $role): ?string
+    {
+        if ($kind !== RelationKind::Table) {
+            // SPEC-GAP: spec/hooks.md is silent on a hook declared on a view/statement/procedure entity (writes exist only for
+            // tables, so it could never act); strict by default (§2) refuses it as MAP-026 rather than ignoring it.
+            return "a hook is only valid on a table-backed entity, not a {$kind->value}";
+        }
+
+        if ($property->key || $property->version || $property->generated) {
+            return 'a hook column cannot be a key, version, or generated column: the library writes it as data';
+        }
+
+        if ($role === 'soft_delete') {
+            return $property->type === ColumnType::Bool && !$property->nullable
+                ? null
+                : '#[SoftDelete] requires a non-nullable bool property';
+        }
+
+        return $property->type === ColumnType::DateTime || $property->type === ColumnType::DateTimeOffset
+            ? null
+            : "the {$role} audit column must be a DateTimeImmutable (datetime or datetimeoffset), found {$property->type->value}";
     }
 
     /**

@@ -1,5 +1,7 @@
 package orm
 
+import "time"
+
 // Options configures a [Db] session (§7.17, mirrors dotnet/src/SimpleOrm/DbOptions.cs):
 // the dialect, the metadata configuration, and the type-handler registry —
 // fixed for the session's lifetime. The session owns its own metadata cache
@@ -20,6 +22,10 @@ type Options struct {
 	// zero value TrackingUntracked is the Level 0–2 session exactly; opt in
 	// with TrackingTracked for the identity map and change snapshots.
 	Tracking TrackingMode
+	// Clock is the instant the declared hooks write (Level 3 M3, spec/hooks.md): a function returning UTC —
+	// an instant whose zone offset is not zero is VAL-020 when a hook reads it. nil means the wall clock
+	// (time.Now().UTC()); tests and the conformance runners fix it at 2026-08-29T00:00:00Z.
+	Clock func() time.Time
 }
 
 // TrackingMode is the session's tracking mode, fixed at open (ADR-0034 add.1

@@ -387,6 +387,13 @@ func insertRow(ctx context.Context, db *Db, entityType reflect.Type, entity any)
 		}
 	}
 
+	// The [CreatedAt] hook (spec/hooks.md): an unset created-at takes the clock before the row is bound.
+	// SPEC-GAP: the clock is read after the identity gate and the navigation check, so UOW-002/CRUD-004 outrank a
+	// VAL-020 from the clock; the spec gives no refusal order for hooks.
+	if err := db.fillCreatedAt(m, entity); err != nil {
+		return err
+	}
+
 	args := make([]any, 0, len(m.Properties))
 	for _, p := range m.Properties {
 		if p.IsGenerated {
@@ -483,6 +490,13 @@ func updateEntity(ctx context.Context, db *Db, entityType reflect.Type, entity a
 		return updateTracked(ctx, db, m, entry, entity)
 	}
 
+	// The [UpdatedAt] hook (spec/hooks.md): the library is the column's writer, so the clock lands on the
+	// instance before the row is bound (a caller's value is overwritten) and comes back off if the write fails.
+	_, restoreStamp, err := db.stampSet(m, entity, nil)
+	if err != nil {
+		return false, err
+	}
+
 	// Bind SET values, key values, and the current version for the WHERE;
 	// database-generated non-key columns are never written.
 	var bound []*core.PropertyMap
@@ -492,6 +506,7 @@ func updateEntity(ctx context.Context, db *Db, entityType reflect.Type, entity a
 		}
 	}
 	if err := executeUpdate(ctx, db, entityType, m, entity, db.options.Dialect.UpdateSQL(m), bound); err != nil {
+		restoreStamp()
 		return false, err
 	}
 	// An instance the session did not know is tracked once its full row is written.
@@ -511,16 +526,22 @@ func updateTracked(ctx context.Context, db *Db, m *core.EntityMap, entry *tracke
 	}
 	var set []*core.PropertyMap
 	for _, p := range changed {
-		if !p.IsKey && !p.IsVersion && !p.IsGenerated {
+		if isWritableChange(p) {
 			set = append(set, p)
 		}
 	}
 	if len(set) == 0 {
-		// Only key/version/generated values differing is clean: no statement, no snapshot change
-		// (spec/session.md Clarifications, ADR-0035).
+		// Only key/version/generated values (or the [UpdatedAt] stamp, which never makes an instance dirty)
+		// differing is clean: no statement, no stamp, no snapshot change (spec/session.md Clarifications,
+		// ADR-0035; spec/hooks.md).
 		return false, nil
 	}
+	set, restoreStamp, err := db.stampSet(m, entity, set)
+	if err != nil {
+		return false, err
+	}
 	if err := executeUpdate(ctx, db, m.Type, m, entity, db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set)); err != nil {
+		restoreStamp()
 		return false, err
 	}
 	return true, db.tracker.resnapshot(entry, append(set, versionOf(m)...))
@@ -574,7 +595,13 @@ func UpdateOnly[T any](ctx context.Context, db *Db, entity *T, properties ...str
 	if err != nil {
 		return err
 	}
+	// The [UpdatedAt] column joins the SET after the caller's columns (spec/hooks.md).
+	set, restoreStamp, err := db.stampSet(m, entity, set)
+	if err != nil {
+		return err
+	}
 	if err := executeUpdate(ctx, db, reflect.TypeFor[T](), m, entity, db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set)); err != nil {
+		restoreStamp()
 		return err
 	}
 	// Only the written columns and the bumped version move, so an unwritten change stays dirty; an
@@ -691,9 +718,27 @@ func Delete[T any](ctx context.Context, db *Db, key any) error {
 	if err != nil {
 		return err
 	}
+	// A soft delete by key on a versioned entity refuses before any SQL: the version it does not know
+	// cannot be bumped blindly (CRUD-012, spec/hooks.md). SPEC-GAP: raised before the key is validated
+	// (the entity's shape comes first, as CRUD-003 does); the spec gives no order against CRUD-002.
+	if m.SoftDeleteProperty != nil && m.VersionProperty != nil {
+		return core.NewError("CRUD-012", entityType.Name(),
+			"a soft delete by key cannot bump the version column; pass the entity (orm.DeleteEntity) for the version-checked form")
+	}
 	keyValues, err := validateKey(m, key)
 	if err != nil {
 		return err
+	}
+	if m.SoftDeleteProperty != nil {
+		// Every delete of a [SoftDelete] entity is the flag-setting update (spec/hooks.md); the key's instance,
+		// if the session tracks one, is forgotten like any deleted row.
+		// SPEC-GAP: the by-key form forgets the key's tracked instance but, having no instance to carry it, sets no
+		// flag or stamp on it (the entity form does); the spec says only "forgotten like any deleted row".
+		if err := softDeleteByKey(ctx, db, entityType, m, keyValues); err != nil {
+			return err
+		}
+		db.forgetKey(m, core.KeyTuple(keyValues))
+		return nil
 	}
 
 	args := make([]any, len(keyValues))
@@ -738,6 +783,17 @@ func deleteEntity(ctx context.Context, db *Db, entityType reflect.Type, entity a
 	entry, err := db.writeIdentity(m, entity)
 	if err != nil {
 		return err
+	}
+	if m.SoftDeleteProperty != nil {
+		// A [SoftDelete] entity's delete is the version-checked flag-setting update (spec/hooks.md); the
+		// instance is forgotten afterwards like any deleted row, its flag and stamp set on it.
+		if err := softDeleteEntity(ctx, db, entityType, m, entity); err != nil {
+			return err
+		}
+		if entry != nil {
+			db.tracker.forget(entry)
+		}
+		return nil
 	}
 	checkVersion := m.VersionProperty != nil
 

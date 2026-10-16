@@ -98,6 +98,13 @@ func buildColumns(m *core.EntityMap) []any {
 		if p.IsGenerated {
 			obj = obj.Set("generated", true)
 		}
+		// Hooks export only when declared (spec/metadata-model.md "Declared hooks").
+		if token := p.Audit.Token(); token != "" {
+			obj = obj.Set("audit", token)
+		}
+		if p.IsSoftDelete {
+			obj = obj.Set("softDelete", true)
+		}
 		result[i] = obj
 	}
 	return result

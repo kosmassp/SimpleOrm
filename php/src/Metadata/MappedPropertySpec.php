@@ -26,6 +26,8 @@ final readonly class MappedPropertySpec
         public bool $isVersion = false,
         public ?string $foreignKeyReferences = null,
         public ?OwnedSpec $owner = null,
+        public AuditRole $audit = AuditRole::None,
+        public bool $isSoftDelete = false,
     ) {
     }
 }

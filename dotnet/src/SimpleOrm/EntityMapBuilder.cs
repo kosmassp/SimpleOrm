@@ -96,6 +96,27 @@ public sealed class EntityMapBuilder<T>
             return this;
         }
 
+        /// <summary>The audit column filled on insert when unset (Level 3 M3, spec/hooks.md).</summary>
+        public PropertyConfiguration CreatedAt()
+        {
+            _spec.Audit = AuditRole.CreatedAt;
+            return this;
+        }
+
+        /// <summary>The audit column stamped on every write that changes the row (Level 3 M3).</summary>
+        public PropertyConfiguration UpdatedAt()
+        {
+            _spec.Audit = AuditRole.UpdatedAt;
+            return this;
+        }
+
+        /// <summary>The flag a delete sets instead of removing the row (Level 3 M3).</summary>
+        public PropertyConfiguration SoftDelete()
+        {
+            _spec.IsSoftDelete = true;
+            return this;
+        }
+
         public PropertyConfiguration EnumAsInt()
         {
             _spec.EnumAsInt = true;

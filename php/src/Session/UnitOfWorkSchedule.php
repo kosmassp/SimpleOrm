@@ -117,6 +117,12 @@ final class UnitOfWorkSchedule
         }
     }
 
+    /** Drops a scheduled removal (detach); a no-op for an instance not scheduled for one. */
+    public function cancelRemoval(object $instance): void
+    {
+        unset($this->removals[spl_object_id($instance)]);
+    }
+
     /** @return array<int, array{instance: object, map: EntityMap, seq: int, direct: bool, links: array<string, array{owner: object, relationship: RelationshipMap}>}> */
     public function inserts(): array
     {

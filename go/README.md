@@ -166,6 +166,38 @@ members and is `UOW-005` over a nil slice — `orm.Load` it first, nothing loads
 implicitly. A nil singular navigation cascades nothing. A refusal anywhere in a
 cascade schedules nothing.
 
+### Hooks, detach and merge (Level 3 M3, ADR-0034)
+
+Hooks are **declared on the column**, never registered callbacks, and the session acts on them in every write —
+the immediate operations and the unit of work alike. The session clock is `orm.Options.Clock` (UTC; the wall
+clock by default; a non-UTC instant is `VAL-020`):
+
+```go
+type BaseModel struct {
+    CreatedAtUtc time.Time  `orm:"column=created_at,created_at"`   // filled on insert when unset (the zero instant)
+    UpdatedAtUtc *time.Time `orm:"column=updated_at,updated_at"`   // stamped on every write that changes the row
+}
+type Role struct {
+    BaseModel
+    ID        int64  `orm:"column,key,generated"`
+    IsDeleted bool   `orm:"column,soft_delete"`                    // a delete sets this instead of removing the row
+}
+```
+
+`updated_at` joins the SET of a full-row update, of `UpdateOnly` (after your columns), of a tracked dirty update,
+and of a soft delete — and is never what makes a tracked instance dirty (a clean instance writes and stamps
+nothing). On a `soft_delete` entity `orm.DeleteEntity` (and a flushed `Remove`) is the version-checked update
+that sets the flag; `orm.Delete[T]` by key does the same, but refuses a versioned entity with `CRUD-012`. **Reads
+never filter on the flag**: write `orm.Eq("IsDeleted", false)` yourself.
+
+```go
+err = orm.Detach(db, &user)                 // the session forgets it (and cancels what was scheduled for it); UOW-001 for a stranger
+managed, err := orm.Merge(ctx, db, &copy)   // the session's instance for the copy's key (reads the row if unknown): copies every
+                                            // mapped non-key value, the version included; navigations are not merged; CRUD-002 for an unset key
+```
+
+Both need a tracked session (`UOW-003` otherwise).
+
 Errors are values with a stable code: `errors.As(err, &e)` on an `*orm.Error`,
 or `orm.CodeOf(err)`. Every I/O function takes a `context.Context`.
 

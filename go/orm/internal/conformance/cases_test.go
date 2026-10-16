@@ -59,7 +59,7 @@ func TestCases_BehaveAsSpecified(t *testing.T) {
 				return
 			}
 
-			db, err := orm.Open(ctx, path, orm.Options{Dialect: sqlite.New()})
+			db, err := orm.Open(ctx, path, orm.Options{Dialect: sqlite.New(), Clock: testsupport.FixedClock})
 			if err != nil {
 				t.Fatalf("%s: open: %v", name, err)
 			}
@@ -85,7 +85,7 @@ func TestCases_BehaveAsSpecified(t *testing.T) {
 // separate, in-flux area of this port), then seeds it from fixtures/seed.json.
 func buildCaseFixture(t *testing.T, ctx context.Context, path string) {
 	t.Helper()
-	db, err := orm.Open(ctx, path, orm.Options{Dialect: sqlite.New()})
+	db, err := orm.Open(ctx, path, orm.Options{Dialect: sqlite.New(), Clock: testsupport.FixedClock})
 	if err != nil {
 		t.Fatalf("open fixture: %v", err)
 	}

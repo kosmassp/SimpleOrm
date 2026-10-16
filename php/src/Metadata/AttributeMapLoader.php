@@ -11,6 +11,7 @@ use SimpleOrm\Errors\MappingError;
 use SimpleOrm\Errors\MappingException;
 use SimpleOrm\Metadata\Attributes\Cascade;
 use SimpleOrm\Metadata\Attributes\Column;
+use SimpleOrm\Metadata\Attributes\CreatedAt;
 use SimpleOrm\Metadata\Attributes\EnumAsInt;
 use SimpleOrm\Metadata\Attributes\ForeignKey;
 use SimpleOrm\Metadata\Attributes\Generated;
@@ -24,8 +25,10 @@ use SimpleOrm\Metadata\Attributes\OneToMany;
 use SimpleOrm\Metadata\Attributes\OneToOne;
 use SimpleOrm\Metadata\Attributes\Owned;
 use SimpleOrm\Metadata\Attributes\Procedure;
+use SimpleOrm\Metadata\Attributes\SoftDelete;
 use SimpleOrm\Metadata\Attributes\Statement;
 use SimpleOrm\Metadata\Attributes\Table;
+use SimpleOrm\Metadata\Attributes\UpdatedAt;
 use SimpleOrm\Metadata\Attributes\Version;
 use SimpleOrm\Metadata\Attributes\View;
 use SimpleOrm\Naming\NamingConvention;
@@ -244,6 +247,23 @@ final class AttributeMapLoader
             $navigationCount = ($manyToOne !== null ? 1 : 0) + ($oneToOne !== null ? 1 : 0)
                 + ($oneToMany !== null ? 1 : 0) + ($manyToMany !== null ? 1 : 0);
 
+            $hooks = self::hookAttributes($property);
+            // SPEC-GAP: spec/hooks.md says each hook "carries [Column]" but names no code for a hook on a navigation, an
+            // [Ignore]d property, or one with no #[Column]; all three are MAP-026 here (the hook declaration is what is wrong).
+            if ($hooks !== [] && ($owned !== null || $navigationCount > 0 || $ignore !== null || $column === null)) {
+                $errors[] = new MappingError(
+                    'MAP-026',
+                    $target,
+                    '#[' . implode('], #[', $hooks) . '] is valid only on a plain #[Column] property, not on a navigation, an #[Owned] member, an #[Ignore]d or an unmapped property',
+                );
+            } elseif (count($hooks) > 1) {
+                $errors[] = new MappingError(
+                    'MAP-026',
+                    $target,
+                    'carries more than one hook (#[' . implode('], #[', $hooks) . ']); a property has at most one',
+                );
+            }
+
             if ($owned !== null) {
                 if ($cascade !== null) {
                     self::cascadeOnNonNavigation($target, $errors);
@@ -346,8 +366,36 @@ final class AttributeMapLoader
                 isGenerated: $generated !== null,
                 isVersion: $version !== null,
                 foreignKeyReferences: $foreignKey?->references,
+                audit: count($hooks) === 1 ? self::auditRole($hooks[0]) : AuditRole::None,
+                isSoftDelete: count($hooks) === 1 && $hooks[0] === 'SoftDelete',
             );
         }
+    }
+
+    /**
+     * The short names of the hook attributes (`CreatedAt`, `UpdatedAt`, `SoftDelete`) a property carries (Level 3 M3).
+     *
+     * @return list<string>
+     */
+    private static function hookAttributes(ReflectionProperty $property): array
+    {
+        $names = [];
+        foreach ([CreatedAt::class => 'CreatedAt', UpdatedAt::class => 'UpdatedAt', SoftDelete::class => 'SoftDelete'] as $attribute => $name) {
+            if ($property->getAttributes($attribute) !== []) {
+                $names[] = $name;
+            }
+        }
+
+        return $names;
+    }
+
+    private static function auditRole(string $hook): AuditRole
+    {
+        return match ($hook) {
+            'CreatedAt' => AuditRole::CreatedAt,
+            'UpdatedAt' => AuditRole::UpdatedAt,
+            default => AuditRole::None,
+        };
     }
 
     /**
@@ -755,6 +803,17 @@ final class AttributeMapLoader
                 continue;
             }
 
+            if (self::hookAttributes($member) !== []) {
+                // SPEC-GAP: spec/hooks.md is silent on a hook inside an #[Owned] type; refused as MAP-026 (the hook is the
+                // owner's own column), not MAP-024 (which lists what an owned member may not carry, and hooks are not in it).
+                $errors[] = new MappingError(
+                    'MAP-026',
+                    $memberTarget,
+                    'a hook (#[CreatedAt], #[UpdatedAt], #[SoftDelete]) is valid on an entity\'s own column, not on a member of an #[Owned] type',
+                );
+                continue;
+            }
+
             $forbidden = false;
             foreach ([Key::class, Generated::class, Version::class, ForeignKey::class, Owned::class,
                 ManyToOne::class, OneToOne::class, OneToMany::class, ManyToMany::class] as $attribute) {
@@ -841,7 +900,7 @@ final class AttributeMapLoader
         $propertyAttributes = [
             Column::class, Ignore::class, Key::class, Generated::class, Version::class, EnumAsInt::class,
             ForeignKey::class, ManyToOne::class, OneToOne::class, OneToMany::class, ManyToMany::class, Owned::class,
-            Cascade::class,
+            Cascade::class, CreatedAt::class, UpdatedAt::class, SoftDelete::class,
         ];
         foreach (PropertyDiscovery::propertiesInDeclarationOrder($class) as $property) {
             foreach ($propertyAttributes as $attribute) {

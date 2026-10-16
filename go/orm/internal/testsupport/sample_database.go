@@ -17,6 +17,13 @@ import (
 // dotnet's TestDb.SeedTime / PHP's SampleDatabase).
 var SeedTime = time.Date(2026, 8, 28, 9, 30, 0, 0, time.UTC)
 
+// ClockNow is the instant the conformance runners and the sample-database helpers fix the session
+// clock at (spec/hooks.md "The session clock"): 2026-08-29T00:00:00Z.
+var ClockNow = time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC)
+
+// FixedClock is the Options.Clock every session-opening runner uses.
+func FixedClock() time.Time { return ClockNow }
+
 // OpenSample opens a temp-file database with every sample table and the
 // UserTransactionTotal view created from metadata (ADR-0011, ADR-0008 add.3) —
 // no hand-written DDL and no dependency on the migrations runner, which lands
@@ -41,6 +48,9 @@ func OpenSampleAt(t testing.TB, path string, options orm.Options) *orm.Db {
 
 	if options.Dialect == nil {
 		options.Dialect = sqlite.New()
+	}
+	if options.Clock == nil {
+		options.Clock = FixedClock
 	}
 	db, err := orm.Open(ctx, path, options)
 	if err != nil {

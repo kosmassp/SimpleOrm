@@ -156,6 +156,28 @@ type RelationshipMap struct {
 	Cascade CascadeOperations
 }
 
+// AuditRole is the audit hook a column carries (Level 3 M3, spec/hooks.md): the session fills a
+// created-at column on insert when unset and stamps an updated-at column on every write that
+// changes a row. The zero value is no hook.
+type AuditRole int
+
+const (
+	AuditNone AuditRole = iota
+	AuditCreatedAt
+	AuditUpdatedAt
+)
+
+// Token is the export's "audit" value (spec/metadata-model.md "Declared hooks"); "" for no hook.
+func (a AuditRole) Token() string {
+	switch a {
+	case AuditCreatedAt:
+		return "created_at"
+	case AuditUpdatedAt:
+		return "updated_at"
+	}
+	return ""
+}
+
 // PropertyMap is one mapped field ↔ column pair (§7.1). The loader resolves the
 // neutral ColumnType once; conversion, storage types, and the export read it
 // and never re-derive it from the Go type.
@@ -176,6 +198,10 @@ type PropertyMap struct {
 	IsKey       bool
 	IsGenerated bool
 	IsVersion   bool
+	// Audit is the audit hook this column carries (spec/hooks.md), AuditNone when undeclared.
+	Audit AuditRole
+	// IsSoftDelete marks the soft-delete flag column (spec/hooks.md): a delete sets it instead of removing the row.
+	IsSoftDelete bool
 	// ForeignKeyReferences is the entity this FK column references (the descriptor's ForeignKey), or nil.
 	ForeignKeyReferences reflect.Type
 	// Owner is the owned navigation this member is flattened through
@@ -286,6 +312,11 @@ type EntityMap struct {
 	// KeyProperties are the key properties in declaration order (composite keys are ordered).
 	KeyProperties   []*PropertyMap
 	VersionProperty *PropertyMap
+	// CreatedAtProperty, UpdatedAtProperty, and SoftDeleteProperty are the declared hook columns
+	// (Level 3 M3, spec/hooks.md), or nil: at most one per role, validated by the assembler (MAP-026).
+	CreatedAtProperty  *PropertyMap
+	UpdatedAtProperty  *PropertyMap
+	SoftDeleteProperty *PropertyMap
 	// OwnedTypes are the owned value types flattened into this entity (ADR-0030), in declaration order.
 	OwnedTypes []*OwnedMap
 }
@@ -322,6 +353,15 @@ func NewEntityMap(
 		}
 		if p.IsVersion && m.VersionProperty == nil {
 			m.VersionProperty = p
+		}
+		if p.Audit == AuditCreatedAt && m.CreatedAtProperty == nil {
+			m.CreatedAtProperty = p
+		}
+		if p.Audit == AuditUpdatedAt && m.UpdatedAtProperty == nil {
+			m.UpdatedAtProperty = p
+		}
+		if p.IsSoftDelete && m.SoftDeleteProperty == nil {
+			m.SoftDeleteProperty = p
 		}
 		if p.Owner != nil && !seenOwners[p.Owner] {
 			seenOwners[p.Owner] = true

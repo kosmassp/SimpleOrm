@@ -132,7 +132,7 @@ func TestCrudCases_BehaveAsSpecified(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			db, err := orm.Open(ctx, testsupport.TempDatabase(t), orm.Options{Dialect: sqlite.New()})
+			db, err := orm.Open(ctx, testsupport.TempDatabase(t), orm.Options{Dialect: sqlite.New(), Clock: testsupport.FixedClock})
 			if err != nil {
 				t.Fatalf("open: %v", err)
 			}

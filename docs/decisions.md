@@ -3115,6 +3115,80 @@ green run, on a machine with an engine.
 **Status.** Accepted. The three Level 4 dialects exist in three implementations
 at the reference's runtime-first scope; the spec now describes them.
 
+### ADR-0040 addendum 1 — owner rulings on the four open items; the priority change (2026-10-17)
+
+ADR-0040 named four driver items it could not settle without the owner. The
+rulings, item by item:
+
+1. **`bytes` writes through PDO — done.** PHP strings hold text and bytes
+   alike and PDO binds every untyped value as `PARAM_STR`, so a bytes value
+   reached PostgreSQL as escaped text, SQL Server as a string into
+   `varbinary` — and SQLite as TEXT, which a STRICT `BLOB` column refuses: the
+   PHP port could not write bytes on any dialect, the reference database
+   included, and no fixture column showed it. Ruling: bind by the metadata
+   token, as the C# and Go drivers bind by type. `TypeConverter::toParameter()`
+   wraps a `bytes`-typed value as a `BinaryParameter` and `PdoBinder` binds it
+   `PDO::PARAM_LOB` — for generated CRUD, key reads, criteria, and registry
+   queries, whose args property declares the token with the entity attribute
+   `#[Column(type: ColumnType::Bytes)]`. Snapshots keep the plain string. The
+   fixture gains its one bytes column so every leg covers it:
+   `UserProfile.Avatar` → `avatar`, nullable (`byte[]?`, PHP `?string` +
+   token, Go `*[]byte`), migration **V0012** + snapshot in the three sample
+   trees (each written by its own CLI; identical modulo `generatedAt`);
+   `entities/user_profile.json`, `fixtures/seed.json` (null),
+   `cases/owned_read.json`, and the new `crud-cases/bytes_round_trip.json` (a
+   NUL, a backslash, 0xff, invalid UTF-8, then bytes spelling a `bytea` escape
+   literal; insert, column-list and full update, a NULL). The PHP crud runner
+   had passed bytes values through undecoded — it learned the base64 encoding,
+   as did the Go runner. Every live leg (C#, PHP, Go × PostgreSQL and SQL
+   Server) runs the same round trip, incl. a criteria and a registry match;
+   the PHP PostgreSQL leg fails without the fix. spec/dialects.md
+   Clarification 14.
+2. **go-mssqldb binding `nil` as `nvarchar(1)` NULL — waiting for a SQL Server
+   engine.** Nothing changes until a live run proves it. The SQL Server bytes
+   round trip of item 1 ends with a NULL into `varbinary(max)` in all three
+   implementations: that write is the probe (an untyped null may reach the
+   server as a character type through ADO.NET or PDO ODBC too). The owner is
+   to be reminded when SQL Server is available.
+3. **`RowsAffected` summing trigger row counts — waiting for a SQL Server
+   engine,** and for a test against a schema with real triggers (Fidelis)
+   before any rule. For orientation only: EF Core emits `SET NOCOUNT ON` plus
+   `OUTPUT` and needs `HasTrigger()` to opt out; Hibernate trusts the raw count
+   and asks trigger authors for `SET NOCOUNT ON`.
+4. **pgx's statement cache after a schema change — done.** pgx v5 caches every
+   statement with arguments per connection and invalidates the entry on any
+   error, but never retries; a Go session pins one connection, so a changed
+   table under a cached statement fails with SQLSTATE 0A000 "cached plan must
+   not change result type". Ruling: configurable, default retry once outside a
+   transaction. `postgres.New(postgres.WithCachedPlanPolicy(...))`:
+   `CachedPlanRetryOnce` (default) re-runs the statement once when the
+   connection's transaction status is idle — the failed statement ran in its
+   own implicit transaction — and surfaces the error inside a transaction,
+   which PostgreSQL has already aborted (the caller rolls back);
+   `CachedPlanSurface` never retries. Explicitly prepared statements are never
+   retried. Live tests pin all three paths. C# (Npgsql does not auto-prepare by
+   default) and PHP (PDO prepares per statement) are unaffected. A driver
+   matter, not a seam member: spec/dialects.md Clarification 15.
+
+spec/dialects.md: the two ruled items leave "Found by the ports, not yet ruled
+on"; items 2 and 3 and the first green run of the SQL Server legs move to their
+own paragraph, "Waiting for a SQL Server engine"; the testing contract gains the
+bytes round trip and the cached-plan policy.
+
+**Priorities (owner, 2026-10-17).** The new-language ports are deprioritized:
+Rust, Python, and TypeScript wait — Rust only when the owner starts working in
+Rust — and MySQL/Oracle are off the table. **Next: the SQL Server live legs on
+a machine with an engine** (the owner is switching computers for that), **then
+rulings 2 and 3**, which wait on those runs. This supersedes the "Next"
+sentence of ADR-0039/ADR-0040 and CLAUDE.md §1.
+
+**Counts** (PostgreSQL 16.4 live on this machine, no SQL Server engine): C# 418
+passed / 11 skipped (was 416 / 10); PHP 811 tests, 17 skipped (was 805 / 16);
+Go `gofmt`, `go vet`, `go test -p 2 ./...` ok.
+
+**Status.** Accepted. Rulings 1 and 4 done in every implementation they
+concern; rulings 2 and 3 wait for a SQL Server engine.
+
 ## ADR-0041 — Inheritance mapping: concrete classes only; a base class is never an entity (2026-10-17)
 
 Owner rulings, taken in a design discussion held before any code (the

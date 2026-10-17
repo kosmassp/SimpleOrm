@@ -413,17 +413,30 @@ Named here so that no implementation attempts it ahead of the reference:
   the metadata's `Schema`; batching (spec/unit-of-work.md "Batching") — all Level 4.
 - `migrations-cases/` and `cases/` fixtures per dialect: the conformance folders
   that reach a database run on SQLite; `ast/` is the per-dialect pin.
-- Found by the ports, not yet ruled on: `bytes` **writes** through a driver whose
-  parameters are untyped text (PDO `PARAM_STR` parses a `bytea` payload as escaped
-  text — a `PARAM_LOB` binding or hex encoding would need the token at bind time;
-  no fixture entity has a bytes column); go-mssqldb binding `nil` as an
-  `nvarchar(1)` NULL (a NULL into `varbinary` may refuse, error 257) and summing
-  trigger row counts into `RowsAffected` (a `CRUD-010` hazard on schemas with
-  triggers lacking `SET NOCOUNT ON`); pgx's statement cache across a schema change
-  in a long-lived session; `time`- and `decimal`-typed array parameters; composite
-  `nvarchar(450)` keys exceeding SQL Server's 900-byte index limit (declare real
-  lengths in migrations); the first green run of the SQL Server live legs — no
-  engine here, and go-mssqldb cannot address LocalDB (a TCP server is its default).
+- Found by the ports, not yet ruled on: `time`- and `decimal`-typed array
+  parameters; composite `nvarchar(450)` keys exceeding SQL Server's 900-byte index
+  limit (declare real lengths in migrations). (`bytes` writes through untyped
+  drivers and pgx's statement cache after a schema change are ruled —
+  Clarifications 14 and 15.)
+
+**Waiting for a SQL Server engine** (owner rulings, ADR-0040 add.1: nothing
+changes until a live run proves the hazard; the first machine with an engine
+runs these first):
+
+- **The first green run of the SQL Server live legs** in all three
+  implementations — no engine here, and go-mssqldb cannot address LocalDB (a TCP
+  server is its default).
+- **go-mssqldb binding `nil` as an `nvarchar(1)` NULL**: a NULL into `varbinary`
+  may refuse (error 257). The bytes round trip every SQL Server leg runs ends with
+  a NULL written into `varbinary(max)` — that write is the probe, in every
+  implementation (an untyped null may reach the server as a character type
+  through ADO.NET or PDO ODBC too).
+- **go-mssqldb summing trigger row counts into `RowsAffected`**: a `CRUD-010`
+  hazard on schemas whose triggers lack `SET NOCOUNT ON`. To be tested against a
+  schema with real triggers before any rule (for orientation: EF Core emits `SET
+  NOCOUNT ON` plus `OUTPUT` and needs an explicit opt-out for tables with
+  triggers; Hibernate trusts the raw count and asks trigger authors for `SET
+  NOCOUNT ON`).
 
 ## Testing contract
 
@@ -446,16 +459,20 @@ version-column concurrency on update and delete; transaction scopes; explicit,
 batch, and link loading; a subselect include over a paged root; the composite-key
 subselect (through the EXISTS rewrite on SQL Server, native row-value IN on
 PostgreSQL); migrations up, re-run, and down under the run lock (with `Down()`
-overrides); the `VAL-020` refusal on a markerless column. PostgreSQL additionally:
-array parameters filled and empty, a temporal criteria comparison against
-`timestamptz`, and a materialized view created and read.
+overrides); the `VAL-020` refusal on a markerless column; the bytes round trip
+of Clarification 14 (insert, column-list and full update, a criteria and a
+registry match, a NULL). PostgreSQL additionally: array parameters filled and
+empty, a temporal criteria comparison against `timestamptz`, a materialized view
+created and read, and — where the driver caches statements — the cached-plan
+policy of Clarification 15 in and out of a transaction.
 
 ## Clarifications
 
 Answers to the four port gap lists of ADR-0040 (PHP and Go, SQL Server and
 PostgreSQL — 42 questions, consolidated), each the answer the implementations now
 embody. No rule above changed; the ADR records the three reference deviations the
-same lists surfaced.
+same lists surfaced. Clarifications 14 and 15 are owner rulings on items the
+ports found (ADR-0040 add.1).
 
 1. **Introspection columns are named.** Every non-SQLite dialect aliases its result
    columns to the names of "Introspection result shapes" (the reference queries
@@ -553,3 +570,40 @@ same lists surfaced.
     exists <name>`, the generator's drop statements) stay as they are: those paths
     are SQLite-only by the deferred list. The migration *actions* (`DropView`,
     `RecreateView`, `DropIndex`) render through the seam and quote.
+14. **`bytes` bind as binary parameters, chosen by the token** (owner ruling,
+    ADR-0040 add.1). A value whose property's metadata type token is `bytes`
+    binds as the driver's binary parameter on every dialect — generated CRUD, key
+    reads, criteria, and registry queries alike. Where the language's static type
+    says it (C# `byte[]`, Go `[]byte`), the driver does so already; where one
+    string type holds text and bytes alike (PHP), the binder chooses `PDO::PARAM_LOB`
+    from the token, and a registry args property declares its token the way an
+    entity property does (`#[Column(type: ColumnType::Bytes)]`). A text binding
+    refuses or corrupts bytes: SQLite stores TEXT, which a STRICT `BLOB` column
+    refuses; PostgreSQL parses a `bytea` payload as escaped text (a backslash
+    starts an escape); SQL Server receives a character string for `varbinary`.
+    The elements of a native array parameter stay text inside the array literal
+    (bytes arrays are outside, with the other array-typed columns). Pinned by the
+    fixture's nullable `UserProfile.Avatar` (migration V0012),
+    `crud-cases/bytes_round_trip` (a NUL, a backslash, 0xff, invalid UTF-8, and
+    bytes that spell a `bytea` escape literal), and the round trip every live leg
+    runs. A nullable bytes member is `byte[]?` (C#), `?string` with the `bytes`
+    token (PHP), `*[]byte` (Go — a bare `[]byte` is required, like `string`).
+15. **PostgreSQL: a cached plan after a schema change** (owner ruling, ADR-0040
+    add.1; a per-implementation driver matter, never a seam member). A driver that
+    prepares and caches statements on a long-lived connection meets SQLSTATE
+    `0A000` "cached plan must not change result type" when the table under a
+    cached statement changes (a column's type, say). Where the driver caches, the
+    behaviour is configurable, and the default **retries the statement once, only
+    when no transaction is active on the connection**: the failed statement ran in
+    its own implicit transaction, so nothing of it happened. Inside a transaction
+    PostgreSQL has already aborted it — the error surfaces unchanged and the caller
+    must roll back. The other setting surfaces the error always. Go: pgx caches
+    every statement with arguments and invalidates the entry on any error but never
+    retries, so the dialect's connection does —
+    `postgres.New(postgres.WithCachedPlanPolicy(postgres.CachedPlanRetryOnce |
+    postgres.CachedPlanSurface))`, retry by default, judged by the connection's
+    transaction status; a statement the caller prepared explicitly is never
+    retried (its server-side statement is what changed). C# is unaffected: Npgsql
+    does not auto-prepare by default (`Max Auto Prepare=0`), so a connection string
+    that turns it on is outside this rule. PHP is unaffected: PDO prepares each
+    statement when the library runs it, and nothing prepared outlives the call.

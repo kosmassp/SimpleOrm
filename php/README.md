@@ -1,6 +1,6 @@
 # SimpleOrm — PHP port
 
-The PHP implementation of the SimpleOrm spec, **Levels 0–2** (ADR-0026 for the
+The PHP implementation of the SimpleOrm spec, **Levels 0–3** (ADR-0026 for the
 mapper, the micro-ORM with generated CRUD, the ADR-0012 criteria core,
 SchemaGuard, and code migrations with the diff generator; ADR-0033 for
 relationships: explicit/batch loading, the Level 2 query AST, and eager loading

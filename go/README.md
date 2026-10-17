@@ -1,6 +1,6 @@
 # SimpleOrm — Go port
 
-The Go implementation of the SimpleOrm spec, **Levels 0–1** (CLAUDE.md §12: the
+The Go implementation of the SimpleOrm spec, **Levels 0–3** (CLAUDE.md §12: the
 first port covers the mapper, the micro-ORM with generated CRUD, the ADR-0012
 criteria core, SchemaGuard, and code migrations with the diff generator). It
 shares no code with the C# reference; it shares `../spec/` and `../conformance/`,

@@ -1,6 +1,6 @@
 {
   "name": "simpleorm/simpleorm",
-  "description": "SimpleOrm PHP port — SQL-first micro-ORM, Levels 0–1 of the SimpleOrm spec (ADR-0026).",
+  "description": "SimpleOrm PHP port — SQL-first micro-ORM, Levels 0–3 of the SimpleOrm spec (ADR-0026, ADR-0033, ADR-0039; SQL Server and PostgreSQL dialects by ADR-0040).",
   "type": "library",
   "license": "MIT",
   "require": {

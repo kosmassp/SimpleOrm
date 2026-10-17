@@ -297,7 +297,10 @@ an `= any` rendering for PostgreSQL is a possible later optimization, not a rule
 ## Introspection result shapes
 
 Parameter `@relation` on every query; an empty result means the relation is absent.
-Flags are integers (`0`/`1`), ordinals zero-based.
+Flags are integers (`0`/`1`), ordinals zero-based. **Result columns carry the names
+below** — every non-SQLite dialect aliases them (`as name`, `as "notnull"`, `as [pk]`,
+…), so a consumer may read by name or by ordinal; SQLite's queries are the frozen
+reference text and are read by ordinal.
 
 - **Columns**: `name, type, notnull, pk` in column order, `pk` the key ordinal
   (0 = not part of the key); `type` is the declared type spelled as the storage
@@ -315,7 +318,7 @@ The reference queries (the SQLite ones are pinned by the ports already):
 
 ```sql
 -- SQL Server, columns
-select c.name,
+select c.name as [name],
        case
            when t.name in (N'decimal', N'numeric')
                then t.name + N'(' + cast(c.precision as nvarchar(8)) + N',' + cast(c.scale as nvarchar(8)) + N')'
@@ -324,9 +327,9 @@ select c.name,
            when t.name in (N'varchar', N'char', N'varbinary', N'binary')
                then t.name + N'(' + case when c.max_length = -1 then N'max' else cast(c.max_length as nvarchar(8)) end + N')'
            else t.name
-       end,
-       cast(case when c.is_nullable = 1 then 0 else 1 end as bigint),
-       cast(isnull(pk.key_ordinal, 0) as bigint)
+       end as [type],
+       cast(case when c.is_nullable = 1 then 0 else 1 end as bigint) as [notnull],
+       cast(isnull(pk.key_ordinal, 0) as bigint) as [pk]
 from sys.columns c
 join sys.types t on t.user_type_id = c.user_type_id
 left join (
@@ -339,7 +342,8 @@ where c.object_id = object_id(@relation)
 order by c.column_id
 
 -- SQL Server, indexes
-select i.name, cast(i.is_unique as bigint), cast(ic.key_ordinal - 1 as bigint), c.name, cast(ic.is_descending_key as bigint)
+select i.name as [index_name], cast(i.is_unique as bigint) as [unique], cast(ic.key_ordinal - 1 as bigint) as [seqno],
+       c.name as [column], cast(ic.is_descending_key as bigint) as [desc]
 from sys.indexes i
 join sys.index_columns ic on ic.object_id = i.object_id and ic.index_id = i.index_id and ic.is_included_column = 0
 join sys.columns c on c.object_id = ic.object_id and c.column_id = ic.column_id
@@ -347,27 +351,27 @@ where i.object_id = object_id(@relation) and i.type > 0 and i.is_primary_key = 0
 order by i.name, ic.key_ordinal
 
 -- SQL Server, view definition
-select m.definition from sys.sql_modules m join sys.views v on v.object_id = m.object_id
+select m.definition as [definition] from sys.sql_modules m join sys.views v on v.object_id = m.object_id
 where v.object_id = object_id(@relation)
 
 -- PostgreSQL, columns
-select a.attname,
-       format_type(a.atttypid, a.atttypmod),
-       (case when a.attnotnull then 1 else 0 end)::bigint,
+select a.attname as name,
+       format_type(a.atttypid, a.atttypmod) as type,
+       (case when a.attnotnull then 1 else 0 end)::bigint as "notnull",
        (case when exists (
            select 1 from pg_index i
            where i.indrelid = a.attrelid and i.indisprimary and a.attnum = any(i.indkey)
-       ) then 1 else 0 end)::bigint
+       ) then 1 else 0 end)::bigint as pk
 from pg_attribute a
 where a.attrelid = to_regclass(@relation) and a.attnum > 0 and not a.attisdropped
 order by a.attnum
 
 -- PostgreSQL, indexes
-select ic.relname,
-       (case when i.indisunique then 1 else 0 end)::bigint,
-       k.n::bigint,
-       a.attname,
-       (case when (i.indoption[k.n] & 1) <> 0 then 1 else 0 end)::bigint
+select ic.relname as index_name,
+       (case when i.indisunique then 1 else 0 end)::bigint as "unique",
+       k.n::bigint as seqno,
+       a.attname as "column",
+       (case when (i.indoption[k.n] & 1) <> 0 then 1 else 0 end)::bigint as "desc"
 from pg_index i
 join pg_class ic on ic.oid = i.indexrelid
 cross join lateral generate_series(0, i.indnkeyatts - 1) as k(n)
@@ -378,7 +382,7 @@ where i.indrelid = to_regclass(@relation)
 order by ic.relname, k.n
 
 -- PostgreSQL, view definition
-select pg_get_viewdef(c.oid, true) from pg_class c
+select pg_get_viewdef(c.oid, true) as definition from pg_class c
 where c.oid = to_regclass(@relation) and c.relkind in ('v', 'm')
 ```
 
@@ -409,6 +413,17 @@ Named here so that no implementation attempts it ahead of the reference:
   the metadata's `Schema`; batching (spec/unit-of-work.md "Batching") — all Level 4.
 - `migrations-cases/` and `cases/` fixtures per dialect: the conformance folders
   that reach a database run on SQLite; `ast/` is the per-dialect pin.
+- Found by the ports, not yet ruled on: `bytes` **writes** through a driver whose
+  parameters are untyped text (PDO `PARAM_STR` parses a `bytea` payload as escaped
+  text — a `PARAM_LOB` binding or hex encoding would need the token at bind time;
+  no fixture entity has a bytes column); go-mssqldb binding `nil` as an
+  `nvarchar(1)` NULL (a NULL into `varbinary` may refuse, error 257) and summing
+  trigger row counts into `RowsAffected` (a `CRUD-010` hazard on schemas with
+  triggers lacking `SET NOCOUNT ON`); pgx's statement cache across a schema change
+  in a long-lived session; `time`- and `decimal`-typed array parameters; composite
+  `nvarchar(450)` keys exceeding SQL Server's 900-byte index limit (declare real
+  lengths in migrations); the first green run of the SQL Server live legs — no
+  engine here, and go-mssqldb cannot address LocalDB (a TCP server is its default).
 
 ## Testing contract
 
@@ -437,5 +452,104 @@ array parameters filled and empty, a temporal criteria comparison against
 
 ## Clarifications
 
-Answers to port questions land here (ADR rule: no rule changes without an entry in
-`docs/decisions.md`).
+Answers to the four port gap lists of ADR-0040 (PHP and Go, SQL Server and
+PostgreSQL — 42 questions, consolidated), each the answer the implementations now
+embody. No rule above changed; the ADR records the three reference deviations the
+same lists surfaced.
+
+1. **Introspection columns are named.** Every non-SQLite dialect aliases its result
+   columns to the names of "Introspection result shapes" (the reference queries
+   above carry the aliases); a consumer may read by name or by ordinal. SQLite's
+   frozen queries are read by ordinal. `to_regclass(@relation)` and
+   `object_id(@relation)` take the relation name **unquoted**: `to_regclass`
+   resolves reserved words and folds case (`Order` → `order`), so no quoting rule
+   exists for the parameter.
+2. **The generated key is the first column of the first row of the first result
+   set that has columns.** SQL Server's `insert …; select cast(scope_identity() as
+   bigint)` batch yields the insert's own row-count result before the scalar; a
+   result-set API advances past column-less results (PDO `nextRowset()`; go-mssqldb
+   skips them itself; ADO.NET's `ExecuteScalar` does so implicitly). The scalar is
+   unnamed — read it by position, never by the key column's name.
+3. **The run lock may be taken as one batch or as consecutive statements** inside
+   the transaction (pgx's extended protocol refuses a multi-statement string with
+   parameters). A refused or failed acquisition **rolls the transaction back before
+   the error surfaces**, so the connection is left as it was found. The runner
+   closes the run with its own `COMMIT`/`ROLLBACK`; the dialect opens the
+   transaction in whatever form that pairs with (a raw `BEGIN` where the driver's
+   transaction API would not — PDO).
+4. **Describing on PostgreSQL happens under a savepoint.** PostgreSQL aborts the
+   whole transaction on any statement error, so a describe that runs inside a
+   transaction (SchemaGuard's shield, or a session transaction) opens a savepoint,
+   rolls back to it on failure, and releases it — and the protection covers
+   statement-backed entities as well as registry entries, so one `VAL-001` never
+   poisons the entries after it. Statements PostgreSQL cannot type without a
+   value (`select @a + @b`, `where @x is null`) fail to describe and report
+   `VAL-001`; they would fail at run time too — cast the parameter.
+5. **Calendar tokens on write.** A `date` property writes the value's **own**
+   calendar date and a `time` property its own time of day — never the instant
+   converted to UTC first (23:30 at −05:00 is still the 28th). Under
+   `BindsTemporalsNatively` a `date` binds natively or as `yyyy-MM-dd` text and a
+   `time` always as `HH:mm:ss.fffffff` text (the database infers the type from the
+   comparison; a `time` value carries no kind). A `datetimeoffset` write keeps its
+   offset (`+00:00`, never `Z`) and binds natively as the instant; `datetime` is
+   the §7.9 rule unchanged.
+6. **Marker detection by text** accepts the drivers' spellings: PostgreSQL renders
+   `timestamptz` in the session's zone (`2026-10-17 08:49:19.462397+07`, minutes
+   omitted when zero, `+05:30` otherwise, fewer fraction digits on a typed
+   precision); the SQL Server driver spells ` +00:00` after a space with seven
+   fraction digits. **Marker detection by column type** (Go) consults the driver's
+   type name case-insensitively: go-mssqldb reports `DATETIME`, `DATETIME2`,
+   `SMALLDATETIME` (markerless) and `DATETIMEOFFSET`; pgx reports `TIMESTAMP`
+   (markerless) and `TIMESTAMPTZ`. A property with a registered handler is never
+   judged — the handler is the legacy-column escape.
+7. **Array parameters, the edges.** A `null` element is `NULL` in the literal (PDO)
+   or a pointer-element slice (Go); an **empty** collection is typed from the
+   declared element type (Go) or left to the comparison (PDO's `{}`); elements pass
+   through the conversion pipeline first, so enums bind by name, temporals by the
+   rules above, decimals as text (`numeric[]` relies on text input — untested). A
+   nested collection or an object element is a binding error with no spec code.
+8. **Connection strings and drivers.** PHP SQL Server takes a `sqlsrv:` **or**
+   `odbc:` DSN verbatim and never emulates prepares (emulation would interpolate
+   strings without the `N` prefix); PHP PostgreSQL a `pgsql:` DSN with credentials
+   embedded. Go SQL Server parses the string with the driver's `msdsn` (URL, ADO,
+   and `odbc:` forms) and sets `GuidConversion` so `uniqueidentifier` reads in RFC
+   4122 order; Go PostgreSQL rewrites `@name` to `$n` inside its connector (first
+   appearance numbers the parameter, names match case-insensitively, a repeated
+   name shares one position, a placeholder without a value or a value without a
+   placeholder is an error, SQL with no `@name` passes through untouched) — the
+   seam gains no member for placeholders.
+9. **Driver value shapes a port relies on.** PDO (`pgsql`): temporals, `numeric`,
+   `uuid`, and arrays arrive as strings, `bytea` as a stream, `int2/4/8` as int,
+   `float4/8` as float, `bool` as bool. go-mssqldb: `decimal`/`numeric`/`money`
+   as ASCII `[]byte` (the converter accepts it), `datetime2` as a `time.Time`
+   without marker, strings bind as `nvarchar`, `time.Time` as `datetimeoffset`;
+   empty result sets of a batch are skipped. pgx: `numeric`, `uuid`, `time`, and
+   unregistered types as `string`, `bytea` as `[]byte`, `timestamptz` in the local
+   zone (`.UTC()` is the rule), `timestamp` as a UTC-labelled instant.
+10. **Describing without executing, per driver.** SQLite: the column-origin API.
+    SQL Server: `sp_describe_first_result_set @tsql, @params,
+    @browse_information_mode = 1` with parameter types from
+    `sp_describe_undeclared_parameters` (else `nvarchar(max)`); `source_table` /
+    `source_column` give the origin, hidden browse columns are skipped, a `dbo`
+    table is unqualified. PostgreSQL: prepare the (rewritten) statement as the
+    unnamed server statement and resolve `TableOID`/`TableAttributeNumber`/
+    `DataTypeOID` through one catalog query (`format_type(oid, -1)`, `regclass`,
+    `attname`); `Table` is `oid::regclass::text`. A port whose driver exposes no
+    origin table for a column (PDO `sqlsrv` `getColumnMeta`) falls back to the
+    expression-column rule — nullable member or `-- notnull:` — and says so.
+11. **The indexable length is a `CREATE TABLE` rule**, not a `StorageType` rule:
+    string and bytes columns of a declared index render `nvarchar(450)` /
+    `varbinary(450)` there, while `StorageType(property)` keeps the key-only rule
+    (snapshots and diff are SQLite-only on these dialects). Two such key columns
+    exceed SQL Server's 900-byte index limit — it creates with a warning; declare
+    real lengths in migrations.
+12. **Testing contract, precisely.** "A database per fixture" may be one database
+    per test class with the schema reset per test, or one per test; both drop
+    afterwards, including on failure. Beyond the list above every live leg pins
+    that all three fetch modes load the same graph and that the run lock excludes
+    a second connection and is released by rollback. The LocalDB default applies
+    only where the driver can address a LocalDB instance.
+13. **Unquoted names in tooling-only paths** (the derived rollback's `drop view if
+    exists <name>`, the generator's drop statements) stay as they are: those paths
+    are SQLite-only by the deferred list. The migration *actions* (`DropView`,
+    `RecreateView`, `DropIndex`) render through the seam and quote.

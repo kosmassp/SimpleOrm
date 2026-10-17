@@ -33,7 +33,7 @@ C# on SQLite is the **reference implementation**. The long-term plan is a langua
 | Identity map, change tracking, unit of work, cascades, merge/detach | 3 — done (ADR-0035–0037) |
 | Inheritance mapping, event hooks (audit, soft delete) | 3 — hooks done (ADR-0037); inheritance skipped by owner ruling (ADR-0038) |
 | Draft migrations generated from the metadata diff | 3 — done (ADR-0038: `[RenamedFrom]` + `diff --draft`) |
-| Additional dialects — order per ADR-0023: **SQL Server first** (owner field-tests with Fidelis), **PostgreSQL second**, then MySQL/Oracle | 4 (seam exists from Level 1) — **SQL Server pulled forward by ADR-0024, PostgreSQL by ADR-0025**, runtime-first: session/CRUD/criteria/loading/SchemaGuard/migration-runner work; shadow/snapshot/diff tooling stays SQLite-only for now |
+| Additional dialects — order per ADR-0023: **SQL Server first** (owner field-tests with Fidelis), **PostgreSQL second**, then MySQL/Oracle | 4 (seam exists from Level 1) — **SQL Server pulled forward by ADR-0024, PostgreSQL by ADR-0025**, runtime-first: session/CRUD/criteria/loading/SchemaGuard/migration-runner work; **both dialects exist in PHP and Go too (ADR-0040, from `spec/dialects.md` alone)**; shadow/snapshot/diff tooling stays SQLite-only everywhere |
 | Read/write splitting and multi-database routing, incl. mixed engines (session-level, never per-entity — see decision log 2026-08-28) | 4 |
 | Caching, observability, resilience, analyzers, source generators | 4 |
 
@@ -73,6 +73,7 @@ spec/                         language-neutral spec, written as each level stabi
   validation-rules.md         every rule with its error code
   errors.md                   error code registry (MAP-, PRM-, MIG-, VAL-, CRUD-, QRY-, TX-, REL-, DDL-, UOW-)
   query-ast.md                Level 2
+  dialects.md                 the seam member by member; the SQLite, SQL Server, PostgreSQL realizations; the live-testing contract (ADR-0040)
 conformance/                  the executable definition of the library (see §9)
   fixtures/                   seed data
   entities/                   expected EntityMap JSON for the fixture entities
@@ -98,15 +99,18 @@ docs/decisions.md             ADR-style log; append whenever a decision below ch
 ```
 
 ```
-php/                          the PHP port, Levels 0–2 (ADR-0026, Level 2 by ADR-0033): src/ mirrors the C# areas; tests/ holds the
-                              fixture entities (tests/Sample) and one conformance runner per folder;
+php/                          the PHP port, Levels 0–3 (ADR-0026, Level 2 by ADR-0033, Level 3 by ADR-0035–0039): src/ mirrors the C# areas;
+                              src/Dialect holds SqliteDialect, SqlServerDialect, PostgresDialect behind the Dialects registry (ADR-0040);
+                              tests/ holds the fixture entities (tests/Sample), one conformance runner per folder, and the skip-gated
+                              live legs (tests/Dialect/*LiveTest.php, Support/LiveServer);
                               CODING-STANDARD.md is its uniformity contract, §10 the only list of PHP divergences;
                               samples/SimpleOrm.Sample is the standalone consumer project mirroring dotnet/samples
                               (own composer.json via a path repository; models, V0001–V0009 migrations + snapshots,
                               repositories, registry, bin/demo.php) — driven by tests/Samples like the C# sample
-go/                           the Go port, Levels 0–2 (ADR-0027, Level 2 by ADR-0031): one module; orm/ is the public package (session,
+go/                           the Go port, Levels 0–3 (ADR-0027, Level 2 by ADR-0031, Level 3 by ADR-0035–0039): one module; orm/ is the public package (session,
                               registry, SchemaGuard, aliases of the internal/core contracts), orm/sqlite the dialect
-                              + shadow, orm/migrations the migration model and tools, orm/cli the command as a
+                              + shadow, orm/sqlserver (go-mssqldb) and orm/postgres (pgx) the Level 4 dialects (ADR-0040),
+                              orm/migrations the migration model and tools, orm/cli the command as a
                               library, orm/internal/* the areas, orm/sample the fixture entities + migrations tree,
                               orm/internal/conformance one runner per folder; CODING-STANDARD.md §10 the only list
                               of Go divergences
@@ -268,6 +272,8 @@ Not in Level 3: lazy proxies (permanent), caching/observability, savepoints, rea
 **Session state (2026-10-16, ADR-0037):** **Level 3 M3 is done in C#, PHP, and Go** (detach/merge; the declared hooks `[CreatedAt]`/`[UpdatedAt]`/`[SoftDelete]` with `DbOptions.Clock`; `spec/hooks.md`; `hook-cases` + `merge-cases`; migration V0011 in all three sample trees; the AST/CRUD/tracking/flush pins changed where `is_deleted` and the stamp appear). The ports' 13 + 16 gaps drove six reference alignments (failure paths put the stamp/flag/fill back; `MAP-026` everywhere incl. non-table sources and owned members; builder hooks; assembler-level validation); the review found four PHP bugs. C# 380 passed / 22 skipped, PHP 575, Go ok. (M4 was then skipped, ADR-0038.)
 
 **Session state (2026-10-16, ADR-0038):** **M4 skipped by owner ruling; Level 3 M5 is done in C#, PHP, and Go** (`[RenamedFrom]` as a declared rename the generator reads — permanent and harmless once applied; `[Draft]` + `diff --draft`; `MIG-013` refuses a pending draft whole-plan in `migrate`/`baseline`, `status` reports `Draft`, `shadow`/`--amend` keep working; `MAP-027`; `spec/migrations.md` "Draft migrations"; `diff-cases` `renamed_from_*`, `migrations-cases/draft_refuses_to_apply`; fixture `Role.Name` declares `name`). The ports' 13 + 15 gaps drove six reference fixes (duplicate declarations crashed the generator; a still-mapped old column was a rename; a pending draft was not pending; `--amend` dropped the marker; `shadow` refused drafts; owned/non-table declarations passed); the review found five port bugs and pinned one emitted order. C# 390 passed / 22 skipped, PHP 614, Go ok. **Next: the Level 3 exit (M6) — only when the owner says so.**
+
+**Session state (2026-10-17, ADR-0040):** **the SQL Server and PostgreSQL dialects exist in PHP and Go** at the reference's runtime-first scope, built by the porting method from the new `spec/dialects.md` (the seam member by member, every rendering of the three dialects, the temporal marker rule per dialect, array parameters and native binding for drivers without typed parameters, the live-testing contract `SIMPLEORM_POSTGRES`/`SIMPLEORM_SQLSERVER`, the shared deferred list). Go drivers owner-approved: `github.com/microsoft/go-mssqldb` v1.11.2, `github.com/jackc/pgx/v5` v5.11.0 (stdlib; a package-local connector rewrites `@name`→`$n`); PHP uses the `pdo_pgsql` / `pdo_sqlsrv`-or-`pdo_odbc` extensions. New optional Go capability `core.TemporalMarkers` (VAL-020 by column type — `time.Time` has no Kind); PHP binds arrays as a PostgreSQL array literal and reads generated keys by position. The `ast/` runners of both ports render every case through every shipped dialect. **Three reference deviations found and fixed in C#**: an unpaged subquery's `ORDER BY` (illegal on SQL Server; `ast/level2/subselect_unpaged_ordered`), `nvarchar(max)` on indexed columns in SQL Server `CREATE TABLE`, `DropIndex`/view actions bypassing the seam. Live: PostgreSQL 16.4 green in PHP (24 tests) and Go (23); the SQL Server legs (16 PHP, 22 Go) are written and skip — no engine here, LocalDB unreachable from go-mssqldb. 42 gaps → `spec/dialects.md` Clarifications. Still SQLite-only everywhere: snapshot/shadow/diff/force-sync. C# 409 passed / 10 skipped, PHP 777 (16 skipped), Go ok. **Next: the new-language ports (Rust first) — only when the owner says so.**
 
 **Session state (2026-10-17, ADR-0039):** **Level 3 is closed** — the exit audit (one agent, `spec/` + `conformance/` only, designing a Python port) listed 32 gaps; all are Clarifications now (`spec/session.md` "The step scripts" states the step-script grammar, values, the fixture's property/navigation names, the fixture database — no FK constraints — and the recorder seam; `unit-of-work.md`/`hooks.md`/`migrations.md` blocks; registry rows widened; both READMEs re-indexed). Found and fixed: the reference's type rank was a discovery sequence (now the depth both ports computed; `flush-cases/unrelated_types_interleave_in_schedule_order`), C# merge/refresh copied an owned type member-wise (now whole, as the ports; `merge-cases/merge_and_refresh_apply_the_owned_rule`, `value` may name an owned navigation), PHP `--amend` read the draft marker from the class instead of the root file (`amend-cases/diff_draft_marks_the_root` + `amend_keeps_the_draft_marker`, `command.draft`/`files[].draft`, token `DRAFT`), `draft_refuses_to_apply` pins atomicity. Benchmarks: `TrackingBenchmarks` added; the dirty sweep's label strings cached (allocation −90%); DbBatch not adopted. C# 394 passed / 22 skipped, PHP 618, Go ok. **Next: the new-language ports (Rust first) — only when the owner says so.**
 

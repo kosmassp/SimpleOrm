@@ -153,4 +153,26 @@ public sealed class PostgresDialectTests
     [InlineData("text", typeof(int), false)]
     public void Declared_type_compatibility_is_strict(string declared, Type clr, bool compatible)
         => Assert.Equal(compatible, Dialect.IsDeclaredTypeCompatible(declared, clr, enumAsInt: false));
+
+    [Fact]
+    public void Introspection_queries_take_the_relation_and_name_their_result_columns()
+    {
+        // The spec's names on every non-SQLite dialect (spec/dialects.md "Introspection result
+        // shapes"), so the ports may read by name while the reference reads by ordinal.
+        foreach (var alias in new[] { "as name", "as type", "as \"notnull\"", "as pk" })
+        {
+            Assert.Contains(alias, Dialect.ColumnsInfoSql, StringComparison.Ordinal);
+        }
+
+        foreach (var alias in new[] { "as index_name", "as \"unique\"", "as seqno", "as \"column\"", "as \"desc\"" })
+        {
+            Assert.Contains(alias, Dialect.IndexesInfoSql, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("as definition", Dialect.ViewDefinitionSql, StringComparison.Ordinal);
+        foreach (var sql in new[] { Dialect.ColumnsInfoSql, Dialect.IndexesInfoSql, Dialect.ViewDefinitionSql })
+        {
+            Assert.Contains("to_regclass(@relation)", sql, StringComparison.Ordinal);
+        }
+    }
 }

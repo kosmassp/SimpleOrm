@@ -389,7 +389,7 @@ func (a *TableActions) CreateIndexes() *MigrationAction {
 
 // DropIndex drops an index by name.
 func (a *TableActions) DropIndex(name string) *MigrationAction {
-	return a.track(&a.removes, newAction("drop index "+name, []string{"drop index " + name}))
+	return a.track(&a.removes, newAction("drop index "+name, []string{a.dialect.DropIndexSQL(a.table, name)}))
 }
 
 // SQL is the raw-SQL escape hatch; it runs after the ordered groups.
@@ -439,12 +439,12 @@ func (a *ViewActions) CreateView() *MigrationAction {
 
 // DropView drops the view.
 func (a *ViewActions) DropView() *MigrationAction {
-	return a.track(newAction("drop "+a.view, []string{"drop view " + a.view}))
+	return a.track(newAction("drop "+a.view, []string{"drop view " + a.dialect.QuoteIdentifier(a.view)}))
 }
 
 // RecreateView drops (if present) and re-creates the view from its current defining SQL.
 func (a *ViewActions) RecreateView() *MigrationAction {
-	statements := append([]string{"drop view if exists " + a.view}, a.dialect.CreateViewSQL(a.entityMap))
+	statements := append([]string{"drop view if exists " + a.dialect.QuoteIdentifier(a.view)}, a.dialect.CreateViewSQL(a.entityMap))
 	statements = append(statements, a.dialect.CreateIndexSQL(a.entityMap)...)
 	return a.track(newAction("recreate "+a.view, statements))
 }

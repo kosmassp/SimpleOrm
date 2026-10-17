@@ -253,7 +253,7 @@ final class Db
         $parameters = [];
         $bindParameter = static function (mixed $value, ?PropertyMap $property) use (&$parameters, $converter, $queryName): string {
             $name = 'c' . count($parameters);
-            $parameters[$name] = $converter->toDatabase($value, "{$queryName} @{$name}", $property?->enumAsInt() ?? false);
+            $parameters[$name] = $converter->toDatabase($value, "{$queryName} @{$name}", $property?->enumAsInt() ?? false, $property?->type);
 
             return '@' . $name;
         };
@@ -386,7 +386,7 @@ final class Db
         $parameters = [];
         foreach ($keyValues as $i => $value) {
             $predicates[] = $dialect->quoteIdentifier($map->keyProperties[$i]->columnName) . " = :k{$i}";
-            $parameters["k{$i}"] = $this->converter->toDatabase($value, "{$map->entityName()} key[{$i}]");
+            $parameters["k{$i}"] = $this->converter->toDatabase($value, "{$map->entityName()} key[{$i}]", type: $map->keyProperties[$i]->type);
         }
 
         $sql = 'select ' . implode(', ', array_map(
@@ -828,15 +828,24 @@ final class Db
                 $property->getValue($entity),
                 "{$map->entityName()}.{$property->propertyName()}",
                 $property->enumAsInt(),
+                $property->type,
             );
         }
 
         PdoBinder::bindAndExecute($statement, $parameters);
 
         if ($map->keyStrategy === KeyStrategy::DatabaseGenerated) {
-            $row = $statement->fetch(PDO::FETCH_ASSOC);
+            // The key is column 0 of the first result that has columns: `returning` yields it first on SQLite and
+            // PostgreSQL; SQL Server's unnamed `scope_identity()` scalar follows the insert's own row-count result
+            // as the batch's next rowset (spec/dialects.md "Generated keys").
+            while ($statement->columnCount() === 0 && $statement->nextRowset()) {
+                // advance to the rowset that carries the key
+            }
+
+            $row = $statement->fetch(PDO::FETCH_NUM);
+            $statement->closeCursor();
             $keyProperty = $map->keyProperties[0];
-            $generated = is_array($row) ? ($row[$keyProperty->columnName] ?? null) : null;
+            $generated = is_array($row) ? ($row[0] ?? null) : null;
             $keyProperty->setValue($entity, $this->converter->fromDatabase(
                 $generated,
                 $keyProperty->type,
@@ -1047,6 +1056,7 @@ final class Db
                 $property->getValue($entity),
                 "{$map->entityName()}.{$property->propertyName()}",
                 $property->enumAsInt(),
+                $property->type,
             );
         }
 
@@ -1112,6 +1122,7 @@ final class Db
                 $parameters[$key->columnName] = $this->converter->toDatabase(
                     $key->getValue($keyOrEntity),
                     "{$map->entityName()}.{$key->propertyName()}",
+                    type: $key->type,
                 );
             }
 
@@ -1120,6 +1131,7 @@ final class Db
                 $parameters[$version->columnName] = $this->converter->toDatabase(
                     $version->getValue($keyOrEntity),
                     "{$map->entityName()}.{$version->propertyName()}",
+                    type: $version->type,
                 );
             }
         } else {
@@ -1128,6 +1140,7 @@ final class Db
                 $parameters[$map->keyProperties[$i]->columnName] = $this->converter->toDatabase(
                     $value,
                     "{$map->entityName()} key[{$i}]",
+                    type: $map->keyProperties[$i]->type,
                 );
             }
         }

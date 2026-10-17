@@ -113,6 +113,33 @@ final class SchemaGuard
     }
 
     /**
+     * PostgreSQL aborts the surrounding transaction on any statement error — a refused `prepare` or `execute` would
+     * fail everything validated after it with "current transaction is aborted" — so every statement described
+     * (a registry entry's or a statement entity's) runs under its own savepoint there, inside
+     * {@see self::validateStatement()} so no caller can forget it (CODING-STANDARD §10; the Go port keeps the same
+     * savepoint inside its describer). SQLite and SQL Server keep the transaction usable after an error and need
+     * none (SQL Server's savepoint syntax differs anyway).
+     */
+    private static function openSavepoint(PDO $connection): bool
+    {
+        if ($connection->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'pgsql') {
+            return false;
+        }
+
+        $connection->exec('savepoint simpleorm_shield');
+
+        return true;
+    }
+
+    private static function closeSavepoint(PDO $connection, bool $opened): void
+    {
+        if ($opened) {
+            $connection->exec('rollback to savepoint simpleorm_shield');
+            $connection->exec('release savepoint simpleorm_shield');
+        }
+    }
+
+    /**
      * Throws {@see SchemaValidationException} when {@see self::report()} is
      * non-empty.
      *
@@ -171,8 +198,33 @@ final class SchemaGuard
 
     // --- statements (registry queries/commands and statement entities) -------------
 
-    /** @param array<string, array<string, array{0: string, 1: bool}>> $columnsCache */
+    /**
+     * One statement check (§7.19), shared by registry entries and statement-backed entities; the describing runs
+     * under the PostgreSQL savepoint ({@see self::openSavepoint()}) so one unparseable statement never poisons the
+     * shield transaction for the next.
+     *
+     * @param array<string, array<string, array{0: string, 1: bool}>> $columnsCache
+     */
     private static function validateStatement(
+        Db $db,
+        PDO $connection,
+        array &$columnsCache,
+        string $source,
+        string $sql,
+        ?string $argsType,
+        ?string $resultType,
+        array &$errors,
+    ): void {
+        $savepoint = self::openSavepoint($connection);
+        try {
+            self::describeAndCheck($db, $connection, $columnsCache, $source, $sql, $argsType, $resultType, $errors);
+        } finally {
+            self::closeSavepoint($connection, $savepoint);
+        }
+    }
+
+    /** @param array<string, array<string, array{0: string, 1: bool}>> $columnsCache */
+    private static function describeAndCheck(
         Db $db,
         PDO $connection,
         array &$columnsCache,

@@ -194,6 +194,8 @@ public static class AnsiSelectRenderer
                         $"subquery membership compares {c.Properties.Count} propert{(c.Properties.Count == 1 ? "y" : "ies")} against a subquery projecting {subqueryWidth} column(s)");
                 }
 
+                var subquery = SubqueryFor(c.Subquery, dialect);
+
                 if (c.Properties.Count > 1 && !dialect.SupportsRowValueIn)
                 {
                     // No row-value IN (ADR-0024): the same subquery becomes a
@@ -201,7 +203,7 @@ public static class AnsiSelectRenderer
                     // the aliased root — identical rows match, identical
                     // parameter order (the subquery still binds inline, here).
                     var projected = c.Subquery.Projection ?? c.Subquery.Map.Properties;
-                    return "exists (select 1 from (" + dialect.SelectSql(c.Subquery, bind) + ") s where "
+                    return "exists (select 1 from (" + dialect.SelectSql(subquery, bind) + ") s where "
                         + string.Join(" and ", c.Properties.Select((p, i) =>
                             "s." + dialect.QuoteIdentifier(projected[i].ColumnName)
                             + " = " + Column(map, rootAlias, p, queryName, dialect)))
@@ -211,7 +213,7 @@ public static class AnsiSelectRenderer
                 var lhs = c.Properties.Count == 1
                     ? Column(map, rootAlias, c.Properties[0], queryName, dialect)
                     : "(" + string.Join(", ", c.Properties.Select(p => Column(map, rootAlias, p, queryName, dialect))) + ")";
-                return lhs + " in (" + dialect.SelectSql(c.Subquery, bind) + ")";
+                return lhs + " in (" + dialect.SelectSql(subquery, bind) + ")";
             }
 
             case Criteria.NullCheck c:
@@ -231,6 +233,19 @@ public static class AnsiSelectRenderer
                 throw new ArgumentOutOfRangeException(nameof(criteria));
         }
     }
+
+    /// <summary>
+    /// The nested select as the dialect can run it. Where the paging clause
+    /// requires ORDER BY (SQL Server), ORDER BY in turn is illegal in a subquery
+    /// without paging (error 1033), so an unpaged subquery's orderings are
+    /// omitted there — membership is order-insensitive, nothing observable
+    /// changes (spec/query-ast.md "Subquery membership"). A paged subquery keeps
+    /// them: the page needs them.
+    /// </summary>
+    private static SelectAst SubqueryFor(SelectAst subquery, IDialect dialect)
+        => dialect.PagingRequiresOrderBy && subquery.Limit is null && subquery.Offset is null && subquery.Orderings.Count > 0
+            ? new SelectAst(subquery.Map, subquery.Where, [], null, null, subquery.Projection, subquery.Joins)
+            : subquery;
 
     private static string Column(EntityMap map, string? rootAlias, string property, string queryName, IDialect dialect)
     {

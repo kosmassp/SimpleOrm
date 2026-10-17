@@ -36,14 +36,14 @@ final class ViewActions
 
     public function dropView(): MigrationAction
     {
-        return $this->track(new MigrationAction('drop ' . $this->view(), ['drop view ' . $this->view()]));
+        return $this->track(new MigrationAction('drop ' . $this->view(), ['drop view ' . $this->dialect->quoteIdentifier($this->view())]));
     }
 
     /** Drops (if present) and re-creates from the current defining SQL. */
     public function recreateView(): MigrationAction
     {
         $statements = [
-            'drop view if exists ' . $this->view(),
+            'drop view if exists ' . $this->dialect->quoteIdentifier($this->view()),
             $this->dialect->createViewSql($this->map),
             ...$this->dialect->createIndexSql($this->map),
         ];

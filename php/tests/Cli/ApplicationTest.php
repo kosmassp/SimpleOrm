@@ -158,9 +158,9 @@ final class ApplicationTest extends TestCase
     }
 
     #[Test]
-    public function an_unknown_dialect_refuses_naming_adr_0026(): void
+    public function an_unknown_dialect_refuses(): void
     {
-        [$exit] = $this->exec(['migrate', '--dialect', 'postgres']);
+        [$exit] = $this->exec(['migrate', '--dialect', 'mysql']);
 
         self::assertSame(1, $exit);
     }

@@ -20,6 +20,7 @@ passes the same files (ADR-0031, ADR-0034).
 | `loading.md` | relationship loading: explicit, batch, and the three eager fetch modes | 2 |
 | `unit-of-work.md` | `Persist`/`Remove`/`Flush`, order of writes, declared cascades; detach and merge | 3 |
 | `hooks.md` | declared hooks: created-at, updated-at, soft delete; the session clock | 3 |
+| `dialects.md` | the dialect seam member by member; the SQLite, SQL Server, and PostgreSQL realizations: capability flags, paging, generated keys, DDL, migration actions, the run lock, storage types, declared-type compatibility, temporals, array parameters, introspection shapes, the live-testing contract | 1, 4 (dialects pulled forward by ADR-0024/0025) |
 
 Rules:
 

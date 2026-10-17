@@ -59,7 +59,7 @@ final class TypeConverter
             ColumnType::Bool => $this->toBool($value),
             ColumnType::String => (string) $value,
             ColumnType::Guid => $this->toGuid($value, $context),
-            ColumnType::Bytes => (string) $value,
+            ColumnType::Bytes => is_resource($value) ? (string) stream_get_contents($value) : (string) $value,   // pdo_pgsql returns bytea as a stream
             ColumnType::DateTime => $this->toUtcDateTime($value, $context),
             ColumnType::DateTimeOffset => $this->toOffsetDateTime($value, $context),
             ColumnType::Date => $this->toDate($value, $context),
@@ -73,9 +73,13 @@ final class TypeConverter
     /**
      * PHP value → database value (§7.9 storage conventions). Handlers win;
      * unknown types are `MAP-030`. `$enumAsInt` reflects the mapped column's
-     * `#[EnumAsInt]` flag.
+     * `#[EnumAsInt]` flag; `$type` is the mapped column's neutral token where the
+     * caller has one (a `PropertyMap`), which decides a `DateTimeImmutable`'s
+     * storage form — the reference tells `DateOnly`/`TimeOnly`/`DateTimeOffset`
+     * apart by type, PHP only by the declared token (CODING-STANDARD §10). A
+     * value with no token (a registered query's argument) follows the datetime rule.
      */
-    public function toDatabase(mixed $value, string $context, bool $enumAsInt = false): mixed
+    public function toDatabase(mixed $value, string $context, bool $enumAsInt = false, ?ColumnType $type = null): mixed
     {
         if ($value === null) {
             return null;
@@ -94,7 +98,7 @@ final class TypeConverter
         }
 
         if ($value instanceof DateTimeImmutable) {
-            return $this->formatTemporal($value);
+            return $this->formatTemporal($value, $type);
         }
 
         if ($value instanceof Decimal) {
@@ -117,18 +121,37 @@ final class TypeConverter
     }
 
     /**
-     * ISO-8601 UTC with seven fractional digits and a trailing Z, exactly like
-     * C#'s `"o"` format for `Kind == Utc`. A non-UTC zone converts first — PHP's
-     * `DateTimeImmutable` always carries a real zone, so the write-side
-     * `Kind == Unspecified` refusal (VAL-020) has no PHP counterpart.
+     * The storage form per token, each the C# `"o"`/`"O"` shape (seven fractional digits):
+     *
+     * - `datetime` (and no token): ISO-8601 UTC with a trailing `Z`; a non-UTC zone converts
+     *   first — PHP's `DateTimeImmutable` always carries a real zone, so the write-side
+     *   `Kind == Unspecified` refusal (VAL-020) has no PHP counterpart. Under
+     *   `bindsTemporalsNatively` the UTC instant itself is handed on (`PdoBinder` sends its text).
+     * - `datetimeoffset`: the value's own offset kept (`+02:00`, `+00:00` for UTC — never `Z`),
+     *   as the reference keeps a `DateTimeOffset`; natively the UTC instant, as the reference's
+     *   `ToUniversalTime()`.
+     * - `date`: the value's **own calendar date** `Y-m-d` — converting the instant would shift
+     *   the date of a value held in another zone, and a `date` carries no zone (the Go port's
+     *   rule under native binding too).
+     * - `time`: the time of day `H:i:s.u0`. Both calendar forms are text whatever the binding
+     *   flag says: they carry no kind to refuse, and the database infers the parameter's type
+     *   from the comparison (spec/dialects.md "Temporals").
      */
-    private function formatTemporal(DateTimeImmutable $value): DateTimeImmutable|string
+    private function formatTemporal(DateTimeImmutable $value, ?ColumnType $type): DateTimeImmutable|string
     {
-        if ($this->bindsTemporalsNatively) {
-            return $value->getOffset() === 0 ? $value : $value->setTimezone(new DateTimeZone('UTC'));
-        }
+        return match ($type) {
+            ColumnType::Date => $value->format('Y-m-d'),
+            ColumnType::Time => $value->format('H:i:s.u') . '0',
+            ColumnType::DateTimeOffset => $this->bindsTemporalsNatively
+                ? self::toUtc($value)
+                : $value->format('Y-m-d\TH:i:s.u') . '0' . $value->format('P'),
+            default => $this->bindsTemporalsNatively ? self::toUtc($value) : Iso8601::format($value),
+        };
+    }
 
-        return Iso8601::format($value);
+    private static function toUtc(DateTimeImmutable $value): DateTimeImmutable
+    {
+        return $value->getOffset() === 0 ? $value : $value->setTimezone(new DateTimeZone('UTC'));
     }
 
     private function toInt(mixed $value, ColumnType $type, string $context): int
@@ -251,8 +274,11 @@ final class TypeConverter
             throw self::conversionFailed($value, 'datetime', $context);
         }
 
+        // The marker is a trailing Z or an explicit offset — ISO-8601 `+hh:mm`, and the
+        // forms the provider drivers spell (spec/dialects.md "Temporals"): PostgreSQL's
+        // `+07` without minutes, SQL Server's ` +00:00` after a space, `+0700`.
         $trimmed = rtrim($value);
-        $hasMarker = str_ends_with(strtoupper($trimmed), 'Z') || preg_match('/[+-]\d{2}:\d{2}$/', $trimmed) === 1;
+        $hasMarker = str_ends_with(strtoupper($trimmed), 'Z') || preg_match('/ ?[+-]\d{2}(:?\d{2})?$/', $trimmed) === 1;
         if (!$hasMarker) {
             throw new SimpleOrmException(
                 'VAL-020',
@@ -278,13 +304,20 @@ final class TypeConverter
         return $parsed;
     }
 
+    /** `HH:mm:ss` with optional fractional seconds — SQLite stores none, SQL Server and PostgreSQL report up to seven digits. */
     private function toTime(mixed $value, string $context): DateTimeImmutable
     {
         if (!is_string($value)) {
             throw self::conversionFailed($value, 'time', $context);
         }
 
-        $parsed = DateTimeImmutable::createFromFormat('!H:i:s', trim($value));
+        $text = trim($value);
+        $dot = strpos($text, '.');
+        if ($dot !== false) {
+            $text = substr($text, 0, $dot + 1) . str_pad(substr(substr($text, $dot + 1), 0, 6), 6, '0');   // PHP's `u` takes exactly six digits
+        }
+
+        $parsed = DateTimeImmutable::createFromFormat($dot === false ? '!H:i:s' : '!H:i:s.u', $text);
         if ($parsed === false) {
             throw self::conversionFailed($value, 'time', $context);
         }

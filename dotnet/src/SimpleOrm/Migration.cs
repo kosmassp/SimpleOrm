@@ -381,7 +381,7 @@ public sealed class TableActions
         => Track(_adds, new MigrationAction("indexes " + Table, _dialect.CreateIndexSql(_map)));
 
     public MigrationAction DropIndex(string name)
-        => Track(_removes, new MigrationAction("drop index " + name, ["drop index " + name]));
+        => Track(_removes, new MigrationAction("drop index " + name, [_dialect.DropIndexSql(Table, name)]));
 
     /// <summary>Raw SQL escape hatch; runs after the ordered groups.</summary>
     public MigrationAction Sql(string sql)
@@ -422,12 +422,12 @@ public sealed class ViewActions
     }
 
     public MigrationAction DropView()
-        => Track(new MigrationAction("drop " + View, ["drop view " + View]));
+        => Track(new MigrationAction("drop " + View, ["drop view " + _dialect.QuoteIdentifier(View)]));
 
     /// <summary>Drops (if present) and re-creates from the current defining SQL.</summary>
     public MigrationAction RecreateView()
     {
-        var statements = new List<string> { "drop view if exists " + View, _dialect.CreateViewSql(_map) };
+        var statements = new List<string> { "drop view if exists " + _dialect.QuoteIdentifier(View), _dialect.CreateViewSql(_map) };
         statements.AddRange(_dialect.CreateIndexSql(_map));
         return Track(new MigrationAction("recreate " + View, statements));
     }

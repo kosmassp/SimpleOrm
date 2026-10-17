@@ -210,7 +210,12 @@ as a row value when more than one, `in (select …)` over a nested select that
 names its own entity and whose projection has the same arity. The subquery
 renders through the same renderer with the same bind function — its
 placeholders continue the outer numbering in render order — and keeps its
-own predicates, orderings, and paging.
+own predicates, orderings, and paging. One dialect exception: where the paging
+clause requires ORDER BY (`PagingRequiresOrderBy`, SQL Server), ORDER BY is in
+turn illegal inside a subquery that has no paging (error 1033), so an
+**unpaged** subquery's orderings are omitted there — membership is
+order-insensitive, the rows are the same; a paged subquery keeps them
+(`conformance/ast/level2/subselect_unpaged_ordered.json` pins both).
 
 ```json
 { "op": "in_select", "properties": ["UserId"],

@@ -1,6 +1,6 @@
 # SimpleOrm — PHP port
 
-The PHP implementation of the SimpleOrm spec, **Levels 0–2** (ADR-0026 for the
+The PHP implementation of the SimpleOrm spec, **Levels 0–3** (ADR-0026 for the
 mapper, the micro-ORM with generated CRUD, the ADR-0012 criteria core,
 SchemaGuard, and code migrations with the diff generator; ADR-0033 for
 relationships: explicit/batch loading, the Level 2 query AST, and eager loading
@@ -10,7 +10,9 @@ and it is correct when it passes the same conformance files unchanged.
 
 Requirements: PHP 8.4 with `pdo_sqlite` (Laragon ships the extension DLL; the
 Composer scripts load it with `-d extension=pdo_sqlite`, so no `php.ini` change
-is needed), Composer.
+is needed), Composer. The SQL Server and PostgreSQL dialects need `pdo_sqlsrv`
+(or `pdo_odbc`) and `pdo_pgsql` respectively — only when you use them; see
+"Dialects" below.
 
 ```bash
 cd php
@@ -31,13 +33,15 @@ src/Mapping       TypeConverter, TypeHandler registry, ResultMapper, RowSegment 
 src/Parameters    SqlPlaceholders, ParameterBinder (@name → :name, IN-list expansion)
 src/Query         Criteria, SelectAst (+ SelectJoin/JoinPair, projection), AnsiSelectRenderer,
                   CriteriaQuery (include/fetch), FetchMode
-src/Dialect       Dialect (the seam, same members as C# IDialect), SqliteDialect
+src/Dialect       Dialect (the seam, same members as C# IDialect), SqliteDialect, SqlServerDialect,
+                  PostgresDialect, Dialects (the name → dialect registry behind --dialect)
 src/Session       Db, DbOptions, transaction scope, Query/Command registry types, DbLoading and
                   DbEagerJoin (the loading engines), KeyTuple, the Navigations trait
 src/Migrations    versions, steps, actions, runner, snapshots, derived downs, generator, sync
 src/Validation    SchemaGuard
 src/Cli           the simpleorm command
 tests/Sample      the fixture entities (mirror dotnet/samples)
+tests/Dialect     the SQL Server and PostgreSQL dialect tests; *LiveTest.php are the live legs
 tests/Conformance one data-driven runner per conformance folder
 tests/Samples     drives samples/SimpleOrm.Sample the way dotnet/tests drive the C# sample
 samples/SimpleOrm.Sample
@@ -184,8 +188,10 @@ discovered under (via `ClassScanner`). Migrations default to `<src>/Migrations`
 under `<Ns>\Migrations` — override either with `--migrations`/
 `--migrations-namespace` when they live elsewhere. Snapshots default to the
 migrations directory (`--snapshots` for `migrate down`; `--out` for
-`snapshot`/`diff`/`shadow`). `--db` is a bare SQLite path, a `sqlite:` DSN, or
-`Data Source=...`; `--dialect` accepts only `sqlite` today (ADR-0026).
+`snapshot`/`diff`/`shadow`). `--db` is the dialect's native connection string — for
+SQLite a bare path, a `sqlite:` DSN, or `Data Source=...`; `--dialect
+sqlite|sqlserver|postgres` (default `sqlite`) picks the dialect for every database
+command, and `shadow` accepts SQLite only.
 
 ```bash
 php bin/simpleorm migrate --src src --namespace 'App' --db app.db
@@ -196,3 +202,31 @@ php bin/simpleorm diff --src src --namespace 'App' --name AddNote
 php bin/simpleorm diff --src src --namespace 'App' --name AddNote --draft
 php bin/simpleorm shadow --src src --namespace 'App' --from V0001 --to V0003
 ```
+
+## Dialects
+
+Three dialects ship in `SimpleOrm\Dialect` (spec/dialects.md): `SqliteDialect`
+(the reference rendering), `SqlServerDialect` (ADR-0024) and `PostgresDialect`
+(ADR-0025). Each takes its PDO driver's native DSN verbatim:
+
+```php
+new DbOptions(new SqliteDialect());      // 'app.db', 'sqlite:app.db', or 'Data Source=app.db'
+new DbOptions(new SqlServerDialect());   // 'sqlsrv:Server=host;Database=app;Encrypt=no' or an 'odbc:…' DSN (pdo_sqlsrv / pdo_odbc)
+new DbOptions(new PostgresDialect());    // 'pgsql:host=localhost;port=5432;dbname=app;user=app;password=…' (pdo_pgsql)
+```
+
+The two non-SQLite dialects are **runtime-first**: the session, generated CRUD,
+criteria queries, loading in every fetch mode, tracking, the unit of work, hooks,
+SchemaGuard, and the migration runner with the dialect's run lock (`sp_getapplock`
+/ `pg_advisory_xact_lock`) all work. The snapshot, shadow, diff, and force-sync
+tooling stays SQLite-only, so a rollback there needs a `Down()` override
+(`MIG-020` says so). On PostgreSQL a collection argument binds as one array
+parameter (`where id = any(:ids)`), and a legacy `timestamp without time zone` /
+`datetime2` column refuses `VAL-020` at read time unless a `TypeHandler` declares it.
+
+The live legs (`tests/Dialect/*LiveTest.php`) run against a real server and skip
+as a group where none answers: `composer test-live` loads `pdo_pgsql` and
+`pdo_odbc`; set `SIMPLEORM_POSTGRES` / `SIMPLEORM_SQLSERVER` to an admin DSN with
+the right to create databases (defaults: `localhost:5432` as `postgres`/`postgres`;
+LocalDB through `pdo_sqlsrv`). Each test creates and drops its own
+`simpleorm_test_<hex>` database.

@@ -95,6 +95,8 @@ type (
 	Dialect = core.Dialect
 	// StatementDescriber is the optional dialect capability SchemaGuard needs: describe a statement without executing it.
 	StatementDescriber = core.StatementDescriber
+	// TemporalMarkers is the optional dialect capability behind the VAL-020 read rule where the driver's temporals carry no marker (spec/dialects.md).
+	TemporalMarkers = core.TemporalMarkers
 	// ColumnDescription is one described result column.
 	ColumnDescription = core.ColumnDescription
 	// BindCriteriaParameter binds one criteria value and returns its placeholder.

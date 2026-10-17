@@ -193,3 +193,82 @@ func TestBind_RoundTripsAgainstARealSQLiteDatabase(t *testing.T) {
 		t.Errorf("the malicious-looking string binds as data, not SQL: got %q", storedName)
 	}
 }
+
+// arrayDialect is the capability the binder consults and nothing else: a dialect with real array
+// parameters (PostgreSQL), so the collection binds as one typed slice and the SQL stays untouched.
+type arrayDialect struct{ core.Dialect }
+
+func (arrayDialect) SupportsArrayParameters() bool { return true }
+
+type stringIdsArgs struct{ Ids []string }
+
+type decimalIdsArgs struct{ Ids []core.Decimal }
+
+type nullableIdsArgs struct{ Ids []*int64 }
+
+func TestBind_ArrayParametersBindOneTypedSliceAndLeaveTheSQLAlone(t *testing.T) {
+	sqlText := "select id from users where id = any(@Ids)"
+	bound, err := params.Bind(sqlText, idsArgs{Ids: []int64{1, 2, 3}}, newConverter(), arrayDialect{}, "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound.SQL != sqlText {
+		t.Errorf("SQL must be untouched, got %q", bound.SQL)
+	}
+	if len(bound.Args) != 1 {
+		t.Fatalf("expected one array argument, got %d", len(bound.Args))
+	}
+	arg := bound.Args[0].(sql.NamedArg)
+	if arg.Name != "Ids" {
+		t.Errorf("argument name %q", arg.Name)
+	}
+	ids, ok := arg.Value.([]int64)
+	if !ok || len(ids) != 3 || ids[0] != 1 || ids[2] != 3 {
+		t.Errorf("expected []int64{1,2,3}, got %#v", arg.Value)
+	}
+}
+
+func TestBind_AnEmptyCollectionBindsAnEmptySliceTypedByTheDeclaredElement(t *testing.T) {
+	bound, err := params.Bind("select id from users where id = any(@Ids)", idsArgs{Ids: []int64{}}, newConverter(), arrayDialect{}, "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, ok := bound.Args[0].(sql.NamedArg).Value.([]int64)
+	if !ok || len(ids) != 0 {
+		t.Errorf("expected an empty []int64, got %#v", bound.Args[0].(sql.NamedArg).Value)
+	}
+
+	// A nil collection is just as empty, and a string element types as []string.
+	bound, err = params.Bind("select id from users where name = any(@Ids)", stringIdsArgs{}, newConverter(), arrayDialect{}, "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names, ok := bound.Args[0].(sql.NamedArg).Value.([]string); !ok || len(names) != 0 {
+		t.Errorf("expected an empty []string, got %#v", bound.Args[0].(sql.NamedArg).Value)
+	}
+}
+
+func TestBind_ArrayElementsTypeByTheirConvertedForm(t *testing.T) {
+	// Decimals convert to invariant text, so both the filled and the empty array are []string.
+	for _, args := range []decimalIdsArgs{{Ids: []core.Decimal{core.MustDecimal("1.5")}}, {}} {
+		bound, err := params.Bind("select 1 where @Ids is not null", args, newConverter(), arrayDialect{}, "q")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := bound.Args[0].(sql.NamedArg).Value.([]string); !ok {
+			t.Errorf("expected []string, got %#v", bound.Args[0].(sql.NamedArg).Value)
+		}
+	}
+}
+
+func TestBind_ANullElementMakesTheSliceOfPointers(t *testing.T) {
+	one := int64(1)
+	bound, err := params.Bind("select 1 where @Ids is not null", nullableIdsArgs{Ids: []*int64{&one, nil}}, newConverter(), arrayDialect{}, "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, ok := bound.Args[0].(sql.NamedArg).Value.([]*int64)
+	if !ok || len(ids) != 2 || ids[0] == nil || *ids[0] != 1 || ids[1] != nil {
+		t.Errorf("expected []*int64{&1, nil}, got %#v", bound.Args[0].(sql.NamedArg).Value)
+	}
+}

@@ -407,7 +407,16 @@ func renderSubqueryMembership(
 		columns[i] = aliasQualifiedColumn(dialect, rootAlias, p.ColumnName)
 	}
 
-	subquerySQL, err := SelectSQL(dialect, c.Subquery, bind)
+	subquery := c.Subquery
+	if dialect.PagingRequiresOrderBy() && subquery.Limit == nil && subquery.Offset == nil && len(subquery.Orderings) > 0 {
+		// An ORDER BY inside a subquery is legal on SQL Server only with TOP/OFFSET (error 1033), and it
+		// means nothing to set membership: an unpaged subquery drops it there (SQLite/PostgreSQL keep the
+		// reference rendering). Orderings bind no parameters, so the numbering is untouched.
+		unordered := *subquery
+		unordered.Orderings = nil
+		subquery = &unordered
+	}
+	subquerySQL, err := SelectSQL(dialect, subquery, bind)
 	if err != nil {
 		return "", err
 	}

@@ -1,15 +1,19 @@
 # SimpleOrm — Go port
 
-The Go implementation of the SimpleOrm spec, **Levels 0–1** (CLAUDE.md §12: the
+The Go implementation of the SimpleOrm spec, **Levels 0–3** (CLAUDE.md §12: the
 first port covers the mapper, the micro-ORM with generated CRUD, the ADR-0012
 criteria core, SchemaGuard, and code migrations with the diff generator). It
 shares no code with the C# reference; it shares `../spec/` and `../conformance/`,
 and it is correct when it passes the same conformance files unchanged
 (ADR-0027).
 
-Requirements: Go 1.25+. The only runtime dependency is `modernc.org/sqlite`
-(pure Go, no cgo — the analog of `Microsoft.Data.Sqlite`/`pdo_sqlite`); tests
-use the standard `testing` package against real temp-file databases.
+Requirements: Go 1.25+. The runtime dependencies are one driver per dialect
+package — `modernc.org/sqlite` (pure Go, no cgo — the analog of
+`Microsoft.Data.Sqlite`/`pdo_sqlite`) for `orm/sqlite`, `github.com/microsoft/go-mssqldb`
+for `orm/sqlserver`, `github.com/jackc/pgx/v5` for `orm/postgres`; an application
+links only the dialects it imports. Tests use the standard `testing` package
+against real temp-file databases; the SQL Server and PostgreSQL legs run against a
+real server and skip where none answers (see "Dialects").
 
 ```bash
 cd go
@@ -23,6 +27,8 @@ orm/                    package orm — the session (Open, Query, Insert, Get, F
                         registry (Inline, Embedded, Registry), SchemaGuard (Validate), and
                         aliases of every contract: the one import application code needs
 orm/sqlite              the SQLite dialect (Dialect, New) and the shadow replayer (Shadow)
+orm/sqlserver           the SQL Server dialect over go-mssqldb (Dialect, New; sp_describe_first_result_set describer)
+orm/postgres            the PostgreSQL dialect over pgx (Dialect, New; the @name → $n connector, Prepare-based describer)
 orm/migrations          versions, steps, actions, runner, snapshots, derived downs, generator,
                         diff/amend, force sync (application code reaches it through orm's aliases)
 orm/cli                 the simpleorm command as a library: cli.Run(ctx, registry, args, out, err)
@@ -256,7 +262,38 @@ simpleorm shadow --out ./migrations --from V0006 --to V0009
 
 There is no `--assembly`: the registry *is* the application. `--package` (the
 migrations package's import path, for the code `diff` emits) defaults to the
-package of the registered versions; `--dialect` accepts only `sqlite` today.
+package of the registered versions; `--dialect sqlite|sqlserver|postgres`
+(default `sqlite`) picks the dialect for every database command — `--db` is then
+that driver's native connection string — and `shadow` accepts SQLite only.
+
+### Dialects
+
+Three dialects ship (spec/dialects.md): `sqlite.New()` (the reference rendering),
+`sqlserver.New()` (ADR-0024) and `postgres.New()` (ADR-0025). Each opens its
+driver's native connection string:
+
+```go
+orm.Open(ctx, "app.db", orm.Options{Dialect: sqlite.New()})
+orm.Open(ctx, "sqlserver://user:pass@host:1433?database=app", orm.Options{Dialect: sqlserver.New()}) // or an ADO-style server=…;database=… string
+orm.Open(ctx, "postgres://user:pass@localhost:5432/app", orm.Options{Dialect: postgres.New()})       // or a key/value DSN
+```
+
+The two non-SQLite dialects are **runtime-first**: the session, generated CRUD,
+criteria queries, loading in every fetch mode, tracking, the unit of work, hooks,
+SchemaGuard (each dialect describes statements through its driver), and the
+migration runner with the dialect's run lock (`sp_getapplock` /
+`pg_advisory_xact_lock`) all work. The snapshot, shadow, diff, and force-sync
+tooling stays SQLite-only, so a rollback there needs a `Down()` override
+(`MIG-020` says so). On PostgreSQL a slice argument binds as one typed array
+parameter (`where id = any(@Ids)`), and a legacy `timestamp without time zone` /
+`datetime2` column refuses `VAL-020` at read time unless a `TypeHandler` declares it.
+
+The live legs (`orm/sqlserver/live_test.go`, `orm/postgres/live_test.go`) run
+against a real server and skip as a group where none answers; set
+`SIMPLEORM_POSTGRES` / `SIMPLEORM_SQLSERVER` to an admin connection string with
+the right to create databases (defaults: `postgres://postgres:postgres@localhost:5432/postgres`;
+`sqlserver://localhost:1433?database=master&encrypt=disable` with integrated
+authentication). Each test creates and drops its own `simpleorm_test_<hex>` database.
 
 ### Draft migrations (Level 3 M5, ADR-0034)
 

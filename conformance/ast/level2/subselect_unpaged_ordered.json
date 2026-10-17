@@ -1,0 +1,16 @@
+{
+  "name": "subselect_unpaged_ordered",
+  "comment": "An unpaged subquery with orderings: SQLite and PostgreSQL render them as given; where paging requires ORDER BY (SQL Server) an ORDER BY without paging is illegal inside a subquery (error 1033), so the renderer omits an unpaged subquery's orderings there — membership is order-insensitive, the rows are the same. A paged subquery keeps them (subselect_membership.json).",
+  "entity": "Transaction",
+  "select": {
+    "where": [ { "op": "in_select", "properties": ["UserId"],
+                 "select": { "entity": "User", "projection": ["Id"],
+                             "where": [ { "op": "eq", "property": "Name", "value": "Ada" } ],
+                             "orderBy": [ { "property": "Name" } ] } } ],
+    "orderBy": [ { "property": "Id" } ]
+  },
+  "expect": {
+    "sqlite": { "sql": "select id, user_id, status, amount, version, note, created_at, updated_at from transactions where user_id in (select id from users where name = @c0 order by name) order by id", "parameters": ["Ada"] },
+    "sqlserver": { "sql": "select [id], [user_id], [status], [amount], [version], [note], [created_at], [updated_at] from [transactions] where [user_id] in (select [id] from [users] where [name] = @c0) order by [id]", "parameters": ["Ada"] },
+    "postgres": { "sql": "select \"id\", \"user_id\", \"status\", \"amount\", \"version\", \"note\", \"created_at\", \"updated_at\" from \"transactions\" where \"user_id\" in (select \"id\" from \"users\" where \"name\" = @c0 order by \"name\") order by \"id\"", "parameters": ["Ada"] } }
+}

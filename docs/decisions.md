@@ -2973,6 +2973,147 @@ first gap list already answered. Only when the owner says so.
 
 **Status.** Accepted. Level 3 closed in C#, PHP, and Go.
 
+## ADR-0040 — The Level 4 dialects reach the ports: SQL Server and PostgreSQL for PHP and Go, built from the spec alone (2026-10-17)
+
+Owner: give the PHP and Go ports the SQL Server and PostgreSQL dialects at the
+scope the reference has today (ADR-0024/0025, runtime-first), by the porting
+method (ADR-0026/0027/0031/0034: foundation contracts first, parallel Sonnet
+agents forbidden to read another implementation, a uniformity review, gaps
+resolved against the reference into spec Clarifications). Snapshot, shadow,
+diff, and force-sync tooling stays SQLite-only in every implementation — the
+reference has not done it either, and this ADR does not pretend otherwise.
+
+**The spec had no dialect document.** ADR-0024/0025 recorded the SQL Server and
+PostgreSQL decisions in prose and `conformance/ast/` pinned their SELECT
+renderings, but storage types, DDL guards, generated-key retrieval, the run-lock
+statements, the version-table DDL, the migration-action grammar, the `VAL-011`
+tables, the temporal marker rule per dialect, and the introspection result
+shapes lived only in `dotnet/`. A port forbidden to read `dotnet/` would have had
+to invent them. So the foundation of this pass is **`spec/dialects.md`** — the
+seam member by member, the capability-flag table, every rendering of the three
+realized dialects (the reference text given so implementations stay uniform
+rather than inventive; the `ast/` pins are what must match byte for byte), the
+array-parameter and native-temporal-binding contracts restated for drivers
+without typed parameters, the live-testing contract (`SIMPLEORM_POSTGRES` /
+`SIMPLEORM_SQLSERVER`, a `simpleorm_test_<hex>` database per fixture, skip as a
+group), and the shared deferred list. Beside it: a name→dialect registry in each
+port (`Dialects` in PHP, the `dialects`/`astDialects` maps in Go) that the CLI's
+`--dialect` and the `ast/` runners share — the runners now render every case
+through every shipped dialect and fail on a missing expectation, as the
+reference runner does; live-test fixtures that probe once per process; the PHP
+converter made tolerant of the drivers' temporal text (`+07`, ` +00:00`,
+fractional `time`) and `bytea` streams; and the Go `core.TemporalMarkers`
+optional capability (below).
+
+**Drivers** (CLAUDE.md §4, owner-approved 2026-10-17): Go `github.com/microsoft/go-mssqldb`
+v1.11.2 (Microsoft-maintained, pure Go, TDS over `database/sql`, Windows
+integrated authentication, `@name` parameters natively) and
+`github.com/jackc/pgx/v5` v5.11.0 through its `stdlib` adapter (pure Go, typed
+slices as array parameters, `Prepare` exposes field descriptions for
+SchemaGuard; `lib/pq` is in maintenance mode and has neither) — the module stays
+cgo-free, as ADR-0027 wanted. PHP needs no package: `pdo_pgsql` and
+`pdo_sqlsrv` (or `pdo_odbc` with the SQL Server ODBC driver) are extensions,
+listed under `composer.json` `suggest`; `composer test-live` loads them.
+
+**The shapes each language forced** (the §10 rows, in one paragraph each):
+
+- *PHP.* PDO sends every parameter untyped and binds no arrays and no objects,
+  so `SupportsArrayParameters` is realized as **one PostgreSQL array literal**
+  under `PARAM_STR` (`Parameters\PostgresArrayLiteral`: every string
+  double-quoted and backslash-escaped, numbers bare, `NULL`, `{}`; PostgreSQL
+  infers the array type from the comparison), and `BindsTemporalsNatively`
+  changes nothing observable — the converter hands back the UTC
+  `DateTimeImmutable`, the binder sends the ISO-8601 string, and
+  `timestamptz >= text` never arises because the parameter is untyped. The
+  marker rule is judged on the value's text (PDO returns every temporal as a
+  string). The generated key is read by **position** from the first result set
+  that has columns (`Db::runInsert` advances with `nextRowset()` — SQL Server's
+  `scope_identity()` scalar is unnamed and follows the insert's row-count
+  result). SchemaGuard's shield runs each registry entry under a **savepoint**
+  on PostgreSQL, which aborts the whole transaction on any error. The run lock
+  opens with a raw `BEGIN` because the runner closes with raw `COMMIT`/`ROLLBACK`.
+  `SqlServerDialect` takes a `sqlsrv:` or `odbc:` DSN verbatim and never
+  emulates prepares.
+- *Go.* pgx's `database/sql` adapter accepts only `$n` positionals, so
+  `orm/postgres` wraps the connector in a package-local `driver.Connector` that
+  **rewrites `@name` to `$n`** (through the port's placeholder scanner, so
+  literals and comments are untouched) — the seam gains no member for it.
+  `DescribeStatement` prepares the unnamed server statement and resolves names
+  with one catalog query (PostgreSQL) or runs
+  `sp_describe_first_result_set … @browse_information_mode = 1` with parameter
+  types from `sp_describe_undeclared_parameters` (SQL Server). A Go `time.Time`
+  always carries a location, so a driver-native temporal has no "unspecified"
+  state: the new optional capability **`core.TemporalMarkers`** lets the dialect
+  judge a column's driver-reported type name, and the result mapper refuses a
+  markerless column read into a temporal property with `VAL-020` on every
+  materializing path (query, get, criteria, scalar, DTO, join segments) — the
+  marker lives in the column type, not the value. Array parameters bind as
+  **typed slices** (an empty collection typed from the declared element type);
+  go-mssqldb returns decimals as ASCII bytes (`toDecimal` accepts `[]byte`);
+  under native binding `time` stays text (pgx cannot encode `time.Time` for a
+  `time` parameter) and `date` binds as the calendar date.
+
+**Reference deviations the ports surfaced — fixed in C# and matched everywhere:**
+
+1. An unpaged subquery kept its `ORDER BY`. SQL Server rejects `ORDER BY` in a
+   subquery without `TOP`/`OFFSET` (error 1033), so an ordered, unpaged
+   SubSelect root could never have run there; where `PagingRequiresOrderBy` the
+   renderer now omits an unpaged subquery's orderings (membership is
+   order-insensitive). Pinned on all three dialects by
+   `conformance/ast/level2/subselect_unpaged_ordered.json`.
+2. SQL Server `CreateTableSql` rendered `nvarchar(max)` for `users.email` and
+   `roles.role_name`, which the sample declares unique indexes on — not
+   indexable (error 1919), so the reference's own live `OpenAsync` would have
+   failed on a working engine. `CREATE TABLE` now gives string and bytes
+   columns of a declared index the indexable `(450)` length; `StorageType`
+   keeps the key-only rule (snapshots and diff are SQLite-only there anyway).
+3. `TableActions.DropIndex` bypassed the seam (`"drop index " + name` while
+   ADR-0024 added `DropIndexSql` for exactly this), and the view actions wrote
+   the view name unquoted — `drop view order` fails on SQL Server. Both now
+   render through the dialect, SQLite byte-identical (checksums untouched).
+
+None of the three was reachable by the SQLite suite, and the SQL Server live
+suite has never run on a working engine (ADR-0024's LocalDB caveat still holds
+on this machine). Two ports built from the spec found them in an afternoon.
+
+**Review alignment.** The uniformity review (one agent over the whole tree, this time allowed to read the reference) found every seam member of the four dialects byte-identical to C#; made introspection aliasing one rule in all three implementations (the reference's SQL Server and PostgreSQL queries alias their result columns too now, pinned by unit tests everywhere); moved PHP's pgsql savepoint inside `validateStatement` so statement-backed entities are covered like registry entries; found a **pre-existing PHP Level 1 bug** — `date`/`time`/`datetimeoffset` tokens were written as a full UTC `datetime` (unreadable back on SQLite, refused by a PostgreSQL `time` column, the offset lost) — fixed by passing the token to `toDatabase`, which also made the two ports agree on the calendar rule (Clarification 5); added the fetch-mode-parity and lock-exclusivity live tests to both ports; probed `to_regclass('order')` live and retired the quoting worry; merged the §10 rows and wrote the READMEs' dialect sections.
+
+**Conformance.** `conformance/ast/**` renders through three dialects in every
+implementation (PHP and Go runners enumerate their registries; a case lacking a
+shipped dialect's expectation fails); one new case. `migrations-cases/` and
+`cases/` stay SQLite — the live legs are the per-dialect proof, as in the
+reference.
+
+**Verification.** PostgreSQL 16.4 live on this machine: PHP 24 live tests
+and Go 23 live tests green — key write-back, the `timestamptz` marker, array
+parameters filled and empty, temporal criteria, paging, reserved words,
+concurrency, transactions, explicit/batch/link loading, SubSelect over a paged
+root, composite row-value IN, materialized views, migrations under the advisory
+lock, `VAL-020` on `timestamp`, a tracked flush with hook stamps, SchemaGuard.
+SQL Server: 16 PHP and 22 Go live tests **written from the spec and never
+executed** — no reachable engine here (LocalDB broken, nothing on 1433, and
+go-mssqldb cannot address LocalDB at all); the rendering surface is fully
+tested without a server and every `sqlserver` pin passes. C# 409 passed /
+10 skipped (the PostgreSQL live suite ran); PHP 777 tests (16 skipped); Go every package ok.
+
+**Spec.** `spec/dialects.md` (new) with a Clarifications block of 13 answers
+consolidating the four gap lists (42 questions); `spec/query-ast.md` the subquery ORDER BY rule;
+`spec/README.md`, `conformance/README.md` indexed.
+
+**Deferred, named** (the same list in every implementation, plus what this pass
+could not verify): snapshot/shadow/diff/force-sync beyond SQLite; the `MIG-012`
+view guard against `sys.sql_modules`/`pg_get_viewdef` output; `bytea` **writes**
+through PDO (`PARAM_STR` parses the payload as escaped text — needs `PARAM_LOB`
+or hex encoding; no sample entity has a bytes column); go-mssqldb binding `nil`
+as `nvarchar(1)` NULL (a NULL into `varbinary` may refuse, error 257) and
+summing trigger row counts into `RowsAffected`; `to_regclass(@relation)` /
+`object_id(@relation)` taking an unquoted name (a reserved-word relation name
+would not introspect — all mapped names are snake_case); pgx's statement cache
+across schema changes in a long-lived session; the SQL Server live legs' first
+green run, on a machine with an engine.
+
+**Status.** Accepted. The three Level 4 dialects exist in three implementations
+at the reference's runtime-first scope; the spec now describes them.
 ## ADR-0041 — Inheritance mapping: concrete classes only; a base class is never an entity (2026-10-17)
 
 Owner rulings, taken in a design discussion held before any code (the

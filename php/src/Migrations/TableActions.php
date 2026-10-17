@@ -108,7 +108,7 @@ final class TableActions
 
     public function dropIndex(string $name): MigrationAction
     {
-        return $this->track($this->removes, new MigrationAction('drop index ' . $name, ['drop index ' . $name]));
+        return $this->track($this->removes, new MigrationAction('drop index ' . $name, [$this->dialect->dropIndexSql($this->table(), $name)]));
     }
 
     /** Raw SQL escape hatch; runs after the ordered groups. */

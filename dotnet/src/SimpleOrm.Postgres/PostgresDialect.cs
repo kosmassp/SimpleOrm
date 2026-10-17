@@ -59,31 +59,34 @@ public sealed class PostgresDialect : IDialect
 
     public bool SupportsTransactionalDdl => true;
 
+    // The introspection result columns carry the spec's names on every non-SQLite dialect
+    // (spec/dialects.md "Introspection result shapes"), so a consumer may read by name or by
+    // ordinal; the reference reads by ordinal. `pk` is a presence flag here, not an ordinal.
     public string ColumnsInfoSql
         => """
-           select a.attname,
-                  format_type(a.atttypid, a.atttypmod),
-                  (case when a.attnotnull then 1 else 0 end)::bigint,
+           select a.attname as name,
+                  format_type(a.atttypid, a.atttypmod) as type,
+                  (case when a.attnotnull then 1 else 0 end)::bigint as "notnull",
                   (case when exists (
                       select 1 from pg_index i
                       where i.indrelid = a.attrelid and i.indisprimary and a.attnum = any(i.indkey)
-                  ) then 1 else 0 end)::bigint
+                  ) then 1 else 0 end)::bigint as pk
            from pg_attribute a
            where a.attrelid = to_regclass(@relation) and a.attnum > 0 and not a.attisdropped
            order by a.attnum
            """;
 
     public string ViewDefinitionSql
-        => "select pg_get_viewdef(c.oid, true) from pg_class c "
+        => "select pg_get_viewdef(c.oid, true) as definition from pg_class c "
             + "where c.oid = to_regclass(@relation) and c.relkind in ('v', 'm')";
 
     public string IndexesInfoSql
         => """
-           select ic.relname,
-                  (case when i.indisunique then 1 else 0 end)::bigint,
-                  k.n::bigint,
-                  a.attname,
-                  (case when (i.indoption[k.n] & 1) <> 0 then 1 else 0 end)::bigint
+           select ic.relname as index_name,
+                  (case when i.indisunique then 1 else 0 end)::bigint as "unique",
+                  k.n::bigint as seqno,
+                  a.attname as "column",
+                  (case when (i.indoption[k.n] & 1) <> 0 then 1 else 0 end)::bigint as "desc"
            from pg_index i
            join pg_class ic on ic.oid = i.indexrelid
            cross join lateral generate_series(0, i.indnkeyatts - 1) as k(n)

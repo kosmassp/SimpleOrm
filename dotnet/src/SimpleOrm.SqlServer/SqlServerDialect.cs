@@ -55,9 +55,13 @@ public sealed class SqlServerDialect : IDialect
 
     public bool SupportsTransactionalDdl => true;
 
+    // The introspection result columns carry the spec's names (`name, type, notnull, pk`;
+    // `index_name, unique, seqno, column, desc`; `definition`) on every non-SQLite dialect —
+    // SQLite's pragmas name them so already — so a consumer may read by name or by ordinal
+    // (spec/dialects.md "Introspection result shapes"). The reference reads by ordinal.
     public string ColumnsInfoSql
         => """
-           select c.name,
+           select c.name as [name],
                   case
                       when t.name in (N'decimal', N'numeric')
                           then t.name + N'(' + cast(c.precision as nvarchar(8)) + N',' + cast(c.scale as nvarchar(8)) + N')'
@@ -66,9 +70,9 @@ public sealed class SqlServerDialect : IDialect
                       when t.name in (N'varchar', N'char', N'varbinary', N'binary')
                           then t.name + N'(' + case when c.max_length = -1 then N'max' else cast(c.max_length as nvarchar(8)) end + N')'
                       else t.name
-                  end,
-                  cast(case when c.is_nullable = 1 then 0 else 1 end as bigint),
-                  cast(isnull(pk.key_ordinal, 0) as bigint)
+                  end as [type],
+                  cast(case when c.is_nullable = 1 then 0 else 1 end as bigint) as [notnull],
+                  cast(isnull(pk.key_ordinal, 0) as bigint) as [pk]
            from sys.columns c
            join sys.types t on t.user_type_id = c.user_type_id
            left join (
@@ -82,12 +86,13 @@ public sealed class SqlServerDialect : IDialect
            """;
 
     public string ViewDefinitionSql
-        => "select m.definition from sys.sql_modules m "
+        => "select m.definition as [definition] from sys.sql_modules m "
             + "join sys.views v on v.object_id = m.object_id "
             + "where v.object_id = object_id(@relation)";
 
     public string IndexesInfoSql
-        => "select i.name, cast(i.is_unique as bigint), cast(ic.key_ordinal - 1 as bigint), c.name, cast(ic.is_descending_key as bigint) "
+        => "select i.name as [index_name], cast(i.is_unique as bigint) as [unique], cast(ic.key_ordinal - 1 as bigint) as [seqno], "
+            + "c.name as [column], cast(ic.is_descending_key as bigint) as [desc] "
             + "from sys.indexes i "
             + "join sys.index_columns ic on ic.object_id = i.object_id and ic.index_id = i.index_id and ic.is_included_column = 0 "
             + "join sys.columns c on c.object_id = ic.object_id and c.column_id = ic.column_id "
@@ -202,6 +207,11 @@ public sealed class SqlServerDialect : IDialect
         var builder = new StringBuilder("if object_id(N'").Append(Escape(map.RelationName!))
             .Append("', N'U') is null\ncreate table ").Append(QuoteIdentifier(map.RelationName!)).Append(" (");
 
+        // nvarchar(max)/varbinary(max) cannot be an index key column (error 1919), so
+        // a string or bytes column of a declared index gets the indexable length a
+        // key column gets (spec/dialects.md "Storage types").
+        var indexed = new HashSet<string>(map.Indexes.SelectMany(i => i.Columns).Select(c => c.ColumnName), StringComparer.Ordinal);
+
         var first = true;
         foreach (var property in map.Properties)
         {
@@ -214,7 +224,7 @@ public sealed class SqlServerDialect : IDialect
                 continue;
             }
 
-            builder.Append(StorageType(property));
+            builder.Append(StorageType(property, indexable: property.IsKey || indexed.Contains(property.ColumnName)));
             if (!property.IsNullable)
             {
                 builder.Append(" not null");
@@ -301,7 +311,14 @@ public sealed class SqlServerDialect : IDialect
     /// <c>(max)</c> except keys, which need an indexable length; decimals default
     /// to <c>decimal(38, 9)</c> — declare the real precision in migrations.
     /// </summary>
-    public string StorageType(PropertyMap property)
+    public string StorageType(PropertyMap property) => StorageType(property, indexable: property.IsKey);
+
+    /// <summary>
+    /// The storage type with the indexable length applied when <paramref name="indexable"/>:
+    /// a key column, or a column of a declared index (CREATE TABLE only — snapshots and
+    /// diff see the key-only rule the seam's <see cref="StorageType(PropertyMap)"/> states).
+    /// </summary>
+    private static string StorageType(PropertyMap property, bool indexable)
     {
         var type = Nullable.GetUnderlyingType(property.ClrType) ?? property.ClrType;
         if (type.IsEnum)
@@ -346,7 +363,7 @@ public sealed class SqlServerDialect : IDialect
 
         if (type == typeof(byte[]))
         {
-            return property.IsKey ? "varbinary(450)" : "varbinary(max)";
+            return indexable ? "varbinary(450)" : "varbinary(max)";
         }
 
         if (type == typeof(Guid))
@@ -370,7 +387,7 @@ public sealed class SqlServerDialect : IDialect
         }
 
         // string, JSON, handler types.
-        return property.IsKey ? "nvarchar(450)" : "nvarchar(max)";
+        return indexable ? "nvarchar(450)" : "nvarchar(max)";
     }
 
     /// <summary>The declared type's base name: lowercased, any <c>(length)</c> stripped.</summary>

@@ -2972,3 +2972,141 @@ forbidden to read any implementation — the Python audit above is that port's
 first gap list already answered. Only when the owner says so.
 
 **Status.** Accepted. Level 3 closed in C#, PHP, and Go.
+
+## ADR-0040 — Inheritance mapping: concrete classes only; a base class is never an entity (2026-10-17)
+
+Owner rulings, taken in a design discussion held before any code (the
+standing rule: discuss first, build only when scheduled). ADR-0034 left M4
+optional — single-table inheritance with a discriminator, nothing else —
+ADR-0038 skipped it, ADR-0039 closed Level 3 with inheritance "off the map
+unless a later ADR schedules it". This is that ADR, and it schedules the
+opposite: **mapped inheritance is ruled out permanently**, and the one form
+the library already has — a base class that shares members — gets the
+strictness it lacked.
+
+**The discussion.** Single-table inheritance was walked through subsystem by
+subsystem against the code as it stands: a discriminator block on the root
+`EntityMap` and `root`/`discriminatorValue` on each subtype; a dispatching
+mapper plan whose strictness becomes per-row (`MAP-001`/`MAP-002` relaxed to
+the hierarchy's union, a new code for an unknown discriminator value); the
+discriminator written on insert as a library-filled property; a subtype
+predicate that is either rendered into generated SQL and pinned in
+`conformance/ast/` or written by the caller as explicit criteria (the
+soft-delete shape, ADR-0037); the identity namespace moved from the exact
+runtime type (the ADR-0039 Clarification) to the hierarchy root, with a new
+`UOW-002` case; the hierarchy ranking as one node in the flush order; the
+union snapshot with subtype-only columns forced nullable (the ADR-0030
+precedent); two SchemaGuard rules; a fixture hierarchy in three sample trees
+and three migration trees. Nine subsystems, nine conformance folders
+extended, a new spec document — about M2 and M3 together, in three
+implementations by the per-milestone method.
+
+**Why it is out, permanently.** Four reasons, any one sufficient:
+
+1. **A navigation typed to a hierarchy root is a polymorphic association**,
+   which ADR-0019 ruled out permanently. Single-table inheritance either
+   reopens that ruling or forbids base-typed navigations, which guts it.
+2. **Two of the six target languages have no subclassing.** Go embedding is
+   composition (a `[]*Document` cannot hold an `*Invoice`); Rust would model
+   the concept as an enum with a variant per subtype. A language-neutral
+   spec would have to define "a row whose type is one of a closed set of
+   variants, chosen by a column" — a sum type — and the class-family
+   encoding would be the odd one, not the rule. Writing the spec from the
+   C# shape would be exactly the family bias the uniformity programme
+   (ADR-0032) exists to catch.
+3. **Identity would stop being the instance's exact runtime type** — the
+   rule every Level 3 implementation and the Python audit settled on — and
+   every tracking, flush, merge, and refresh path would carry a hierarchy
+   lookup for a feature the fixture does not need.
+4. **The need is already met without library code.** A `Kind` enum column
+   plus one nullable `[Owned]` navigation per variant (ADR-0030: subtype
+   columns under a prefix, an all-NULL group reads as null, the caller
+   switches on `Kind`, the variant filter is `Criteria.Eq("Kind", …)` —
+   the soft-delete shape); or a write model on the table plus one keyed
+   `[View]`/`[Statement]` read model per variant (ADR-0008: SQL-first,
+   read-only, trackable, with its own navigations). Both go into the
+   README as the "Variants" patterns.
+
+**Table-per-type (TPT)** is ruled out permanently as well: every base read
+becomes a join over every subtype table — a hidden query in substance (§2) —
+and every subtype insert becomes two statements whose generated key must
+flow across the hierarchy inside the unit of work. **Table-per-concrete
+(TPC)** is not ruled out, because it is what the library already does when
+the base class is not an entity — see the next ruling. Its polymorphic form
+(a `UNION ALL` read over the concrete tables, a key space shared across
+them) is out: SQLite's per-table `INTEGER PRIMARY KEY` makes the (type, key)
+identity impossible across tables, and the AST has no union.
+
+**The ruling: identity comes only from the real class.** A concrete class is
+an entity: its own relation, its own key space, its own identity. A base
+class shares members and nothing else — its `[Column]`, `[Key]`,
+`[Generated]`, `[Version]`, hook, and `[RenamedFrom]` declarations are
+inherited by every concrete subclass as if declared there (the fixture's
+`BaseModel` audit columns; `metadata-model.md`'s inherited-properties rule),
+each concrete table carrying its own copy of every column. **A base class
+is never read, written, queried, exported, validated, or targeted by a
+navigation. A read through a base class throws** — the owner's choice over
+silent exclusion, §2 "strict by default". A base class is a type that is
+abstract, or that another mapped type extends.
+
+**`MAP-028` — a base class used as an entity.** Reserved now in
+`spec/errors.md`; raised by the loader (and therefore by every path that
+loads a map: registry queries with an entity result type, key reads,
+criteria queries, writes, explicit and eager loading, the builder, the
+tracker, SchemaGuard, `export-metadata`) in these cases:
+
+- an **abstract class** loaded as an entity (a query, key read, criteria
+  query, write, or navigation target typed to it; a builder registration
+  of it);
+- a mapped type whose **base class carries a relation source** of its own
+  (`[Table]`/`[View]`/`[MaterializedView]`/`[Statement]`/`[Procedure]`) —
+  the base would be an entity, so it may not be extended by one; the error
+  names both classes. The loader checks this while walking the chain it
+  already walks for inherited properties, and must read class-level
+  attributes **without** attribute inheritance (C#'s default
+  `GetCustomAttribute` inherits), so a subclass never silently adopts its
+  base's table;
+- in an assembly scan (SchemaGuard, the CLI), a **concrete class without a
+  source that another scanned type extends** — the one case a lone load
+  cannot see, because a concrete class with `[Column]` properties and no
+  source legitimately maps to a convention-named table. Startup catches it
+  (`ValidateAsync` runs in every environment, §7.21); declaring base
+  classes `abstract` is the documented convention.
+
+What exists today, for the record: scans already skip abstract classes
+(`SchemaGuard`, `Program`), but `Query<BaseModel>()` loads a convention
+table `base_model` and fails with the provider's "no such table",
+`GetAsync<BaseModel>` fails with `CRUD-002` (the wrong name), and a concrete
+base class carrying `[Key]` loads, exports, and validates as an entity
+silently.
+
+**Ports.** Go: unreachable — embedding is composition and an embedded
+struct's fields are the struct's own; recorded like `MAP-023` in C#, a code
+that exists for the languages that need it. PHP: `abstract` classes and
+`get_parent_class`, the same two checks as C#. Python and TypeScript, when
+their ports come: reachable, same rules. Rust: unreachable.
+
+**What changes, and when.** This ADR records the ruling, reserves the code,
+and updates the brief (§3 row, §7c M4, §11). The implementation is an
+addendum-sized change, not a milestone, done by the usual method — the
+reference with the spec sentence and the conformance case first, then PHP
+and Go by agents forbidden to read another implementation, then a review:
+
+- the loader rule in `AttributeMapLoader` (the base-chain walk; attribute
+  reads without inheritance) and the builder, plus the scan rule in
+  SchemaGuard and the CLI;
+- `metadata-model.md`: one paragraph beside the inherited-properties rule
+  ("a base class is never an entity"; the abstract convention);
+  `mapping-rules.md`/`validation-rules.md` rows; the README "Variants"
+  section with both patterns;
+- conformance: at least `cases/map028_read_through_a_base_class` (a query
+  whose result type is the fixture's `BaseModel`, `expect.error`
+  `MAP-028`) — the declaration rule pinned by each implementation's own
+  tests, and as a conformance case if a fixture-free form is found;
+- tests in C#, PHP, and Go for every case above.
+
+Nothing starts unprompted (CLAUDE.md §1).
+
+**Status.** Accepted. Inheritance mapping (single-table, table-per-type,
+polymorphic table-per-concrete) ruled out permanently; base classes share
+members only; `MAP-028` reserved; implementation not started.

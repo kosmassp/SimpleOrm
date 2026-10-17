@@ -228,6 +228,11 @@ public sealed class ConformanceCrudTests
             return Guid.Parse(text);
         }
 
+        if (target == typeof(byte[]))
+        {
+            return Convert.FromBase64String(text);
+        }
+
         return text;
     }
 
@@ -240,6 +245,7 @@ public sealed class ConformanceCrudTests
         decimal m => m.ToString("0.############################", CultureInfo.InvariantCulture),   // scale-normalized
         float or double => Convert.ToDouble(value, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture),
         DateTime dt => dt.ToString("o", CultureInfo.InvariantCulture),
+        byte[] bytes => Convert.ToBase64String(bytes),
         Enum e => e.ToString(),
         _ => value.ToString(),
     };

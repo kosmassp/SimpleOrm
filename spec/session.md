@@ -395,7 +395,7 @@ from a base class, exported last:
 | `User` (`users`) | `Id` → `id` (key, generated), `Name` → `name`, `Email` → `email`, `DisplayName` → `display_name` | `Transactions` one-to-many (`Transaction.UserId`), `Roles` many-to-many via `UserRole`, `Profile` one-to-one (`UserProfile.UserId`) |
 | `Role` (`roles`) | `Id`, `Name` → `role_name` (renamed from `name`), `IsDeleted` → `is_deleted` (soft delete) | `Users` many-to-many via `UserRole` |
 | `UserRole` (`user_roles`) | `UserId` → `user_id` (key), `RoleId` → `role_id` (key), `GrantedBy` → `granted_by` | `User`, `Role` many-to-one |
-| `UserProfile` (`user_profiles`) | `Id`, `UserId` → `user_id`, `Bio` → `bio`, `AvatarUrl` → `avatar_url`, owned `Address` → `Address.Street` → `address_street`, `Address.City` → `address_city`, `Address.PostalCode` → `address_postal_code` | `User` many-to-one |
+| `UserProfile` (`user_profiles`) | `Id`, `UserId` → `user_id`, `Bio` → `bio`, `AvatarUrl` → `avatar_url`, `Avatar` → `avatar` (nullable `bytes`, V0012, ADR-0040 add.1), owned `Address` → `Address.Street` → `address_street`, `Address.City` → `address_city`, `Address.PostalCode` → `address_postal_code` | `User` many-to-one |
 | `Transaction` (`transactions`) | `Id`, `UserId` → `user_id`, `Status` → `status` (enum by name), `Amount` → `amount`, `Version` → `version` (version), `Note` → `note` | `User` many-to-one, `Details` one-to-many (`TransactionDetail.TransactionId`), cascade persist + remove |
 | `TransactionDetail` (`transaction_details`) | `Id`, `TransactionId` → `transaction_id`, `Description` → `description`, `Quantity` → `quantity`, `UnitPrice` → `unit_price` | `Transaction` many-to-one |
 

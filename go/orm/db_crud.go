@@ -100,7 +100,7 @@ func readRowByKey(ctx context.Context, db *Db, m *core.EntityMap, entityType ref
 	for i, value := range keyValues {
 		name := fmt.Sprintf("k%d", i)
 		predicates[i] = dialect.QuoteIdentifier(m.KeyProperties[i].ColumnName) + " = @" + name
-		converted, err := db.converter.ToDatabase(value, "", fmt.Sprintf("%s key[%d]", entityType.Name(), i))
+		converted, err := db.converter.ToParameter(value, "", fmt.Sprintf("%s key[%d]", entityType.Name(), i))
 		if err != nil {
 			return reflect.Value{}, err
 		}
@@ -408,7 +408,7 @@ func writeInsert(ctx context.Context, db *Db, entityType reflect.Type, m *core.E
 		if p.IsGenerated {
 			continue
 		}
-		converted, err := db.converter.ToDatabase(p.Get(entity), p.ColumnType, entityType.Name()+"."+p.PropertyName)
+		converted, err := db.converter.ToParameter(p.Get(entity), p.ColumnType, entityType.Name()+"."+p.PropertyName)
 		if err != nil {
 			return err
 		}
@@ -681,7 +681,7 @@ func ownedNavigation(m *core.EntityMap, name string) *core.OwnedMap {
 func executeUpdate(ctx context.Context, db *Db, entityType reflect.Type, m *core.EntityMap, entity any, sqlText string, bound []*core.PropertyMap) error {
 	args := make([]any, 0, len(bound))
 	for _, p := range bound {
-		converted, err := db.converter.ToDatabase(p.Get(entity), p.ColumnType, entityType.Name()+"."+p.PropertyName)
+		converted, err := db.converter.ToParameter(p.Get(entity), p.ColumnType, entityType.Name()+"."+p.PropertyName)
 		if err != nil {
 			return err
 		}
@@ -751,7 +751,7 @@ func Delete[T any](ctx context.Context, db *Db, key any) error {
 
 	args := make([]any, len(keyValues))
 	for i, value := range keyValues {
-		converted, err := db.converter.ToDatabase(value, "", fmt.Sprintf("%s key[%d]", entityType.Name(), i))
+		converted, err := db.converter.ToParameter(value, "", fmt.Sprintf("%s key[%d]", entityType.Name(), i))
 		if err != nil {
 			return err
 		}
@@ -807,7 +807,7 @@ func deleteEntity(ctx context.Context, db *Db, entityType reflect.Type, entity a
 
 	args := make([]any, 0, len(m.KeyProperties)+1)
 	for _, key := range m.KeyProperties {
-		converted, err := db.converter.ToDatabase(key.Get(entity), key.ColumnType, entityType.Name()+"."+key.PropertyName)
+		converted, err := db.converter.ToParameter(key.Get(entity), key.ColumnType, entityType.Name()+"."+key.PropertyName)
 		if err != nil {
 			return err
 		}
@@ -815,7 +815,7 @@ func deleteEntity(ctx context.Context, db *Db, entityType reflect.Type, entity a
 	}
 	if checkVersion {
 		version := m.VersionProperty
-		converted, err := db.converter.ToDatabase(version.Get(entity), version.ColumnType, entityType.Name()+"."+version.PropertyName)
+		converted, err := db.converter.ToParameter(version.Get(entity), version.ColumnType, entityType.Name()+"."+version.PropertyName)
 		if err != nil {
 			return err
 		}

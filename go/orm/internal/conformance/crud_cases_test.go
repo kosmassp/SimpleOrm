@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -354,6 +355,13 @@ func decodeConformanceValue(raw json.RawMessage, property *core.PropertyMap) (an
 		}
 		return orm.ParseGUID(text)
 
+	case core.TypeBytes:
+		var text string
+		if err := json.Unmarshal(raw, &text); err != nil {
+			return nil, err
+		}
+		return base64.StdEncoding.DecodeString(text)
+
 	case core.TypeDateTime:
 		var text string
 		if err := json.Unmarshal(raw, &text); err != nil {
@@ -468,6 +476,10 @@ func encodeForCompare(value any, columnType core.ColumnType) (text string, isNul
 	case core.TypeGUID:
 		if g, ok := value.(orm.GUID); ok {
 			return g.String(), false
+		}
+	case core.TypeBytes:
+		if b, ok := value.([]byte); ok {
+			return base64.StdEncoding.EncodeToString(b), false
 		}
 	case core.TypeDateTime:
 		if tm, ok := value.(time.Time); ok {

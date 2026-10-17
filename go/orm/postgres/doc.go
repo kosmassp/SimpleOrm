@@ -33,4 +33,21 @@
 // IsMarkerlessTemporal (core.TemporalMarkers) judges: the result mapper refuses
 // VAL-020 for a value read from a `timestamp without time zone` column into a
 // datetime property with no registered handler.
+//
+// # Cached plans
+//
+// pgx prepares and caches every statement that has arguments, per connection,
+// and a session pins one connection for its life. When the table under a
+// cached statement changes (a column's type, say), PostgreSQL refuses the next
+// run with SQLSTATE 0A000 "cached plan must not change result type"; pgx
+// invalidates the entry on any error but never retries. The default policy,
+// CachedPlanRetryOnce, runs the statement once more when no transaction is
+// open on the connection; inside one PostgreSQL has aborted the transaction,
+// so the error surfaces and the caller rolls back. CachedPlanSurface
+// (New(WithCachedPlanPolicy(CachedPlanSurface))) never retries. A surfaced
+// cached-plan error is TX-002 (spec/errors.md), wrapping pgx's error: roll
+// back and rerun the transaction, or open a new session — pgx dropped the
+// stale statement on the error, and the library holds no statement cache. A driver
+// matter of this package, not a seam member (spec/dialects.md Clarifications,
+// ADR-0040 add.1).
 package postgres

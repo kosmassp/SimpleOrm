@@ -35,15 +35,20 @@ final class ConformanceValues
             ColumnType::EnumText, ColumnType::EnumInt => self::enumCase($property->phpType, (string) $value),
             ColumnType::DateTime, ColumnType::DateTimeOffset, ColumnType::Date, ColumnType::Time
                 => new DateTimeImmutable((string) $value),
+            ColumnType::Bytes => self::base64Decode((string) $value),
             default => (string) $value,
         };
     }
 
-    /** A PHP value reduced to a comparable string (or null). */
-    public static function encodeForCompare(mixed $value): ?string
+    /**
+     * A PHP value reduced to a comparable string (or null). A `bytes` property's string is
+     * base64 (the documented encoding) — PHP strings alone cannot say they hold bytes.
+     */
+    public static function encodeForCompare(mixed $value, ?PropertyMap $property = null): ?string
     {
         return match (true) {
             $value === null => null,
+            $property?->type === ColumnType::Bytes && is_string($value) => base64_encode($value),
             is_bool($value) => $value ? 'true' : 'false',
             is_int($value) => (string) $value,
             is_float($value) => (string) $value,
@@ -62,6 +67,16 @@ final class ConformanceValues
             is_bool($jsonValue) => $jsonValue ? 'true' : 'false',
             default => (string) $jsonValue,
         };
+    }
+
+    private static function base64Decode(string $value): string
+    {
+        $bytes = base64_decode($value, strict: true);
+        if ($bytes === false) {
+            throw new RuntimeException("not a base64 bytes value: {$value}");
+        }
+
+        return $bytes;
     }
 
     /** @param class-string|null $enumClass */

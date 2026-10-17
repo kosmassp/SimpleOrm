@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	// The one import of the driver (CODING-STANDARD §1): pgx's connection configuration and its database/sql adapter.
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
@@ -20,16 +22,19 @@ import (
 // placeholder-rewriting driver below. Nothing connects until first use. It is
 // not registered with database/sql.Register — sql.OpenDB takes the connector
 // directly, so the package keeps no init and no global state.
-func openPool(connectionString string) (*sql.DB, error) {
+func openPool(connectionString string, cachedPlan CachedPlanPolicy) (*sql.DB, error) {
 	config, err := pgx.ParseConfig(connectionString)
 	if err != nil {
 		return nil, err
 	}
-	return sql.OpenDB(&connector{inner: stdlib.GetConnector(*config)}), nil
+	return sql.OpenDB(&connector{inner: stdlib.GetConnector(*config), cachedPlan: cachedPlan}), nil
 }
 
 // connector wraps pgx's driver.Connector so every connection it makes is a [conn].
-type connector struct{ inner driver.Connector }
+type connector struct {
+	inner      driver.Connector
+	cachedPlan CachedPlanPolicy
+}
 
 func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
 	inner, err := c.inner.Connect(ctx)
@@ -41,7 +46,7 @@ func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
 		_ = inner.Close()
 		return nil, fmt.Errorf("postgres: pgx returned a %T connection, expected *stdlib.Conn", inner)
 	}
-	return &conn{inner: pgxConn}, nil
+	return &conn{inner: pgxConn, cachedPlan: c.cachedPlan}, nil
 }
 
 func (c *connector) Driver() driver.Driver { return c.inner.Driver() }
@@ -132,8 +137,11 @@ func (r rewritten) arrange(args []driver.NamedValue) ([]driver.NamedValue, error
 }
 
 // conn is one pgx connection behind the rewriting layer. Everything but the
-// placeholder rewrite is pgx's own behaviour, delegated.
-type conn struct{ inner *stdlib.Conn }
+// placeholder rewrite and the cached-plan retry is pgx's own behaviour, delegated.
+type conn struct {
+	inner      *stdlib.Conn
+	cachedPlan CachedPlanPolicy
+}
 
 var (
 	_ driver.Conn               = (*conn)(nil)
@@ -173,7 +181,14 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 	if err != nil {
 		return nil, err
 	}
-	return c.inner.ExecContext(ctx, r.sql, arranged)
+	result, err := c.inner.ExecContext(ctx, r.sql, arranged)
+	if c.retriesCachedPlan(err) {
+		result, err = c.inner.ExecContext(ctx, r.sql, arranged)
+	}
+	if err != nil {
+		return nil, c.surfaceCachedPlan(query, err)
+	}
+	return result, nil
 }
 
 func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
@@ -182,7 +197,55 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	if err != nil {
 		return nil, err
 	}
-	return c.inner.QueryContext(ctx, r.sql, arranged)
+	rows, err := c.inner.QueryContext(ctx, r.sql, arranged)
+	if c.retriesCachedPlan(err) {
+		rows, err = c.inner.QueryContext(ctx, r.sql, arranged)
+	}
+	if err != nil {
+		return nil, c.surfaceCachedPlan(query, err)
+	}
+	return rows, nil
+}
+
+// isCachedPlanError reports PostgreSQL refusing a cached prepared statement whose result type
+// changed under it: SQLSTATE 0A000, "cached plan must not change result type".
+func isCachedPlanError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "0A000" &&
+		strings.HasPrefix(pgErr.Message, "cached plan must not change result type")
+}
+
+// retriesCachedPlan reports whether err is the cached-plan error, the policy is
+// CachedPlanRetryOnce, and no transaction is open on the connection — then the statement ran in
+// its own implicit transaction and nothing of it happened, and pgx has already invalidated its
+// cache entry (it does so on every error: Conn.exec's deferred Invalidate, Rows.Close), so one more
+// run re-prepares it. Inside a transaction (TxStatus 'T' or the aborted 'E') PostgreSQL has aborted
+// the transaction, and the error surfaces as TX-002. Statements the caller prepared explicitly
+// (stmt) are never retried: their server-side statement is what changed.
+func (c *conn) retriesCachedPlan(err error) bool {
+	return c.cachedPlan == CachedPlanRetryOnce && isCachedPlanError(err) &&
+		c.inner.Conn().PgConn().TxStatus() == 'I'
+}
+
+// surfaceCachedPlan turns a cached-plan error that was not (or could not be) retried into TX-002
+// (spec/errors.md), naming the statement and saying what fixes it, with pgx's error kept as the
+// cause; every other error passes through unchanged. The rerun the message asks for works because
+// pgx dropped the stale statement from this connection's cache on the error — the library holds
+// no statement cache of its own.
+func (c *conn) surfaceCachedPlan(query string, err error) error {
+	if !isCachedPlanError(err) {
+		return err
+	}
+	remedy := "rerun the statement (the driver dropped its stale prepared copy, so the rerun re-prepares it against the new table shape) or open a new session"
+	if c.inner.Conn().PgConn().TxStatus() != 'I' {
+		remedy = "PostgreSQL has aborted the current transaction: roll it back and rerun the whole transaction (the driver dropped its stale prepared copy, so the rerun re-prepares it against the new table shape), or open a new session"
+	}
+	return &core.Error{
+		Code:    "TX-002",
+		Target:  query,
+		Message: "the schema changed under a statement this connection had prepared (SQLSTATE 0A000, cached plan must not change result type); " + remedy,
+		Cause:   err,
+	}
 }
 
 func (c *conn) Ping(ctx context.Context) error { return c.inner.Ping(ctx) }

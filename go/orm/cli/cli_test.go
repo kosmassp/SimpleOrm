@@ -41,8 +41,8 @@ func TestRun_FullWorkflowAgainstTheSampleRegistry(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("migrate: code=%d stderr=%s", code, errOut)
 	}
-	if !strings.Contains(out, "applied 11 version(s)") {
-		t.Fatalf("expected 11 applied versions, got: %s", out)
+	if !strings.Contains(out, "applied 12 version(s)") {
+		t.Fatalf("expected 12 applied versions, got: %s", out)
 	}
 
 	// status: every step Applied.
@@ -100,8 +100,8 @@ func TestRun_FullWorkflowAgainstTheSampleRegistry(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("migrate down: code=%d stderr=%s", code, errOut)
 	}
-	if !strings.Contains(out, "reverted 11 version(s)") {
-		t.Fatalf("expected 11 reverted versions, got: %s", out)
+	if !strings.Contains(out, "reverted 12 version(s)") {
+		t.Fatalf("expected 12 reverted versions, got: %s", out)
 	}
 
 	out, errOut, code = runCLI(t, "status", "--db", dbPath)

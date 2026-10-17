@@ -199,7 +199,7 @@ func renderAndRunSelect(ctx context.Context, db *Db, ast *core.SelectAst, queryN
 		if property != nil {
 			columnType = property.ColumnType
 		}
-		converted, err := db.converter.ToDatabase(value, columnType, fmt.Sprintf("%s @%s", queryName, name))
+		converted, err := db.converter.ToParameter(value, columnType, fmt.Sprintf("%s @%s", queryName, name))
 		if err != nil {
 			return "", err
 		}

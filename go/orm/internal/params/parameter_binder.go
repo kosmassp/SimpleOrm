@@ -118,6 +118,9 @@ func Bind(sqlText string, args any, converter *mapping.TypeConverter, dialect co
 				if err != nil {
 					return BoundSQL{}, err
 				}
+				if cv == nil {
+					cv = mapping.TypedNull(core.ColumnTypeOf(f.value.Type().Elem()))
+				}
 				namedArgs = append(namedArgs, sql.Named(name, cv))
 			}
 			// An empty collection becomes NULL: "x IN (NULL)" is valid SQL matching no rows.
@@ -132,6 +135,10 @@ func Bind(sqlText string, args any, converter *mapping.TypeConverter, dialect co
 		cv, err := converter.ToDatabase(f.value.Interface(), "", context)
 		if err != nil {
 			return BoundSQL{}, err
+		}
+		if cv == nil {
+			// A NULL carries the type the field's Go type gives it (ADR-0040 add.1, mapping.TypedNull).
+			cv = mapping.TypedNull(core.ColumnTypeOf(f.value.Type()))
 		}
 		namedArgs = append(namedArgs, sql.Named(placeholder, cv))
 	}

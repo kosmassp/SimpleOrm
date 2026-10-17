@@ -3115,6 +3115,118 @@ green run, on a machine with an engine.
 **Status.** Accepted. The three Level 4 dialects exist in three implementations
 at the reference's runtime-first scope; the spec now describes them.
 
+### ADR-0040 addendum 1 — owner rulings on the four open items; the priority change (2026-10-17)
+
+ADR-0040 named four driver items it could not settle without the owner. The
+rulings, item by item:
+
+1. **`bytes` writes through PDO — done.** PHP strings hold text and bytes
+   alike and PDO binds every untyped value as `PARAM_STR`, so a bytes value
+   reached PostgreSQL as escaped text, SQL Server as a string into
+   `varbinary` — and SQLite as TEXT, which a STRICT `BLOB` column refuses: the
+   PHP port could not write bytes on any dialect, the reference database
+   included, and no fixture column showed it. Ruling: bind by the metadata
+   token, as the C# and Go drivers bind by type. `TypeConverter::toParameter()`
+   wraps a `bytes`-typed value as a `BinaryParameter` and `PdoBinder` binds it
+   `PDO::PARAM_LOB` — for generated CRUD, key reads, criteria, and registry
+   queries, whose args property declares the token with the entity attribute
+   `#[Column(type: ColumnType::Bytes)]`. Snapshots keep the plain string. The
+   fixture gains its one bytes column so every leg covers it:
+   `UserProfile.Avatar` → `avatar`, nullable (`byte[]?`, PHP `?string` +
+   token, Go `*[]byte`), migration **V0012** + snapshot in the three sample
+   trees (each written by its own CLI; identical modulo `generatedAt`);
+   `entities/user_profile.json`, `fixtures/seed.json` (null),
+   `cases/owned_read.json`, and the new `crud-cases/bytes_round_trip.json` (a
+   NUL, a backslash, 0xff, invalid UTF-8, then bytes spelling a `bytea` escape
+   literal; insert, column-list and full update, a NULL). The PHP crud runner
+   had passed bytes values through undecoded — it learned the base64 encoding,
+   as did the Go runner. Every live leg (C#, PHP, Go × PostgreSQL and SQL
+   Server) runs the same round trip, incl. a criteria and a registry match;
+   the PHP PostgreSQL leg fails without the fix. spec/dialects.md
+   Clarification 14.
+2. **go-mssqldb binding `nil` as `nvarchar(1)` NULL — ruled, built, SQL
+   Server-unverified.** The owner first held it for a live run, then ruled the
+   fix now (same day): **typed nulls from the metadata token.** go-mssqldb
+   types a parameter from its Go value, and SQL Server refuses to convert an
+   `nvarchar` into `varbinary` implicitly (error 257). The Go binder's
+   `TypeConverter.ToParameter` turns a NULL into `mapping.TypedNull(token)` —
+   `[]byte(nil)` for `bytes` (go-mssqldb announces it as `varbinary`),
+   `sql.NullInt16/32/64`, `NullFloat64`, `NullBool`, `NullTime` for the
+   numeric, `bool`, and instant tokens, `sql.NullString` for `string`,
+   `decimal`, `guid`, `date`, `time`, and text enums, an untyped nil only for a
+   custom handler type — at every generated-CRUD, key-read, criteria, and
+   registry bind site (a registry argument's token from its Go type); the
+   snapshot form (`ToDatabase`) is unchanged. SQLite and PostgreSQL bind
+   exactly what they did (modernc binds a nil `[]byte` as NULL; pgx encodes
+   both forms as NULL; the `sql.Null` types reach both as nil through
+   `driver.Valuer`) — their suites and the PostgreSQL live leg pass unchanged.
+   Pinned by unit tests on the binder's output; the skip-gated SQL Server leg
+   gains `TestLive_ANullBytesWriteIsATypedNull` (insert and update write a NULL
+   into `varbinary(max)`), unrun until an engine exists. Whether ADO.NET's
+   untyped `DBNull` and PDO ODBC's `PARAM_NULL` share the hazard is answered by
+   the same NULL write in the C# and PHP SQL Server legs. spec/dialects.md
+   Clarification 16.
+3. **`RowsAffected` summing trigger row counts — left open until tested
+   against Fidelis's triggers on a SQL Server machine.** The candidate fix is
+   `SET NOCOUNT ON; <write>; SELECT @@ROWCOUNT` on SQL Server, and with
+   triggers in the mapping (Level 4, below) the strategy can be keyed off
+   declared triggers the way EF Core's `HasTrigger()` does. (For orientation:
+   Hibernate trusts the raw count and asks trigger authors for `SET NOCOUNT
+   ON`.)
+4. **pgx's statement cache after a schema change — done.** pgx v5 caches every
+   statement with arguments per connection and invalidates the entry on any
+   error (verified in v5.11: `Conn.exec`'s deferred `Invalidate`,
+   `Rows.Close`), but never retries; a Go session pins one connection, so a
+   changed table under a cached statement fails with SQLSTATE 0A000 "cached
+   plan must not change result type". Ruling: configurable, default retry once
+   outside a transaction. `postgres.New(postgres.WithCachedPlanPolicy(...))`:
+   `CachedPlanRetryOnce` (default) re-runs the statement once when the
+   connection's transaction status is idle — the failed statement ran in its
+   own implicit transaction — and surfaces the error inside a transaction,
+   which PostgreSQL has already aborted; `CachedPlanSurface` never retries.
+   Explicitly prepared statements are never retried. **Refinement (owner, same
+   day): a surfaced cached-plan error is `TX-002`** (registered in
+   spec/errors.md, "the schema changed under a statement the driver had
+   prepared"), never the bare provider error: it names the statement, keeps
+   pgx's error as its wrapped cause (`core.Error` gained `Cause`/`Unwrap`), and
+   tells the caller what to do — inside a transaction roll it back and rerun
+   the whole transaction, outside one rerun the statement, or open a new
+   session. The rerun works because pgx drops the stale statement itself on
+   the error; the library holds no statement cache. Live tests pin the retry,
+   TX-002 in a transaction (and the rerun transaction succeeding), and TX-002
+   under the surface policy. C# (Npgsql does not auto-prepare by default) and
+   PHP (PDO prepares per statement) are unaffected. A driver matter, not a seam
+   member: spec/dialects.md Clarification 15.
+
+**Triggers in the mapping (owner ruling, Level 4).** Triggers become a
+declared part of the model: declared on the entity (a trigger object with its
+defining SQL, like `[View]`'s DDL), applied by migrations as a first-class
+object kind `Trigger/...` beside Table and View, snapshotted by normalized DDL
+with a `MIG-012`-style guard against a trigger changed by hand; and the
+metadata's knowledge that a table has triggers feeds the SQL Server write
+strategy (item 3's row-count-after-trigger problem). Not scheduled; recorded
+so item 3's eventual fix has its route.
+
+spec/dialects.md: the ruled items leave "Found by the ports, not yet ruled
+on" (Clarifications 14, 15, 16); the first green run of the SQL Server legs
+(which now also verifies 16) and item 3 stay in "Waiting for a SQL Server
+engine"; the testing contract gains the bytes round trip and the cached-plan
+policy.
+
+**Priorities (owner, 2026-10-17).** The new-language ports are deprioritized:
+Rust, Python, and TypeScript wait — Rust only when the owner starts working in
+Rust — and MySQL/Oracle are off the table. **Next: the SQL Server live legs on
+a machine with an engine** (the owner is switching computers for that) —
+verifying ruling 2 — **then ruling 3**, tested against Fidelis's triggers.
+This supersedes the "Next" sentence of ADR-0039/ADR-0040 and CLAUDE.md §1.
+
+**Counts** (PostgreSQL 16.4 live on this machine, no SQL Server engine): C# 418
+passed / 11 skipped (was 416 / 10); PHP 811 tests, 17 skipped (was 805 / 16);
+Go `gofmt`, `go vet`, `go test -p 2 ./...` ok.
+
+**Status.** Accepted. Rulings 1 and 4 done in every implementation they
+concern; ruling 2 built in Go, unverified against SQL Server; ruling 3 open.
+
 ## ADR-0041 — Inheritance mapping: concrete classes only; a base class is never an entity (2026-10-17)
 
 Owner rulings, taken in a design discussion held before any code (the

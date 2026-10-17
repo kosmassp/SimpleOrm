@@ -26,7 +26,13 @@ type Error struct {
 	Target string
 	// Message says what was expected and, when there is something to do, what to do.
 	Message string
+	// Cause is the provider error this one wraps, when there is one (TX-002 keeps the driver's
+	// error here); errors.As and errors.Is reach it through Unwrap.
+	Cause error
 }
+
+// Unwrap is the wrapped provider error, or nil.
+func (e *Error) Unwrap() error { return e.Cause }
 
 // NewError builds an Error; the message reads "<code> <target>: <message>".
 func NewError(code, target, message string) *Error {

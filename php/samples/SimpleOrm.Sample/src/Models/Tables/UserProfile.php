@@ -12,6 +12,7 @@ use SimpleOrm\Metadata\Attributes\Key;
 use SimpleOrm\Metadata\Attributes\ManyToOne;
 use SimpleOrm\Metadata\Attributes\Owned;
 use SimpleOrm\Metadata\Attributes\Table;
+use SimpleOrm\Metadata\ColumnType;
 
 /**
  * Table `user_profiles` (STRICT), the one-to-one fixture (ADR-0019 add.1): this
@@ -41,6 +42,10 @@ final class UserProfile extends BaseModel
 
     #[Column]
     public ?string $avatarUrl = null;
+
+    /** The fixture's one `bytes` column (ADR-0040 add.1, migration V0012): bound as `PDO::PARAM_LOB` by its token. */
+    #[Column(type: ColumnType::Bytes)]
+    public ?string $avatar = null;
 
     /** Owned value type (ADR-0030): `Address` stored as `address_*` columns of this table; nullable, so an all-NULL row reads back as no address. */
     #[Owned]

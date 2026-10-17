@@ -47,6 +47,7 @@ use SimpleOrm\Tests\Sample\Models\UserProfile;
 use SimpleOrm\Tests\Sample\Models\UserRole;
 use SimpleOrm\Tests\Support\LiveServer;
 use SimpleOrm\Tests\Support\PostgresDatabase;
+use SimpleOrm\Tests\Support\BytesRoundTrip;
 use SimpleOrm\Tests\Support\SampleDatabase;
 use SimpleOrm\Validation\SchemaGuard;
 use SimpleOrm\Types\Decimal;
@@ -160,6 +161,13 @@ final class PostgresLiveTest extends TestCase
         self::assertSame(0, $read->createdAtUtc->getOffset());
         self::assertSame('2026-08-28T09:30:00Z', $read->createdAtUtc->format('Y-m-d\TH:i:s\Z'));
         self::assertNull($read->updatedAtUtc);
+    }
+
+    /** ADR-0040 add.1: bytes bind as PDO::PARAM_LOB — under PARAM_STR a bytea payload parses as escaped text. */
+    #[Test]
+    public function bytes_round_trip_through_crud_criteria_and_registry_queries(): void
+    {
+        BytesRoundTrip::run($this->open());
     }
 
     #[Test]

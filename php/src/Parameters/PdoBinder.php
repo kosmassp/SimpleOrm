@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Parameters;
 
+use DateTimeImmutable;
 use PDO;
 use PDOStatement;
+use SimpleOrm\Types\Iso8601;
 
 /**
  * Executes a prepared PDO statement with every parameter bound under an
@@ -20,7 +22,9 @@ use PDOStatement;
  * `int` → `PARAM_INT`, `bool` → `PARAM_INT` (SQLite has no boolean), `null` →
  * `PARAM_NULL`, everything else → `PARAM_STR`. PDO has no double type, so a
  * `float` still binds as text; compare floats against declared-affinity
- * columns or cast in SQL. Parameter names are given without their leading `:`
+ * columns or cast in SQL. An `array` value (only a dialect with
+ * `supportsArrayParameters()` leaves one, ADR-0025) binds as a PostgreSQL array
+ * literal string ({@see PostgresArrayLiteral}). Parameter names are given without their leading `:`
  * (as `BoundSql::$parameters` does).
  */
 final class PdoBinder
@@ -33,6 +37,19 @@ final class PdoBinder
     public static function bindAndExecute(PDOStatement $statement, array $parameters): void
     {
         foreach ($parameters as $name => $value) {
+            if ($value instanceof DateTimeImmutable) {
+                // A dialect with BindsTemporalsNatively (ADR-0025) leaves the UTC instant a DateTimeImmutable, and
+                // PDO cannot bind one: the ISO-8601 string under an untyped parameter is its equivalent, the server
+                // infers timestamptz from the comparison (CODING-STANDARD §10).
+                $value = Iso8601::format($value);
+            }
+
+            if (is_array($value)) {
+                // A collection kept whole by a dialect with array parameters (ADR-0025): one PostgreSQL
+                // array literal under an untyped string parameter; the server infers the array type.
+                $value = PostgresArrayLiteral::encode($value);
+            }
+
             $statement->bindValue(':' . $name, $value, match (true) {
                 $value === null => PDO::PARAM_NULL,
                 is_int($value), is_bool($value) => PDO::PARAM_INT,

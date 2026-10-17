@@ -17,6 +17,10 @@ final class Dialects
 {
     public const SQLITE = 'sqlite';
 
+    public const SQLSERVER = 'sqlserver';
+
+    public const POSTGRES = 'postgres';
+
     private function __construct()
     {
     }
@@ -29,7 +33,7 @@ final class Dialects
      */
     public static function names(): array
     {
-        return [self::SQLITE];
+        return [self::SQLITE, self::SQLSERVER, self::POSTGRES];
     }
 
     /** A fresh dialect for a name (case-insensitive); an unknown name refuses before anything opens. */
@@ -37,6 +41,8 @@ final class Dialects
     {
         return match (strtolower(trim($name))) {
             self::SQLITE => new SqliteDialect(),
+            self::SQLSERVER => new SqlServerDialect(),
+            self::POSTGRES => new PostgresDialect(),
             default => throw new SimpleOrmException(
                 'CLI',
                 'dialect',

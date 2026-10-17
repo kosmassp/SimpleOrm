@@ -201,13 +201,15 @@ func (c *TypeConverter) formatTemporal(value time.Time, columnType core.ColumnTy
 		return core.FormatOffset(value)
 	case core.TypeDate:
 		if c.bindsTemporalsNatively {
-			return value.UTC()
+			// The value's own calendar date at UTC midnight: converting the instant would shift the date
+			// of a value held in another zone, and a `date` carries no zone.
+			return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, time.UTC)
 		}
 		return core.FormatDate(value)
 	case core.TypeTime:
-		if c.bindsTemporalsNatively {
-			return value.UTC()
-		}
+		// Native or not, a `time` binds as its invariant text: it carries no kind to refuse, and the
+		// database infers the parameter's type from the comparison (pgx has no encoder for a
+		// time.Time under a `time` parameter, only for pgtype.Time).
 		return core.FormatTime(value)
 	default: // "" and TypeDateTime both mean the plain datetime rule.
 		if c.bindsTemporalsNatively {
@@ -221,6 +223,9 @@ func (c *TypeConverter) toDecimal(value any, context string) (any, error) {
 	switch v := value.(type) {
 	case string:
 		return core.ParseDecimal(v)
+	case []byte:
+		// go-mssqldb yields a decimal/numeric/money column as its ASCII digits (spec/dialects.md, SQL Server).
+		return core.ParseDecimal(string(v))
 	case int64:
 		return core.DecimalOf(v), nil
 	case float64:

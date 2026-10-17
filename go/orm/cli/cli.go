@@ -29,7 +29,9 @@ import (
 	"github.com/kosmassp/SimpleOrm/go/orm"
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/metadata"
 	"github.com/kosmassp/SimpleOrm/go/orm/migrations"
+	"github.com/kosmassp/SimpleOrm/go/orm/postgres"
 	"github.com/kosmassp/SimpleOrm/go/orm/sqlite"
+	"github.com/kosmassp/SimpleOrm/go/orm/sqlserver"
 )
 
 // Run parses args (as the shell would pass argv[1:]) and executes one
@@ -129,7 +131,9 @@ func (a arguments) flag(name string) bool {
 // and the conformance ast/ pins use (spec/dialects.md "Connection strings and
 // the CLI"). Adding a dialect is one entry here.
 var dialects = map[string]func() orm.Dialect{
-	"sqlite": func() orm.Dialect { return sqlite.New() },
+	"postgres":  func() orm.Dialect { return postgres.New() },
+	"sqlite":    func() orm.Dialect { return sqlite.New() },
+	"sqlserver": func() orm.Dialect { return sqlserver.New() },
 }
 
 // dialectFor is the --dialect rule: a name dialects knows, sqlite by default;

@@ -70,13 +70,17 @@ func Open(ctx context.Context, connectionString string, options Options) (*Db, e
 	if options.Tracking == TrackingTracked {
 		identityMap = newTracker(converter)
 	}
+	mapper := mapping.NewResultMapper(loader, converter)
+	if judge, ok := options.Dialect.(core.TemporalMarkers); ok {
+		mapper.UseTemporalMarkers(judge) // the VAL-020 read rule by column type (spec/dialects.md "Temporals")
+	}
 	return &Db{
 		pool:       pool,
 		connection: connection,
 		options:    options,
 		maps:       loader,
 		converter:  converter,
-		mapper:     mapping.NewResultMapper(loader, converter),
+		mapper:     mapper,
 		tracker:    identityMap,
 	}, nil
 }

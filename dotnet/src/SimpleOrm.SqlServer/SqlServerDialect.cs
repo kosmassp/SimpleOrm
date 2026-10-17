@@ -202,6 +202,11 @@ public sealed class SqlServerDialect : IDialect
         var builder = new StringBuilder("if object_id(N'").Append(Escape(map.RelationName!))
             .Append("', N'U') is null\ncreate table ").Append(QuoteIdentifier(map.RelationName!)).Append(" (");
 
+        // nvarchar(max)/varbinary(max) cannot be an index key column (error 1919), so
+        // a string or bytes column of a declared index gets the indexable length a
+        // key column gets (spec/dialects.md "Storage types").
+        var indexed = new HashSet<string>(map.Indexes.SelectMany(i => i.Columns).Select(c => c.ColumnName), StringComparer.Ordinal);
+
         var first = true;
         foreach (var property in map.Properties)
         {
@@ -214,7 +219,7 @@ public sealed class SqlServerDialect : IDialect
                 continue;
             }
 
-            builder.Append(StorageType(property));
+            builder.Append(StorageType(property, indexable: property.IsKey || indexed.Contains(property.ColumnName)));
             if (!property.IsNullable)
             {
                 builder.Append(" not null");
@@ -301,7 +306,14 @@ public sealed class SqlServerDialect : IDialect
     /// <c>(max)</c> except keys, which need an indexable length; decimals default
     /// to <c>decimal(38, 9)</c> — declare the real precision in migrations.
     /// </summary>
-    public string StorageType(PropertyMap property)
+    public string StorageType(PropertyMap property) => StorageType(property, indexable: property.IsKey);
+
+    /// <summary>
+    /// The storage type with the indexable length applied when <paramref name="indexable"/>:
+    /// a key column, or a column of a declared index (CREATE TABLE only — snapshots and
+    /// diff see the key-only rule the seam's <see cref="StorageType(PropertyMap)"/> states).
+    /// </summary>
+    private static string StorageType(PropertyMap property, bool indexable)
     {
         var type = Nullable.GetUnderlyingType(property.ClrType) ?? property.ClrType;
         if (type.IsEnum)
@@ -346,7 +358,7 @@ public sealed class SqlServerDialect : IDialect
 
         if (type == typeof(byte[]))
         {
-            return property.IsKey ? "varbinary(450)" : "varbinary(max)";
+            return indexable ? "varbinary(450)" : "varbinary(max)";
         }
 
         if (type == typeof(Guid))
@@ -370,7 +382,7 @@ public sealed class SqlServerDialect : IDialect
         }
 
         // string, JSON, handler types.
-        return property.IsKey ? "nvarchar(450)" : "nvarchar(max)";
+        return indexable ? "nvarchar(450)" : "nvarchar(max)";
     }
 
     /// <summary>The declared type's base name: lowercased, any <c>(length)</c> stripped.</summary>

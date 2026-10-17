@@ -191,9 +191,9 @@ snapshots and the diff generator compare on the dialects that have them.
 | `decimal` | `TEXT` | `decimal(38, 9)` — declare the real precision in migrations | `numeric` (unconstrained) |
 | `double` | `REAL` | `float` | `double precision` |
 | `float` | `REAL` | `real` | `real` |
-| `string`, JSON, handler types | `TEXT` | `nvarchar(max)`; a key column `nvarchar(450)` (the indexable length) | `text` |
+| `string`, JSON, handler types | `TEXT` | `nvarchar(max)`; a key column `nvarchar(450)` (the indexable length), and `CREATE TABLE` also gives the length to a column of a declared index — `nvarchar(max)` cannot be an index key (error 1919) | `text` |
 | `guid` | `TEXT` | `uniqueidentifier` | `uuid` |
-| `bytes` | `BLOB` | `varbinary(max)`; a key column `varbinary(450)` | `bytea` |
+| `bytes` | `BLOB` | `varbinary(max)`; a key column or a column of a declared index `varbinary(450)` (as for strings) | `bytea` |
 | `datetime`, `datetimeoffset` | `TEXT` | `datetimeoffset` | `timestamp with time zone` |
 | `date` | `TEXT` | `date` | `date` |
 | `time` | `TEXT` | `time` | `time without time zone` |

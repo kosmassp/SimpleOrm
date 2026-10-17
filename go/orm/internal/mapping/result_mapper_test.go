@@ -276,3 +276,65 @@ type idOnlyDTOWithName struct {
 	ID   int64
 	Name string
 }
+
+// --- VAL-020 by database column type (core.TemporalMarkers, spec/dialects.md "Temporals") ---
+
+// textIsMarkerless is a stub judge: the SQLite driver reports the declared type TEXT for created_at, so
+// judging TEXT markerless exercises the hook without a server (the PostgreSQL leg runs it for real).
+type textIsMarkerless struct{}
+
+func (textIsMarkerless) IsMarkerlessTemporal(databaseTypeName string) bool {
+	return databaseTypeName == "TEXT"
+}
+
+type stampRow struct {
+	CreatedAt time.Time
+}
+
+func readStamp(t *testing.T, mapper *mapping.ResultMapper, path, query string) error {
+	t.Helper()
+	rows := openRawRows(t, path, query)
+	plan := planFor(t, mapper, reflect.TypeFor[stampRow](), rows)
+	if !rows.Next() {
+		t.Fatalf("expected a row for %q", query)
+	}
+	_, err := plan.Read(rows)
+	return err
+}
+
+func TestPlan_AMarkerlessColumnIsVAL020WhenTheDialectJudgesIt(t *testing.T) {
+	path := setupUsersTable(t)
+
+	judged := newMapper()
+	judged.UseTemporalMarkers(textIsMarkerless{})
+	if err := readStamp(t, judged, path, "select created_at from users"); core.CodeOf(err) != "VAL-020" {
+		t.Fatalf("expected VAL-020, got %v", err)
+	}
+
+	// No judge (SQLite): the value carries its own marker and reads as before.
+	if err := readStamp(t, newMapper(), path, "select created_at from users"); err != nil {
+		t.Fatalf("an unjudged mapper should read the marked value, got %v", err)
+	}
+}
+
+func TestPlan_ANullOrAnUnjudgedTypeNeverRefusesVAL020(t *testing.T) {
+	path := setupUsersTable(t)
+
+	// A column the judge does not call markerless reads.
+	other := newMapper()
+	other.UseTemporalMarkers(textIsMarkerless{})
+	if err := readStamp(t, other, path, "select cast(created_at as blob) as created_at from users"); core.CodeOf(err) == "VAL-020" {
+		t.Fatalf("a column of another type should not be judged markerless: %v", err)
+	}
+
+	// NULL is no value to refuse.
+	type maybeRow struct{ UpdatedAt *time.Time }
+	rows := openRawRows(t, path, "select updated_at from users")
+	plan := planFor(t, other, reflect.TypeFor[maybeRow](), rows)
+	if !rows.Next() {
+		t.Fatal("expected a row")
+	}
+	if _, err := plan.Read(rows); err != nil {
+		t.Fatalf("a NULL in a judged column should read as nil, got %v", err)
+	}
+}

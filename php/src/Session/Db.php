@@ -834,9 +834,17 @@ final class Db
         PdoBinder::bindAndExecute($statement, $parameters);
 
         if ($map->keyStrategy === KeyStrategy::DatabaseGenerated) {
-            $row = $statement->fetch(PDO::FETCH_ASSOC);
+            // The key is column 0 of the first result that has columns: `returning` yields it first on SQLite and
+            // PostgreSQL; SQL Server's unnamed `scope_identity()` scalar follows the insert's own row-count result
+            // as the batch's next rowset (spec/dialects.md "Generated keys").
+            while ($statement->columnCount() === 0 && $statement->nextRowset()) {
+                // advance to the rowset that carries the key
+            }
+
+            $row = $statement->fetch(PDO::FETCH_NUM);
+            $statement->closeCursor();
             $keyProperty = $map->keyProperties[0];
-            $generated = is_array($row) ? ($row[$keyProperty->columnName] ?? null) : null;
+            $generated = is_array($row) ? ($row[0] ?? null) : null;
             $keyProperty->setValue($entity, $this->converter->fromDatabase(
                 $generated,
                 $keyProperty->type,

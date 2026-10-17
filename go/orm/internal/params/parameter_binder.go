@@ -29,8 +29,9 @@ type BoundSQL struct {
 // not a string) is an IN list: without array-parameter support (SQLite,
 // always) every occurrence of the placeholder expands to generated names
 // (@ids_0, @ids_1, …) using the SQL's own spelling, and an empty collection
-// rewrites to the literal NULL. With array-parameter support the collection
-// binds as one parameter instead, SQL untouched.
+// rewrites to the literal NULL. With array-parameter support (PostgreSQL) the
+// collection binds as one parameter instead, SQL untouched: a slice typed by
+// the converted element type, an empty one typed from the declared element.
 func Bind(sqlText string, args any, converter *mapping.TypeConverter, dialect core.Dialect, queryName string) (BoundSQL, error) {
 	v := reflect.ValueOf(args)
 	for v.Kind() == reflect.Pointer {
@@ -100,7 +101,11 @@ func Bind(sqlText string, args any, converter *mapping.TypeConverter, dialect co
 					}
 					converted[i] = cv
 				}
-				namedArgs = append(namedArgs, sql.Named(placeholder, converted))
+				typed, err := typedArray(converted, f.value.Type().Elem(), converter, context)
+				if err != nil {
+					return BoundSQL{}, err
+				}
+				namedArgs = append(namedArgs, sql.Named(placeholder, typed))
 				continue
 			}
 
@@ -142,6 +147,58 @@ func isCollection(v reflect.Value) bool {
 		return v.Type().Elem().Kind() != reflect.Uint8
 	}
 	return false
+}
+
+// typedArray is the array-parameter realization (spec/dialects.md "Array
+// parameters"): the converted elements as a slice typed by the converted
+// element type — []int64, []string, []float64, []bool, []time.Time, [][]byte —
+// so the driver can encode it as the database array. "Typed" means the element
+// type travels with the parameter even when there are no elements: an empty
+// collection derives its type from the declared element type by converting that
+// type's zero value through the same pipeline (so `bigint = any($1)` still
+// types where an untyped empty list would not). A null element makes the slice
+// of pointers, which drivers encode as NULL entries.
+func typedArray(converted []any, declared reflect.Type, converter *mapping.TypeConverter, context string) (any, error) {
+	var elementType reflect.Type
+	hasNull := false
+	for _, item := range converted {
+		if item == nil {
+			hasNull = true
+		} else if elementType == nil {
+			elementType = reflect.TypeOf(item)
+		}
+	}
+	if elementType == nil {
+		zero := reflect.Zero(declared)
+		if declared.Kind() == reflect.Pointer {
+			zero = reflect.Zero(declared.Elem())
+		}
+		sample, err := converter.ToDatabase(zero.Interface(), "", context)
+		if err != nil || sample == nil {
+			return nil, core.Errorf("MAP-030", context,
+				"an array parameter of %s has no converted element type; register a TypeHandler (§7.9)", declared)
+		}
+		elementType = reflect.TypeOf(sample)
+	}
+
+	if hasNull {
+		slice := reflect.MakeSlice(reflect.SliceOf(reflect.PointerTo(elementType)), len(converted), len(converted))
+		for i, item := range converted {
+			if item == nil {
+				continue
+			}
+			element := reflect.New(elementType)
+			element.Elem().Set(reflect.ValueOf(item))
+			slice.Index(i).Set(element)
+		}
+		return slice.Interface(), nil
+	}
+
+	slice := reflect.MakeSlice(reflect.SliceOf(elementType), len(converted), len(converted))
+	for i, item := range converted {
+		slice.Index(i).Set(reflect.ValueOf(item))
+	}
+	return slice.Interface(), nil
 }
 
 func collectionElements(v reflect.Value) []any {

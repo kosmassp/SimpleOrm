@@ -13,8 +13,10 @@ import (
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/metadata"
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/render"
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/testsupport"
+	"github.com/kosmassp/SimpleOrm/go/orm/postgres"
 	"github.com/kosmassp/SimpleOrm/go/orm/sample"
 	"github.com/kosmassp/SimpleOrm/go/orm/sqlite"
+	"github.com/kosmassp/SimpleOrm/go/orm/sqlserver"
 )
 
 // sampleEntities is the ten fixture types by their conformance "entity" name
@@ -39,7 +41,9 @@ var sampleEntities = map[string]reflect.Type{
 // dialect package registers itself from its own ast_<dialect>_test.go file in
 // this package, so adding a dialect never edits this file.
 var astDialects = map[string]func() core.Dialect{
-	"sqlite": func() core.Dialect { return sqlite.New() },
+	"postgres":  func() core.Dialect { return postgres.New() },
+	"sqlite":    func() core.Dialect { return sqlite.New() },
+	"sqlserver": func() core.Dialect { return sqlserver.New() },
 }
 
 // astExpectation is one dialect's pinned rendering.

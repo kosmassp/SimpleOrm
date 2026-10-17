@@ -26,12 +26,21 @@ type ResultMapper struct {
 	loader    *metadata.Loader
 	converter *TypeConverter
 	plans     sync.Map // string -> *Plan
+	// markers judges a column's driver-reported type for the VAL-020 read rule on databases whose
+	// native temporals carry no marker (spec/dialects.md "Temporals"); nil on SQLite, whose TEXT
+	// temporals carry their own marker.
+	markers core.TemporalMarkers
 }
 
 // NewResultMapper builds a mapper sharing loader's metadata cache and converter's conversion rules.
 func NewResultMapper(loader *metadata.Loader, converter *TypeConverter) *ResultMapper {
 	return &ResultMapper{loader: loader, converter: converter}
 }
+
+// UseTemporalMarkers sets the dialect capability that judges markerless temporal
+// columns (core.TemporalMarkers); call it once, before the first Plan. A mapper
+// without one reads temporals exactly as before.
+func (m *ResultMapper) UseTemporalMarkers(judge core.TemporalMarkers) { m.markers = judge }
 
 // binding is one result column bound to a target. For an entity or a DTO, the
 // target is an ad-hoc *core.PropertyMap — the loader's own for an entity, one
@@ -52,6 +61,10 @@ type Plan struct {
 	scalar     bool
 	bindings   []binding
 	converter  *TypeConverter
+	// markerChecks are the binding indices read into a datetime/datetimeoffset without a registered
+	// handler, judged against the column's database type at read time; empty without a judge.
+	markerChecks []int
+	markers      core.TemporalMarkers
 }
 
 // Plan returns the plan for resultType against columns, building and caching
@@ -76,12 +89,14 @@ func (m *ResultMapper) buildPlan(resultType reflect.Type, columns []string, quer
 		if len(columns) == 0 {
 			return nil, core.Errorf("MAP-002", queryName, "%s expects one result column, the result has none", resultType)
 		}
-		return &Plan{
+		plan := &Plan{
 			resultType: resultType,
 			scalar:     true,
 			converter:  m.converter,
 			bindings:   []binding{{columnType: core.ColumnTypeOf(resultType), context: queryName + " → " + resultType.String()}},
-		}, nil
+		}
+		m.planMarkerChecks(plan)
+		return plan, nil
 	}
 
 	structType := resultType
@@ -102,13 +117,34 @@ func (m *ResultMapper) buildPlan(resultType reflect.Type, columns []string, quer
 		return nil, err
 	}
 
-	return &Plan{
+	plan := &Plan{
 		resultType: resultType,
 		structType: structType,
 		isPointer:  isPointer,
 		converter:  m.converter,
 		bindings:   bindings,
-	}, nil
+	}
+	m.planMarkerChecks(plan)
+	return plan, nil
+}
+
+// planMarkerChecks marks the bindings the VAL-020 database-type rule applies to: a datetime or
+// datetimeoffset token read without a registered handler (handlers win over the fixed table — the
+// documented escape for legacy columns). date and time carry no kind by design and never refuse.
+func (m *ResultMapper) planMarkerChecks(plan *Plan) {
+	if m.markers == nil {
+		return
+	}
+	plan.markers = m.markers
+	for i, b := range plan.bindings {
+		columnType, target := b.columnType, plan.resultType
+		if b.property != nil {
+			columnType, target = b.property.ColumnType, b.property.Type
+		}
+		if (columnType == core.TypeDateTime || columnType == core.TypeDateTimeOffset) && !m.converter.HasHandler(target) {
+			plan.markerChecks = append(plan.markerChecks, i)
+		}
+	}
 }
 
 // entityBindings is the §7.7 strictness rule: every result column resolves to
@@ -245,7 +281,14 @@ func (p *Plan) Read(rows *sql.Rows) (any, error) {
 	if err := rows.Scan(scanArgs...); err != nil {
 		return nil, err
 	}
-	return p.ReadValues(raw)
+	var types []*sql.ColumnType
+	if len(p.markerChecks) > 0 {
+		var err error
+		if types, err = rows.ColumnTypes(); err != nil {
+			return nil, err
+		}
+	}
+	return p.ReadValuesTyped(raw, types)
 }
 
 // ReadValues assembles a result from column values read elsewhere, in the
@@ -257,9 +300,26 @@ func (p *Plan) Read(rows *sql.Rows) (any, error) {
 // the plan built for that segment's stripped column names. Read and
 // ReadValues share every conversion rule (owned-member nullability included);
 // this addition does not change Read's behavior.
-func (p *Plan) ReadValues(raw []any) (any, error) {
+func (p *Plan) ReadValues(raw []any) (any, error) { return p.ReadValuesTyped(raw, nil) }
+
+// ReadValuesTyped is ReadValues with the driver-reported column types of the
+// same values, in the same order: where the dialect judges temporals by their
+// column type (core.TemporalMarkers), a non-NULL value read from a markerless
+// column is VAL-020 before any conversion. types may be nil (nothing judged).
+func (p *Plan) ReadValuesTyped(raw []any, types []*sql.ColumnType) (any, error) {
 	if len(raw) != len(p.bindings) {
 		return nil, fmt.Errorf("simpleorm: ReadValues got %d value(s), the plan expects %d", len(raw), len(p.bindings))
+	}
+	if types != nil {
+		for _, i := range p.markerChecks {
+			if raw[i] == nil || i >= len(types) {
+				continue
+			}
+			if name := types[i].DatabaseTypeName(); p.markers.IsMarkerlessTemporal(name) {
+				return nil, core.Errorf("VAL-020", p.bindings[i].context,
+					"the %s column stores datetimes without a UTC/offset marker; declare it with time zone (timestamptz / datetimeoffset), or register a TypeHandler for the property to read a legacy column", name)
+			}
+		}
 	}
 
 	if p.scalar {

@@ -257,6 +257,8 @@ type navReadState struct {
 	field   reflect.StructField
 	indices []int
 	plan    *mapping.Plan
+	// types are the driver-reported column types of this segment, in plan order (VAL-020 by database type).
+	types []*sql.ColumnType
 }
 
 // ownerRecord is one deduplicated root instance (§7.4): the heap-allocated
@@ -295,6 +297,10 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 	if err != nil {
 		return nil, err
 	}
+	columnTypes, err := rows.ColumnTypes() // the VAL-020 database-type rule (core.TemporalMarkers) judges each segment's slice
+	if err != nil {
+		return nil, err
+	}
 
 	// T is the entity struct or a pointer to it: the pointer shape is what a tracked
 	// session hands out as its own instance (Level 3 M1, CODING-STANDARD §10).
@@ -306,6 +312,7 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 		trackedTargets[i] = db.tracking(nav.targetMap)
 	}
 	rootIndices, rootColumns := segmentColumns(columns, "t_")
+	rootTypes := pickTypes(columnTypes, rootIndices)
 	rootPlan, err := db.mapper.Plan(reflect.PointerTo(rootType), rootColumns, queryName)
 	if err != nil {
 		return nil, err
@@ -336,7 +343,7 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 		if err != nil {
 			return nil, err
 		}
-		states[i] = &navReadState{nav: nav, field: field, indices: indices, plan: plan}
+		states[i] = &navReadState{nav: nav, field: field, indices: indices, plan: plan, types: pickTypes(columnTypes, indices)}
 	}
 
 	var order []*ownerRecord
@@ -360,7 +367,7 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 			}
 		}
 
-		rootValue, err := rootPlan.ReadValues(pick(raw, rootIndices))
+		rootValue, err := rootPlan.ReadValuesTyped(pick(raw, rootIndices), rootTypes)
 		if err != nil {
 			return nil, err
 		}
@@ -415,7 +422,7 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 				// segment: a dead link loads as null/absent, never an error.
 				continue
 			}
-			targetValue, err := state.plan.ReadValues(segment)
+			targetValue, err := state.plan.ReadValuesTyped(segment, state.types)
 			if err != nil {
 				return nil, err
 			}
@@ -506,6 +513,15 @@ func pick(values []any, indices []int) []any {
 	out := make([]any, len(indices))
 	for i, idx := range indices {
 		out[i] = values[idx]
+	}
+	return out
+}
+
+// pickTypes is pick for the driver-reported column types.
+func pickTypes(types []*sql.ColumnType, indices []int) []*sql.ColumnType {
+	out := make([]*sql.ColumnType, len(indices))
+	for i, idx := range indices {
+		out[i] = types[idx]
 	}
 	return out
 }

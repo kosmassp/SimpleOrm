@@ -69,6 +69,25 @@ final class PdoBinderTest extends TestCase
         self::assertSame(['t' => 'text'], $this->row('select typeof(:v) as t', ['v' => '5']));
     }
 
+    #[Test]
+    public function a_collection_value_binds_as_a_postgres_array_literal_string(): void
+    {
+        // Only a dialect with array parameters (ADR-0025) leaves an array whole; the binder sends the literal as text.
+        self::assertSame(['t' => 'text', 'v' => '{1,3}'], $this->row('select typeof(:v) as t, :v as v', ['v' => [1, 3]]));
+        self::assertSame(['t' => 'text', 'v' => '{}'], $this->row('select typeof(:v) as t, :v as v', ['v' => []]));
+        self::assertSame(['v' => '{"a,b",NULL}'], $this->row('select :v as v', ['v' => ['a,b', null]]));
+    }
+
+    #[Test]
+    public function a_natively_bound_temporal_binds_as_its_iso_8601_utc_string(): void
+    {
+        // BindsTemporalsNatively leaves the converter's UTC instant a DateTimeImmutable; PDO cannot bind one (CODING-STANDARD §10).
+        $instant = new \DateTimeImmutable('2026-08-28T16:30:00+07:00');
+
+        self::assertSame(['v' => '2026-08-28T09:30:00.0000000Z'], $this->row('select :v as v', ['v' => $instant]));
+        self::assertSame(['v' => '{"2026-08-28T09:30:00.0000000Z"}'], $this->row('select :v as v', ['v' => [$instant]]));
+    }
+
     /** @param array<string, mixed> $parameters @return array<string, mixed> */
     private function row(string $sql, array $parameters): array
     {

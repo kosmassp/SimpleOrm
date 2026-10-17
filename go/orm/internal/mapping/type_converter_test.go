@@ -329,3 +329,30 @@ func TestTypeConverter_NullPassesThroughBothDirections(t *testing.T) {
 		t.Errorf("nil to database: %v %v", got, err)
 	}
 }
+
+func TestTypeConverter_NativeTemporalBindingHandsTheDriverUTCInstantsAndDates(t *testing.T) {
+	c := mapping.NewTypeConverter(core.NewTypeHandlerRegistry(), true)
+	zone := time.FixedZone("-05:00", -5*60*60)
+	local := time.Date(2026, 8, 28, 23, 30, 15, 0, zone)
+
+	// An instant binds as the same instant in UTC (timestamptz >= text refuses on PostgreSQL).
+	for _, token := range []core.ColumnType{"", core.TypeDateTime, core.TypeDateTimeOffset} {
+		got, err := c.ToDatabase(local, token, "ctx")
+		instant, ok := got.(time.Time)
+		if err != nil || !ok || !instant.Equal(local) || instant.Location() != time.UTC {
+			t.Errorf("%q: got %#v, %v", token, got, err)
+		}
+	}
+
+	// A date is its own calendar date at UTC midnight — converting the instant would shift it to the 29th.
+	got, err := c.ToDatabase(local, core.TypeDate, "ctx")
+	if want := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC); err != nil || got != want {
+		t.Errorf("date: got %#v, %v, want %v", got, err, want)
+	}
+
+	// A time of day binds as invariant text: no kind to refuse, and the database infers the parameter type.
+	got, err = c.ToDatabase(local, core.TypeTime, "ctx")
+	if err != nil || got != "23:30:15.0000000" {
+		t.Errorf("time: got %#v, %v", got, err)
+	}
+}

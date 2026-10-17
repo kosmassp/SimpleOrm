@@ -247,6 +247,13 @@ final class AnsiSelectRenderer
         ?string $rootAlias,
     ): string {
         $subProjection = $criteria->subquery->projection ?? $criteria->subquery->map->properties;
+        $subquery = $criteria->subquery;
+        if ($subquery->orderings !== [] && $subquery->limit === null && $subquery->offset === null && $dialect->pagingRequiresOrderBy()) {
+            // SQL Server refuses ORDER BY in a subquery or derived table unless TOP/OFFSET accompanies it (error 1033);
+            // an unpaged subquery's order cannot change membership, so it is dropped — only where the flag says the
+            // dialect has that rule, so every other dialect's rendering is untouched.
+            $subquery = new SelectAst($subquery->map, $subquery->where, [], null, null, $subquery->projection, $subquery->joins);
+        }
 
         if (count($subProjection) !== count($criteria->properties)) {
             throw new SimpleOrmException(
@@ -267,7 +274,7 @@ final class AnsiSelectRenderer
         // nested selects too; the outer bind callback continues the parameter
         // numbering (spec/query-ast.md Clarifications, ADR-0033).
         if (count($resolvedRootProperties) === 1) {
-            $subSql = $dialect->selectSql($criteria->subquery, $bind);
+            $subSql = $dialect->selectSql($subquery, $bind);
 
             return self::qualifiedColumn($map, $criteria->properties[0], $queryName, $dialect, $rootAlias)
                 . ' in (' . $subSql . ')';
@@ -278,7 +285,7 @@ final class AnsiSelectRenderer
                 static fn (string $p): string => self::qualifiedColumn($map, $p, $queryName, $dialect, $rootAlias),
                 $criteria->properties,
             ));
-            $subSql = $dialect->selectSql($criteria->subquery, $bind);
+            $subSql = $dialect->selectSql($subquery, $bind);
 
             return "({$columns}) in ({$subSql})";
         }
@@ -286,7 +293,7 @@ final class AnsiSelectRenderer
         // Row-value IN unsupported (ADR-0024; SQL Server): a correlated EXISTS
         // over the same subquery as a derived table `s`. `$rootAlias` is `t`
         // here — this very rewrite is why `treeNeedsExistsRewrite` aliased it.
-        $subSql = $dialect->selectSql($criteria->subquery, $bind);
+        $subSql = $dialect->selectSql($subquery, $bind);
         $correlations = [];
         foreach ($resolvedRootProperties as $i => $rootProperty) {
             $subColumn = $dialect->quoteIdentifier($subProjection[$i]->columnName);

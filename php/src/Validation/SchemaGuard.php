@@ -84,7 +84,12 @@ final class SchemaGuard
         $columnsCache = [];
         try {
             foreach (self::discoverRegistry($classes) as [$source, $sql, $argsType, $resultType]) {
-                self::validateStatement($db, $connection, $columnsCache, $source, $sql, $argsType, $resultType, $errors);
+                $savepoint = self::openSavepoint($connection);
+                try {
+                    self::validateStatement($db, $connection, $columnsCache, $source, $sql, $argsType, $resultType, $errors);
+                } finally {
+                    self::closeSavepoint($connection, $savepoint);
+                }
             }
 
             foreach ($classes as $class) {
@@ -102,6 +107,31 @@ final class SchemaGuard
         }
 
         return $errors;
+    }
+
+    /**
+     * PostgreSQL aborts the surrounding transaction on any statement error — a refused `prepare` or `execute` would
+     * fail every entry validated after it with "current transaction is aborted" — so each registry entry runs under
+     * its own savepoint there (CODING-STANDARD §10). SQLite and SQL Server keep the transaction usable after an
+     * error and need none (SQL Server's savepoint syntax differs anyway).
+     */
+    private static function openSavepoint(PDO $connection): bool
+    {
+        if ($connection->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'pgsql') {
+            return false;
+        }
+
+        $connection->exec('savepoint simpleorm_shield');
+
+        return true;
+    }
+
+    private static function closeSavepoint(PDO $connection, bool $opened): void
+    {
+        if ($opened) {
+            $connection->exec('rollback to savepoint simpleorm_shield');
+            $connection->exec('release savepoint simpleorm_shield');
+        }
     }
 
     /**

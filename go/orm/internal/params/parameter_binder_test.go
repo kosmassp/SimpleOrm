@@ -272,3 +272,38 @@ func TestBind_ANullElementMakesTheSliceOfPointers(t *testing.T) {
 		t.Errorf("expected []*int64{&1, nil}, got %#v", bound.Args[0].(sql.NamedArg).Value)
 	}
 }
+
+type nullableArgs struct {
+	Avatar *[]byte
+	Name   *string
+	Count  *int64
+	Ids    []*int32
+}
+
+// A nil argument binds as a NULL that carries its Go type's token (ADR-0040 add.1): []byte(nil) for
+// bytes, the sql.Null type for the others — never an untyped nil go-mssqldb would announce as nvarchar(1).
+func TestBind_ANilArgumentBindsATypedNull(t *testing.T) {
+	sqlText := "select 1 where @Avatar is null and @Name is null and @Count is null and 1 in (@Ids)"
+	bound, err := params.Bind(sqlText, nullableArgs{Ids: []*int32{nil}}, newConverter(), sqlite.New(), "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"Avatar": []byte(nil), "Name": sql.NullString{}, "Count": sql.NullInt64{}, "Ids_0": sql.NullInt32{}}
+	for _, arg := range bound.Args {
+		named := arg.(sql.NamedArg)
+		expected, ok := want[named.Name]
+		if !ok {
+			t.Fatalf("unexpected argument %s", named.Name)
+		}
+		switch e := expected.(type) {
+		case []byte:
+			if got, ok := named.Value.([]byte); !ok || got != nil {
+				t.Errorf("%s: want []byte(nil), got %#v", named.Name, named.Value)
+			}
+		default:
+			if named.Value != e {
+				t.Errorf("%s: want %#v, got %#v", named.Name, e, named.Value)
+			}
+		}
+	}
+}

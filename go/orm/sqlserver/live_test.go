@@ -1132,10 +1132,37 @@ func TestLive_SchemaGuardOverASmallRegistry(t *testing.T) {
 	}
 }
 
-// TestLive_BytesRoundTrip writes and matches varbinary values (ADR-0040 add.1). Its last write, a NULL
-// into varbinary(max), is also the probe for the null-typing ruling waiting for a SQL Server engine
-// (spec/dialects.md): go-mssqldb binds nil as an nvarchar(1) NULL, which may refuse (error 257).
+// TestLive_BytesRoundTrip writes and matches varbinary values (ADR-0040 add.1), ending with a NULL
+// into varbinary(max) — bound as a typed []byte(nil), see TestLive_ANullBytesWriteIsATypedNull.
 func TestLive_BytesRoundTrip(t *testing.T) {
 	db, _ := newSampleSession(t, orm.Options{})
 	testsupport.BytesRoundTrip(t, db)
+}
+
+// TestLive_ANullBytesWriteIsATypedNull verifies the typed-null ruling (ADR-0040 add.1, spec/dialects.md
+// "Typed nulls from the metadata token") the day an engine exists: an untyped nil would reach SQL Server
+// as an nvarchar(1) NULL, which it refuses to convert into varbinary (error 257); the binder sends a
+// []byte(nil), which go-mssqldb announces as varbinary. Insert and update both write the NULL.
+func TestLive_ANullBytesWriteIsATypedNull(t *testing.T) {
+	ctx := context.Background()
+	db, _ := newSampleSession(t, orm.Options{})
+	user := testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+	profile := &sample.UserProfile{UserID: user.ID}
+	profile.CreatedAtUtc = testsupport.SeedTime
+	if err := orm.Insert(ctx, db, profile); err != nil {
+		t.Fatalf("insert with a NULL avatar: %v", err)
+	}
+	avatar := []byte{0x01}
+	profile.Avatar = &avatar
+	if err := orm.UpdateOnly(ctx, db, profile, "Avatar"); err != nil {
+		t.Fatal(err)
+	}
+	profile.Avatar = nil
+	if err := orm.UpdateOnly(ctx, db, profile, "Avatar"); err != nil {
+		t.Fatalf("update to a NULL avatar: %v", err)
+	}
+	read, err := orm.Get[sample.UserProfile](ctx, db, profile.ID)
+	if err != nil || read.Avatar != nil {
+		t.Fatalf("expected a NULL avatar back, got %v, %v", read, err)
+	}
 }

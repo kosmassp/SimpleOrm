@@ -38,6 +38,15 @@ public sealed class EntityMapLoader
     public static IReadOnlyList<MappingError> BaseClassesUsedAsEntities(IEnumerable<Type> types)
         => AttributeMapLoader.BaseClassesUsedAsEntities(types);
 
+    /// <summary>
+    /// The entity types an assembly scan maps — concrete classes carrying mapping
+    /// attributes that are not owned types — or a <see cref="MappingException"/> with
+    /// every <c>MAP-028</c> when a base class is among them (ADR-0040). Tooling that
+    /// enumerates entities (the CLI, the shadow rebuild) goes through this.
+    /// </summary>
+    public static IReadOnlyList<Type> ScannedEntityTypes(IEnumerable<Type> types)
+        => AttributeMapLoader.ScannedEntityTypes(types);
+
     private EntityMap LoadCore(Type entityType)
     {
         if (entityType.IsAbstract)

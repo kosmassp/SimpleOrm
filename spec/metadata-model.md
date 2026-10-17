@@ -88,7 +88,10 @@ class legitimately maps to a convention-named table on its own. Declaring base
 classes `abstract` is the convention (the fixture's `BaseModel`). Mapped
 inheritance — single-table, table-per-type, a polymorphic read over concrete
 tables — is ruled out permanently; a language without subclassing (Go, Rust) has
-nothing to refuse and records the code as unreachable.
+nothing to refuse in these three forms and records the code as unreachable —
+except what its own inheritance-like mechanism would silently carry (Go method
+promotion of an embedded struct's entity descriptor), which it refuses with the
+same code (see Clarifications).
 
 ## Naming convention
 
@@ -281,3 +284,61 @@ A column may declare the column it was previously stored under, exported
 only when declared: `"renamedFrom": "name"`. The diff generator reads it as
 a declared rename; the mapper and the session ignore it. `MAP-027` when
 declared without `[Column]` or without a name.
+
+## Clarifications (the PHP and Go ports asked; ADR-0040 add.1)
+
+- **"Abstract" includes interfaces** and any other type that can never be
+  instantiated: a map is never loaded for it, whatever the loader.
+- **Where the check runs.** The abstract check runs once, first, at the single
+  map-loading entry point — before explicit registrations, the annotation loader,
+  and the convention loader — so every path that loads a map inherits it. A
+  manual-builder registration of an abstract type is refused where it is written
+  (at registration), not only when the map is first needed.
+- **A navigation typed to an abstract class.** The owner's declaration is
+  shape-valid and the owner's map loads; what refuses is every load of the
+  target — an explicit load, a batch load, an eager load in any fetch mode, and an
+  export that needs the target's map (a one-to-many's foreign-key columns). An
+  owner's map that never needs the target's map (a many-to-one) exports.
+- **The parent rule applies under every loader** — annotation, convention, and
+  manual builder: "a mapped type" is mapped by any of them. It is collected
+  beside the type's other errors (never first-error-only), one error per ancestor
+  that carries a relation source or an `[Index]`, naming the subclass, that
+  ancestor, and the declarations found, however far up the chain — a
+  grandparent's `[Table]` is named even when the parent is clean, and an
+  abstract ancestor carrying `[Table]` counts: its source names it an entity.
+- **"Read without inheritance" is vacuous** where the language's reflection never
+  inherits class-level annotations (PHP `getAttributes()`); it is an instruction
+  where it does (C# attribute inheritance) or where an inheritance-like mechanism
+  exists (Go method promotion: an embedded struct whose entity descriptor names a
+  relation source or indexes would be promoted onto the embedding struct — the
+  loader refuses the pair with `MAP-028` naming both types, the deepest declaring
+  struct through nested embedding, and never reads the promoted descriptor; an
+  embedded struct with no descriptor, or one declaring only foreign keys or links,
+  shares its fields and nothing else).
+- **The scan rule's sets.** A *base candidate* is a concrete, mapped, non-owned
+  class carrying no relation source of its own; an *extender* is any scanned
+  mapped, non-owned class below it — abstract ones included — directly or through
+  intermediates. Every candidate in the scanned list that an extender sits under
+  is reported, each once, naming its extenders (sorted by name): a chain
+  `Base ← Middle (no source) ← Leaf ([Table])` reports both `Base` and `Middle`.
+  An ancestor outside the scanned list is invisible to the scan. A reported base
+  is not validated as a relation; its extenders still are. Alone, the same
+  concrete class loads and maps to its convention-named table, and so does a
+  subclass of it that carries its own `[Table]`.
+- **What the scan refuses.** SchemaGuard reports the bases in its complete
+  report. Every CLI command that enumerates entities — `export-metadata`,
+  `snapshot`, `diff`, `migrate --force`'s sync, `shadow` — refuses before doing
+  anything, with exit code 1 and every `MAP-028`; `validate` reports through
+  SchemaGuard. Where there is no assembly to scan (PHP), the scan runs over the
+  class list the caller passes; where registration is explicit and nothing
+  extends anything (Go), the rule has nothing to see.
+- **A registry entry whose result type fails to load** (`MAP-028`, or any other
+  loader failure) is one SchemaGuard report row per violation, with the entry as
+  the source, and the entry's per-column checks are skipped; never an escaping
+  exception.
+- **The conformance case needs nothing in the fixture database**: the refusal
+  happens when the result type's map is first needed, before any row is read.
+  Where the code is unreachable, the runner resolves `BaseModel` to its
+  field-sharing fixture type and pins the premise (the type is embedded by value
+  in the fixture entities) instead of running the query — "passes by
+  construction" is honest only because the premise is checked.

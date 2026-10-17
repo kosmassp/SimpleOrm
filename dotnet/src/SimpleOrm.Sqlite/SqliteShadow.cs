@@ -299,9 +299,7 @@ public static class SqliteShadow
     {
         var loader = new EntityMapLoader();
         var byRelation = new Dictionary<string, MappedEntity>(StringComparer.OrdinalIgnoreCase);
-        foreach (var type in assembly.GetExportedTypes()
-            .Where(t => t is { IsClass: true, IsAbstract: false } && EntityMapLoader.HasMappingAttributes(t)
-                && !EntityMapLoader.IsOwnedType(t)))
+        foreach (var type in EntityMapLoader.ScannedEntityTypes(assembly.GetExportedTypes()))   // ADR-0040: a base class refuses the scan
         {
             var map = loader.Load(type);
             if (map.RelationName is not null && map.Kind != RelationKind.Statement)

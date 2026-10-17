@@ -12,6 +12,7 @@ internal static class ConventionMapLoader
     {
         var errors = new List<MappingError>();
         var specs = new List<MappedPropertySpec>();
+        AttributeMapLoader.CheckBaseClasses(entityType, errors);   // ADR-0040 (unreachable in practice: such a type routes to the attribute loader)
 
         foreach (var property in AttributeMapLoader.PropertiesInDeclarationOrder(entityType))
         {

@@ -3110,3 +3110,81 @@ Nothing starts unprompted (CLAUDE.md §1).
 **Status.** Accepted. Inheritance mapping (single-table, table-per-type,
 polymorphic table-per-concrete) ruled out permanently; base classes share
 members only; `MAP-028` reserved; implementation not started.
+
+### ADR-0040 addendum 1 — MAP-028 built in three implementations (2026-10-17)
+
+The addendum-sized change the ADR scheduled, done by the usual method: the
+reference with the spec text and the conformance case first, then PHP and Go by
+agents forbidden to read another implementation, then a review that aligned
+the reference to what the ports had read into the spec.
+
+**What was built.** C#: the one map-loading entry point (`EntityMapLoader`)
+refuses an abstract type before any loader runs, so every path that loads a map
+— registry result types, key reads, criteria queries, writes, explicit and eager
+loading of a navigation target, the tracker, SchemaGuard, `export-metadata` —
+raises `MAP-028`; `MappingOptions.Register` refuses an abstract registration
+where it is written; the attribute loader reads every class-level attribute
+without inheritance (`inherit: false` — relation sources, `[Index]`, `[Owned]`)
+and reports an ancestor carrying a relation source **or an `[Index]`** with both
+class names and the declarations found, collected beside the type's other
+errors and applied under every loader (attribute, convention, manual builder);
+the scan rule (`EntityMapLoader.BaseClassesUsedAsEntities`) finds a concrete
+sourceless mapped class that another scanned class extends — SchemaGuard reports
+it once and does not validate it as a relation, and `ScannedEntityTypes` makes
+every CLI command that enumerates entities (`export-metadata`, `snapshot`,
+`diff`, `migrate --force`, `shadow`) refuse before doing anything. PHP: the same
+three checks in `Metadata\BaseClassRules` (`isAbstract()` — interfaces
+included — and `getParentClass()`; PHP's `getAttributes()` never inherits, so
+"read without inheritance" needed no code), wired into the entry point, the
+builder, the registrations, SchemaGuard, and `Cli\Application::mappedTypes()`.
+Go: the abstract-class and scan forms are unreachable (a struct type is always
+concrete; nothing extends anything; registration is explicit) and are recorded
+beside `MAP-023` and as a §10 row — but the agent found and closed the one
+reachable analog: **method promotion** carried an embedded struct's `Entity()`
+descriptor onto the embedding struct, which silently adopted the embedded
+struct's table; `refuseEmbeddedEntities` now reports every such pair with
+`MAP-028` naming both types (the deepest declaring struct through nested
+embedding) and never reads the promoted descriptor, while a plain embedded
+struct (`sample.BaseModel`) keeps sharing fields only.
+
+**Found on the way.** SchemaGuard (C# and PHP alike) let a `MappingException`
+for a registry entry's result type escape instead of becoming report rows — any
+loader failure, not only `MAP-028`; both now add one row per violation with the
+entry as the source and skip that entry's per-column checks.
+
+**Implementation rulings beyond the ADR's letter, for the owner to confirm:**
+`[Index]` on a base class is treated like a relation source (with class-level
+attributes no longer inherited the alternative was a silently dropped index,
+which §2 forbids); an abstract ancestor carrying `[Table]` is `MAP-028` on the
+concrete subclass (the base's source names it an entity — it was silently
+inherited before); `[Owned]` on a class is read without inheritance too.
+
+**Spec.** `metadata-model.md`: the paragraph "A base class is never an entity"
+beside the inherited-properties rule, and a Clarifications section answering
+the ports' 15 + 7 gap questions (interfaces are abstract; where the check runs;
+a navigation typed to an abstract class — the owner's map loads, every load of
+the target refuses; the parent rule under every loader, one error per ancestor;
+"read without inheritance" is vacuous in PHP and an instruction against Go's
+promotion; the scan rule's candidate and extender sets, chains, the invisible
+outside ancestor, what each CLI command does; the registry-entry report rows;
+what the conformance runner pins where the code is unreachable).
+`mapping-rules.md` Strictness bullet, `validation-rules.md` row and item 2,
+`errors.md` row completed, `conformance/README.md` `cases/` row (`result` may
+name `BaseModel`), README "Variants" with both patterns (owned variants with a
+kind column; a write model plus `[View]`/`[Statement]` read models).
+
+**Conformance.** `cases/map028_read_through_a_base_class.json` (`"result":
+"BaseModel"`, `expect.error MAP-028`) runs in all three runners — C# and PHP
+refuse at the map load before any row is read; Go resolves the name to the
+embedded `sample.BaseModel`, pins that it is embedded by value in the fixture
+entities, and passes by construction without running the query. No fixture-free
+conformance form exists for the declaration rules (`cases/` needs a fixture
+result type and there is no loader-error folder): they are pinned by each
+implementation's own tests (C# `BaseClassRuleTests`, PHP `BaseClassRulesTest` +
+`BaseClassScanTest`, Go `metadata/map028_test.go`).
+
+**Counts.** C# 413 passed / 10 skipped (was 394 / 22; the live Postgres leg ran on this machine); PHP 646 (was 618); Go `go vet` + `go test ./...` ok.
+
+**Status.** Accepted; the ADR's implementation is complete. Nothing else
+inheritance-related changed: single-table and table-per-type stay out
+permanently.

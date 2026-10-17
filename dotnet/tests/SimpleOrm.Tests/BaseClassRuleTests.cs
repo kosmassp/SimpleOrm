@@ -88,6 +88,10 @@ public sealed class BaseClassRuleTests(SqliteFixture fixture)
         // The subclass never adopts the base's table — refused, not silently remapped —
         // and the check is one error among the type's others, never first-error-only.
         Assert.Equal(["MAP-028", "MAP-010"], CodesOf<ExtendsATableWithAnUnmappedProperty>().OrderDescending().ToArray());
+
+        // The rule holds under every loader: a manual map of such a subclass is refused the same way.
+        var options = new MappingOptions().Register(new EntityMapBuilder<ExtendsATable>().ToTable("labels"));
+        Assert.Contains("MAP-028", Assert.Throws<MappingException>(() => new EntityMapLoader(options).Load<ExtendsATable>()).Errors.Select(e => e.Code));
     }
 
     [Fact]
@@ -110,6 +114,12 @@ public sealed class BaseClassRuleTests(SqliteFixture fixture)
 
         // The fixture itself is clean: BaseModel is abstract, so nothing in the sample is flagged.
         Assert.Empty(EntityMapLoader.BaseClassesUsedAsEntities(typeof(User).Assembly.GetExportedTypes()));
+
+        // Tooling enumerates entities through the scan: the whole set refuses when a base class is among it.
+        var refused = Assert.Throws<MappingException>(() => EntityMapLoader.ScannedEntityTypes(
+            [typeof(ConcreteSourcelessBase), typeof(ExtendsTheSourcelessBase), typeof(User)]));
+        Assert.Equal(typeof(ConcreteSourcelessBase), refused.EntityType);
+        Assert.DoesNotContain(typeof(BaseModel), EntityMapLoader.ScannedEntityTypes(typeof(User).Assembly.GetExportedTypes()));
     }
 
     [Fact]

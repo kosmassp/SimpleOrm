@@ -592,7 +592,7 @@ internal static class AttributeMapLoader
         // to this loader, where it is MAP-028 rather than silently adopted.
         for (var type = entityType; type is not null && type != typeof(object); type = type.BaseType)
         {
-            if (ClassLevelEntityMetadata(type) is not null)
+            if (ClassLevelEntityMetadata(type).Length > 0)
             {
                 return true;
             }
@@ -605,10 +605,10 @@ internal static class AttributeMapLoader
     }
 
     /// <summary>
-    /// The name of the first class-level entity declaration the type itself carries —
-    /// a relation source or <c>[Index]</c> — read without attribute inheritance; null when none.
+    /// The class-level entity declarations the type itself carries — relation sources
+    /// and <c>[Index]</c> — read without attribute inheritance; empty when none.
     /// </summary>
-    private static string? ClassLevelEntityMetadata(Type type)
+    private static string[] ClassLevelEntityMetadata(Type type)
         => type.GetCustomAttributes(inherit: false)
             .Select(a => a switch
             {
@@ -620,7 +620,9 @@ internal static class AttributeMapLoader
                 IndexAttribute => "[Index]",
                 _ => null,
             })
-            .FirstOrDefault(name => name is not null);
+            .Where(name => name is not null)
+            .Distinct()
+            .ToArray()!;
 
     /// <summary>
     /// ADR-0040: a base class shares members only. One carrying a relation source (or an
@@ -628,15 +630,17 @@ internal static class AttributeMapLoader
     /// extended by one — <c>MAP-028</c> naming both classes, checked on the chain the
     /// loader already walks for inherited properties.
     /// </summary>
-    private static void CheckBaseClasses(Type entityType, List<MappingError> errors)
+    internal static void CheckBaseClasses(Type entityType, List<MappingError> errors)
     {
+        // One error per ancestor, listing its declarations — every loader (attribute,
+        // convention, manual builder) calls this: "a mapped type" is mapped by any of them.
         for (var type = entityType.BaseType; type is not null && type != typeof(object); type = type.BaseType)
         {
-            if (ClassLevelEntityMetadata(type) is { } declaration)
+            if (ClassLevelEntityMetadata(type) is { Length: > 0 } declarations)
             {
                 errors.Add(new MappingError(
                     "MAP-028", entityType.Name,
-                    $"extends '{type.Name}', which carries {declaration}: a base class shares members only and is never an entity (ADR-0040); "
+                    $"extends '{type.Name}', which carries {string.Join(" and ", declarations)}: a base class shares members only and is never an entity (ADR-0040); "
                     + "declare the relation source on the concrete class and keep the base a plain member holder"));
             }
         }
@@ -673,9 +677,27 @@ internal static class AttributeMapLoader
             .OrderBy(pair => pair.Key.Name, StringComparer.Ordinal)
             .Select(pair => new MappingError(
                 "MAP-028", pair.Key.Name,
-                $"is a concrete class without a relation source that '{string.Join("', '", pair.Value)}' extends: a base class shares members only "
-                + "and is never an entity (ADR-0040); declare it abstract"))
+                $"is a concrete class without a relation source that '{string.Join("', '", pair.Value.OrderBy(n => n, StringComparer.Ordinal))}' extends: "
+                + "a base class shares members only and is never an entity (ADR-0040); declare it abstract"))
             .ToArray();
+    }
+
+    /// <summary>
+    /// The scanned entity types — concrete, mapped, not owned — after the ADR-0040 scan
+    /// rule: when a base class is among them the whole scan refuses with one
+    /// <see cref="MappingException"/> carrying every <c>MAP-028</c> (the CLI's entity
+    /// commands and the shadow rebuild; SchemaGuard reports instead of throwing).
+    /// </summary>
+    internal static IReadOnlyList<Type> ScannedEntityTypes(IEnumerable<Type> types)
+    {
+        var all = types.ToArray();
+        var errors = BaseClassesUsedAsEntities(all);
+        if (errors.Count > 0)
+        {
+            throw new MappingException(all.First(t => t.Name == errors[0].Target), errors);
+        }
+
+        return all.Where(t => t is { IsClass: true, IsAbstract: false } && HasMappingAttributes(t) && !IsOwnedType(t)).ToArray();
     }
 
     /// <summary>

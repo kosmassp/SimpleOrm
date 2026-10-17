@@ -16,6 +16,7 @@ use SimpleOrm\Errors\MappingException;
 use SimpleOrm\Errors\SchemaValidationException;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Errors\ValidationError;
+use SimpleOrm\Metadata\BaseClassRules;
 use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\EntityMapLoader;
@@ -87,9 +88,16 @@ final class SchemaGuard
                 self::validateStatement($db, $connection, $columnsCache, $source, $sql, $argsType, $resultType, $errors);
             }
 
+            // MAP-028 (ADR-0040): a concrete sourceless class another scanned class extends is a base class, not an
+            // entity - reported once, naming the extenders, and not validated as a relation.
+            $bases = BaseClassRules::scan($classes);
+            foreach (BaseClassRules::scanErrors($classes) as $error) {
+                $errors[] = new ValidationError($error->code, $error->target, $error->message);
+            }
+
             foreach ($classes as $class) {
                 $reflection = new ReflectionClass($class);
-                if ($reflection->isAbstract() || $reflection->isInterface()) {
+                if ($reflection->isAbstract() || $reflection->isInterface() || isset($bases[$reflection->getName()])) {
                     continue;
                 }
 
@@ -247,6 +255,13 @@ final class SchemaGuard
         $columns = self::describedColumns($statement);
         try {
             $db->mapper()->createPlan($resultType, $columns, $source);
+        } catch (MappingException $exception) {
+            // A result type whose map fails to load (MAP-028, MAP-010...) is report rows, one per violation, never an escaping exception.
+            foreach ($exception->errors as $error) {
+                $errors[] = new ValidationError($error->code, $source, $error->message);
+            }
+
+            return;
         } catch (SimpleOrmException $exception) {
             $errors[] = new ValidationError($exception->errorCode, $source, self::rawMessage($exception));
         }
@@ -289,9 +304,13 @@ final class SchemaGuard
             }
         }
 
-        $map = !self::isScalarType($resultType) && EntityMapLoader::hasMappingAttributes($resultType)
-            ? $db->maps()->load($resultType)
-            : null;
+        try {
+            $map = !self::isScalarType($resultType) && EntityMapLoader::hasMappingAttributes($resultType)
+                ? $db->maps()->load($resultType)
+                : null;
+        } catch (MappingException) {
+            return;   // the load failure was reported by the mapping pipeline above
+        }
 
         for ($i = 0; $i < $statement->columnCount(); $i++) {
             $meta = $statement->getColumnMeta($i);

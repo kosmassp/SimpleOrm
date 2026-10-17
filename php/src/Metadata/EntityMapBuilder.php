@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Metadata;
 
+use ReflectionClass;
 use ReflectionProperty;
 use SimpleOrm\Errors\MappingException;
 use SimpleOrm\Naming\NamingConvention;
@@ -44,6 +45,8 @@ final class EntityMapBuilder
      */
     public static function for(string $entityType, ?NamingConvention $naming = null): self
     {
+        BaseClassRules::assertConcrete($entityType);   // MAP-028 at registration time (ADR-0040)
+
         return new self($entityType, $naming);
     }
 
@@ -97,7 +100,7 @@ final class EntityMapBuilder
 
     public function build(): EntityMap
     {
-        $errors = [];
+        $errors = BaseClassRules::parentDeclarationErrors(new ReflectionClass($this->entityType));   // MAP-028 (ADR-0040)
         $map = MapAssembler::assemble(
             $this->entityType,
             RelationKind::Table,

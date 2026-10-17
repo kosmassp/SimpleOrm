@@ -24,7 +24,7 @@ final class ConventionMapLoader
     public static function load(string $entityType, NamingConvention $convention): EntityMap
     {
         $class = new ReflectionClass($entityType);
-        $errors = [];
+        $errors = BaseClassRules::parentDeclarationErrors($class);   // MAP-028 (ADR-0040)
         $specs = [];
 
         foreach (PropertyDiscovery::propertiesInDeclarationOrder($class) as $property) {

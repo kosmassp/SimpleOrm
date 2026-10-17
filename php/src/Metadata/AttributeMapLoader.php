@@ -63,6 +63,9 @@ final class AttributeMapLoader
             )]);
         }
 
+        // MAP-028 (ADR-0040): a parent carrying a relation source or an #[Index] makes it an entity; collected with the rest.
+        array_push($errors, ...BaseClassRules::parentDeclarationErrors($class));
+
         [$kind, $relationName, $schema, $statementSql, $statementParameters] =
             self::readRelationSource($class, $convention, $errors);
 

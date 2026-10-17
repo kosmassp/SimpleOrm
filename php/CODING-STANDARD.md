@@ -60,6 +60,13 @@ Mirror the C# member names when porting: `IDialect.QuoteIdentifier` → `Dialect
   (`EntityMapLoader` owns its map cache; `Db` owns its loader).
 - Composition over inheritance; interfaces at seams only: `Dialect`,
   `TypeHandler`, `NamingConvention`. Do not add abstractions "for the future".
+- **A base class is never an entity** (`MAP-028`, ADR-0040). Declare a class that only shares members `abstract`: the
+  one map-loading entry point (`EntityMapLoader::load`), the builder, and `MappingOptions` refuse an abstract class
+  (`isAbstract()`), a mapped class whose parent chain (`getParentClass()`) carries `#[Table]`/`#[View]`/
+  `#[MaterializedView]`/`#[Statement]`/`#[Procedure]` or `#[Index]` is refused with both classes named, and
+  assembly scans (SchemaGuard, the CLI) refuse a concrete sourceless class another scanned class extends — all
+  three through `SimpleOrm\Metadata\BaseClassRules`, the only home of the rule. PHP does not inherit class attributes
+  by reflection, so a subclass can never adopt its parent's relation source; PHP has no divergence here (§10).
 
 ## 4. Errors
 

@@ -13,6 +13,7 @@ use SimpleOrm\Dialect\SqliteShadow;
 use SimpleOrm\Discovery\ClassScanner;
 use SimpleOrm\Errors\SchemaValidationException;
 use SimpleOrm\Errors\SimpleOrmException;
+use SimpleOrm\Metadata\BaseClassRules;
 use SimpleOrm\Metadata\EntityMapJson;
 use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Metadata\RelationKind;
@@ -476,14 +477,26 @@ final class Application
      * Concrete mapped entities only, like the reference's `MappedTypes()`
      * (`IsClass && !IsAbstract`): an abstract base carrying `#[Column]`s (a
      * sample-style `BaseModel`) contributes columns to its subclasses but is
-     * no entity itself, so loading it would refuse with `MAP-019`.
+     * no entity itself, so loading it would refuse with `MAP-028`. A scanned concrete class without a relation
+     * source that another scanned class extends is a base class too (ADR-0040): every command that works on the
+     * scanned entities refuses with `MAP-028` naming the base and its extenders rather than treat it as an entity.
      *
      * @return list<class-string>
      */
     private static function mappedTypes(Arguments $arguments): array
     {
+        $classes = self::classes($arguments);
+        $baseErrors = BaseClassRules::scanErrors($classes);
+        if ($baseErrors !== []) {
+            throw new SimpleOrmException(
+                'MAP-028',
+                'assembly scan',
+                implode('; ', array_map(static fn ($error): string => $error->target . ' ' . $error->message, $baseErrors)),
+            );
+        }
+
         return array_values(array_filter(
-            self::classes($arguments),
+            $classes,
             static fn (string $class): bool => !(new ReflectionClass($class))->isAbstract()
                 && EntityMapLoader::hasMappingAttributes($class)
                 && !EntityMapLoader::isOwnedType($class),

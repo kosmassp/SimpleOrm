@@ -47,6 +47,9 @@ final class EntityMapLoader
     /** @param class-string $entityType */
     private function loadCore(string $entityType): EntityMap
     {
+        // MAP-028 (ADR-0040): the one place every path that loads a map passes through.
+        BaseClassRules::assertConcrete($entityType);
+
         if (isset($this->options->explicitMaps[$entityType])) {
             return $this->options->explicitMaps[$entityType];
         }

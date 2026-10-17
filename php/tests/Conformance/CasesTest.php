@@ -18,6 +18,7 @@ use SimpleOrm\Session\Db;
 use SimpleOrm\Session\DbOptions;
 use SimpleOrm\Session\EmptyArgs;
 use SimpleOrm\Session\Query;
+use SimpleOrm\Tests\Sample\Models\BaseModel;
 use SimpleOrm\Tests\Sample\Models\Role;
 use SimpleOrm\Tests\Sample\Models\Transaction;
 use SimpleOrm\Tests\Sample\Models\TransactionDetail;
@@ -47,6 +48,7 @@ final class CasesTest extends TestCase
         'UserRole' => UserRole::class,
         'UserProfile' => UserProfile::class,
         'Transaction' => Transaction::class,
+        'BaseModel' => BaseModel::class,
         'TransactionDetail' => TransactionDetail::class,
         'UserTransactionTotal' => UserTransactionTotal::class,
     ];

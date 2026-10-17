@@ -43,7 +43,7 @@ public sealed class EntityMapBuilder<T>
     internal EntityMap Build(INamingConvention convention)
     {
         var errors = new List<MappingError>();
-        AttributeMapLoader.CheckBaseClasses(typeof(T), errors);   // ADR-0040: a base carrying a relation source is MAP-028 under every loader
+        AttributeMapLoader.CheckBaseClasses(typeof(T), errors);   // ADR-0041: a base carrying a relation source is MAP-028 under every loader
         var map = MapAssembler.Assemble(
             typeof(T),
             RelationKind.Table,

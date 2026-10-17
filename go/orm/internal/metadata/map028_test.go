@@ -10,7 +10,7 @@ import (
 	"github.com/kosmassp/SimpleOrm/go/orm/sample"
 )
 
-// MAP-028 (ADR-0040) exists for languages with subclassing. Go has no
+// MAP-028 (ADR-0041) exists for languages with subclassing. Go has no
 // abstract types and no scan rule (embedding is composition), so only one
 // analog is reachable: method promotion. An embedded struct that declares
 // Entity() — its own relation source or indexes — would be promoted onto the

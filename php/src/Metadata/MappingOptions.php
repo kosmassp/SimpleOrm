@@ -24,7 +24,7 @@ final readonly class MappingOptions
         public array $explicitMaps = [],
     ) {
         foreach (array_keys($explicitMaps) as $entityType) {
-            BaseClassRules::assertConcrete($entityType);   // MAP-028: a registration of an abstract class (ADR-0040)
+            BaseClassRules::assertConcrete($entityType);   // MAP-028: a registration of an abstract class (ADR-0041)
         }
     }
 

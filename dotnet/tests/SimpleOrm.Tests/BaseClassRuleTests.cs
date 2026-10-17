@@ -4,7 +4,7 @@ using Xunit;
 namespace SimpleOrm.Tests;
 
 /// <summary>
-/// ADR-0040: a base class shares members only; identity comes from the concrete class
+/// ADR-0041: a base class shares members only; identity comes from the concrete class
 /// alone. An abstract class loaded as an entity by any path, a mapped type whose base
 /// carries a relation source, and — in a scan — a concrete sourceless class another
 /// scanned type extends are all <c>MAP-028</c>.
@@ -27,7 +27,7 @@ public sealed class BaseClassRuleTests(SqliteFixture fixture)
         // convention loader; it is refused the same way.
         Assert.Equal(["MAP-028"], CodesOf<PlainAbstract>());
 
-        // The concrete class still maps, its inherited columns included (ADR-0040 keeps what exists).
+        // The concrete class still maps, its inherited columns included (ADR-0041 keeps what exists).
         var user = new EntityMapLoader().Load<User>();
         Assert.Contains(user.Properties, p => p.PropertyName == nameof(BaseModel.CreatedAtUtc) && p.ColumnName == "created_at");
     }

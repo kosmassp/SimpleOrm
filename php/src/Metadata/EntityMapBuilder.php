@@ -45,7 +45,7 @@ final class EntityMapBuilder
      */
     public static function for(string $entityType, ?NamingConvention $naming = null): self
     {
-        BaseClassRules::assertConcrete($entityType);   // MAP-028 at registration time (ADR-0040)
+        BaseClassRules::assertConcrete($entityType);   // MAP-028 at registration time (ADR-0041)
 
         return new self($entityType, $naming);
     }
@@ -100,7 +100,7 @@ final class EntityMapBuilder
 
     public function build(): EntityMap
     {
-        $errors = BaseClassRules::parentDeclarationErrors(new ReflectionClass($this->entityType));   // MAP-028 (ADR-0040)
+        $errors = BaseClassRules::parentDeclarationErrors(new ReflectionClass($this->entityType));   // MAP-028 (ADR-0041)
         $map = MapAssembler::assemble(
             $this->entityType,
             RelationKind::Table,

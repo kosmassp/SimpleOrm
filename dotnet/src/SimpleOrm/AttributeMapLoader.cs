@@ -52,7 +52,7 @@ internal static class AttributeMapLoader
     {
         var sources = new List<(RelationKind Kind, string? Name, string? Schema, string? Sql, object[]? RawParameters)>();
 
-        // Class-level attributes are read without inheritance (ADR-0040): a subclass
+        // Class-level attributes are read without inheritance (ADR-0041): a subclass
         // never adopts its base's relation source — a base carrying one is MAP-028 below.
         if (entityType.GetCustomAttribute<TableAttribute>(inherit: false) is { } table)
         {
@@ -588,7 +588,7 @@ internal static class AttributeMapLoader
     internal static bool HasMappingAttributes(Type entityType)
     {
         // The class chain is walked explicitly, each level read without attribute
-        // inheritance (ADR-0040) — a base's class-level metadata routes the subclass
+        // inheritance (ADR-0041) — a base's class-level metadata routes the subclass
         // to this loader, where it is MAP-028 rather than silently adopted.
         for (var type = entityType; type is not null && type != typeof(object); type = type.BaseType)
         {
@@ -625,7 +625,7 @@ internal static class AttributeMapLoader
             .ToArray()!;
 
     /// <summary>
-    /// ADR-0040: a base class shares members only. One carrying a relation source (or an
+    /// ADR-0041: a base class shares members only. One carrying a relation source (or an
     /// <c>[Index]</c>, which belongs to a relation) would be an entity, so it may not be
     /// extended by one — <c>MAP-028</c> naming both classes, checked on the chain the
     /// loader already walks for inherited properties.
@@ -640,14 +640,14 @@ internal static class AttributeMapLoader
             {
                 errors.Add(new MappingError(
                     "MAP-028", entityType.Name,
-                    $"extends '{type.Name}', which carries {string.Join(" and ", declarations)}: a base class shares members only and is never an entity (ADR-0040); "
+                    $"extends '{type.Name}', which carries {string.Join(" and ", declarations)}: a base class shares members only and is never an entity (ADR-0041); "
                     + "declare the relation source on the concrete class and keep the base a plain member holder"));
             }
         }
     }
 
     /// <summary>
-    /// The scan rule of ADR-0040 (<c>MAP-028</c>): a concrete, sourceless, mapped class
+    /// The scan rule of ADR-0041 (<c>MAP-028</c>): a concrete, sourceless, mapped class
     /// that another scanned class extends. A lone load cannot see it — the class maps
     /// legitimately to a convention-named table — so startup validation and the CLI check
     /// the scanned set as a whole. One error per base class, naming its subclasses.
@@ -678,12 +678,12 @@ internal static class AttributeMapLoader
             .Select(pair => new MappingError(
                 "MAP-028", pair.Key.Name,
                 $"is a concrete class without a relation source that '{string.Join("', '", pair.Value.OrderBy(n => n, StringComparer.Ordinal))}' extends: "
-                + "a base class shares members only and is never an entity (ADR-0040); declare it abstract"))
+                + "a base class shares members only and is never an entity (ADR-0041); declare it abstract"))
             .ToArray();
     }
 
     /// <summary>
-    /// The scanned entity types — concrete, mapped, not owned — after the ADR-0040 scan
+    /// The scanned entity types — concrete, mapped, not owned — after the ADR-0041 scan
     /// rule: when a base class is among them the whole scan refuses with one
     /// <see cref="MappingException"/> carrying every <c>MAP-028</c> (the CLI's entity
     /// commands and the shadow rebuild; SchemaGuard reports instead of throwing).

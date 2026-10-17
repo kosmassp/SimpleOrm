@@ -68,7 +68,7 @@ order), then each base class upward — a language whose own reflection lists ba
 members first (a Python dataclass, a Go embedded struct) reorders to match.
 Composite key order is `[Key]` declaration order.
 
-**A base class is never an entity** (ADR-0040). A base class shares members only:
+**A base class is never an entity** (ADR-0041). A base class shares members only:
 its column, key, generated, version, hook, and rename declarations are inherited by
 every concrete subclass as if declared there, each concrete relation carrying its
 own copy of every column; identity comes from the concrete class alone. A base
@@ -285,7 +285,7 @@ only when declared: `"renamedFrom": "name"`. The diff generator reads it as
 a declared rename; the mapper and the session ignore it. `MAP-027` when
 declared without `[Column]` or without a name.
 
-## Clarifications (the PHP and Go ports asked; ADR-0040 add.1)
+## Clarifications (the PHP and Go ports asked; ADR-0041 add.1)
 
 - **"Abstract" includes interfaces** and any other type that can never be
   instantiated: a map is never loaded for it, whatever the loader.

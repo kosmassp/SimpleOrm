@@ -88,7 +88,7 @@ final class SchemaGuard
                 self::validateStatement($db, $connection, $columnsCache, $source, $sql, $argsType, $resultType, $errors);
             }
 
-            // MAP-028 (ADR-0040): a concrete sourceless class another scanned class extends is a base class, not an
+            // MAP-028 (ADR-0041): a concrete sourceless class another scanned class extends is a base class, not an
             // entity - reported once, naming the extenders, and not validated as a relation.
             $bases = BaseClassRules::scan($classes);
             foreach (BaseClassRules::scanErrors($classes) as $error) {

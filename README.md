@@ -186,7 +186,7 @@ Zero children yield an empty list, never null. Custom types register an
 `ITypeHandler<T>` on `DbOptions.TypeHandlers` — the only path for types outside the
 fixed conversion table.
 
-### Variants (no inheritance mapping, ADR-0040)
+### Variants (no inheritance mapping, ADR-0041)
 
 SimpleOrm maps **concrete classes only**. A base class shares members — the
 sample's abstract `BaseModel` gives every table its audit columns, each table

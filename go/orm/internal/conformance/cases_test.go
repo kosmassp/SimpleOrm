@@ -340,7 +340,7 @@ func assertRowsMatch(t *testing.T, name string, actual any, expected json.RawMes
 	}
 }
 
-// assertBaseModelUnreachable handles `"result": "BaseModel"` (ADR-0040,
+// assertBaseModelUnreachable handles `"result": "BaseModel"` (ADR-0041,
 // conformance/README.md): the fixture's base class, which every implementation
 // resolves only to refuse it with MAP-028. In Go the refusal is unreachable —
 // embedding is composition, a struct type is always concrete, and nothing

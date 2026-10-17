@@ -10,7 +10,7 @@ use SimpleOrm\Cli\Application;
 use SimpleOrm\Tests\Support\TempDatabase;
 
 /**
- * `MAP-028` in the CLI's assembly scan (ADR-0040): `export-metadata` and `validate` refuse a scanned concrete class
+ * `MAP-028` in the CLI's assembly scan (ADR-0041): `export-metadata` and `validate` refuse a scanned concrete class
  * without a relation source that another scanned class extends, via the same {@see \SimpleOrm\Metadata\BaseClassRules}
  * SchemaGuard uses; the clean fixture application (whose abstract `AuditedModel` is the declared convention) is
  * covered by {@see ApplicationTest}.

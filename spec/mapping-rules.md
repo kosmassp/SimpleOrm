@@ -13,7 +13,7 @@ result columns and the mapped properties must match **exactly, both ways**:
 - a result column with no mapped property → `MAP-001`
 - a mapped property with no result column → `MAP-002`
 - a result type that is a base class — abstract, or extending a class that carries
-  a relation source of its own → `MAP-028` (metadata-model.md; ADR-0040): the map
+  a relation source of its own → `MAP-028` (metadata-model.md; ADR-0041): the map
   never loads, so the shape is never compared
 
 Partial selections of an entity are expressed as DTOs, not as half-filled entities.

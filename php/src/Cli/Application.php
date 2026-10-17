@@ -478,7 +478,7 @@ final class Application
      * (`IsClass && !IsAbstract`): an abstract base carrying `#[Column]`s (a
      * sample-style `BaseModel`) contributes columns to its subclasses but is
      * no entity itself, so loading it would refuse with `MAP-028`. A scanned concrete class without a relation
-     * source that another scanned class extends is a base class too (ADR-0040): every command that works on the
+     * source that another scanned class extends is a base class too (ADR-0041): every command that works on the
      * scanned entities refuses with `MAP-028` naming the base and its extenders rather than treat it as an entity.
      *
      * @return list<class-string>

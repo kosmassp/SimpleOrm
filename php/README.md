@@ -53,7 +53,7 @@ navigations, explicit target classes on collection navigations, registries as
 static methods, `$db->from(User::class)` for criteria, directory-based migration
 discovery. Read the standard before contributing; it is the uniformity contract.
 
-Base classes (ADR-0040): declare a class that only shares members (the sample's `BaseModel`) `abstract` — loading one as an
+Base classes (ADR-0041): declare a class that only shares members (the sample's `BaseModel`) `abstract` — loading one as an
 entity by any path is `MAP-028`, as is extending a class that carries `#[Table]` (or any relation source, or `#[Index]`), and
 `SchemaGuard::validate` / the CLI's `export-metadata` refuse a concrete sourceless class that another scanned class extends.
 

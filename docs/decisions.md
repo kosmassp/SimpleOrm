@@ -2973,7 +2973,7 @@ first gap list already answered. Only when the owner says so.
 
 **Status.** Accepted. Level 3 closed in C#, PHP, and Go.
 
-## ADR-0040 — Inheritance mapping: concrete classes only; a base class is never an entity (2026-10-17)
+## ADR-0041 — Inheritance mapping: concrete classes only; a base class is never an entity (2026-10-17)
 
 Owner rulings, taken in a design discussion held before any code (the
 standing rule: discuss first, build only when scheduled). ADR-0034 left M4
@@ -3111,7 +3111,7 @@ Nothing starts unprompted (CLAUDE.md §1).
 polymorphic table-per-concrete) ruled out permanently; base classes share
 members only; `MAP-028` reserved; implementation not started.
 
-### ADR-0040 addendum 1 — MAP-028 built in three implementations (2026-10-17)
+### ADR-0041 addendum 1 — MAP-028 built in three implementations (2026-10-17)
 
 The addendum-sized change the ADR scheduled, done by the usual method: the
 reference with the spec text and the conformance case first, then PHP and Go by

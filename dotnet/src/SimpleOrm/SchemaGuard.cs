@@ -61,7 +61,7 @@ public static class SchemaGuard
                 await ValidateStatementAsync(db, shield, cache, source, sql, argsType, resultType, errors, ct).ConfigureAwait(false);
             }
 
-            // ADR-0040: a concrete sourceless class another scanned type extends is a
+            // ADR-0041: a concrete sourceless class another scanned type extends is a
             // base class (MAP-028), not an entity — reported once, not validated as a table.
             var baseClasses = EntityMapLoader.BaseClassesUsedAsEntities(types);
             errors.AddRange(baseClasses.Select(e => new ValidationError(e.Code, e.Target, e.Message)));

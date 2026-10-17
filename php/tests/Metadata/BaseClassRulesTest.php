@@ -36,7 +36,7 @@ use SimpleOrm\Session\DbOptions;
 use SimpleOrm\Errors\SimpleOrmException;
 
 /**
- * `MAP-028` - a base class is never an entity (ADR-0040, spec/metadata-model.md): the abstract class refused on
+ * `MAP-028` - a base class is never an entity (ADR-0041, spec/metadata-model.md): the abstract class refused on
  * every path that loads a map, the parent-chain declaration rule, and the assembly-scan rule. PHP's
  * `isAbstract()` and `getParentClass()` cover all of it - no divergence (CODING-STANDARD §10).
  */

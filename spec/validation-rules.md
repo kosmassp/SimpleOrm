@@ -14,7 +14,7 @@ a transaction that is always rolled back.
 1. **Registry entries** — every `public static` `Query<TArgs,TResult>` /
    `Command<TArgs>` field in the assembly's exported types.
 2. **Entities** — every exported, concrete type carrying mapping metadata that is
-   not an owned type and that no other scanned type extends (ADR-0040). Tables check
+   not an owned type and that no other scanned type extends (ADR-0041). Tables check
    existence, columns, declared types, and nullability; views and materialized
    views check existence and columns only (they report neither declared types nor
    nullability reliably); statement entities validate their defining SQL like a
@@ -57,7 +57,7 @@ outer join; the origin-based check trusts the base constraint (§7.19).
 | `VAL-012` | the mapped relation does not exist |
 | `VAL-013` | a mapped column does not exist in the relation |
 | `VAL-011` / `VAL-010` | declared-type compatibility and nullability per column, honoring `[EnumAsInt]` and registered handlers |
-| `MAP-028` | a concrete class without a relation source of its own that another scanned type extends is a base class, not an entity (ADR-0040; metadata-model.md): reported once, naming the extending types, and not validated as a relation; abstract classes and owned types are not entities and are not scanned |
+| `MAP-028` | a concrete class without a relation source of its own that another scanned type extends is a base class, not an entity (ADR-0041; metadata-model.md): reported once, naming the extending types, and not validated as a relation; abstract classes and owned types are not entities and are not scanned |
 
 The declared-type table is the dialect's (§7.25); on SQLite it is meaningful
 because all fixture and migration tables are STRICT. Loader failures

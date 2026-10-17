@@ -160,7 +160,7 @@ Assembly LoadAssembly()
     return Assembly.LoadFrom(Path.GetFullPath(path));
 }
 
-// ADR-0040: a concrete sourceless class another type extends is a base class
+// ADR-0041: a concrete sourceless class another type extends is a base class
 // (MAP-028), not an entity — every command that enumerates entities (export-metadata,
 // snapshot, diff, migrate --force) refuses before doing anything; validate reports it.
 IEnumerable<Type> MappedTypes(Assembly assembly)

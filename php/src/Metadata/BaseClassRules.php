@@ -15,7 +15,7 @@ use SimpleOrm\Metadata\Attributes\Table;
 use SimpleOrm\Metadata\Attributes\View;
 
 /**
- * `MAP-028` - a base class is never an entity (ADR-0040, spec/metadata-model.md). A base class shares
+ * `MAP-028` - a base class is never an entity (ADR-0041, spec/metadata-model.md). A base class shares
  * members only; identity comes from the concrete class alone. Three cases, one home for each:
  *
  *  1. {@see self::assertConcrete()} - an abstract class loaded as an entity by any path (the one map-loading

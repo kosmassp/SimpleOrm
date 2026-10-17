@@ -49,7 +49,7 @@ func loadFromDeclarations(l *Loader, t reflect.Type) (*core.EntityMap, error) {
 	return assemble(t, kind, relationName, schema, sql, declaredParams, specs, indexSpecs, relationships, convention, errs)
 }
 
-// refuseEmbeddedEntities is the one Go-reachable analog of MAP-028 (ADR-0040;
+// refuseEmbeddedEntities is the one Go-reachable analog of MAP-028 (ADR-0041;
 // CODING-STANDARD §4 and §10). Go has no abstract types and no type "extends"
 // another, so the abstract-class and assembly-scan cases cannot occur — but
 // method promotion can carry a base's declaration: an embedded struct whose
@@ -93,7 +93,7 @@ func refuseEmbeddedEntities(t reflect.Type, errs *errorCollector) bool {
 
 // declaresRelationOrIndexes reports whether a descriptor carries a relation
 // source (a non-zero Source: Table("") with no name is the convention table)
-// or declared indexes — the class-level declarations ADR-0040 reads without
+// or declared indexes — the class-level declarations ADR-0041 reads without
 // inheritance.
 func declaresRelationOrIndexes(def core.EntityDef) bool {
 	s := def.Source

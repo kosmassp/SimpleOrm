@@ -29,7 +29,7 @@ public sealed class EntityMapLoader
     public static bool IsOwnedType(Type type) => AttributeMapLoader.IsOwnedType(type);
 
     /// <summary>
-    /// The scan rule of ADR-0040 (<c>MAP-028</c>): among the types an assembly scan
+    /// The scan rule of ADR-0041 (<c>MAP-028</c>): among the types an assembly scan
     /// considers, a concrete class without a relation source of its own that another
     /// scanned type extends is a base class, not an entity — the one case a lone load
     /// cannot see, because such a class legitimately maps to a convention-named table.
@@ -41,7 +41,7 @@ public sealed class EntityMapLoader
     /// <summary>
     /// The entity types an assembly scan maps — concrete classes carrying mapping
     /// attributes that are not owned types — or a <see cref="MappingException"/> with
-    /// every <c>MAP-028</c> when a base class is among them (ADR-0040). Tooling that
+    /// every <c>MAP-028</c> when a base class is among them (ADR-0041). Tooling that
     /// enumerates entities (the CLI, the shadow rebuild) goes through this.
     /// </summary>
     public static IReadOnlyList<Type> ScannedEntityTypes(IEnumerable<Type> types)
@@ -51,11 +51,11 @@ public sealed class EntityMapLoader
     {
         if (entityType.IsAbstract)
         {
-            // ADR-0040: a base class shares members only; identity comes from the
+            // ADR-0041: a base class shares members only; identity comes from the
             // concrete class alone. Every path that loads a map arrives here.
             throw new MappingException(entityType, [new MappingError(
                 "MAP-028", entityType.Name,
-                "is abstract: a base class shares members only and is never an entity (ADR-0040); read, write, and query the concrete class")]);
+                "is abstract: a base class shares members only and is never an entity (ADR-0041); read, write, and query the concrete class")]);
         }
 
         if (_options.ExplicitMaps.TryGetValue(entityType, out var factory))

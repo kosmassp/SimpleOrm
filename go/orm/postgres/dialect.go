@@ -16,10 +16,43 @@ import (
 // `returning` write-back, storage types spelled the way format_type reports
 // them. It also implements core.StatementDescriber (SchemaGuard) and
 // core.TemporalMarkers (the VAL-020 read rule by column type).
-type Dialect struct{}
+type Dialect struct {
+	cachedPlan CachedPlanPolicy
+}
 
-// New is the dialect; it carries no state.
-func New() *Dialect { return &Dialect{} }
+// CachedPlanPolicy says what a connection does when PostgreSQL refuses a statement pgx prepared and
+// cached earlier because the table changed under it — SQLSTATE 0A000 "cached plan must not change
+// result type" (ADR-0040 add.1, spec/dialects.md Clarifications). pgx itself only invalidates the
+// cached statement on any error; it never retries.
+type CachedPlanPolicy int
+
+const (
+	// CachedPlanRetryOnce (the default) re-runs the statement once — pgx re-prepares it — when no
+	// transaction is active on the connection: the failed statement ran in its own implicit
+	// transaction, so nothing of it happened. Inside a transaction PostgreSQL has already aborted
+	// the transaction, so the error surfaces unchanged and the caller must roll back.
+	CachedPlanRetryOnce CachedPlanPolicy = iota
+	// CachedPlanSurface returns the error unchanged, in or out of a transaction.
+	CachedPlanSurface
+)
+
+// Option configures the dialect at construction.
+type Option func(*Dialect)
+
+// WithCachedPlanPolicy chooses the cached-plan behaviour (default CachedPlanRetryOnce).
+func WithCachedPlanPolicy(policy CachedPlanPolicy) Option {
+	return func(d *Dialect) { d.cachedPlan = policy }
+}
+
+// New is the dialect. Its only setting is a driver matter, not a seam member: the cached-plan
+// policy of the connections it opens.
+func New(options ...Option) *Dialect {
+	d := &Dialect{}
+	for _, option := range options {
+		option(d)
+	}
+	return d
+}
 
 var (
 	_ core.Dialect            = (*Dialect)(nil)
@@ -31,8 +64,8 @@ var (
 // `postgres://user:password@host:port/database` URL or a key/value DSN). The pool
 // rewrites `@name` placeholders to the `$n` positions pgx requires (see the
 // package comment); nothing connects until first use.
-func (*Dialect) CreateConnection(connectionString string) (*sql.DB, error) {
-	return openPool(connectionString)
+func (d *Dialect) CreateConnection(connectionString string) (*sql.DB, error) {
+	return openPool(connectionString, d.cachedPlan)
 }
 
 // QuoteIdentifier always double-quotes, doubling any embedded `"`: lowercase

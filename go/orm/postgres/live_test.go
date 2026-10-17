@@ -1179,3 +1179,89 @@ func TestLive_BytesRoundTrip(t *testing.T) {
 	db, _ := openSample(t, orm.Options{})
 	testsupport.BytesRoundTrip(t, db)
 }
+
+type planArgs struct{ ID int64 }
+
+var (
+	noteByID      = orm.Inline[planArgs, string]("select note from plan_rows where id = @ID")
+	noteAsVarchar = orm.InlineCommand[orm.EmptyArgs]("alter table plan_rows alter column note type varchar(40)")
+	noteAsText    = orm.InlineCommand[orm.EmptyArgs]("alter table plan_rows alter column note type text")
+)
+
+// openPlanSession is a session on a fresh database holding plan_rows(1, 'kept'), opened with the
+// given dialect — one pinned connection, so pgx's statement cache lives as long as the session.
+func openPlanSession(t *testing.T, dialect *postgres.Dialect) *orm.Db {
+	t.Helper()
+	connection := newDatabase(t)
+	execRaw(t, connection, "create table plan_rows (id bigint primary key, note text not null)")
+	execRaw(t, connection, "insert into plan_rows (id, note) values (1, 'kept')")
+	db, err := orm.Open(context.Background(), connection, orm.Options{Dialect: dialect, Clock: testsupport.FixedClock})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+// isCachedPlanError reports SQLSTATE 0A000 "cached plan must not change result type".
+func isCachedPlanError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "cached plan must not change result type") && strings.Contains(err.Error(), "0A000")
+}
+
+// TestLive_ACachedPlanAfterASchemaChangeRetriesOnceOutsideATransaction pins the default
+// CachedPlanRetryOnce (ADR-0040 add.1, spec/dialects.md Clarifications): a statement pgx prepared and
+// cached meets a table whose column type changed — outside a transaction it is run once more and
+// succeeds; inside one PostgreSQL has aborted the transaction, the error surfaces unchanged, and
+// after the rollback the statement works again (pgx invalidated its cache entry).
+func TestLive_ACachedPlanAfterASchemaChangeRetriesOnceOutsideATransaction(t *testing.T) {
+	ctx := context.Background()
+	db := openPlanSession(t, postgres.New())
+
+	if note, err := orm.QuerySingle(ctx, db, noteByID, planArgs{ID: 1}); err != nil || note != "kept" {
+		t.Fatalf("first read (prepares and caches): %q, %v", note, err)
+	}
+	if _, err := orm.Execute(ctx, db, noteAsVarchar, orm.EmptyArgs{}); err != nil {
+		t.Fatal(err)
+	}
+	if note, err := orm.QuerySingle(ctx, db, noteByID, planArgs{ID: 1}); err != nil || note != "kept" {
+		t.Fatalf("outside a transaction the stale plan should be retried once: %q, %v", note, err)
+	}
+
+	// The cache now holds the varchar plan; change the type back, then read inside a transaction.
+	if _, err := orm.Execute(ctx, db, noteAsText, orm.EmptyArgs{}); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orm.QuerySingle(ctx, db, noteByID, planArgs{ID: 1}); !isCachedPlanError(err) {
+		t.Fatalf("inside a transaction the 0A000 error should surface unchanged, got %v", err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if note, err := orm.QuerySingle(ctx, db, noteByID, planArgs{ID: 1}); err != nil || note != "kept" {
+		t.Fatalf("after the rollback the statement re-prepares: %q, %v", note, err)
+	}
+}
+
+// TestLive_TheSurfacePolicyNeverRetriesACachedPlan pins CachedPlanSurface: the 0A000 error surfaces
+// outside a transaction too, and the next run re-prepares (pgx's own invalidation).
+func TestLive_TheSurfacePolicyNeverRetriesACachedPlan(t *testing.T) {
+	ctx := context.Background()
+	db := openPlanSession(t, postgres.New(postgres.WithCachedPlanPolicy(postgres.CachedPlanSurface)))
+
+	if _, err := orm.QuerySingle(ctx, db, noteByID, planArgs{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orm.Execute(ctx, db, noteAsVarchar, orm.EmptyArgs{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orm.QuerySingle(ctx, db, noteByID, planArgs{ID: 1}); !isCachedPlanError(err) {
+		t.Fatalf("CachedPlanSurface should return the 0A000 error, got %v", err)
+	}
+	if note, err := orm.QuerySingle(ctx, db, noteByID, planArgs{ID: 1}); err != nil || note != "kept" {
+		t.Fatalf("the next run re-prepares: %q, %v", note, err)
+	}
+}

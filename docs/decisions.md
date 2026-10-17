@@ -3114,6 +3114,7 @@ green run, on a machine with an engine.
 
 **Status.** Accepted. The three Level 4 dialects exist in three implementations
 at the reference's runtime-first scope; the spec now describes them.
+
 ## ADR-0041 — Inheritance mapping: concrete classes only; a base class is never an entity (2026-10-17)
 
 Owner rulings, taken in a design discussion held before any code (the

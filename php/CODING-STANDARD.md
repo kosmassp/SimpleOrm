@@ -22,8 +22,10 @@ reinvent them. Where PHP forces a different shape, the adaptation is listed in
 - `use` imports sorted alphabetically, one per line, no unused imports, no group
   use, fully-qualified names only in attributes' string arguments.
 - No `require`/`include` outside `bin/` and test bootstrap; Composer autoload only.
-- No runtime dependencies beyond `ext-pdo` (+ the SQLite driver). Dev dependency:
-  PHPUnit only. Anything else is asked for first (CLAUDE.md §4).
+- No runtime dependencies beyond `ext-pdo` (+ the PDO driver of the dialect in use:
+  `pdo_sqlite`, `pdo_pgsql`, `pdo_sqlsrv` or `pdo_odbc` — extensions, never packages;
+  `composer.json` lists them under `suggest`). Dev dependency: PHPUnit only. Anything
+  else is asked for first (CLAUDE.md §4).
 
 ## 2. Naming
 
@@ -113,8 +115,11 @@ Mirror the C# member names when porting: `IDialect.QuoteIdentifier` → `Dialect
   every test with a snake_case sentence name; one behavior per test; assert the
   error **code** (`$e->errorCode`), never the message text.
 - Real databases only: a temp-file SQLite database per test class
-  (`Support\TempDatabase`), deleted afterwards. **No mocks, no fakes, no
-  in-memory stand-ins for the database.**
+  (`Support\TempDatabase`), deleted afterwards; a per-fixture database on a real
+  server for the SQL Server and PostgreSQL legs (`Support\PostgresDatabase`,
+  `Support\SqlServerDatabase`), skipped as a group where no server answers
+  (spec/dialects.md "Testing contract"). **No mocks, no fakes, no in-memory
+  stand-ins for the database.**
 - Conformance runners live in `tests/Conformance/`, one per `conformance/*`
   folder, read the JSON from `../../conformance/`, and are data-driven
   (`#[DataProvider]`). They are the definition of done: a feature without a
@@ -207,6 +212,11 @@ Mirror the C# member names when porting: `IDialect.QuoteIdentifier` → `Dialect
 | `[Draft]` on the root class | `#[Draft]` (`SimpleOrm\Migrations\Draft`, class target) on the root; `MigrationVersion::isDraft()` reads it by reflection and is overridable; the generated root writes it as `#[\SimpleOrm\Migrations\Draft]` after a `DRAFT:` docblock line | same shape as C#'s marker attribute |
 | `SqlVersion` takes a draft flag | `SqlVersion::draft($version, ...$steps)`, a static factory beside the constructor | the step list is variadic, so a `draft:` argument cannot follow it |
 | a pending draft is `MIG-013` for `migrate`/`baseline`; `status` reports `Draft` | the runner checks after history validation (`migrate`) or after reading the history (`baseline`, versions ≤ the target only) and before any statement; `MigrationState::Draft` is the pending state of a draft's steps (a recorded draft keeps its normal state); `MigrationRunner::hasPending()` and `SchemaGuard` count a pending draft as pending (`MIG-030`); `shadow` replays a draft through a runner built with `replayDrafts: true` (constructor argument, shadow only); `diff --amend` of a root that is a draft keeps the marker | the Clarifications fix the semantics (pending, recorded, baseline scope, the version named, `MIG-030`, tooling-only replay, amend keeps the marker); these are PHP's seams for them — `replayDrafts` is `@internal`, set only by `SqliteShadow`, so the application has no way past `MIG-013` |
+| the dialect packages `SimpleOrm.Sqlite` / `SimpleOrm.SqlServer` / `SimpleOrm.Postgres` (one assembly each, one provider package each) | one namespace, `SimpleOrm\Dialect`: `SqliteDialect`, `SqlServerDialect`, `PostgresDialect`, all over PDO; `Dialects::names()`/`Dialects::create($name)` is the one name→dialect registry the CLI's `--dialect` and the `ast/` runners share (spec/dialects.md). `SqlServerDialect` takes a `sqlsrv:` **or** `odbc:` PDO DSN verbatim (the SQL is the same over either driver); `PostgresDialect` takes a `pgsql:` DSN | PHP has no per-provider packages — PDO drivers are extensions loaded by name (`pdo_pgsql`, `pdo_sqlsrv`/`pdo_odbc`); the SQL Server driver is not installed on every machine, so the dialect must not depend on one |
+| `SupportsArrayParameters` binds a collection as one **typed** array parameter (Npgsql) | the collection binds as one `PDO::PARAM_STR` holding the PostgreSQL array literal (`{1,2}`, elements quoted/escaped per the literal grammar, `{}` when empty) under PDO's untyped parameter; the SQL stays untouched and PostgreSQL infers the array type from the comparison | PDO has no array parameters and sends every parameter untyped (spec/dialects.md "Array parameters") |
+| `BindsTemporalsNatively` hands the provider a UTC `DateTime` value | the flag is honored for the converter's contract (`TypeConverter` returns the UTC `DateTimeImmutable`) but the PDO binder still sends the ISO-8601 string: under PDO's untyped parameter PostgreSQL infers `timestamptz` and `timestamptz >= text` never arises — nothing observable changes | PDO cannot bind a `DateTimeImmutable`; the untyped parameter is the equivalent (spec/dialects.md "Temporals") |
+| markerless temporal storage (`datetime2`, `timestamp without time zone`) refuses `VAL-020` by the value's `Kind` | by the value's text: PDO returns every temporal as a string, and the §7.9 marker check accepts `Z`, `+hh:mm`, `+hhmm`, `+hh` (PostgreSQL spells `+07`), and the SQL Server driver's ` +00:00` after a space; a string with none refuses. `bytea` arrives as a stream and is read to a string; `time` values may carry fractional seconds | PDO's string-typed results carry the marker in the text itself |
+| `[PostgresFact]`/`[SqlServerFact]` skip as a group where no server answers; a database per fixture | `Tests\Support\LiveServer` probes the admin DSN once per process (`SIMPLEORM_POSTGRES` / `SIMPLEORM_SQLSERVER`, else the conventional default); `PostgresDatabase`/`SqlServerDatabase` create and drop a `simpleorm_test_<hex>` database and `skipUnlessAvailable()` in `setUp`; `composer test` stays `pdo_sqlite`-only unless the other extensions are loaded (`-d extension=pdo_pgsql`) | PHPUnit has no attribute-level skip; the extension may be absent altogether (then the probe fails and the leg skips) |
 
 Everything not in this table is identical to the reference. If you find something
 that cannot be, stop and add a row here — with the reason — before coding around it.

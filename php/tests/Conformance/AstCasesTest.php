@@ -10,7 +10,7 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use ReflectionProperty;
 use RuntimeException;
-use SimpleOrm\Dialect\SqliteDialect;
+use SimpleOrm\Dialect\Dialects;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Metadata\EntityMap;
@@ -27,9 +27,11 @@ use SimpleOrm\Tests\Support\ConformancePaths;
 
 /**
  * The AST-case runner (§9, ADR-0020/query-ast.md): each `conformance/ast/*.json`
- * builds a criteria query as data and renders it through `SqliteDialect`,
- * comparing the exact SQL text and the ordered parameter values, or the error
- * code — mirrors dotnet's `ConformanceAstTests`. `EntityMap`s for `User`/`Role`
+ * builds a criteria query as data and renders it through **every** dialect
+ * {@see Dialects} ships (ADR-0024: the `expect` block carries one entry per
+ * dialect, all mandatory), comparing the exact SQL text and the ordered parameter
+ * values per dialect, or the dialect-invariant error code — mirrors dotnet's
+ * `ConformanceAstTests`. `EntityMap`s for `User`/`Role`
  * are hand-built below (§9: the metadata loader is a different area's work and
  * may not exist yet); if `SimpleOrm\Metadata\EntityMapLoader` exists this test
  * could load them instead, but the hand-built path is what makes this suite
@@ -52,6 +54,14 @@ final class AstCasesTest extends TestCase
     #[DataProvider('caseFiles')]
     public function renders_as_pinned(string $fileName): void
     {
+        foreach (Dialects::names() as $dialectName) {
+            $this->renderAsPinned($fileName, $dialectName);
+        }
+    }
+
+    /** One dialect's rendering of a case: the exact SQL and ordered parameter values, or the dialect-invariant error code. */
+    private function renderAsPinned(string $fileName, string $dialectName): void
+    {
         $path = ConformancePaths::dir('ast') . DIRECTORY_SEPARATOR . $fileName;
         $spec = json_decode((string) file_get_contents($path), associative: true, flags: JSON_THROW_ON_ERROR);
 
@@ -61,7 +71,7 @@ final class AstCasesTest extends TestCase
             default => throw new RuntimeException("no hand-built EntityMap for entity '{$spec['entity']}'"),
         };
 
-        $dialect = new SqliteDialect();
+        $dialect = Dialects::create($dialectName);
         $bound = [];
         $bind = static function (mixed $value, ?PropertyMap $property) use (&$bound): string {
             $bound[] = $value;
@@ -79,15 +89,15 @@ final class AstCasesTest extends TestCase
         }
 
         if (isset($spec['expect']['error'])) {
-            self::assertSame($spec['expect']['error'], $errorCode, "{$fileName}: expected error code");
+            self::assertSame($spec['expect']['error'], $errorCode, "{$fileName} [{$dialectName}]: expected error code");
 
             return;
         }
 
-        self::assertNull($errorCode, "{$fileName}: rendering threw unexpectedly");
-        self::assertArrayHasKey('sqlite', $spec['expect'], "{$fileName} lacks the 'sqlite' expectation (§9: every case pins every dialect)");
-        self::assertSame($spec['expect']['sqlite']['sql'], $sql, "{$fileName}: rendered SQL");
-        self::assertSame($spec['expect']['sqlite']['parameters'], $bound, "{$fileName}: bound parameter values");
+        self::assertNull($errorCode, "{$fileName} [{$dialectName}]: rendering threw unexpectedly");
+        self::assertArrayHasKey($dialectName, $spec['expect'], "{$fileName} lacks the '{$dialectName}' expectation (§9: every case pins every dialect)");
+        self::assertSame($spec['expect'][$dialectName]['sql'], $sql, "{$fileName} [{$dialectName}]: rendered SQL");
+        self::assertSame($spec['expect'][$dialectName]['parameters'], $bound, "{$fileName} [{$dialectName}]: bound parameter values");
     }
 
     /** @param array<string, mixed> $select */

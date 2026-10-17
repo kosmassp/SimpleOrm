@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -124,19 +125,36 @@ func (a arguments) flag(name string) bool {
 
 // --- shared plumbing ---------------------------------------------------------
 
-// dialectFor is the --dialect rule: sqlite is the only dialect this port
-// supports (ADR-0027) — a Go analog would need SimpleOrm.SqlServer/Postgres
-// ports this repository does not have yet; any other name refuses loudly
-// rather than silently defaulting.
+// dialects is every dialect this port ships, by the name the --dialect option
+// and the conformance ast/ pins use (spec/dialects.md "Connection strings and
+// the CLI"). Adding a dialect is one entry here.
+var dialects = map[string]func() orm.Dialect{
+	"sqlite": func() orm.Dialect { return sqlite.New() },
+}
+
+// dialectFor is the --dialect rule: a name dialects knows, sqlite by default;
+// any other name refuses loudly before anything opens rather than silently
+// defaulting.
 func dialectFor(a arguments) (orm.Dialect, string, error) {
 	name := "sqlite"
 	if value, ok := a.option("dialect"); ok {
-		name = strings.ToLower(value)
+		name = strings.ToLower(strings.TrimSpace(value))
 	}
-	if name != "sqlite" {
-		return nil, "", fmt.Errorf("unknown --dialect '%s' (ADR-0027: this port supports only sqlite)", name)
+	factory, ok := dialects[name]
+	if !ok {
+		return nil, "", fmt.Errorf("unknown --dialect '%s'; this port ships %s", name, strings.Join(dialectNames(), ", "))
 	}
-	return sqlite.New(), name, nil
+	return factory(), name, nil
+}
+
+// dialectNames lists the shipped dialect names, sorted.
+func dialectNames() []string {
+	names := make([]string, 0, len(dialects))
+	for name := range dialects {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func connectionString(a arguments) (string, error) {

@@ -8,7 +8,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
-use SimpleOrm\Dialect\SqliteDialect;
+use SimpleOrm\Dialect\Dialects;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\EntityMapLoader;
@@ -32,9 +32,9 @@ use SimpleOrm\Tests\Support\ConformancePaths;
 /**
  * The Level 2 AST-case runner (spec/query-ast.md "Level 2 extensions"): each
  * `conformance/ast/level2/*.json` builds a criteria query carrying projection,
- * joins, or subquery membership and renders it through {@see SqliteDialect},
- * comparing the exact SQL text and ordered parameter values, or the error
- * code — mirrors {@see AstCasesTest} but loads real `EntityMap`s (through
+ * joins, or subquery membership and renders it through every dialect
+ * {@see Dialects} ships, comparing the exact SQL text and ordered parameter
+ * values per dialect, or the dialect-invariant error code — mirrors {@see AstCasesTest} but loads real `EntityMap`s (through
  * {@see EntityMapLoader}) for the fixture entities under
  * `tests/Sample/Models`, since Level 2 cases join across several of them.
  */
@@ -57,10 +57,18 @@ final class AstLevel2CasesTest extends TestCase
     #[DataProvider('caseFiles')]
     public function renders_as_pinned(string $fileName): void
     {
+        foreach (Dialects::names() as $dialectName) {
+            $this->renderAsPinned($fileName, $dialectName);
+        }
+    }
+
+    /** One dialect's rendering of a case: the exact SQL and ordered parameter values, or the dialect-invariant error code. */
+    private function renderAsPinned(string $fileName, string $dialectName): void
+    {
         $path = ConformancePaths::dir('ast/level2') . DIRECTORY_SEPARATOR . $fileName;
         $spec = json_decode((string) file_get_contents($path), associative: true, flags: JSON_THROW_ON_ERROR);
 
-        $dialect = new SqliteDialect();
+        $dialect = Dialects::create($dialectName);
         $bound = [];
         $bind = static function (mixed $value) use (&$bound): string {
             $bound[] = $value;
@@ -79,15 +87,15 @@ final class AstLevel2CasesTest extends TestCase
         }
 
         if (isset($spec['expect']['error'])) {
-            self::assertSame($spec['expect']['error'], $errorCode, "{$fileName}: expected error code");
+            self::assertSame($spec['expect']['error'], $errorCode, "{$fileName} [{$dialectName}]: expected error code");
 
             return;
         }
 
-        self::assertNull($errorCode, "{$fileName}: rendering threw unexpectedly ({$errorCode})");
-        self::assertArrayHasKey('sqlite', $spec['expect'], "{$fileName} lacks the 'sqlite' expectation (§9: every case pins every dialect)");
-        self::assertSame($spec['expect']['sqlite']['sql'], $sql, "{$fileName}: rendered SQL");
-        self::assertSame($spec['expect']['sqlite']['parameters'], $bound, "{$fileName}: bound parameter values");
+        self::assertNull($errorCode, "{$fileName} [{$dialectName}]: rendering threw unexpectedly ({$errorCode})");
+        self::assertArrayHasKey($dialectName, $spec['expect'], "{$fileName} lacks the '{$dialectName}' expectation (§9: every case pins every dialect)");
+        self::assertSame($spec['expect'][$dialectName]['sql'], $sql, "{$fileName} [{$dialectName}]: rendered SQL");
+        self::assertSame($spec['expect'][$dialectName]['parameters'], $bound, "{$fileName} [{$dialectName}]: bound parameter values");
     }
 
     /** @param array<string, mixed> $select */

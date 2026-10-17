@@ -59,7 +59,7 @@ final class TypeConverter
             ColumnType::Bool => $this->toBool($value),
             ColumnType::String => (string) $value,
             ColumnType::Guid => $this->toGuid($value, $context),
-            ColumnType::Bytes => (string) $value,
+            ColumnType::Bytes => is_resource($value) ? (string) stream_get_contents($value) : (string) $value,   // pdo_pgsql returns bytea as a stream
             ColumnType::DateTime => $this->toUtcDateTime($value, $context),
             ColumnType::DateTimeOffset => $this->toOffsetDateTime($value, $context),
             ColumnType::Date => $this->toDate($value, $context),
@@ -251,8 +251,11 @@ final class TypeConverter
             throw self::conversionFailed($value, 'datetime', $context);
         }
 
+        // The marker is a trailing Z or an explicit offset — ISO-8601 `+hh:mm`, and the
+        // forms the provider drivers spell (spec/dialects.md "Temporals"): PostgreSQL's
+        // `+07` without minutes, SQL Server's ` +00:00` after a space, `+0700`.
         $trimmed = rtrim($value);
-        $hasMarker = str_ends_with(strtoupper($trimmed), 'Z') || preg_match('/[+-]\d{2}:\d{2}$/', $trimmed) === 1;
+        $hasMarker = str_ends_with(strtoupper($trimmed), 'Z') || preg_match('/ ?[+-]\d{2}(:?\d{2})?$/', $trimmed) === 1;
         if (!$hasMarker) {
             throw new SimpleOrmException(
                 'VAL-020',
@@ -278,13 +281,20 @@ final class TypeConverter
         return $parsed;
     }
 
+    /** `HH:mm:ss` with optional fractional seconds — SQLite stores none, SQL Server and PostgreSQL report up to seven digits. */
     private function toTime(mixed $value, string $context): DateTimeImmutable
     {
         if (!is_string($value)) {
             throw self::conversionFailed($value, 'time', $context);
         }
 
-        $parsed = DateTimeImmutable::createFromFormat('!H:i:s', trim($value));
+        $text = trim($value);
+        $dot = strpos($text, '.');
+        if ($dot !== false) {
+            $text = substr($text, 0, $dot + 1) . str_pad(substr(substr($text, $dot + 1), 0, 6), 6, '0');   // PHP's `u` takes exactly six digits
+        }
+
+        $parsed = DateTimeImmutable::createFromFormat($dot === false ? '!H:i:s' : '!H:i:s.u', $text);
         if ($parsed === false) {
             throw self::conversionFailed($value, 'time', $context);
         }

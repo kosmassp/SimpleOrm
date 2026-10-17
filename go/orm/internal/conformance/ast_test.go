@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
@@ -32,28 +33,38 @@ var sampleEntities = map[string]reflect.Type{
 	"UserTransactionTotal": reflect.TypeFor[sample.UserTransactionTotal](),
 }
 
+// astDialects is every dialect the ast/ runner renders through, by the name
+// its `expect` block uses (ADR-0024: one entry per dialect, all mandatory) —
+// the runner's stand-in for ConformanceAstTests.cs's dialect dictionary. A
+// dialect package registers itself from its own ast_<dialect>_test.go file in
+// this package, so adding a dialect never edits this file.
+var astDialects = map[string]func() core.Dialect{
+	"sqlite": func() core.Dialect { return sqlite.New() },
+}
+
+// astExpectation is one dialect's pinned rendering.
+type astExpectation struct {
+	SQL        string        `json:"sql"`
+	Parameters []interface{} `json:"parameters"`
+}
+
 // astCase is the conformance/ast/*.json shape (spec/query-ast.md): a select
 // AST as JSON, and per-dialect expected SQL/parameters or a dialect-neutral
-// error code. This port has one dialect (sqlite); other dialects' expectations
-// are read and ignored.
+// error code. The expect block is read as a map so every dialect astDialects
+// knows is checked; a case lacking a shipped dialect's expectation fails.
 type astCase struct {
-	Name   string          `json:"name"`
-	Entity string          `json:"entity"`
-	Select json.RawMessage `json:"select"`
-	Expect struct {
-		Error  string `json:"error"`
-		SQLite struct {
-			SQL        string        `json:"sql"`
-			Parameters []interface{} `json:"parameters"`
-		} `json:"sqlite"`
-	} `json:"expect"`
+	Name   string                     `json:"name"`
+	Entity string                     `json:"entity"`
+	Select json.RawMessage            `json:"select"`
+	Expect map[string]json.RawMessage `json:"expect"`
 }
 
 // TestAst_RendersAsSpecified is the ast/ runner (§9, ADR-0020), mirroring
-// ConformanceAstTests.cs: build the AST from JSON, render through the SQLite
-// dialect, and compare the exact SQL and ordered parameter values, or the
-// error code. conformance/ast/level2/ (ADR-0022 add.1: projection, joins,
-// in_select) runs through the same body, its subtests prefixed "level2/".
+// ConformanceAstTests.cs: build the AST from JSON, render through every
+// shipped dialect, and compare the exact SQL and ordered parameter values per
+// dialect, or the dialect-invariant error code. conformance/ast/level2/
+// (ADR-0022 add.1: projection, joins, in_select) runs through the same body,
+// its subtests prefixed "level2/".
 func TestAst_RendersAsSpecified(t *testing.T) {
 	runAstFolder(t, "ast", "")
 	runAstFolder(t, filepath.Join("ast", "level2"), "level2/")
@@ -61,6 +72,12 @@ func TestAst_RendersAsSpecified(t *testing.T) {
 
 func runAstFolder(t *testing.T, folder, subtestPrefix string) {
 	dir := testsupport.ConformanceFolder(t, folder)
+	dialectNames := make([]string, 0, len(astDialects))
+	for name := range astDialects {
+		dialectNames = append(dialectNames, name)
+	}
+	sort.Strings(dialectNames)
+
 	for _, name := range testsupport.ConformanceCases(t, folder) {
 		t.Run(subtestPrefix+name, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join(dir, name))
@@ -72,42 +89,69 @@ func runAstFolder(t *testing.T, folder, subtestPrefix string) {
 				t.Fatalf("parse %s: %v", name, err)
 			}
 
-			m, err := resolveEntityMap(c.Entity)
-			if err != nil {
-				t.Fatalf("%s: %v", name, err)
-			}
-
-			ast, err := parseSelect(m, c.Select)
-			if err != nil {
-				t.Fatalf("%s: parsing select: %v", name, err)
-			}
-
-			var bound []any
-			bind := func(value any, _ *core.PropertyMap) (string, error) {
-				bound = append(bound, value)
-				return "@c" + itoa(len(bound)-1), nil
-			}
-
-			sql, renderErr := sqlite.New().SelectSQL(ast, bind)
-
-			if c.Expect.Error != "" {
-				if core.CodeOf(renderErr) != c.Expect.Error {
-					t.Errorf("expected error %s, got %v", c.Expect.Error, renderErr)
+			var expectedError string
+			if raw, ok := c.Expect["error"]; ok {
+				if err := json.Unmarshal(raw, &expectedError); err != nil {
+					t.Fatalf("parse %s expect.error: %v", name, err)
 				}
-				return
 			}
 
-			if renderErr != nil {
-				t.Fatalf("unexpected error: %v", renderErr)
-			}
-			if sql != c.Expect.SQLite.SQL {
-				t.Errorf("sql:\n got  %q\n want %q", sql, c.Expect.SQLite.SQL)
-			}
-			wantParams := decodeAllAny(c.Expect.SQLite.Parameters)
-			if !paramsEqual(wantParams, bound) {
-				t.Errorf("parameters:\n got  %#v\n want %#v", bound, wantParams)
+			for _, dialectName := range dialectNames {
+				t.Run(dialectName, func(t *testing.T) {
+					renderAstCase(t, name, c, expectedError, dialectName, astDialects[dialectName]())
+				})
 			}
 		})
+	}
+}
+
+// renderAstCase renders one case through one dialect and compares it with
+// that dialect's pinned expectation, or with the dialect-invariant error code.
+func renderAstCase(t *testing.T, name string, c astCase, expectedError, dialectName string, dialect core.Dialect) {
+	t.Helper()
+
+	m, err := resolveEntityMap(c.Entity)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+
+	ast, err := parseSelect(m, c.Select)
+	if err != nil {
+		t.Fatalf("%s: parsing select: %v", name, err)
+	}
+
+	var bound []any
+	bind := func(value any, _ *core.PropertyMap) (string, error) {
+		bound = append(bound, value)
+		return "@c" + itoa(len(bound)-1), nil
+	}
+
+	sql, renderErr := dialect.SelectSQL(ast, bind)
+
+	if expectedError != "" {
+		if core.CodeOf(renderErr) != expectedError {
+			t.Errorf("expected error %s, got %v", expectedError, renderErr)
+		}
+		return // error codes are the cross-dialect contract (§9)
+	}
+
+	if renderErr != nil {
+		t.Fatalf("unexpected error: %v", renderErr)
+	}
+	raw, ok := c.Expect[dialectName]
+	if !ok {
+		t.Fatalf("%s lacks the %q expectation — every dialect pins every case (§9)", name, dialectName)
+	}
+	var expected astExpectation
+	if err := json.Unmarshal(raw, &expected); err != nil {
+		t.Fatalf("parse %s expect.%s: %v", name, dialectName, err)
+	}
+	if sql != expected.SQL {
+		t.Errorf("sql:\n got  %q\n want %q", sql, expected.SQL)
+	}
+	wantParams := decodeAllAny(expected.Parameters)
+	if !paramsEqual(wantParams, bound) {
+		t.Errorf("parameters:\n got  %#v\n want %#v", bound, wantParams)
 	}
 }
 

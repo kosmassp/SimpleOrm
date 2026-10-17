@@ -18,11 +18,7 @@ import (
 // the test ends. The caller opens it; nothing is created here.
 func TempDatabase(t testing.TB) string {
 	t.Helper()
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		t.Fatalf("random suffix: %v", err)
-	}
-	path := filepath.Join(os.TempDir(), "simpleorm_go_"+hex.EncodeToString(suffix[:])+".db")
+	path := filepath.Join(os.TempDir(), "simpleorm_go_"+randomHex(t, 8)+".db")
 	t.Cleanup(func() {
 		// Best effort: Windows can briefly hold a delete lock after the driver closes its handle.
 		for _, file := range []string{path, path + "-wal", path + "-shm", path + "-journal"} {
@@ -98,4 +94,14 @@ func ReadConformance(t testing.TB, folder string, name string) []byte {
 // files' line endings, and byte comparisons must not depend on that.
 func NormalizeNewlines(text string) string {
 	return strings.ReplaceAll(text, "\r\n", "\n")
+}
+
+// randomHex is n random bytes as lowercase hex — the suffix of every per-test database name.
+func randomHex(t testing.TB, n int) string {
+	t.Helper()
+	suffix := make([]byte, n)
+	if _, err := rand.Read(suffix); err != nil {
+		t.Fatalf("random suffix: %v", err)
+	}
+	return hex.EncodeToString(suffix)
 }

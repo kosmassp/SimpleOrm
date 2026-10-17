@@ -8,7 +8,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use ReflectionClass;
 use SimpleOrm\Dialect\Dialect;
-use SimpleOrm\Dialect\SqliteDialect;
+use SimpleOrm\Dialect\Dialects;
 use SimpleOrm\Dialect\SqliteShadow;
 use SimpleOrm\Discovery\ClassScanner;
 use SimpleOrm\Errors\SchemaValidationException;
@@ -38,8 +38,8 @@ use SimpleOrm\Validation\SchemaGuard;
  * migrations live under `--migrations` (default `<src>/Migrations`) with
  * namespace `--migrations-namespace` (default `<namespace>\Migrations`);
  * snapshots default to the migrations directory, and so does `--out` for
- * `snapshot`/`diff`/`shadow`. `--dialect` accepts only `sqlite` for now —
- * other dialects refuse by name, naming ADR-0026.
+ * `snapshot`/`diff`/`shadow`. `--dialect` names a dialect {@see Dialects} ships
+ * (`sqlite` by default); `shadow` accepts only `sqlite`.
  */
 final class Application
 {
@@ -295,8 +295,8 @@ final class Application
         if ($dialectName !== null && strcasecmp($dialectName, 'sqlite') !== 0) {
             return self::fail(
                 "shadow replays into a throwaway SQLite database and supports only --dialect sqlite; "
-                    . "'{$dialectName}' is not ported yet (ADR-0026) — its rollbacks need Down() overrides "
-                    . 'until snapshot tooling learns that dialect',
+                    . "snapshot tooling is SQLite-only in every implementation (spec/dialects.md) — '{$dialectName}' "
+                    . 'rollbacks need Down() overrides until it learns that dialect',
             );
         }
 
@@ -431,14 +431,10 @@ final class Application
         };
     }
 
+    /** The `--dialect` rule (spec/dialects.md): a name {@see Dialects} knows, `sqlite` by default; anything else refuses before anything opens. */
     private static function dialectFor(Arguments $arguments): Dialect
     {
-        $name = strtolower($arguments->option('dialect') ?? 'sqlite');
-        if ($name === 'sqlite') {
-            return new SqliteDialect();
-        }
-
-        throw new SimpleOrmException('CLI', 'arguments', "--dialect '{$name}' is not ported yet (ADR-0026); only sqlite is available");
+        return Dialects::create($arguments->option('dialect') ?? Dialects::SQLITE);
     }
 
     private static function srcDir(Arguments $arguments): string

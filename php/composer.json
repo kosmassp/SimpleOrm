@@ -12,6 +12,11 @@
   "require-dev": {
     "phpunit/phpunit": "^11.5"
   },
+  "suggest": {
+    "ext-pdo_sqlite": "the SQLite dialect (the reference, ADR-0003)",
+    "ext-pdo_pgsql": "the PostgreSQL dialect (ADR-0025)",
+    "ext-pdo_sqlsrv": "the SQL Server dialect (ADR-0024); pdo_odbc with the SQL Server ODBC driver also works"
+  },
   "autoload": {
     "psr-4": {
       "SimpleOrm\\": "src/"
@@ -28,7 +33,8 @@
   ],
   "scripts": {
     "test": "php -d extension=pdo_sqlite -d extension=sqlite3 vendor/bin/phpunit",
-    "test-filter": "php -d extension=pdo_sqlite -d extension=sqlite3 vendor/bin/phpunit --filter"
+    "test-filter": "php -d extension=pdo_sqlite -d extension=sqlite3 vendor/bin/phpunit --filter",
+    "test-live": "php -d extension=pdo_sqlite -d extension=sqlite3 -d extension=pdo_pgsql -d extension=pdo_odbc vendor/bin/phpunit"
   },
   "config": {
     "sort-packages": true,

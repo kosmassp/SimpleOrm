@@ -68,6 +68,28 @@ order), then each base class upward — a language whose own reflection lists ba
 members first (a Python dataclass, a Go embedded struct) reorders to match.
 Composite key order is `[Key]` declaration order.
 
+**A base class is never an entity** (ADR-0040). A base class shares members only:
+its column, key, generated, version, hook, and rename declarations are inherited by
+every concrete subclass as if declared there, each concrete relation carrying its
+own copy of every column; identity comes from the concrete class alone. A base
+class is never read, written, queried, exported, validated, or targeted by a
+navigation — a read through one throws `MAP-028` rather than silently excluding or
+remapping it. Three cases, all `MAP-028`: an **abstract class** loaded as an entity
+by any path that loads a map (a registry result type, a key read, a criteria query,
+a write, an explicit or eager load of a navigation typed to it, a manual-builder
+registration, the tracker, SchemaGuard, `export-metadata`); a mapped type whose
+**base class carries a relation source** (`[Table]`/`[View]`/`[MaterializedView]`/
+`[Statement]`/`[Procedure]`) or an `[Index]` of its own — the error names both
+classes, and class-level declarations are read **without inheritance**, so a
+subclass never adopts its base's relation; and, in an **assembly scan** (SchemaGuard,
+the CLI's `export-metadata`/`validate`), a **concrete class without a source that
+another scanned type extends** — the one case a lone load cannot see, because such a
+class legitimately maps to a convention-named table on its own. Declaring base
+classes `abstract` is the convention (the fixture's `BaseModel`). Mapped
+inheritance — single-table, table-per-type, a polymorphic read over concrete
+tables — is ruled out permanently; a language without subclassing (Go, Rust) has
+nothing to refuse and records the code as unreachable.
+
 ## Naming convention
 
 Wherever a name is derived rather than explicit, a configurable naming convention

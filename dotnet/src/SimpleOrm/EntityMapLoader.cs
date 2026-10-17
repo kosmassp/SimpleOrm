@@ -28,8 +28,27 @@ public sealed class EntityMapLoader
     /// <summary>An <c>[Owned]</c> value type (ADR-0030): carries mapping attributes but is never an entity — assembly scans skip it.</summary>
     public static bool IsOwnedType(Type type) => AttributeMapLoader.IsOwnedType(type);
 
+    /// <summary>
+    /// The scan rule of ADR-0040 (<c>MAP-028</c>): among the types an assembly scan
+    /// considers, a concrete class without a relation source of its own that another
+    /// scanned type extends is a base class, not an entity — the one case a lone load
+    /// cannot see, because such a class legitimately maps to a convention-named table.
+    /// Returns one error per base class, naming the types that extend it.
+    /// </summary>
+    public static IReadOnlyList<MappingError> BaseClassesUsedAsEntities(IEnumerable<Type> types)
+        => AttributeMapLoader.BaseClassesUsedAsEntities(types);
+
     private EntityMap LoadCore(Type entityType)
     {
+        if (entityType.IsAbstract)
+        {
+            // ADR-0040: a base class shares members only; identity comes from the
+            // concrete class alone. Every path that loads a map arrives here.
+            throw new MappingException(entityType, [new MappingError(
+                "MAP-028", entityType.Name,
+                "is abstract: a base class shares members only and is never an entity (ADR-0040); read, write, and query the concrete class")]);
+        }
+
         if (_options.ExplicitMaps.TryGetValue(entityType, out var factory))
         {
             return factory(_options.NamingConvention);

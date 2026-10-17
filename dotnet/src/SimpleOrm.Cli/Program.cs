@@ -64,6 +64,11 @@ catch (SimpleOrmException exception)
     Console.Error.WriteLine(exception.Message);
     return 1;
 }
+catch (MappingException exception)
+{
+    Console.Error.WriteLine(exception.Message);
+    return 1;
+}
 
 int Usage()
 {
@@ -470,7 +475,16 @@ int ExportMetadata()
         Directory.CreateDirectory(outDir);
     }
 
-    foreach (var type in MappedTypes(assembly))
+    // ADR-0040: a concrete sourceless class another type extends is a base class
+    // (MAP-028), not an entity — the whole export refuses, naming it.
+    var types = MappedTypes(assembly).ToArray();
+    if (EntityMapLoader.BaseClassesUsedAsEntities(assembly.GetExportedTypes()) is { Count: > 0 } baseClasses)
+    {
+        throw new MappingException(
+            Array.Find(types, t => t.Name == baseClasses[0].Target) ?? types[0], baseClasses);
+    }
+
+    foreach (var type in types)
     {
         var json = EntityMapJson.Export(loader.Load(type), loader);
         if (outDir is null)

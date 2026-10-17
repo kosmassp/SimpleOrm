@@ -18,6 +18,14 @@ public sealed class MappingOptions
     public MappingOptions Register<T>(EntityMapBuilder<T> builder)
         where T : class
     {
+        if (typeof(T).IsAbstract)
+        {
+            // ADR-0040: a base class is never an entity, so it cannot be registered as one.
+            throw new MappingException(typeof(T), [new MappingError(
+                "MAP-028", typeof(T).Name,
+                "is abstract: a base class shares members only and is never an entity (ADR-0040); register the concrete class")]);
+        }
+
         ExplicitMaps[typeof(T)] = builder.Build;
         return this;
     }

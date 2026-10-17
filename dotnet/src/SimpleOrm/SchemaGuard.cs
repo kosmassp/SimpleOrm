@@ -61,9 +61,15 @@ public static class SchemaGuard
                 await ValidateStatementAsync(db, shield, cache, source, sql, argsType, resultType, errors, ct).ConfigureAwait(false);
             }
 
+            // ADR-0040: a concrete sourceless class another scanned type extends is a
+            // base class (MAP-028), not an entity — reported once, not validated as a table.
+            var baseClasses = EntityMapLoader.BaseClassesUsedAsEntities(types);
+            errors.AddRange(baseClasses.Select(e => new ValidationError(e.Code, e.Target, e.Message)));
+            var baseClassNames = new HashSet<string>(baseClasses.Select(e => e.Target), StringComparer.Ordinal);
+
             foreach (var entity in types.Where(t =>
                 t is { IsClass: true, IsAbstract: false } && EntityMapLoader.HasMappingAttributes(t)
-                && !EntityMapLoader.IsOwnedType(t)))
+                && !EntityMapLoader.IsOwnedType(t) && !baseClassNames.Contains(t.Name)))
             {
                 await ValidateEntityAsync(db, shield, cache, entity, errors, ct).ConfigureAwait(false);
             }
@@ -202,6 +208,13 @@ public static class SchemaGuard
             catch (TargetInvocationException exception) when (exception.InnerException is SimpleOrmException mapping)
             {
                 errors.Add(new ValidationError(mapping.Code, source, mapping.Message));
+            }
+            catch (TargetInvocationException exception) when (exception.InnerException is MappingException loader)
+            {
+                // The result type itself fails to load (MAP-028 for a base class, MAP-024 for
+                // an owned type, …): part of the report, never an escaping exception.
+                errors.AddRange(loader.Errors.Select(e => new ValidationError(e.Code, source, e.Message)));
+                return;   // no map, so no per-column check
             }
 
             await ValidateResultColumnsAsync(db, shield, cache, source, sql, reader, resultType, errors, ct).ConfigureAwait(false);

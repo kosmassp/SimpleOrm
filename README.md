@@ -186,6 +186,64 @@ Zero children yield an empty list, never null. Custom types register an
 `ITypeHandler<T>` on `DbOptions.TypeHandlers` — the only path for types outside the
 fixed conversion table.
 
+### Variants (no inheritance mapping, ADR-0040)
+
+SimpleOrm maps **concrete classes only**. A base class shares members — the
+sample's abstract `BaseModel` gives every table its audit columns, each table
+carrying its own copy — and nothing else: it has no relation, no key space, no
+identity, and reading, writing, querying, or exporting through it throws
+`MAP-028`. Declare base classes `abstract`; a base class carrying `[Table]` (or
+any other relation source) is refused with both class names, and a concrete
+sourceless class that another mapped class extends is caught at startup by
+`SchemaGuard.ValidateAsync`. Single-table and table-per-type inheritance are
+ruled out permanently (a root-typed navigation is the polymorphic association
+ADR-0019 forbids; two of the target languages have no subclassing). Rows of
+several kinds in one table are modelled with what already exists:
+
+**Owned variants with a kind column.** One table, a `Kind` enum, one nullable
+`[Owned]` navigation per variant (ADR-0030): a variant's columns sit under a
+prefix, an all-NULL group reads back as null, the caller switches on `Kind`, and
+the variant filter is ordinary criteria.
+
+```csharp
+[Table("documents")]
+public sealed class Document : BaseModel
+{
+    [Key] [Generated] [Column] public long Id { get; set; }
+    [Column] public DocumentKind Kind { get; set; }          // Invoice | CreditNote — TEXT by name
+    [Column] public string Number { get; set; } = "";
+    [Owned] public InvoiceData? Invoice { get; set; }         // invoice_due_date, invoice_total  (NULL for a credit note)
+    [Owned] public CreditNoteData? CreditNote { get; set; }   // credit_note_reason, credit_note_invoice_id
+}
+
+var invoices = await db.Query<Document>()
+    .Where(Criteria.Eq(nameof(Document.Kind), DocumentKind.Invoice))
+    .ToListAsync(ct);
+foreach (var d in invoices) { var due = d.Invoice!.DueDate; }   // the owned group is present for its kind
+```
+
+**A write model plus read models.** One table-backed entity owns the writes; one
+keyed `[View]` or `[Statement]` per variant (ADR-0008) is its SQL-first,
+read-only projection — trackable, with its own navigations, validated by
+SchemaGuard like any other source.
+
+```csharp
+[View("invoices", """
+    select id, number, invoice_due_date as due_date, invoice_total as total
+    from documents where kind = 'Invoice'
+    """)]
+public sealed class Invoice            // not a BaseModel: the audit hooks belong to the table that is written (MAP-026 on a view)
+{
+    [Key] [Column] public long Id { get; set; }
+    [Column] public string Number { get; set; } = "";
+    [Column] public DateOnly DueDate { get; set; }
+    [Column] public decimal Total { get; set; }
+}
+
+var overdue = await db.Query<Invoice>().Where(Criteria.Lt(nameof(Invoice.DueDate), today)).ToListAsync(ct);
+await db.InsertAsync(new Document { Kind = DocumentKind.Invoice, Number = "A-7", Invoice = new() { DueDate = due, Total = 12m } }, ct);
+```
+
 ### Migrations (versioned code, per object)
 
 Root versions under `Migrations/` are the recorded units; per-object steps hold the

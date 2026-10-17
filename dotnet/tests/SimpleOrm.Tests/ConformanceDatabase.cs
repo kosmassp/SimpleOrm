@@ -26,6 +26,7 @@ internal static class ConformanceDatabase
         ["Transaction"] = typeof(Transaction),
         ["TransactionDetail"] = typeof(TransactionDetail),
         ["UserTransactionTotal"] = typeof(UserTransactionTotal),
+        ["BaseModel"] = typeof(BaseModel),   // the fixture's base class: named only to be refused (MAP-028, ADR-0040)
     };
 
     public static async Task BuildAsync(string databasePath, string conformanceDirectory)

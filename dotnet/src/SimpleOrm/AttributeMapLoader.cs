@@ -52,30 +52,34 @@ internal static class AttributeMapLoader
     {
         var sources = new List<(RelationKind Kind, string? Name, string? Schema, string? Sql, object[]? RawParameters)>();
 
-        if (entityType.GetCustomAttribute<TableAttribute>() is { } table)
+        // Class-level attributes are read without inheritance (ADR-0040): a subclass
+        // never adopts its base's relation source — a base carrying one is MAP-028 below.
+        if (entityType.GetCustomAttribute<TableAttribute>(inherit: false) is { } table)
         {
             sources.Add((RelationKind.Table, table.Name, table.Schema, null, null));
         }
 
-        if (entityType.GetCustomAttribute<ViewAttribute>() is { } view)
+        if (entityType.GetCustomAttribute<ViewAttribute>(inherit: false) is { } view)
         {
             sources.Add((RelationKind.View, view.Name, view.Schema, view.Sql, null));
         }
 
-        if (entityType.GetCustomAttribute<MaterializedViewAttribute>() is { } materialized)
+        if (entityType.GetCustomAttribute<MaterializedViewAttribute>(inherit: false) is { } materialized)
         {
             sources.Add((RelationKind.MaterializedView, materialized.Name, materialized.Schema, materialized.Sql, null));
         }
 
-        if (entityType.GetCustomAttribute<StatementAttribute>() is { } statement)
+        if (entityType.GetCustomAttribute<StatementAttribute>(inherit: false) is { } statement)
         {
             sources.Add((RelationKind.Statement, null, null, statement.Sql, statement.Parameters));
         }
 
-        if (entityType.GetCustomAttribute<ProcedureAttribute>() is { } procedure)
+        if (entityType.GetCustomAttribute<ProcedureAttribute>(inherit: false) is { } procedure)
         {
             sources.Add((RelationKind.Procedure, procedure.Name, procedure.Schema, procedure.Sql, procedure.Parameters));
         }
+
+        CheckBaseClasses(entityType, errors);
 
         if (sources.Count > 1)
         {
@@ -379,7 +383,7 @@ internal static class AttributeMapLoader
             return;
         }
 
-        if (ownedType.GetCustomAttributes().Any(a => a is TableAttribute or ViewAttribute or MaterializedViewAttribute
+        if (ownedType.GetCustomAttributes(inherit: false).Any(a => a is TableAttribute or ViewAttribute or MaterializedViewAttribute
                 or StatementAttribute or ProcedureAttribute or IndexAttribute))
         {
             errors.Add(new MappingError(
@@ -486,7 +490,7 @@ internal static class AttributeMapLoader
 
     private static IReadOnlyList<IndexSpec> ReadIndexes(Type entityType, RelationKind kind, List<MappingError> errors)
     {
-        var attributes = entityType.GetCustomAttributes<IndexAttribute>().ToArray();
+        var attributes = entityType.GetCustomAttributes<IndexAttribute>(inherit: false).ToArray();
         if (attributes.Length == 0)
         {
             return [];
@@ -579,21 +583,99 @@ internal static class AttributeMapLoader
     }
 
     /// <summary>An [Owned] value type (ADR-0030): never an entity, so assembly scans skip it.</summary>
-    internal static bool IsOwnedType(Type type) => type.GetCustomAttribute<OwnedAttribute>() is not null;
+    internal static bool IsOwnedType(Type type) => type.GetCustomAttribute<OwnedAttribute>(inherit: false) is not null;
 
     internal static bool HasMappingAttributes(Type entityType)
     {
-        if (entityType.GetCustomAttributes()
-            .Any(a => a is TableAttribute or ViewAttribute or MaterializedViewAttribute
-                or StatementAttribute or ProcedureAttribute or IndexAttribute))
+        // The class chain is walked explicitly, each level read without attribute
+        // inheritance (ADR-0040) — a base's class-level metadata routes the subclass
+        // to this loader, where it is MAP-028 rather than silently adopted.
+        for (var type = entityType; type is not null && type != typeof(object); type = type.BaseType)
         {
-            return true;
+            if (ClassLevelEntityMetadata(type) is not null)
+            {
+                return true;
+            }
         }
 
         return PropertiesInDeclarationOrder(entityType).Any(p => p.GetCustomAttributes()
             .Any(a => a is ColumnAttribute or IgnoreAttribute or KeyAttribute or GeneratedAttribute
                 or VersionAttribute or EnumAsIntAttribute or ForeignKeyAttribute or ManyToOneAttribute
                 or OneToOneAttribute or OneToManyAttribute or ManyToManyAttribute or OwnedAttribute));
+    }
+
+    /// <summary>
+    /// The name of the first class-level entity declaration the type itself carries —
+    /// a relation source or <c>[Index]</c> — read without attribute inheritance; null when none.
+    /// </summary>
+    private static string? ClassLevelEntityMetadata(Type type)
+        => type.GetCustomAttributes(inherit: false)
+            .Select(a => a switch
+            {
+                TableAttribute => "[Table]",
+                ViewAttribute => "[View]",
+                MaterializedViewAttribute => "[MaterializedView]",
+                StatementAttribute => "[Statement]",
+                ProcedureAttribute => "[Procedure]",
+                IndexAttribute => "[Index]",
+                _ => null,
+            })
+            .FirstOrDefault(name => name is not null);
+
+    /// <summary>
+    /// ADR-0040: a base class shares members only. One carrying a relation source (or an
+    /// <c>[Index]</c>, which belongs to a relation) would be an entity, so it may not be
+    /// extended by one — <c>MAP-028</c> naming both classes, checked on the chain the
+    /// loader already walks for inherited properties.
+    /// </summary>
+    private static void CheckBaseClasses(Type entityType, List<MappingError> errors)
+    {
+        for (var type = entityType.BaseType; type is not null && type != typeof(object); type = type.BaseType)
+        {
+            if (ClassLevelEntityMetadata(type) is { } declaration)
+            {
+                errors.Add(new MappingError(
+                    "MAP-028", entityType.Name,
+                    $"extends '{type.Name}', which carries {declaration}: a base class shares members only and is never an entity (ADR-0040); "
+                    + "declare the relation source on the concrete class and keep the base a plain member holder"));
+            }
+        }
+    }
+
+    /// <summary>
+    /// The scan rule of ADR-0040 (<c>MAP-028</c>): a concrete, sourceless, mapped class
+    /// that another scanned class extends. A lone load cannot see it — the class maps
+    /// legitimately to a convention-named table — so startup validation and the CLI check
+    /// the scanned set as a whole. One error per base class, naming its subclasses.
+    /// </summary>
+    internal static IReadOnlyList<MappingError> BaseClassesUsedAsEntities(IEnumerable<Type> types)
+    {
+        var scanned = types.Where(t => t.IsClass && HasMappingAttributes(t) && !IsOwnedType(t)).ToArray();
+        var entities = new HashSet<Type>(scanned.Where(t => !t.IsAbstract));
+        var extendedBy = new Dictionary<Type, List<string>>();
+        foreach (var type in scanned)
+        {
+            for (var baseType = type.BaseType; baseType is not null && baseType != typeof(object); baseType = baseType.BaseType)
+            {
+                if (entities.Contains(baseType))
+                {
+                    if (!extendedBy.TryGetValue(baseType, out var names))
+                    {
+                        extendedBy[baseType] = names = [];
+                    }
+
+                    names.Add(type.Name);
+                }
+            }
+        }
+
+        return extendedBy
+            .OrderBy(pair => pair.Key.Name, StringComparer.Ordinal)
+            .Select(pair => new MappingError(
+                "MAP-028", pair.Key.Name,
+                $"is a concrete class without a relation source that '{string.Join("', '", pair.Value)}' extends: a base class shares members only "
+                + "and is never an entity (ADR-0040); declare it abstract"))
+            .ToArray();
     }
 
     /// <summary>

@@ -44,7 +44,10 @@
 // CachedPlanRetryOnce, runs the statement once more when no transaction is
 // open on the connection; inside one PostgreSQL has aborted the transaction,
 // so the error surfaces and the caller rolls back. CachedPlanSurface
-// (New(WithCachedPlanPolicy(CachedPlanSurface))) never retries. A driver
+// (New(WithCachedPlanPolicy(CachedPlanSurface))) never retries. A surfaced
+// cached-plan error is TX-002 (spec/errors.md), wrapping pgx's error: roll
+// back and rerun the transaction, or open a new session — pgx dropped the
+// stale statement on the error, and the library holds no statement cache. A driver
 // matter of this package, not a seam member (spec/dialects.md Clarifications,
 // ADR-0040 add.1).
 package postgres

@@ -1203,16 +1203,35 @@ func openPlanSession(t *testing.T, dialect *postgres.Dialect) *orm.Db {
 	return db
 }
 
-// isCachedPlanError reports SQLSTATE 0A000 "cached plan must not change result type".
-func isCachedPlanError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "cached plan must not change result type") && strings.Contains(err.Error(), "0A000")
+// expectTX002 asserts the surfaced cached-plan error (spec/errors.md TX-002): a SimpleOrm error naming
+// the statement, whose remedy fits the transaction state, with pgx's 0A000 error kept as its cause.
+func expectTX002(t *testing.T, err error, inTransaction bool) {
+	t.Helper()
+	var ormErr *orm.Error
+	if !errors.As(err, &ormErr) || ormErr.Code != "TX-002" {
+		t.Fatalf("expected TX-002, got %v", err)
+	}
+	if !strings.Contains(ormErr.Target, "plan_rows") {
+		t.Errorf("TX-002 should name the statement, got target %q", ormErr.Target)
+	}
+	remedy := "rerun the statement"
+	if inTransaction {
+		remedy = "roll it back and rerun the whole transaction"
+	}
+	if !strings.Contains(ormErr.Message, remedy) || !strings.Contains(ormErr.Message, "open a new session") {
+		t.Errorf("TX-002 should say %q or open a new session, got %q", remedy, ormErr.Message)
+	}
+	if cause := errors.Unwrap(ormErr); cause == nil || !strings.Contains(cause.Error(), "0A000") ||
+		!strings.Contains(cause.Error(), "cached plan must not change result type") {
+		t.Errorf("TX-002 should wrap pgx's 0A000 error, got cause %v", cause)
+	}
 }
 
 // TestLive_ACachedPlanAfterASchemaChangeRetriesOnceOutsideATransaction pins the default
 // CachedPlanRetryOnce (ADR-0040 add.1, spec/dialects.md Clarifications): a statement pgx prepared and
 // cached meets a table whose column type changed — outside a transaction it is run once more and
-// succeeds; inside one PostgreSQL has aborted the transaction, the error surfaces unchanged, and
-// after the rollback the statement works again (pgx invalidated its cache entry).
+// succeeds; inside one PostgreSQL has aborted the transaction, the error surfaces as TX-002, and
+// rolling back and rerunning the transaction works (pgx dropped the stale entry on the error).
 func TestLive_ACachedPlanAfterASchemaChangeRetriesOnceOutsideATransaction(t *testing.T) {
 	ctx := context.Background()
 	db := openPlanSession(t, postgres.New())
@@ -1235,19 +1254,27 @@ func TestLive_ACachedPlanAfterASchemaChangeRetriesOnceOutsideATransaction(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := orm.QuerySingle(ctx, db, noteByID, planArgs{ID: 1}); !isCachedPlanError(err) {
-		t.Fatalf("inside a transaction the 0A000 error should surface unchanged, got %v", err)
-	}
+	_, err = orm.QuerySingle(ctx, db, noteByID, planArgs{ID: 1})
+	expectTX002(t, err, true)
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
+
+	// The remedy TX-002 names: rerun the whole transaction.
+	rerun, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if note, err := orm.QuerySingle(ctx, db, noteByID, planArgs{ID: 1}); err != nil || note != "kept" {
-		t.Fatalf("after the rollback the statement re-prepares: %q, %v", note, err)
+		t.Fatalf("the rerun transaction re-prepares the statement: %q, %v", note, err)
+	}
+	if err := rerun.Commit(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// TestLive_TheSurfacePolicyNeverRetriesACachedPlan pins CachedPlanSurface: the 0A000 error surfaces
-// outside a transaction too, and the next run re-prepares (pgx's own invalidation).
+// TestLive_TheSurfacePolicyNeverRetriesACachedPlan pins CachedPlanSurface: the cached-plan error surfaces
+// as TX-002 outside a transaction too, and the next run re-prepares (pgx's own invalidation).
 func TestLive_TheSurfacePolicyNeverRetriesACachedPlan(t *testing.T) {
 	ctx := context.Background()
 	db := openPlanSession(t, postgres.New(postgres.WithCachedPlanPolicy(postgres.CachedPlanSurface)))
@@ -1258,9 +1285,8 @@ func TestLive_TheSurfacePolicyNeverRetriesACachedPlan(t *testing.T) {
 	if _, err := orm.Execute(ctx, db, noteAsVarchar, orm.EmptyArgs{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := orm.QuerySingle(ctx, db, noteByID, planArgs{ID: 1}); !isCachedPlanError(err) {
-		t.Fatalf("CachedPlanSurface should return the 0A000 error, got %v", err)
-	}
+	_, err := orm.QuerySingle(ctx, db, noteByID, planArgs{ID: 1})
+	expectTX002(t, err, false)
 	if note, err := orm.QuerySingle(ctx, db, noteByID, planArgs{ID: 1}); err != nil || note != "kept" {
 		t.Fatalf("the next run re-prepares: %q, %v", note, err)
 	}

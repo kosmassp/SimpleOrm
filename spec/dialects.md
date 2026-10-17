@@ -416,27 +416,26 @@ Named here so that no implementation attempts it ahead of the reference:
 - Found by the ports, not yet ruled on: `time`- and `decimal`-typed array
   parameters; composite `nvarchar(450)` keys exceeding SQL Server's 900-byte index
   limit (declare real lengths in migrations). (`bytes` writes through untyped
-  drivers and pgx's statement cache after a schema change are ruled —
-  Clarifications 14 and 15.)
+  drivers, pgx's statement cache after a schema change, and go-mssqldb's untyped
+  NULL are ruled — Clarifications 14, 15, and 16.)
 
-**Waiting for a SQL Server engine** (owner rulings, ADR-0040 add.1: nothing
-changes until a live run proves the hazard; the first machine with an engine
-runs these first):
+**Waiting for a SQL Server engine** (ADR-0040 add.1; the first machine with an
+engine runs these first):
 
 - **The first green run of the SQL Server live legs** in all three
   implementations — no engine here, and go-mssqldb cannot address LocalDB (a TCP
-  server is its default).
-- **go-mssqldb binding `nil` as an `nvarchar(1)` NULL**: a NULL into `varbinary`
-  may refuse (error 257). The bytes round trip every SQL Server leg runs ends with
-  a NULL written into `varbinary(max)` — that write is the probe, in every
-  implementation (an untyped null may reach the server as a character type
-  through ADO.NET or PDO ODBC too).
-- **go-mssqldb summing trigger row counts into `RowsAffected`**: a `CRUD-010`
-  hazard on schemas whose triggers lack `SET NOCOUNT ON`. To be tested against a
-  schema with real triggers before any rule (for orientation: EF Core emits `SET
-  NOCOUNT ON` plus `OUTPUT` and needs an explicit opt-out for tables with
-  triggers; Hibernate trusts the raw count and asks trigger authors for `SET
-  NOCOUNT ON`).
+  server is its default). They include the first verification of Clarification
+  16 (typed nulls), built but never run against SQL Server, and the NULL written
+  into `varbinary(max)` by every SQL Server leg's bytes round trip — which also
+  shows whether an untyped null through ADO.NET or PDO ODBC shares go-mssqldb's
+  hazard.
+- **`RowsAffected` summing trigger row counts** (go-mssqldb): a `CRUD-010`
+  hazard on schemas whose triggers lack `SET NOCOUNT ON`. Open until tested
+  against real triggers on a SQL Server machine; no rule yet. The candidate fix
+  is `SET NOCOUNT ON; <write>; SELECT @@ROWCOUNT` on SQL Server, and with
+  triggers in the mapping (Level 4, ADR-0040 add.1) the strategy can be keyed
+  off declared triggers the way EF Core's `HasTrigger()` does (for orientation:
+  Hibernate trusts the raw count and asks trigger authors for `SET NOCOUNT ON`).
 
 ## Testing contract
 
@@ -471,7 +470,7 @@ policy of Clarification 15 in and out of a transaction.
 Answers to the four port gap lists of ADR-0040 (PHP and Go, SQL Server and
 PostgreSQL — 42 questions, consolidated), each the answer the implementations now
 embody. No rule above changed; the ADR records the three reference deviations the
-same lists surfaced. Clarifications 14 and 15 are owner rulings on items the
+same lists surfaced. Clarifications 14, 15, and 16 are owner rulings on items the
 ports found (ADR-0040 add.1).
 
 1. **Introspection columns are named.** Every non-SQLite dialect aliases its result
@@ -596,10 +595,19 @@ ports found (ADR-0040 add.1).
     behaviour is configurable, and the default **retries the statement once, only
     when no transaction is active on the connection**: the failed statement ran in
     its own implicit transaction, so nothing of it happened. Inside a transaction
-    PostgreSQL has already aborted it — the error surfaces unchanged and the caller
-    must roll back. The other setting surfaces the error always. Go: pgx caches
-    every statement with arguments and invalidates the entry on any error but never
-    retries, so the dialect's connection does —
+    PostgreSQL has already aborted it, and the error surfaces. The other setting
+    surfaces the error always. **A surfaced cached-plan error is `TX-002`**, never
+    the bare provider error: it names the statement, keeps the provider error as
+    its wrapped cause, and says what to do — inside a transaction, roll it back
+    and rerun the whole transaction; outside one, rerun the statement; or open a
+    new session. **Who clears the cache:** the driver, per connection, on the
+    error itself — the library holds no statement cache of its own. That is why
+    the rerun works: it re-prepares against the new table shape. The retry-once
+    default handles the no-transaction case transparently; inside a transaction
+    the application's rerun is the fix. Go: pgx caches every statement with
+    arguments and invalidates the entry on any error (`Conn.exec`'s deferred
+    `Invalidate`, `Rows.Close`) but never retries, so the dialect's connection
+    does —
     `postgres.New(postgres.WithCachedPlanPolicy(postgres.CachedPlanRetryOnce |
     postgres.CachedPlanSurface))`, retry by default, judged by the connection's
     transaction status; a statement the caller prepared explicitly is never
@@ -607,3 +615,25 @@ ports found (ADR-0040 add.1).
     does not auto-prepare by default (`Max Auto Prepare=0`), so a connection string
     that turns it on is outside this rule. PHP is unaffected: PDO prepares each
     statement when the library runs it, and nothing prepared outlives the call.
+16. **Typed nulls from the metadata token** (owner ruling, ADR-0040 add.1). A
+    NULL parameter carries the SQL type its property's metadata token names,
+    never an untyped null: a driver that types parameters from the bound value
+    (go-mssqldb announces an untyped nil as `nvarchar(1)`, which SQL Server
+    refuses to convert into `varbinary` — error 257) then declares the right
+    type. The binder chooses it, metadata-driven and dialect-neutral, for
+    generated CRUD, key reads, criteria, and registry queries (a registry
+    argument's token comes from its declared type). Go: `TypeConverter.
+    ToParameter` turns a NULL into `mapping.TypedNull(token)` — `[]byte(nil)`
+    for `bytes`, `sql.NullInt16/32/64`, `NullFloat64`, `NullBool`, `NullTime`
+    for the numeric, `bool`, and instant tokens, `sql.NullString` for `string`,
+    `decimal`, `guid`, `date`, `time`, and text enums (SQL Server converts a
+    character type implicitly into each of those), an untyped nil only for a
+    custom handler type; the snapshot form (`ToDatabase`) keeps the plain nil.
+    SQLite and PostgreSQL bind exactly what they bound before — every typed null
+    reaches them as SQL NULL (modernc binds a nil `[]byte` as NULL; pgx encodes
+    both forms as NULL and the server types the parameter). Built and pinned by
+    unit tests on the binder's output; **unverified against SQL Server** until an
+    engine exists — the SQL Server leg's NULL bytes write (insert and update) is
+    the verification. C# and PHP: whether ADO.NET's untyped `DBNull` and PDO
+    ODBC's `PARAM_NULL` reach SQL Server as a character type is the same live
+    question, answered by the same NULL write in their SQL Server legs.

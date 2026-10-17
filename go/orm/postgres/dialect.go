@@ -30,9 +30,9 @@ const (
 	// CachedPlanRetryOnce (the default) re-runs the statement once — pgx re-prepares it — when no
 	// transaction is active on the connection: the failed statement ran in its own implicit
 	// transaction, so nothing of it happened. Inside a transaction PostgreSQL has already aborted
-	// the transaction, so the error surfaces unchanged and the caller must roll back.
+	// the transaction, so the error surfaces as TX-002 and the caller rolls back and reruns it.
 	CachedPlanRetryOnce CachedPlanPolicy = iota
-	// CachedPlanSurface returns the error unchanged, in or out of a transaction.
+	// CachedPlanSurface surfaces TX-002, in or out of a transaction.
 	CachedPlanSurface
 )
 

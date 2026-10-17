@@ -271,6 +271,21 @@ being created anew:
 dotnet run --project dotnet/src/SimpleOrm.Cli -- diff --amend --assembly App.dll --out App/Migrations --namespace App.Migrations --name AddNote --db app.db
 ```
 
+Two Level 3 additions keep the intent with the model (ADR-0038). A rename can be
+**declared on the property** instead of re-typed on every run: `[RenamedFrom("name")]`
+beside `[Column("role_name")]` is read by `diff` exactly like `--rename roles.name=role_name`
+(one data-preserving `RenameColumn`, never a drop and an add) and is permanent and
+harmless once applied — when the latest snapshot already has the new column, or has
+neither, it declares nothing (`MAP-027` where it cannot apply: no `[Column]`, an owned
+member, a view). And `diff --draft` stamps the generated root `[Draft]`: `migrate` and
+`baseline` refuse the whole plan while it is there (`MIG-013`), `status` reports it as
+`Draft`, SchemaGuard counts it as pending (`MIG-030`), `--amend` keeps the marker, and
+`shadow` replays it — review the generated code, remove the attribute, then migrate:
+
+```bash
+dotnet run --project dotnet/src/SimpleOrm.Cli -- diff --draft --assembly App.dll --out App/Migrations --namespace App.Migrations --name RenameRoleName
+```
+
 `shadow` rebuilds the snapshots from history instead — it replays every version
 into a throwaway database and introspects after each one, which both regenerates
 lost files and proves the snapshots match the migrations. When history is too long
@@ -425,6 +440,23 @@ Level 2 paths (ADR-0029 refresh, same machine, 1000 rows × 3 child rows):
 The criteria renderer costs ~9% over the equivalent inline SQL. On SQLite the
 parameter-heavy `IN` list is what hurts, so **SubSelect is the fastest mode for
 large owner sets** there; Join pays for its segment readers in allocation.
+Level 3 paths (ADR-0039, same machine; `TrackingBenchmarks`, SQLite in WAL mode so
+the journal does not swamp the library):
+
+| Path | Untracked | Tracked |
+|---|---|---|
+| 1000-row read, warm session (every row an identity hit) | 751 µs | 822 µs (1.09×, +32% allocation) |
+| 1000-row read, fresh session (1000 registrations + snapshots) | 2.2 ms | 3.7 ms (~1.5 µs and ~0.4 KB per row) |
+| get + update one row (Dapper by hand: 32 µs) | 33 µs, the full row | 33 µs, the dirty column only; 9.8 µs when clean (no statement) |
+| 100 inserts in one transaction (Dapper: 519 µs) | 1.40 ms | `Persist` × 100 + `Flush`: 1.67 ms |
+| nothing-to-do flush over 1000 tracked rows | — | ~100 µs and ~30 KB for the dirty sweep |
+
+Tracking costs an identity lookup per row read and a snapshot per row registered;
+a flush sweeps every tracked instance (linear in the session's size, as in every
+snapshot-tracking ORM), so a session is a unit of work, not a process-wide cache.
+The reference does not batch: `Microsoft.Data.Sqlite` cannot, and the flush
+measures within the cost of the same inserts issued one by one.
+
 Numbers are machine-specific — run `dotnet run -c Release` in the benchmarks
 project for yours.
 

@@ -235,8 +235,14 @@ internal sealed class StepScript(Db db, RecordingDialect dialect, string databas
         else if (expect.TryGetProperty("value", out var value))
         {
             var entity = Resolve(value.GetProperty("ref").GetString()!);
-            var property = db.Maps.Load(entity.GetType()).Properties.Single(p => p.PropertyName == value.GetProperty("property").GetString());
+            var map = db.Maps.Load(entity.GetType());
+            var name = value.GetProperty("property").GetString()!;
+            var property = map.Properties.SingleOrDefault(p => p.PropertyName == name);
             var expected = value.GetProperty("equals");
+            // An owned navigation named whole: null, or {} for "an owned object exists" (spec/session.md "The step scripts").
+            var actual = property is not null
+                ? ConformanceCrudTests.Encode(property.GetValue(entity))
+                : map.Properties.Select(p => p.Owner).OfType<OwnedMap>().First(o => o.PropertyName == name).Property.GetValue(entity) is null ? null : "{}";
             Assert.Equal(
                 expected.ValueKind switch
                 {
@@ -244,9 +250,10 @@ internal sealed class StepScript(Db db, RecordingDialect dialect, string databas
                     JsonValueKind.True => "true",
                     JsonValueKind.False => "false",
                     JsonValueKind.Null => null,
+                    JsonValueKind.Object => "{}",
                     _ => expected.GetString(),
                 },
-                ConformanceCrudTests.Encode(property.GetValue(entity)));
+                actual);
         }
         else if (expect.TryGetProperty("sameValue", out var sameValue))
         {

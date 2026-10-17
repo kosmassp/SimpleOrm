@@ -1,0 +1,20 @@
+{
+  "name": "diff_draft_marks_the_root",
+  "comment": "diff --draft (ADR-0038) emits the next version with the draft marker on the root — the language-neutral token DRAFT in the root's header — which migrate and baseline refuse (MIG-013) until the author removes it. The step is ordinary; the existing V0002 is untouched.",
+  "files": [
+    { "path": "V0002", "generated": true, "dialect": "sqlite" },
+    { "path": "Table/AmendWidget/V0002_AddNote", "generated": true } ],
+  "snapshots": [
+    { "path": "Table/AmendWidget/V0001.schema.json", "snapshot": { "object": "amend_widgets", "asOfVersion": 1,
+      "columns": [
+        { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "TEXT", "nullable": false } ],
+      "indexes": [] } } ],
+  "command": { "amend": false, "name": "AddRemark", "draft": true },
+  "expect": { "exit": 0,
+    "kept": [ "V0002", "Table/AmendWidget/V0002_AddNote" ],
+    "written": [ "Table/AmendWidget/V0003_AddRemark", "V0003" ],
+    "files": [
+      { "path": "V0003", "contains": [ "DRAFT", "V0003_AddRemark" ] },
+      { "path": "Table/AmendWidget/V0003_AddRemark", "contains": [ "remark", "TEXT" ], "omits": [ "DRAFT" ] } ] }
+}

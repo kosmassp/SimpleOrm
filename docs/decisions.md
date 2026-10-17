@@ -2843,3 +2843,132 @@ overhead measured, the `DbBatch` decision), and the proof that a port could
 implement Level 3 from the spec alone — only when the owner says so.
 
 **Status.** Accepted. M5 done in all three implementations; M4 skipped.
+
+## ADR-0039 — Level 3 exit: the spec-only audit, the tracked benchmark, the batching decision (2026-10-17)
+
+§7c M6, executed. The exit criterion for a level is "a port could implement
+it from `spec/` + `conformance/` alone". Levels 0–2 were proven by building
+ports that way; Level 3 was built that way milestone by milestone (ADR-0035
+to ADR-0038: the PHP and Go agents forbidden to read another implementation,
+their gap lists resolved into Clarifications). The exit adds a proof of a
+different kind — **an audit from a language family none of the three
+implementations belongs to** — plus the two owed measurements.
+
+**The audit.** One Sonnet agent, allowed to read only `spec/` and
+`conformance/`, wrote the design of a **Python** Level 3 port — a synchronous
+`sqlite3` driver, no static types, decorators and dataclasses, plain
+attributes instead of properties, no overloading — and listed every question
+the spec did not answer: **32 gaps** (6 high, 16 medium, 10 low), nine
+registry rows narrower than the sections using their codes, six stale or
+incomplete passages, eight rules no conformance case could detect. Every one
+was answered against the reference and written into the spec. The high ones:
+the **dialect seam** behind `expectWritten`/`expectStatements` was defined
+nowhere; the **fixture's property and navigation names** (`UpdatedAtUtc` ↔
+`updated_at`) were neither exported nor derivable; **"dirty" had two
+definitions** that disagreed for the `[UpdatedAt]` column; `ChangesOf` was
+silent on a value the converter refuses; **user code had no sanctioned way to
+assign a navigation**; and **type rank was underspecified** for unrelated
+types and the delete phase — and there the audit found a real divergence:
+the reference numbered Tarjan's components in discovery order (a total order
+by first appearance in the schedule) while both ports computed a depth, so
+`Persist(role1); Persist(user); Persist(role2)` flushed role, role, user in
+C# and role, user, role in PHP and Go, undetected by any case. **The depth
+is the rule** — rank is a property of the metadata, unrelated types tie and
+interleave in schedule order — the reference changed, and
+`unrelated_types_interleave_in_schedule_order` pins it.
+
+**Spec.** `spec/session.md` gained "The step scripts — grammar, values, the
+fixture, the seam": the step-script form stated normatively for all four
+Level 3 folders (verbs and fields, expectation kinds, paths, `expectError`
+semantics), the value encoding and by-value comparison, the fixed clock for
+every runner, the fixture table (entity → property → column, navigations,
+hooks, the owned prefix), the fixture database (metadata-built, seeded, **no
+foreign-key constraints**), and the recorder's exact contract. Clarification
+blocks in `unit-of-work.md` (18 answers: the two dirties, conversion failures
+in a question, navigation assignment, type rank as a depth, delete edges,
+summary counting, `UOW-003` first, argument rules, failure propagation,
+disposal, what does I/O and the sync-port reading of "async + cancellation",
+removal discards edits, strong references, the whole-navigation copy of an
+owned type in merge/refresh, "never loaded" ownership, delete's two forms,
+token declarations), `hooks.md` (UTC without a `Kind`: a markerless instant
+refuses, an offset instant converts as a value, the clock must be UTC
+outright; declared type tokens; "unset" port-neutrally), and `migrations.md`
+(the draft marker's neutral token `DRAFT`, `--amend` reading it from the root
+file, rename plus type change, the case-format fields, `status`'s content).
+`errors.md`: `UOW-001`/`UOW-003`/`UOW-004`/`MAP-025`/`MAP-026`/`MAP-027`
+rows now carry their sections' full lists, `MAP-023` applies to any port
+with untyped declarations, `MIG-030` names a pending draft. `crud.md` lost
+its last "Level 3 is future" sentence and gained "Level 3 on these
+operations"; `metadata-model.md` pins `cascade`'s position and order and
+names the member-order hazard for languages whose reflection lists base
+members first; `spec/README.md` and `conformance/README.md` now index every
+document and folder (the never-created `schema/sqlite/` row is gone; the
+Level 3 folders and the `renamedFrom`/`draft` fields are described).
+
+**Conformance.** Five additions: `flush-cases/unrelated_types_interleave_in_schedule_order`
+(the rank rule, and a many-to-one without a cascade scheduling nothing),
+`merge-cases/merge_and_refresh_apply_the_owned_rule` (an owned navigation
+copied as a whole — null for null, an object otherwise; `value` may now name
+an owned navigation with `equals` `null` or `{}`),
+`amend-cases/diff_draft_marks_the_root` and `amend_keeps_the_draft_marker`
+(`command.draft`, `files[].draft`, the token `DRAFT` — M5's main feature had
+no amend coverage), and a `down` step in `draft_refuses_to_apply` that pins
+the refusal's atomicity (its final expectation had been the same whether or
+not V0001 leaked through). Running them found **one more port bug**: PHP's
+`--amend` read the draft marker from the compiled class, not from the root
+file it regenerates — the two file-reading implementations and the spec now
+agree — and **one more reference deviation**: C# merge and refresh copied an
+owned type member by member and so turned a null navigation into an object
+of nulls; both ports already copied the navigation whole.
+
+**The tracked benchmark** (`TrackingBenchmarks`, ShortRun, SQLite WAL with
+`synchronous=OFF` so the journal does not swamp the library, Ryzen 7 5700U):
+
+| Path | Untracked | Tracked |
+|---|---|---|
+| 1000-row read, warm session (every row an identity hit) | 751 µs / 174 KB | 822 µs / 230 KB (1.09×, +32% allocation) |
+| 1000-row read, fresh session (1000 registrations + snapshots) | 2.2 ms / 238 KB | 3.7 ms / 637 KB — about 1.5 µs and 0.4 KB per row, within a noisy run |
+| get + update one row (Dapper by hand: 32 µs) | 33 µs (full row) | 33 µs (the one dirty column); **9.8 µs when clean — no statement** |
+| 100 inserts, one transaction, session opened per call (Dapper: 519 µs) | 1.40 ms / 314 KB | `Persist` × 100 + `Flush`: 1.67 ms / 759 KB |
+| nothing-to-do flush over 1000 tracked rows (the dirty sweep) | — | 922 µs / 259 KB, of which the read is 822 / 230: **~100 µs and ~30 KB per 1000 instances** |
+
+The untracked path is unchanged: `QueryBenchmarks` still reads 1000 rows at
+0.98× Dapper with 21% less allocation and single rows at parity (milestone 8:
+0.97×, −22%). Two things were acted on. The dirty sweep allocated ~280 KB per
+1000 instances before the exit — a `$"{Entity}.{Property}"` label string per
+property per instance, built only for the converter's error message, plus a
+list and a LINQ query per instance — now a per-session label cache and an
+allocation-free `HasDirtyWritableColumn`; and the rank fix above. Noted, not
+acted on: the untracked 100-insert path runs 2.7× a hand-written Dapper
+transaction (the `RETURNING` reader and a command per row) — a Level 4
+performance-pass candidate that has nothing to do with tracking.
+
+**Batching — decided: the reference does not batch.** `Microsoft.Data.Sqlite`
+reports `CanCreateBatch = false`, so `DbBatch` cannot help the reference
+dialect at all, and the 100-row flush measures within the cost of the same
+inserts issued one by one in one transaction. The statement sequence stays
+the contract (`flush-cases`); a dialect whose provider batches (SQL Server,
+PostgreSQL) may adopt `DbBatch` under `#if NET` in the Level 4 performance
+pass, measured there. Recorded in `unit-of-work.md` "Batching".
+
+**Verification.** C#: 394 passed, 22 skipped (LocalDB and the Postgres live
+suite). PHP: 618 tests, 2351 assertions. Go: every package ok, `gofmt` and
+`go vet` clean. The four Level 3 folders plus `diff-cases`, `migrations-cases`,
+and `amend-cases` run in all three implementations.
+
+**Level 3 exit.** Declared. M1–M3 and M5 are done in three implementations,
+M4 skipped by owner ruling (ADR-0038), the spec covers every milestone with
+the audit's silences answered, the conformance matrix is green, the
+untracked path is unchanged and the tracked overhead measured, and a port
+from a fourth language family has a design to start from. What the exit does
+**not** claim: that the Python design was built — the proof is the audit's
+list and its answers, not a fourth implementation; and that a long-lived
+tracked session is free — the sweep is linear in the tracked set by design,
+as in every snapshot-tracking ORM.
+
+**Next — per ADR-0032/0034: the new-language ports, Rust → Python →
+TypeScript**, each from `spec/` + `conformance/` alone, with the agents
+forbidden to read any implementation — the Python audit above is that port's
+first gap list already answered. Only when the owner says so.
+
+**Status.** Accepted. Level 3 closed in C#, PHP, and Go.

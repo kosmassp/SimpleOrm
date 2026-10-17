@@ -71,8 +71,8 @@ final class DiffCommand
         $version = $options->amend ? $latest : $latest + 1;
         // An amend keeps the marker of a root that already carries it, with or without --draft: unreviewed code never becomes
         // applicable by regeneration (spec/migrations.md Clarifications, ADR-0038).
-        $draft = $options->draft || ($options->amend && self::versionIsDraft($set, $version));
         $prefix = sprintf('V%04d', $version);
+        $draft = $options->draft || ($options->amend && self::rootIsDraft($options->outDir . '/' . $prefix . '.php', $set, $version));
         $allSteps = self::allSteps($set);
 
         // 2-3. Amend: locate the version's files and vet them.
@@ -510,9 +510,16 @@ final class DiffCommand
         return $ordered;
     }
 
-    /** Whether the compiled root of `$version` carries the draft marker. */
-    private static function versionIsDraft(MigrationSet $set, int $version): bool
+    /**
+     * Whether the root of `$version` carries the draft marker: the file being regenerated says so (the marker is text in
+     * the tree, as the reference reads it), or the compiled root does.
+     */
+    private static function rootIsDraft(string $rootPath, MigrationSet $set, int $version): bool
     {
+        if (is_file($rootPath) && MigrationGenerator::hasDraftMarker((string) file_get_contents($rootPath))) {
+            return true;
+        }
+
         foreach ($set->versions() as $candidate) {
             if ($candidate->version() === $version) {
                 return $candidate->isDraft();

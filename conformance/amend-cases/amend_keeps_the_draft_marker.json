@@ -1,0 +1,21 @@
+{
+  "name": "amend_keeps_the_draft_marker",
+  "comment": "--amend of a root that carries the draft marker keeps it, with or without --draft on the command (ADR-0038): unreviewed code never becomes applicable by regeneration. The regenerated V0002 still carries DRAFT; its new step does not.",
+  "files": [
+    { "path": "V0002", "generated": true, "dialect": "sqlite", "draft": true },
+    { "path": "Table/AmendWidget/V0002_AddNote", "generated": true } ],
+  "snapshots": [
+    { "path": "Table/AmendWidget/V0001.schema.json", "snapshot": { "object": "amend_widgets", "asOfVersion": 1,
+      "columns": [
+        { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "TEXT", "nullable": false } ],
+      "indexes": [] } } ],
+  "command": { "amend": true, "name": "AddRemark" },
+  "expect": { "exit": 0,
+    "deleted": [ "Table/AmendWidget/V0002_AddNote" ],
+    "kept": [ "Table/AmendWidget/V0001.schema.json" ],
+    "written": [ "Table/AmendWidget/V0002_AddRemark", "V0002" ],
+    "files": [
+      { "path": "V0002", "contains": [ "DRAFT", "V0002_AddRemark" ], "omits": [ "V0002_AddNote" ] },
+      { "path": "Table/AmendWidget/V0002_AddRemark", "contains": [ "remark" ], "omits": [ "DRAFT" ] } ] }
+}

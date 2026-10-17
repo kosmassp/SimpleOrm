@@ -290,3 +290,26 @@ pins the export (`Role.Name` was `name` until V0004).
 - **`--amend` keeps the marker** of a root that already carries it, with or
   without `--draft`: unreviewed code never becomes applicable by
   regeneration.
+
+**Clarifications** (the Level 3 exit audit; ADR-0039):
+
+- **The draft marker's language-neutral token** is the word `DRAFT` in the
+  root's header comment, written beside the language's own marker (C#
+  `[Draft]`, PHP `#[Draft]`, Go `IsDraft()`); `amend-cases` pins it through
+  `command.draft` (`diff --draft`) and `files[].draft` (a root laid out with
+  the marker). **`--amend` reads the marker from the root file** in the tree
+  it regenerates — the marker is text in the tree, not a property of a
+  compiled class.
+- **A rename whose new column also changes type or nullability**: the rename
+  is emitted and the change is reported `DDL-004` under the new name, exactly
+  as for an unrenamed column. A declaration naming the column's own name
+  declares nothing — the snapshot already has it.
+- **Case-format fields.** `diff-cases`: `renames` is a map `{ "old": "new" }`
+  (the explicit `--rename`s); `expect.renamed` lists `[old, new]` pairs in
+  emitted order; `current.asOfVersion` is `0` — the model has no version.
+  `migrations-cases`: a `baseline` step carries `version`; a version object
+  may carry `"draft": true`; `draft_refuses_to_apply` pins the refusal's
+  atomicity with a `down` to 0 that finds nothing applied.
+- **`status` reports one entry per (version, object)**: the version, the
+  object, the step's description, and the state — `Applied`, `Pending`, or
+  `Draft`. The text layout is the implementation's.

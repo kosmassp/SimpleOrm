@@ -387,6 +387,12 @@ final class MigrationGenerator
      *
      * @param list<class-string> $stepClasses fully qualified step class names, in composition order
      */
+    /** Whether a root's source carries the `#[Draft]` marker (Level 3 M5): what `--amend` keeps. */
+    public static function hasDraftMarker(string $source): bool
+    {
+        return str_contains($source, '#[Draft]');
+    }
+
     public static function emitRoot(
         string $rootNamespace,
         int $version,

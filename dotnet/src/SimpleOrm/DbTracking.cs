@@ -27,6 +27,7 @@ public sealed partial class Db
 {
     private readonly Dictionary<Type, Dictionary<object?[], TrackedEntry>> _trackedByKey = new();
     private readonly Dictionary<object, TrackedEntry> _trackedByInstance = new(InstanceComparer.Instance);
+    private readonly Dictionary<PropertyMap, string> _labels = new();
 
     /// <summary>Whether this session keeps an identity map (<see cref="DbOptions.Tracking"/>).</summary>
     public bool IsTracking => Options.Tracking == TrackingMode.Tracked;
@@ -88,11 +89,7 @@ public sealed partial class Db
         var fresh = await ReadByKeyAsync<TEntity>(map, key, ct).ConfigureAwait(false)
             ?? throw new SimpleOrmException(
                 "CRUD-001", typeof(TEntity).Name, $"no row with key ({FormatKey(key)})");
-        foreach (var property in map.Properties)
-        {
-            property.SetValue(entity, property.GetValue(fresh));
-        }
-
+        CopyMapped(map, fresh, entity, skipKeys: false);
         if (entry is not null)
         {
             entry.Snapshot = Snapshot(map, entity);
@@ -294,6 +291,35 @@ public sealed partial class Db
                 "the session does not track this instance: it was not read through, inserted by, or updated by this session");
     }
 
+    /// <summary>
+    /// Refresh and merge copy the mapped values of one instance onto another: plain
+    /// properties one by one, an owned navigation as a whole — null when the source's is
+    /// null (a row whose members are all null reads as null), otherwise an owned object
+    /// carrying the source's members, created when the target had none. Nothing is
+    /// aliased (ADR-0039; the ports copy the same way).
+    /// </summary>
+    private static void CopyMapped(EntityMap map, object source, object target, bool skipKeys)
+    {
+        foreach (var property in map.Properties.Where(p => p.Owner is null && !(skipKeys && p.IsKey)))
+        {
+            property.SetValue(target, property.GetValue(source));
+        }
+
+        foreach (var owner in map.Properties.Select(p => p.Owner).OfType<OwnedMap>().Distinct())
+        {
+            if (owner.Property.GetValue(source) is null)
+            {
+                owner.Property.SetValue(target, null);
+                continue;
+            }
+
+            foreach (var member in owner.Members)
+            {
+                member.SetValue(target, member.GetValue(source));   // creates the target's owned object when absent
+            }
+        }
+    }
+
     /// <summary>The mapped values in database-bound form — the comparison baseline.</summary>
     private object?[] Snapshot(EntityMap map, object entity)
     {
@@ -310,8 +336,36 @@ public sealed partial class Db
     private object? BoundValue(EntityMap map, PropertyMap property, object entity)
     {
         var bound = _converter.ToDatabase(
-            property.GetValue(entity), $"{map.EntityType.Name}.{property.PropertyName}", property.EnumAsInt);
+            property.GetValue(entity), Label(map, property), property.EnumAsInt);
         return bound is DBNull ? null : bound is byte[] bytes ? bytes.ToArray() : bound;
+    }
+
+    /// <summary>The converter's error label for a property, built once per session: the dirty sweep asks for it per instance and per property.</summary>
+    private string Label(EntityMap map, PropertyMap property)
+    {
+        if (!_labels.TryGetValue(property, out var label))
+        {
+            label = map.EntityType.Name + "." + property.PropertyName;
+            _labels.Add(property, label);
+        }
+
+        return label;
+    }
+
+    /// <summary>Whether any column the unit of work would write differs from the snapshot — the flush sweep's question, allocation-free apart from boxing.</summary>
+    private bool HasDirtyWritableColumn(EntityMap map, object entity, object?[] snapshot)
+    {
+        for (var i = 0; i < map.Properties.Count; i++)
+        {
+            var property = map.Properties[i];
+            if (!property.IsKey && !property.IsVersion && !property.IsGenerated
+                && !ValueEquals(BoundValue(map, property, entity), snapshot[i]))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private List<PropertyMap> DirtyProperties(EntityMap map, object entity, object?[] snapshot)

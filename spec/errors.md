@@ -42,9 +42,9 @@ these codes.
 | `MAP-022` | `[ManyToMany]` link entity's `[ForeignKey]` references to a side are missing or their count mismatches that side's key arity | ADR-0019 (+add.1) | L2 milestone 1 |
 | `MAP-023` | malformed mapping declaration: an annotation the language cannot type-check at compile time is unparseable or names an unknown option, token, or member (Go: a malformed `orm` struct tag, an unknown `type=` token, an embedded pointer, a builder naming a field that does not exist); unreachable where annotations are typed (C#, PHP) | ADR-0027 | Go port |
 | `MAP-024` | invalid owned-type declaration: the navigation is not a single class-typed value or has no setter; the owned type is an entity (carries a relation source or index), is not declared owned at class level, has no parameterless constructor, maps no columns, or carries a key, version, generated column, foreign key, relationship, or nested owned type; or an owned type is loaded as if it were an entity | ADR-0030 | L2 exit |
-| `MAP-025` | invalid cascade declaration: `[Cascade]` on a property that is not a `[ManyToOne]`/`[OneToOne]`/`[OneToMany]` navigation — a `[ManyToMany]` navigation cannot cascade (its link rows are entities the unit of work persists explicitly) | ADR-0034 §7c M2 | L3 milestone 2 |
-| `MAP-026` | invalid hook declaration (hooks.md): `[CreatedAt]`/`[UpdatedAt]` on a non-temporal property, `[SoftDelete]` on a non-`bool` or nullable property, a hook on a key, version, or generated column or without `[Column]`, a property carrying more than one hook, or a role declared on more than one property of an entity | ADR-0034 §7c M3 | L3 milestone 3 |
-| `MAP-027` | invalid `[RenamedFrom]` declaration: on a property without `[Column]`, or naming no previous column | ADR-0034 §7c M5 | L3 milestone 5 |
+| `MAP-025` | invalid cascade declaration (unit-of-work.md "Cascades"): `[Cascade]` on anything but a `[ManyToOne]`/`[OneToOne]`/`[OneToMany]` navigation — a column, an ignored property, an owned navigation or an owned type's member, a `[ManyToMany]` navigation (its link rows are entities the unit of work persists explicitly) — or a declaration naming no operation | ADR-0034 §7c M2 | L3 milestone 2 |
+| `MAP-026` | invalid hook declaration (hooks.md): `[CreatedAt]`/`[UpdatedAt]` on a non-temporal property, `[SoftDelete]` on a non-`bool` or nullable property, a hook on a key, version, or generated column or without `[Column]`, a property carrying more than one hook, a role declared on more than one property of an entity, a hook on a navigation, an ignored or unmapped property, an owned navigation or an owned type's member, or any hook on a non-table source (a view, statement, or procedure) | ADR-0034 §7c M3 | L3 milestone 3 |
+| `MAP-027` | invalid `[RenamedFrom]` declaration (migrations.md "Draft migrations"): on a property without `[Column]`, an ignored property, a navigation, an owned navigation or an owned type's member, on a non-table source, naming no previous column, or two properties of one entity declaring the same previous column | ADR-0034 §7c M5 | L3 milestone 5 |
 | `MAP-030` | no conversion or handler between the CLR type and the database value (either direction) | §7.9 | milestone 4 |
 | `MAP-031` | value conversion failed (format, overflow, unknown enum name) | §7.9 | milestone 4 |
 
@@ -115,10 +115,10 @@ these codes.
 | `MIG-010` | applied migration checksum changed (checksum = SHA-256 of the rendered Up SQL) | §7.23 |
 | `MIG-011` | an applied version is unknown to the code | ADR-0013 |
 | `MIG-012` | a view's live definition does not match the step's expected previous definition (changed outside migrations); `--force` recreates it | ADR-0017 add.1 |
-| `MIG-013` | `migrate`/`baseline` reached a version marked `[Draft]` (emitted by `diff --draft`): review it and remove the marker; the whole plan refuses before anything executes | ADR-0034 §7c M5 | L3 milestone 5 |
+| `MIG-013` | `migrate`/`baseline` reached a version marked `[Draft]` (emitted by `diff --draft`): review it and remove the marker; the whole plan refuses before anything executes | ADR-0034 §7c M5 (L3 milestone 5) |
 | `MIG-020` | `migrate down` past a step whose rollback cannot be derived from the snapshots (none embedded/found, or a type/nullability change) and no `Down()` override | ADR-0018 |
 | `MIG-021` | a migration statement failed to execute; the message names the statement | ADR-0018 |
-| `MIG-030` | pending migrations at validation time | §7.24 (milestone 6) |
+| `MIG-030` | pending migrations at validation time — a pending draft (`MIG-013`) is pending work too | §7.24 (milestone 6) |
 
 ## CRUD — generated CRUD (enforced; Insert/Get early via ADR-0011/0012, Update/Delete milestone 7)
 
@@ -140,9 +140,9 @@ Codes are append-only: a retired rule keeps its code (marked retired), never reu
 
 | Code | Meaning | Decided | Enforced |
 |---|---|---|---|
-| `UOW-001` | a tracking question (`ChangesOf`/`IsDirty`) about an instance the session does not track: the session is untracked, or the instance never came through this session (not read by it, inserted by it, or updated by it) | ADR-0034 add.1 | L3 milestone 1 |
+| `UOW-001` | an instance the session does not track where it must: a tracking question (`ChangesOf`/`IsDirty`), `Remove`, or `Detach` of an instance that never came through this session (not read, inserted, updated, or scheduled by it); a tracking question on an untracked session | ADR-0034 add.1 | L3 milestone 1 |
 | `UOW-002` | identity conflict on a write: the instance is not the session's instance for its key — another tracked instance holds that key, or a tracked instance's key was changed (a key is identity and never updates; delete and insert instead) | ADR-0034 add.1 | L3 milestone 1 |
-| `UOW-003` | a unit-of-work call (`Persist`/`Remove`/`Flush`) on an untracked session — the unit of work needs the identity map and the snapshots; open the session with tracking | ADR-0034 §7c M2 | L3 milestone 2 |
-| `UOW-004` | the flush cannot order the scheduled inserts (or deletes): the instances reference each other in a cycle through their navigations | ADR-0034 §7c M2 | L3 milestone 2 |
+| `UOW-003` | a unit-of-work call (`Persist`/`Remove`/`Flush`/`Detach`/`Merge`) on an untracked session — checked before the argument; the unit of work needs the identity map and the snapshots; open the session with tracking | ADR-0034 §7c M2 | L3 milestone 2 |
+| `UOW-004` | the flush cannot order the scheduled inserts or the scheduled deletes: the instances reference each other in a cycle through their navigations (unit-of-work.md "Order of writes"; detected before any SQL) | ADR-0034 §7c M2 | L3 milestone 2 |
 | `UOW-005` | a remove cascades over a collection navigation that was never loaded — nothing loads implicitly; load it or remove the children explicitly | ADR-0034 §7c M2 | L3 milestone 2 |
 | `UOW-006` | conflicting schedule: `Persist` of an instance scheduled for removal (a `Remove` of an instance scheduled for insert simply cancels the insert) | ADR-0034 §7c M2 | L3 milestone 2 |

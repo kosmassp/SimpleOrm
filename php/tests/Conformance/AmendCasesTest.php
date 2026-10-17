@@ -74,7 +74,7 @@ final class AmendCasesTest extends TestCase
     /** @param array<string, mixed> $spec */
     private static function layFiles(string $dir, array $spec): void
     {
-        /** @var list<array{path: string, generated: bool, dialect?: string}> $files */
+        /** @var list<array{path: string, generated: bool, dialect?: string, draft?: bool}> $files */
         $files = $spec['files'];
         $stepRefs = [];
         foreach ($files as $file) {
@@ -93,6 +93,7 @@ final class AmendCasesTest extends TestCase
                     (int) substr(pathinfo($file['path'], PATHINFO_FILENAME), 1),
                     $stepRefs,
                     $file['dialect'] ?? 'sqlite',
+                    $file['draft'] ?? false,
                 ),
                 $file['generated'] && !$isRoot => self::GENERATED_STEP_STUB,
                 default => self::HAND_WRITTEN_STUB,
@@ -127,6 +128,7 @@ final class AmendCasesTest extends TestCase
                 dialect: new SqliteDialect(),
                 dialectLabel: $command['dialect'] ?? 'sqlite',
                 name: $command['name'] ?? null,
+                draft: $command['draft'] ?? false,
                 allowRemove: false,
                 amend: $command['amend'] ?? false,
                 force: $command['force'] ?? false,

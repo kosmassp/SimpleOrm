@@ -627,6 +627,17 @@ func (r *trackingRun) expectValue(i int, ref, property string, raw json.RawMessa
 	if err != nil {
 		r.fatalf(i, "%v", err)
 	}
+	for _, owner := range m.OwnedTypes {
+		if owner.PropertyName() == property {
+			// An owned navigation named whole: null, or {} for "an owned object exists" (spec/session.md "The step scripts").
+			gotNil := reflect.ValueOf(entity).Elem().FieldByIndex(owner.Index).IsNil()
+			wantNil := strings.TrimSpace(string(raw)) == "null"
+			if gotNil != wantNil {
+				r.fatalf(i, "%s.%s nil = %v, want nil = %v", ref, property, gotNil, wantNil)
+			}
+			return
+		}
+	}
 	p, ok := propertyOf(m, property)
 	if !ok {
 		r.fatalf(i, "no mapped property %q on %s", property, m.EntityName())

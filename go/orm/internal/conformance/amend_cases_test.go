@@ -42,6 +42,7 @@ type amendCase struct {
 type amendFileSpec struct {
 	Path      string `json:"path"`
 	Generated bool   `json:"generated"`
+	Draft     bool   `json:"draft"`
 	Dialect   string `json:"dialect"`
 }
 
@@ -53,6 +54,7 @@ type amendSnapshot struct {
 type amendCommandSpec struct {
 	Amend   bool   `json:"amend"`
 	Force   bool   `json:"force"`
+	Draft   bool   `json:"draft"`
 	Name    string `json:"name"`
 	Dialect string `json:"dialect"`
 	Applied bool   `json:"applied"`
@@ -128,7 +130,11 @@ func layAmendFiles(t *testing.T, dir string, spec amendCase) {
 			if dialectLabel == "" {
 				dialectLabel = "sqlite"
 			}
-			source, err := migrations.EmitRoot(amendFixturePackage, version, stepRefs, dialectLabel)
+			emit := migrations.EmitRoot
+			if f.Draft {
+				emit = migrations.EmitDraftRoot
+			}
+			source, err := emit(amendFixturePackage, version, stepRefs, dialectLabel)
 			if err != nil {
 				t.Fatalf("emit root fixture %s: %v", f.Path, err)
 			}
@@ -220,6 +226,7 @@ func runAmendDiff(t *testing.T, dir string, spec amendCase, stdout, stderr *byte
 		Name:         spec.Command.Name,
 		Amend:        spec.Command.Amend,
 		Force:        spec.Command.Force,
+		Draft:        spec.Command.Draft,
 		IsApplied:    isApplied,
 	}, stdout, stderr)
 }

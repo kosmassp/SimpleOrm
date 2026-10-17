@@ -59,8 +59,8 @@ before anything is written.
 
 Update writes **every mapped non-key, non-version, non-generated column by key**
 — the version column is database-computed (below), generated columns are
-database-owned exactly as on insert, and partial updates are hand SQL at
-Level 1. The WHERE ANDs every key column.
+database-owned exactly as on insert; the column-list form below writes a
+subset. The WHERE ANDs every key column.
 
 With a mapped **version column** (integer-valued):
 
@@ -98,9 +98,10 @@ on zero rows, in-memory bump on success), `CRUD-001` without a version column.
   columns of the same versioned row still conflict; the second gets `CRUD-010`.
   A column list narrows what is written, never what is checked.
 
-This is the caller saying what changed. Dirty tracking (deriving the list from
-a loaded snapshot) is Level 3; an `UPDATE … WHERE <criteria>` that never loads
-the entity is a different operation and not this one.
+This is the caller saying what changed. Deriving the list from a snapshot is
+the tracked session's `Update` (session.md "Tracking", Level 3); an
+`UPDATE … WHERE <criteria>` that never loads the entity is a different
+operation and not this one.
 
 ## Delete
 
@@ -172,3 +173,15 @@ a fresh migrated fixture database:
   property name (an unknown column passes through unchanged, so `CRUD-005` is
   expressible); `values` are still applied to the captured instance first, so a
   value outside the list proves the column was not written.
+
+## Level 3 on these operations
+
+Everything above is the untracked session's behaviour and stays exactly so.
+Three Level 3 documents change what the same calls do under their
+declarations, never the statements they render: a **tracked** session's
+`Update` writes only the dirty columns and issues no statement when the
+instance is clean — the "zero rows affected is `CRUD-001`" rule applies to a
+statement that was issued (session.md "Tracking"); `[CreatedAt]` fills on
+insert, `[UpdatedAt]` joins every row-changing SET, and `[SoftDelete]` turns
+every delete into the flag-setting update (hooks.md); `Persist`/`Remove`/
+`Flush` defer the same generated CRUD to one ordered flush (unit-of-work.md).

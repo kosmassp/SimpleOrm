@@ -64,8 +64,9 @@ Explicit (manual builder registration) → annotation loader → convention load
 
 Inherited properties are mapped. Property order — and therefore column order in the
 export — is: the most-derived class's declared properties first (in declaration
-order), then each base class upward. Composite key order is `[Key]` declaration
-order.
+order), then each base class upward — a language whose own reflection lists base
+members first (a Python dataclass, a Go embedded struct) reorders to match.
+Composite key order is `[Key]` declaration order.
 
 ## Naming convention
 
@@ -225,6 +226,8 @@ permanently (no foreign-key integrity / plain SQL says it better). Rules:
   without cascades is unchanged). A `many_to_many` navigation cannot cascade
   (its link rows are entities the unit of work persists explicitly), and a
   cascade on anything but a navigation is a declaration error: `MAP-025`.
+  The export writes `"cascade"` as the last key of the relationship object, in
+  the fixed order `persist`, `remove`.
 - A property carries at most one relationship declaration, and none of
   `[Column]`/`[Ignore]` beside it (`MAP-019`).
 

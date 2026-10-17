@@ -469,15 +469,18 @@ public sealed partial class Db
             }
         }
 
-        // Tarjan: components complete in dependencies-first order, so the first
-        // component found gets rank 0.
+        // Tarjan: components complete in dependencies-first order, so a component's
+        // rank — one more than the highest rank it depends on, 0 when it depends on
+        // nothing — is known when it completes. A depth, never a sequence number:
+        // unrelated types share rank 0 and fall to schedule order (ADR-0039).
         var ranks = new Dictionary<Type, int>();
+        var component = new Dictionary<Type, int>();
+        var componentRanks = new List<int>();
         var index = new Dictionary<Type, int>();
         var lowLink = new Dictionary<Type, int>();
         var stack = new Stack<Type>();
         var onStack = new HashSet<Type>();
         var next = 0;
-        var componentRank = 0;
         void StrongConnect(Type type)
         {
             index[type] = lowLink[type] = next++;
@@ -501,15 +504,31 @@ public sealed partial class Db
                 return;
             }
 
+            var members = new List<Type>();
             Type member;
             do
             {
                 member = stack.Pop();
                 onStack.Remove(member);
-                ranks[member] = componentRank;
+                component[member] = componentRanks.Count;
+                members.Add(member);
             }
             while (!ReferenceEquals(member, type));
-            componentRank++;
+
+            var rank = 0;
+            foreach (var dependency in members.SelectMany(m => dependencies[m]))
+            {
+                if (component[dependency] != componentRanks.Count)
+                {
+                    rank = Math.Max(rank, componentRanks[component[dependency]] + 1);
+                }
+            }
+
+            componentRanks.Add(rank);
+            foreach (var m in members)
+            {
+                ranks[m] = rank;
+            }
         }
 
         foreach (var type in involved)
@@ -646,7 +665,7 @@ public sealed partial class Db
                     continue;
                 }
 
-                if (DirtyProperties(map, entry.Entity, entry.Snapshot).Any(p => !p.IsKey && !p.IsVersion && !p.IsGenerated))
+                if (HasDirtyWritableColumn(map, entry.Entity, entry.Snapshot))
                 {
                     dirty.Add((ranks[byKey.Key], entry.Sequence, entry.Entity));
                 }

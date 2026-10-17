@@ -100,8 +100,12 @@ The fixture: `Transaction.Details` cascades both.
 A flush issues one statement per row through the session's connection. A
 provider batch (C# `DbBatch` on `net6+`) is an execution detail a port may
 add; it changes nothing observable — the statement sequence, the generated
-keys, and the per-row version checks stay as specified. The Level 3 exit
-benchmark decides whether the reference adds it.
+keys, and the per-row version checks stay as specified. **The reference does
+not batch** (Level 3 exit, ADR-0039): its reference provider cannot
+(`Microsoft.Data.Sqlite` reports no batch support), and a 100-row flush
+measured within the cost of the same inserts issued one by one in one
+transaction; a dialect whose provider batches (SQL Server, PostgreSQL) may
+adopt it in the Level 4 performance pass, measured there.
 
 ## Conformance: `flush-cases/`
 
@@ -246,3 +250,102 @@ and `merge` (`ref`, `as` — the returned instance).
   owned members are copied member by member; nothing is aliased.
 - **"Unset key"** for merge: null, a database-generated key at its default, or
   an empty client-generated GUID — a natural key's default value is a key.
+
+## Clarifications (the Level 3 exit audit; ADR-0039)
+
+The exit's proof was a design for a Python port — a synchronous driver, no
+static types, decorators and plain attributes — written from `spec/` and
+`conformance/` alone. Its questions, answered against the reference:
+
+- **Two meanings of "dirty".** `ChangesOf`/`IsDirty` report every mapped
+  property whose database-bound value differs from the snapshot — the
+  `[UpdatedAt]` column included. The **write trigger** — `Update` of a tracked
+  instance, the flush's update phase — ignores key, version, generated
+  columns, **and the `[UpdatedAt]` column**: an instance differing only there
+  is clean and writes nothing. A changed `[CreatedAt]` is an ordinary column
+  and writes.
+- **A value the converter refuses** fails the question that asks for it:
+  `ChangesOf`/`IsDirty` compute the database-bound form, so an unconvertible
+  current value raises the converter's own code (`MAP-030`, `MAP-031`,
+  `VAL-020`) — the error the write would have raised. Nothing is "dirty" that
+  the database could not receive.
+- **Assigning a navigation in user code.** The library writes navigations
+  when it loads; user code writes them through the entity's own means — a
+  constructor, a method of the entity (`SetUser(order, user)` in the example
+  above is such a method), an initializer — never through a public setter
+  (`MAP-011`). Where the language has no setter to forbid (an attribute, a
+  field), the assignment is plain and the port documents the intent. A
+  runner's `navigations` key uses whatever the fixture provides.
+- **Type rank is a depth, never a sequence.** A type that references no other
+  type — through its many-to-one navigations, or by being the target of
+  another type's one-to-many/one-to-one — has rank 0; otherwise its rank is
+  one more than the highest rank among the types it references; the members
+  of a cycle share one rank; the graph spans every type reachable from the
+  flush's types; many-to-many links contribute no edge (the link entity ranks
+  through its own many-to-one navigations). Rank is a property of the
+  metadata alone: unrelated types tie and their instances **interleave in
+  schedule order** (role, user, role — never grouped by type). Inserts take
+  the lowest (rank, schedule order) among the ready instances; deletes the
+  highest rank first, then schedule order; the update phase orders by rank,
+  then registration order. Pinned by `unrelated_types_interleave_in_schedule_order`
+  (the reference numbered components in discovery order until the exit; both
+  ports had computed the depth).
+- **Delete edges mirror insert edges.** A scheduled parent waits for every
+  scheduled child that references it (the child's non-null many-to-one
+  navigation); a scheduled owner waits for the scheduled members of its loaded
+  collection or one-to-one navigation. A cycle among deletes is `UOW-004`
+  before any SQL, exactly as for inserts.
+- **The summary counts intents**, not renderings: `Deleted` counts the
+  removals the flush carried out — a soft delete is a removal, never an
+  update; `Updated` counts the update phase's statements.
+- **`UOW-003` is first**: an untracked session refuses `Persist`, `Remove`,
+  `Detach`, `Merge`, and `Flush` before looking at the argument.
+- **Arguments.** A null argument is the language's argument error. Any other
+  object is loaded as an entity: a type the loaders refuse fails with the
+  loader's code; a keyless or read-only type with `CRUD-002`/`CRUD-003`.
+  Identity is keyed by the instance's exact runtime type.
+- **Any failure inside a flush** — a provider error, a refusal, a cancellation
+  — rolls back the flush's own transaction, undoes the in-memory effects,
+  keeps the schedule, and propagates unchanged: provider errors are never
+  wrapped in a SimpleOrm code, cancellation stays the platform's signal.
+- **Disposing a session with scheduled work drops it silently.** Nothing is
+  ever flushed implicitly.
+- **What does I/O.** `Flush`, `Merge`, `Refresh` — and every read, load, and
+  immediate write — are round trips; `Persist`, `Remove`, `Detach`,
+  `IsTracked`, `ChangesOf`, `IsDirty`, `HasPendingWork` are pure. "Async with
+  a cancellation token" is the shape in languages that have it; a synchronous
+  port blocks and uses its platform's interruption idiom. The contract is that
+  every round trip is a visible call.
+- **An instance scheduled for removal leaves the update phase**: its unsaved
+  edits are discarded with it; a soft delete writes the flag and the stamp
+  only.
+- **The map holds strong references** for the session's lifetime; a session
+  is a unit of work, not a process-wide cache — a long-lived one reading many
+  rows is a long-lived cache, so dispose it or `Detach`. Per-instance
+  bookkeeping lives in the session, never on the instance.
+- **Merge and refresh copy an owned navigation as a whole**: null when the
+  source's navigation is null — for refresh, when the row's members are all
+  null — otherwise an owned object carrying the source's members, created when
+  the target had none. Nothing is aliased: the owned object, byte arrays, and
+  objects held in JSON columns are the target's own copies, never shared
+  between the two instances. The step scripts observe the navigation itself:
+  `value` may name an owned navigation, with `equals` `null` or `{}`. Pinned by
+  `merge_and_refresh_apply_the_owned_rule`.
+- **"Never loaded" belongs to an instance materialized from a row** and is
+  cleared only by a load (`Load`, `LoadEach`, `Include`); insert, update,
+  merge, refresh, and detach leave every navigation as it is. An instance
+  constructed by user code holds whatever collection it holds — loaded, even
+  when empty. `UOW-005` names the first state only. Singular navigations are
+  never guarded — null is both "unloaded" and "none" — even where the
+  language could intercept the read.
+- **Delete is one operation in two forms**, by key and by entity. A language
+  dispatches on the argument (a mapped entity instance is the entity form,
+  anything else a key) or names the forms separately (Go `Delete` /
+  `DeleteEntity`); the soft-delete and `CRUD-012` rules follow the form, not
+  the name.
+- **Declarations given as tokens** (strings, tags): an unknown, blank, or
+  repeated token is `MAP-023` — the code exists for every port whose
+  declarations are not type-checked, not only Go; a cascade declaration
+  naming no operation is `MAP-025`. The export writes `cascade` in the fixed
+  order `persist`, `remove`, whatever order the declaration used, as the
+  **last key of the relationship object**.

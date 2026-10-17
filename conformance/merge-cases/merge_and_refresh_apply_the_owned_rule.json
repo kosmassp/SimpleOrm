@@ -1,0 +1,25 @@
+{
+  "name": "merge_and_refresh_apply_the_owned_rule",
+  "comment": "Merge and refresh copy owned members member by member, then apply the owned rule: a nullable owned navigation whose members are all null is null, otherwise an owned object exists. A copy without an address nulls the tracked profile's Address (dirty on the members that were set); refresh brings the row's address back as an object; a copy with an address overwrites member-wise.",
+  "tracking": "tracked",
+  "steps": [
+    { "get": { "entity": "UserProfile", "key": 1, "as": "p" } },
+    { "expect": { "value": { "ref": "p", "property": "Address", "equals": {} } } },
+    { "expect": { "value": { "ref": "p", "property": "Address.City", "equals": "London" } } },
+    { "new": { "entity": "UserProfile", "as": "bare", "values": { "Id": 1, "UserId": 1, "Bio": "First programmer", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z" } } },
+    { "merge": { "ref": "bare", "as": "m" } },
+    { "expect": { "same": ["p", "m"] } },
+    { "expect": { "value": { "ref": "p", "property": "Address", "equals": null } } },
+    { "expect": { "dirty": { "ref": "p", "properties": ["Address.Street", "Address.City"] } } },
+    { "refresh": { "ref": "p" } },
+    { "expect": { "value": { "ref": "p", "property": "Address", "equals": {} } } },
+    { "expect": { "value": { "ref": "p", "property": "Address.City", "equals": "London" } } },
+    { "expect": { "dirty": { "ref": "p", "properties": [] } } },
+    { "new": { "entity": "UserProfile", "as": "moved", "values": { "Id": 1, "UserId": 1, "Bio": "First programmer", "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z", "Address.Street": "2 Lovelace Lane", "Address.City": "Paris" } } },
+    { "merge": { "ref": "moved", "as": "m2" } },
+    { "expect": { "value": { "ref": "p", "property": "Address.City", "equals": "Paris" } } },
+    { "expect": { "value": { "ref": "p", "property": "Address.PostalCode", "equals": null } } },
+    { "expect": { "dirty": { "ref": "p", "properties": ["Address.Street", "Address.City"] } } },
+    { "flush": { "expectStatements": [ { "op": "update", "entity": "UserProfile", "columns": ["Address.Street", "Address.City", "UpdatedAtUtc"] } ], "expectSummary": { "inserted": 0, "updated": 1, "deleted": 0 } } }
+  ]
+}

@@ -5,7 +5,8 @@ using Microsoft.Data.Sqlite;
 using SimpleOrm;
 using SimpleOrm.Sqlite;
 
-BenchmarkRunner.Run(typeof(QueryBenchmarks).Assembly);
+Console.WriteLine("Microsoft.Data.Sqlite CanCreateBatch: " + new SqliteConnection().CanCreateBatch);   // Level 3 exit: the DbBatch decision
+BenchmarkSwitcher.FromAssembly(typeof(QueryBenchmarks).Assembly).Run(args);
 
 [Table("bench_rows")]
 public sealed class BenchRow

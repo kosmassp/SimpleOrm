@@ -181,7 +181,7 @@ A tracked session keeps, for its lifetime:
 - **A snapshot of each tracked instance's mapped values** as read or last
   written; owned members snapshot flat, like their columns (ADR-0030).
 
-**The tracked instance wins** (ruling 2): a read that finds its key in the
+**The tracked instance wins** (the owner's ruling): a read that finds its key in the
 map returns the tracked instance and **does not apply the row's values** —
 dirty or not. Loaded navigations stay as they were. `RefreshAsync(entity)`
 is the explicit overwrite: it re-reads the row by key, applies every mapped
@@ -328,3 +328,93 @@ convention in the runner, as the other runners do.
   a clean tracked instance carrying an inconsistent navigation is refused,
   not silently skipped. The column-list update checks only the navigations
   of the listed properties, after the list validates.
+
+### The step scripts — grammar, values, the fixture, the seam (Level 3 exit, ADR-0039)
+
+The four Level 3 folders — `tracking-cases/`, `flush-cases/`, `hook-cases/`,
+`merge-cases/` — share one step-script form. This section is normative for
+all of them; the examples above and in unit-of-work.md illustrate it. (The
+Level 3 exit audit — a design for a Python port written from `spec/` and
+`conformance/` alone — found the form defined only by example.)
+
+**Grammar.** A case is `{ "name", "comment", "tracking": "tracked" |
+"untracked", "steps": [ … ] }`. Every step is an object with exactly one verb
+key and, optionally, `"expectError": "<code>"`. The verbs and their fields:
+
+| verb | fields | meaning |
+|---|---|---|
+| `get` | `entity`, `key`, `as` | read by key; binds the ref |
+| `new` | `entity`, `as`, `values`?, `navigations`? | construct in user code — `values` sets properties, `navigations` sets a navigation to a ref or a collection to a list of refs; the database is not touched |
+| `set` | `ref`, `property`, `value` | assign a property |
+| `insert`, `refresh`, `persist`, `remove`, `detach` | `ref` | the operation of that name on the instance |
+| `update` | `ref`, `expectWritten`? | the full-row update (a tracked instance's dirty update); `expectWritten` is the property list the column-list rendering was asked to write, `"all"` for the full-row rendering, `[]` for no statement |
+| `updateOnly` | `ref`, `properties`, `expectWritten`? | the column-list update |
+| `delete` | `ref` (the entity form) or `entity` + `key` (the key form) | |
+| `load` | `ref`, `navigation` | explicit loading of one navigation |
+| `flush` | `expectStatements`?, `expectSummary`? | unit-of-work.md "Conformance" |
+| `merge` | `ref`, `as` | binds the instance merge returns |
+| `begin`, `commit`, `rollback` | `{}` | the session transaction |
+| `expect` | one expectation kind | below |
+
+Expectation kinds, one per `expect`: `same` / `notSame` (two paths — instance
+identity), `dirty` (`ref`, `properties`), `value` (`ref`, `property`,
+`equals`), `tracked` (`ref`, `is`), `pending` (a bool — `HasPendingWork`),
+`sameValue` (two paths — value equality), `count` (`entity`, `equals` —
+counted through a second connection, so uncommitted work is invisible to it).
+A **path** is a ref, `ref.Property`, or `ref.Collection[i]`, accepted wherever
+a ref is resolved. `as` binds a name and may rebind it. A step carrying
+`expectError` must fail with that code — for an `expect` step, evaluating the
+expectation is what fails (`dirty` of an untracked instance is `UOW-001`) —
+and binds nothing; the case then continues.
+
+**Values.** Every `value`, every entry of `values`, and every `equals` uses
+the conformance value encoding of mapping-rules.md (a decimal as a string, an
+instant as ISO-8601 with seven fractional digits and `Z`, an enum by name,
+bytes as base64, keys as bare scalars). A runner decodes through the
+property's declared type when it sets and encodes the property's value the
+same way when it compares, so comparison is by value — a decimal numerically,
+an instant by its moment, a bool strictly, never a text comparison of a
+language's own formatting. Property lists (`dirty.properties`,
+`expectWritten`, a statement's `columns`) may be compared as sets. A `value` expectation may name an owned navigation (`Address`) instead of a
+member: `equals` is then `null` (the navigation is null) or `{}` (an owned object
+exists; members are checked one by one).
+
+**The clock** is fixed at `2026-08-29T00:00:00Z` for every Level 3 runner,
+not only `hook-cases` — the audit columns appear in every folder's write
+lists.
+
+**The fixture, as the scripts spell it.** Property and navigation names are
+the reference's; a port declares the same entities natively and its runner
+maps these names to its own — nothing else needs them (the entity export
+stays column-only). Every table entity inherits `CreatedAtUtc` → `created_at`
+(`[CreatedAt]`) and `UpdatedAtUtc` → `updated_at` (`[UpdatedAt]`, nullable)
+from a base class, exported last:
+
+| entity (table) | properties → columns | navigations |
+|---|---|---|
+| `User` (`users`) | `Id` → `id` (key, generated), `Name` → `name`, `Email` → `email`, `DisplayName` → `display_name` | `Transactions` one-to-many (`Transaction.UserId`), `Roles` many-to-many via `UserRole`, `Profile` one-to-one (`UserProfile.UserId`) |
+| `Role` (`roles`) | `Id`, `Name` → `role_name` (renamed from `name`), `IsDeleted` → `is_deleted` (soft delete) | `Users` many-to-many via `UserRole` |
+| `UserRole` (`user_roles`) | `UserId` → `user_id` (key), `RoleId` → `role_id` (key), `GrantedBy` → `granted_by` | `User`, `Role` many-to-one |
+| `UserProfile` (`user_profiles`) | `Id`, `UserId` → `user_id`, `Bio` → `bio`, `AvatarUrl` → `avatar_url`, owned `Address` → `Address.Street` → `address_street`, `Address.City` → `address_city`, `Address.PostalCode` → `address_postal_code` | `User` many-to-one |
+| `Transaction` (`transactions`) | `Id`, `UserId` → `user_id`, `Status` → `status` (enum by name), `Amount` → `amount`, `Version` → `version` (version), `Note` → `note` | `User` many-to-one, `Details` one-to-many (`TransactionDetail.TransactionId`), cascade persist + remove |
+| `TransactionDetail` (`transaction_details`) | `Id`, `TransactionId` → `transaction_id`, `Description` → `description`, `Quantity` → `quantity`, `UnitPrice` → `unit_price` | `Transaction` many-to-one |
+
+**The database** is built from the fixture's metadata (the generated `CREATE
+TABLE`s) and `fixtures/seed.json` before each case. It carries **no
+foreign-key constraints**, and the session enables no enforcement: constraints
+are the application's schema, and the library never adds any — the write
+order the unit of work promises is what keeps a constrained database happy,
+not what the fixture checks. (A `schema/sqlite/` migrations directory named
+by an early README was never created; the metadata is the fixture's schema.)
+
+**The seam.** `expectWritten` and `expectStatements` observe the dialect: the
+runner wraps the dialect's four **write renderings** — insert, full-row
+update, column-list update, delete — and records one `{ "op", "entity",
+"columns"? }` per rendering the session asks for, in order. `op` is
+`"insert"`, `"update"`, or `"delete"`; `entity` is the class name as the
+fixture spells it; the full-row update carries `"columns": "all"`, the
+column-list update the property list it was asked to write, in list order. A
+soft delete is the column-list update it is. Reads, statement execution, and
+failures are not recorded; the buffer is cleared before each step; a step's
+`expectWritten` is the columns of its last recorded update (`[]` when the step
+recorded none).

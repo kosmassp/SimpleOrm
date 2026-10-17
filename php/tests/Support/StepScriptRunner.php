@@ -9,6 +9,7 @@ use RuntimeException;
 use SimpleOrm\Dialect\SqliteDialect;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Metadata\EntityMap;
+use SimpleOrm\Metadata\OwnedMap;
 use SimpleOrm\Metadata\PropertyMap;
 use SimpleOrm\Session\Db;
 use SimpleOrm\Session\DbOptions;
@@ -210,12 +211,22 @@ final class StepScriptRunner
             Assert::assertSame($expected, $actual, $context);
         } elseif (isset($expect['value'])) {
             $entity = $this->resolve($expect['value']['ref']);
-            $property = self::property($this->db->maps()->load($entity::class), $expect['value']['property']);
-            Assert::assertSame(
-                ConformanceValues::expectedText($expect['value']['equals']),
-                ConformanceValues::encodeForCompare($property->getValue($entity)),
-                $context,
-            );
+            $map = $this->db->maps()->load($entity::class);
+            $name = $expect['value']['property'];
+            $equals = $expect['value']['equals'];
+            $owner = self::ownedNavigation($map, $name);
+            if ($owner !== null) {
+                // An owned navigation named whole: null, or {} for "an owned object exists" (spec/session.md "The step scripts").
+                $owned = $owner->property->isInitialized($entity) ? $owner->property->getValue($entity) : null;
+                Assert::assertSame($equals === null ? null : '{}', $owned === null ? null : '{}', $context);
+            } else {
+                $property = self::property($map, $name);
+                Assert::assertSame(
+                    ConformanceValues::expectedText($equals),
+                    ConformanceValues::encodeForCompare($property->getValue($entity)),
+                    $context,
+                );
+            }
         } elseif (isset($expect['tracked'])) {
             Assert::assertSame($expect['tracked']['is'], $this->db->isTracked($this->resolve($expect['tracked']['ref'])), $context);
         } elseif (isset($expect['pending'])) {
@@ -364,6 +375,18 @@ final class StepScriptRunner
     private static function propertyName(string $name): string
     {
         return implode('.', array_map(lcfirst(...), explode('.', $name)));
+    }
+
+    /** The owned navigation `$name` names whole (`Address`), if any. */
+    private static function ownedNavigation(EntityMap $map, string $name): ?OwnedMap
+    {
+        foreach ($map->ownedTypes as $owner) {
+            if ($owner->propertyName() === self::propertyName($name)) {
+                return $owner;
+            }
+        }
+
+        return null;
     }
 
     private static function property(EntityMap $map, string $name): PropertyMap

@@ -83,7 +83,8 @@ public sealed class ConformanceAmendTests
                     FixtureNamespace,
                     long.Parse(Path.GetFileNameWithoutExtension(relative)[1..]),
                     stepRefs,
-                    file.TryGetProperty("dialect", out var dialect) ? dialect.GetString()! : "sqlite"),
+                    file.TryGetProperty("dialect", out var dialect) ? dialect.GetString()! : "sqlite",
+                    draft: Flag(file, "draft")),
                 (true, false) => GeneratedStepStub,
                 _ => HandWrittenStub,
             };
@@ -114,6 +115,7 @@ public sealed class ConformanceAmendTests
                 Name = command.TryGetProperty("name", out var name) ? name.GetString() : null,
                 Amend = Flag(command, "amend"),
                 Force = Flag(command, "force"),
+                Draft = Flag(command, "draft"),
                 IsApplied = Flag(command, "applied") ? _ => Task.FromResult(true) : null,
             },
             output,

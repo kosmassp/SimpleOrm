@@ -103,14 +103,7 @@ public sealed partial class Db
             target = (TEntity)Track(map, fresh);
         }
 
-        foreach (var property in map.Properties)
-        {
-            if (!property.IsKey)
-            {
-                property.SetValue(target, property.GetValue(detached));
-            }
-        }
-
+        CopyMapped(map, detached, target, skipKeys: true);
         return target;
     }
 }

@@ -119,3 +119,25 @@ whose columns are the flag and the stamp.
 - **A zero database-generated key is unset** everywhere it matters (merge,
   the identity map's null-part rule aside): an explicit `0` on a generated
   key is not a key value.
+
+**Clarifications** (the Level 3 exit audit; ADR-0039):
+
+- **"UTC" without a `Kind`.** An instant with an explicit zero offset is UTC.
+  An instant with another explicit offset is a moment and **converts** to UTC
+  when stored (C# `DateTimeKind.Local`, an aware `+02:00`), as a value. An
+  instant with no marker at all (C# `Unspecified`, a naive `datetime`) is
+  refused — `VAL-020` — as a value and as a clock reading. **The clock must
+  read UTC outright**: any other kind from the clock is `VAL-020`; nothing
+  converts there, because a clock that is not UTC is a configuration error,
+  not a value.
+- **`MAP-026`'s type tests read the declared type**: the neutral type token
+  (`datetime`/`datetimeoffset` for the audit roles, a non-nullable `bool` for
+  the soft-delete flag). Where the language declares no type, the declaration
+  must carry it — a hook on a property whose type the loader cannot know is
+  `MAP-026`.
+- **"Unset", port-neutrally**: null, absent or uninitialized, or the type's
+  zero value — the zero instant, a `0` generated key, an empty GUID. The same
+  reading serves `[CreatedAt]`, merge's "unset key", and the identity map's
+  null-part rule.
+- **Every Level 3 runner fixes the clock** at `2026-08-29T00:00:00Z`
+  (session.md "The step scripts").

@@ -14,7 +14,7 @@ with no versions at all.
   "files": [ { "path": "V0002", "generated": true, "dialect": "sqlite" },
              { "path": "Table/AmendWidget/V0002_AddNote", "generated": false } ],
   "snapshots": [ { "path": "Table/AmendWidget/V0001.schema.json", "snapshot": { "…snapshot document…": "" } } ],
-  "command": { "amend": true, "force": false, "name": "AddRemark", "dialect": "sqlite", "applied": false },
+  "command": { "amend": true, "force": false, "name": "AddRemark", "dialect": "sqlite", "applied": false, "draft": false },
   "expect": { "exit": 0,
               "deleted": [ "…" ], "written": [ "…" ], "kept": [ "…" ],
               "files": [ { "path": "…", "contains": [ "…" ], "omits": [ "…" ] } ],
@@ -31,6 +31,10 @@ with no versions at all.
 - `snapshots`: snapshot documents (format v2, as in `snapshot-cases/`) at their paths.
 - `command.applied`: whether the given database reports the target version as
   applied (the `--db` probe) — it only ever warns.
+- `command.draft`: `diff --draft` (ADR-0038) — the emitted root carries the draft
+  marker; `files[].draft: true` lays out a generated root that already carries it
+  (`--amend` keeps it). The marker's language-neutral token is the word `DRAFT` in
+  the root's header (C# `[Draft]`, PHP `#[Draft]`, Go `IsDraft()` beside it).
 - `expect`: exit code; paths that must be gone, must exist, must still exist;
   content fragments a written file must contain/omit — **language-neutral tokens
   only** (column names, storage types, step class names, the generator header),

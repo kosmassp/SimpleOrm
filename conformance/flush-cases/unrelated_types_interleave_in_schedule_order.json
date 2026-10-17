@@ -1,0 +1,27 @@
+{
+  "name": "unrelated_types_interleave_in_schedule_order",
+  "comment": "Type rank is a depth in the foreign-key graph, never a sequence: User and Role reference nothing (their many-to-many link is its own entity), so both rank 0 and their inserts go in schedule order — role, user, role — not grouped by type. A detail persisted before the new user still waits for it (depth 2 after Transaction, depth 1 after User); the user is persisted explicitly — a many-to-one navigation without a declared cascade schedules nothing.",
+  "tracking": "tracked",
+  "steps": [
+    { "new": { "entity": "Role", "as": "r1", "values": { "Name": "reviewer" } } },
+    { "new": { "entity": "User", "as": "u", "values": { "Name": "Grace Hopper", "Email": "hopper@example.com" } } },
+    { "new": { "entity": "Role", "as": "r2", "values": { "Name": "operator" } } },
+    { "persist": { "ref": "r1" } },
+    { "persist": { "ref": "u" } },
+    { "persist": { "ref": "r2" } },
+    { "flush": { "expectStatements": [ { "op": "insert", "entity": "Role" }, { "op": "insert", "entity": "User" }, { "op": "insert", "entity": "Role" } ],
+                 "expectSummary": { "inserted": 3, "updated": 0, "deleted": 0 } } },
+    { "expect": { "tracked": { "ref": "r1", "is": true } } },
+    { "expect": { "tracked": { "ref": "u", "is": true } } },
+    { "new": { "entity": "TransactionDetail", "as": "d", "values": { "Description": "Widget", "Quantity": 1, "UnitPrice": "2.50" } } },
+    { "new": { "entity": "User", "as": "u2", "values": { "Name": "Ada Lovelace", "Email": "ada2@example.com" } } },
+    { "new": { "entity": "Transaction", "as": "t", "values": { "Status": "Pending", "Amount": "10.00" }, "navigations": { "User": "u2", "Details": ["d"] } } },
+    { "persist": { "ref": "d" } },
+    { "persist": { "ref": "u2" } },
+    { "persist": { "ref": "t" } },
+    { "flush": { "expectStatements": [ { "op": "insert", "entity": "User" }, { "op": "insert", "entity": "Transaction" }, { "op": "insert", "entity": "TransactionDetail" } ],
+                 "expectSummary": { "inserted": 3, "updated": 0, "deleted": 0 } } },
+    { "expect": { "sameValue": ["d.TransactionId", "t.Id"] } },
+    { "expect": { "sameValue": ["t.UserId", "u2.Id"] } }
+  ]
+}

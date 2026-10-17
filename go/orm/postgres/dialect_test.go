@@ -387,4 +387,17 @@ func TestIntrospectionQueriesBindOneRelationParameter(t *testing.T) {
 	if !strings.Contains(d.ViewDefinitionSQL(), "pg_get_viewdef(c.oid, true)") {
 		t.Errorf("view definition should read pg_get_viewdef: %s", d.ViewDefinitionSQL())
 	}
+
+	// The result columns carry the spec's names (spec/dialects.md "Introspection result shapes").
+	for query, aliases := range map[string][]string{
+		d.ColumnsInfoSQL():    {"as name", "as type", `as "notnull"`, "as pk"},
+		d.IndexesInfoSQL():    {"as index_name", `as "unique"`, "as seqno", `as "column"`, `as "desc"`},
+		d.ViewDefinitionSQL(): {"as definition"},
+	} {
+		for _, alias := range aliases {
+			if !strings.Contains(query, alias) {
+				t.Errorf("introspection query lacks %q:\n%s", alias, query)
+			}
+		}
+	}
 }

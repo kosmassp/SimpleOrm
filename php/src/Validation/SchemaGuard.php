@@ -84,12 +84,7 @@ final class SchemaGuard
         $columnsCache = [];
         try {
             foreach (self::discoverRegistry($classes) as [$source, $sql, $argsType, $resultType]) {
-                $savepoint = self::openSavepoint($connection);
-                try {
-                    self::validateStatement($db, $connection, $columnsCache, $source, $sql, $argsType, $resultType, $errors);
-                } finally {
-                    self::closeSavepoint($connection, $savepoint);
-                }
+                self::validateStatement($db, $connection, $columnsCache, $source, $sql, $argsType, $resultType, $errors);
             }
 
             foreach ($classes as $class) {
@@ -111,9 +106,11 @@ final class SchemaGuard
 
     /**
      * PostgreSQL aborts the surrounding transaction on any statement error — a refused `prepare` or `execute` would
-     * fail every entry validated after it with "current transaction is aborted" — so each registry entry runs under
-     * its own savepoint there (CODING-STANDARD §10). SQLite and SQL Server keep the transaction usable after an
-     * error and need none (SQL Server's savepoint syntax differs anyway).
+     * fail everything validated after it with "current transaction is aborted" — so every statement described
+     * (a registry entry's or a statement entity's) runs under its own savepoint there, inside
+     * {@see self::validateStatement()} so no caller can forget it (CODING-STANDARD §10; the Go port keeps the same
+     * savepoint inside its describer). SQLite and SQL Server keep the transaction usable after an error and need
+     * none (SQL Server's savepoint syntax differs anyway).
      */
     private static function openSavepoint(PDO $connection): bool
     {
@@ -193,8 +190,33 @@ final class SchemaGuard
 
     // --- statements (registry queries/commands and statement entities) -------------
 
-    /** @param array<string, array<string, array{0: string, 1: bool}>> $columnsCache */
+    /**
+     * One statement check (§7.19), shared by registry entries and statement-backed entities; the describing runs
+     * under the PostgreSQL savepoint ({@see self::openSavepoint()}) so one unparseable statement never poisons the
+     * shield transaction for the next.
+     *
+     * @param array<string, array<string, array{0: string, 1: bool}>> $columnsCache
+     */
     private static function validateStatement(
+        Db $db,
+        PDO $connection,
+        array &$columnsCache,
+        string $source,
+        string $sql,
+        ?string $argsType,
+        ?string $resultType,
+        array &$errors,
+    ): void {
+        $savepoint = self::openSavepoint($connection);
+        try {
+            self::describeAndCheck($db, $connection, $columnsCache, $source, $sql, $argsType, $resultType, $errors);
+        } finally {
+            self::closeSavepoint($connection, $savepoint);
+        }
+    }
+
+    /** @param array<string, array<string, array{0: string, 1: bool}>> $columnsCache */
+    private static function describeAndCheck(
         Db $db,
         PDO $connection,
         array &$columnsCache,

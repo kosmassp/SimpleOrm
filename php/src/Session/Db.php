@@ -253,7 +253,7 @@ final class Db
         $parameters = [];
         $bindParameter = static function (mixed $value, ?PropertyMap $property) use (&$parameters, $converter, $queryName): string {
             $name = 'c' . count($parameters);
-            $parameters[$name] = $converter->toDatabase($value, "{$queryName} @{$name}", $property?->enumAsInt() ?? false);
+            $parameters[$name] = $converter->toDatabase($value, "{$queryName} @{$name}", $property?->enumAsInt() ?? false, $property?->type);
 
             return '@' . $name;
         };
@@ -386,7 +386,7 @@ final class Db
         $parameters = [];
         foreach ($keyValues as $i => $value) {
             $predicates[] = $dialect->quoteIdentifier($map->keyProperties[$i]->columnName) . " = :k{$i}";
-            $parameters["k{$i}"] = $this->converter->toDatabase($value, "{$map->entityName()} key[{$i}]");
+            $parameters["k{$i}"] = $this->converter->toDatabase($value, "{$map->entityName()} key[{$i}]", type: $map->keyProperties[$i]->type);
         }
 
         $sql = 'select ' . implode(', ', array_map(
@@ -828,6 +828,7 @@ final class Db
                 $property->getValue($entity),
                 "{$map->entityName()}.{$property->propertyName()}",
                 $property->enumAsInt(),
+                $property->type,
             );
         }
 
@@ -1055,6 +1056,7 @@ final class Db
                 $property->getValue($entity),
                 "{$map->entityName()}.{$property->propertyName()}",
                 $property->enumAsInt(),
+                $property->type,
             );
         }
 
@@ -1120,6 +1122,7 @@ final class Db
                 $parameters[$key->columnName] = $this->converter->toDatabase(
                     $key->getValue($keyOrEntity),
                     "{$map->entityName()}.{$key->propertyName()}",
+                    type: $key->type,
                 );
             }
 
@@ -1128,6 +1131,7 @@ final class Db
                 $parameters[$version->columnName] = $this->converter->toDatabase(
                     $version->getValue($keyOrEntity),
                     "{$map->entityName()}.{$version->propertyName()}",
+                    type: $version->type,
                 );
             }
         } else {
@@ -1136,6 +1140,7 @@ final class Db
                 $parameters[$map->keyProperties[$i]->columnName] = $this->converter->toDatabase(
                     $value,
                     "{$map->entityName()} key[{$i}]",
+                    type: $map->keyProperties[$i]->type,
                 );
             }
         }

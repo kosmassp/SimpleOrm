@@ -416,6 +416,7 @@ final class DbTracking
             $value,
             "{$map->entityName()}.{$property->propertyName()}",
             $property->enumAsInt(),
+            $property->type,
         );
 
         return $value instanceof Decimal && $bound === (string) $value ? $value : $bound;

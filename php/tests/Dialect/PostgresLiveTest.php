@@ -28,6 +28,7 @@ use SimpleOrm\Session\DbOptions;
 use SimpleOrm\Session\TrackingMode;
 use SimpleOrm\Tests\Dialect\Fixtures\Postgres\BadPostgresRegistry;
 use SimpleOrm\Tests\Dialect\Fixtures\Postgres\BrokenSqlRegistry;
+use SimpleOrm\Tests\Dialect\Fixtures\Postgres\CalendarRow;
 use SimpleOrm\Tests\Dialect\Fixtures\Postgres\CompChild;
 use SimpleOrm\Tests\Dialect\Fixtures\Postgres\CompParent;
 use SimpleOrm\Tests\Dialect\Fixtures\Postgres\IdsArgs;
@@ -441,6 +442,53 @@ final class PostgresLiveTest extends TestCase
             static fn (CompParent $p): array => array_map(static fn (CompChild $c): string => $c->note, $p->children),
             $rows,
         ));
+    }
+
+    #[Test]
+    public function every_fetch_mode_loads_the_same_graph(): void
+    {
+        $db = $this->open();
+        $ada = SampleDatabase::insertUser($db, 'Ada', 'ada@example.com');
+        $bob = SampleDatabase::insertUser($db, 'Bob', 'bob@example.com');
+        $first = SampleDatabase::insertTransaction($db, $ada, '1.00');
+        $second = SampleDatabase::insertTransaction($db, $ada, '2.00');
+        $third = SampleDatabase::insertTransaction($db, $bob, '3.00');
+
+        foreach ([FetchMode::MultiQuery, FetchMode::SubSelect, FetchMode::Join] as $mode) {
+            $users = $db->from(User::class)->orderBy('id')->include('transactions')->fetch($mode)->toList();
+            $graph = array_map(
+                static fn (User $u): array => [$u->id, array_map(static fn (Transaction $t): int => $t->id, $u->transactions)],
+                $users,
+            );
+            self::assertSame([[$ada->id, [$first->id, $second->id]], [$bob->id, [$third->id]]], $graph, $mode->name);
+        }
+    }
+
+    // --- the calendar tokens on native columns ------------------------------------------------------
+
+    #[Test]
+    public function date_time_and_datetimeoffset_tokens_round_trip_through_their_native_columns(): void
+    {
+        $db = $this->open();
+        $db->createTable(CalendarRow::class);
+
+        $row = new CalendarRow();
+        $row->day = new DateTimeImmutable('2026-08-28T23:30:00', new DateTimeZone('-05:00'));       // still the 28th, not the 29th in UTC
+        $row->clock = new DateTimeImmutable('2026-01-01T13:30:15.250000', new DateTimeZone('+09:00'));
+        $row->atOffset = new DateTimeImmutable('2026-08-28T12:00:00', new DateTimeZone('+02:00'));
+        $db->insert($row);
+
+        $stored = $db->connection()->query('select day::text, clock::text from calendar_rows')->fetch(PDO::FETCH_NUM);
+        self::assertSame(['2026-08-28', '13:30:15.25'], $stored);
+
+        $loaded = $db->get(CalendarRow::class, $row->id);
+        self::assertSame('2026-08-28', $loaded->day->format('Y-m-d'));
+        self::assertSame('13:30:15.250000', $loaded->clock->format('H:i:s.u'));
+        self::assertSame($row->atOffset->getTimestamp(), $loaded->atOffset->getTimestamp());   // timestamptz keeps the instant, not the offset
+
+        // The calendar values compare natively in criteria too (the parameter's type is inferred from the column).
+        $matches = $db->from(CalendarRow::class)->where(Criteria::eq('day', new DateTimeImmutable('2026-08-28', new DateTimeZone('UTC'))))->toList();
+        self::assertCount(1, $matches);
     }
 
     // --- materialized views -----------------------------------------------------------------------

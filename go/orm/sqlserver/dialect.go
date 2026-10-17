@@ -86,9 +86,14 @@ func (*Dialect) SupportsProcedures() bool { return true }
 func (*Dialect) SupportsTransactionalDDL() bool { return true }
 
 // --- introspection (spec/dialects.md "Introspection result shapes") ---------------
+//
+// The result columns carry the spec's names (`name, type, notnull, pk`;
+// `index_name, unique, seqno, column, desc`; `definition`) on every non-SQLite
+// dialect of every implementation — SQLite's pragmas name them so already — so
+// a consumer may read by name or, as this port and the reference do, by ordinal.
 
 func (*Dialect) ColumnsInfoSQL() string {
-	return "select c.name,\n" +
+	return "select c.name as [name],\n" +
 		"       case\n" +
 		"           when t.name in (N'decimal', N'numeric')\n" +
 		"               then t.name + N'(' + cast(c.precision as nvarchar(8)) + N',' + cast(c.scale as nvarchar(8)) + N')'\n" +
@@ -97,9 +102,9 @@ func (*Dialect) ColumnsInfoSQL() string {
 		"           when t.name in (N'varchar', N'char', N'varbinary', N'binary')\n" +
 		"               then t.name + N'(' + case when c.max_length = -1 then N'max' else cast(c.max_length as nvarchar(8)) end + N')'\n" +
 		"           else t.name\n" +
-		"       end,\n" +
-		"       cast(case when c.is_nullable = 1 then 0 else 1 end as bigint),\n" +
-		"       cast(isnull(pk.key_ordinal, 0) as bigint)\n" +
+		"       end as [type],\n" +
+		"       cast(case when c.is_nullable = 1 then 0 else 1 end as bigint) as [notnull],\n" +
+		"       cast(isnull(pk.key_ordinal, 0) as bigint) as [pk]\n" +
 		"from sys.columns c\n" +
 		"join sys.types t on t.user_type_id = c.user_type_id\n" +
 		"left join (\n" +
@@ -113,7 +118,8 @@ func (*Dialect) ColumnsInfoSQL() string {
 }
 
 func (*Dialect) IndexesInfoSQL() string {
-	return "select i.name, cast(i.is_unique as bigint), cast(ic.key_ordinal - 1 as bigint), c.name, cast(ic.is_descending_key as bigint)\n" +
+	return "select i.name as [index_name], cast(i.is_unique as bigint) as [unique], cast(ic.key_ordinal - 1 as bigint) as [seqno],\n" +
+		"       c.name as [column], cast(ic.is_descending_key as bigint) as [desc]\n" +
 		"from sys.indexes i\n" +
 		"join sys.index_columns ic on ic.object_id = i.object_id and ic.index_id = i.index_id and ic.is_included_column = 0\n" +
 		"join sys.columns c on c.object_id = ic.object_id and c.column_id = ic.column_id\n" +
@@ -122,7 +128,7 @@ func (*Dialect) IndexesInfoSQL() string {
 }
 
 func (*Dialect) ViewDefinitionSQL() string {
-	return "select m.definition from sys.sql_modules m join sys.views v on v.object_id = m.object_id\n" +
+	return "select m.definition as [definition] from sys.sql_modules m join sys.views v on v.object_id = m.object_id\n" +
 		"where v.object_id = object_id(@relation)"
 }
 

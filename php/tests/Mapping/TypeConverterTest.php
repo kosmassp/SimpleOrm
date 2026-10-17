@@ -161,6 +161,44 @@ final class TypeConverterTest extends TestCase
     }
 
     #[Test]
+    public function date_and_time_tokens_write_their_own_calendar_text_whatever_the_zone(): void
+    {
+        // The value's own calendar date and time of day — never the instant shifted to UTC (23:30 -05:00 is still the 28th).
+        $late = new DateTimeImmutable('2026-08-28T23:30:15.250000', new DateTimeZone('-05:00'));
+        self::assertSame('2026-08-28', $this->converter->toDatabase($late, 'ctx', type: ColumnType::Date));
+        self::assertSame('23:30:15.2500000', $this->converter->toDatabase($late, 'ctx', type: ColumnType::Time));
+
+        // Text under native binding too: date and time carry no kind, the database infers the type (spec/dialects.md).
+        $native = new TypeConverter(new TypeHandlerRegistry(), bindsTemporalsNatively: true);
+        self::assertSame('2026-08-28', $native->toDatabase($late, 'ctx', type: ColumnType::Date));
+        self::assertSame('23:30:15.2500000', $native->toDatabase($late, 'ctx', type: ColumnType::Time));
+
+        // Round trip through the read side.
+        $day = $this->converter->fromDatabase('2026-08-28', ColumnType::Date, DateTimeImmutable::class, 'ctx');
+        self::assertSame('2026-08-28', $day->format('Y-m-d'));
+        $clock = $this->converter->fromDatabase('23:30:15.2500000', ColumnType::Time, DateTimeImmutable::class, 'ctx');
+        self::assertSame('23:30:15.250000', $clock->format('H:i:s.u'));
+    }
+
+    #[Test]
+    public function datetimeoffset_token_writes_keep_the_offset_and_bind_the_utc_instant_natively(): void
+    {
+        $value = new DateTimeImmutable('2026-08-28T12:00:00', new DateTimeZone('+02:00'));
+        self::assertSame('2026-08-28T12:00:00.0000000+02:00', $this->converter->toDatabase($value, 'ctx', type: ColumnType::DateTimeOffset));
+
+        $utc = new DateTimeImmutable('2026-08-28T10:00:00', new DateTimeZone('UTC'));
+        self::assertSame('2026-08-28T10:00:00.0000000+00:00', $this->converter->toDatabase($utc, 'ctx', type: ColumnType::DateTimeOffset));
+
+        $native = new TypeConverter(new TypeHandlerRegistry(), bindsTemporalsNatively: true);
+        $bound = $native->toDatabase($value, 'ctx', type: ColumnType::DateTimeOffset);
+        self::assertInstanceOf(DateTimeImmutable::class, $bound);
+        self::assertSame('2026-08-28T10:00:00+00:00', $bound->format('c'));
+
+        // With no token (a registered query's argument) the datetime rule applies: UTC with a Z.
+        self::assertSame('2026-08-28T10:00:00.0000000Z', $this->converter->toDatabase($value, 'ctx'));
+    }
+
+    #[Test]
     public function date_and_time_tokens_parse_their_own_format(): void
     {
         $date = $this->converter->fromDatabase('2026-08-28', ColumnType::Date, DateTimeImmutable::class, 'ctx');

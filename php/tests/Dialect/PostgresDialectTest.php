@@ -372,6 +372,17 @@ final class PostgresDialectTest extends TestCase
 
         self::assertStringContainsString('format_type(a.atttypid, a.atttypmod)', $this->dialect->columnsInfoSql());
         self::assertStringContainsString('pg_get_viewdef(c.oid, true)', $this->dialect->viewDefinitionSql());
+
+        // The result columns carry the spec's names (spec/dialects.md "Introspection result shapes").
+        foreach (['as name', 'as type', 'as "notnull"', 'as pk'] as $alias) {
+            self::assertStringContainsString($alias, $this->dialect->columnsInfoSql());
+        }
+
+        foreach (['as index_name', 'as "unique"', 'as seqno', 'as "column"', 'as "desc"'] as $alias) {
+            self::assertStringContainsString($alias, $this->dialect->indexesInfoSql());
+        }
+
+        self::assertStringContainsString('as definition', $this->dialect->viewDefinitionSql());
     }
 
     // --- fixtures ---------------------------------------------------------------------

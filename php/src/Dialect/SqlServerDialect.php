@@ -250,8 +250,10 @@ final class SqlServerDialect implements Dialect
     }
 
     /**
-     * Result columns are **named** `name, type, notnull, pk` — the PDO consumers read by name, where the reference
-     * reads by ordinal (spec/dialects.md "Introspection result shapes").
+     * The introspection result columns carry the spec's names (`name, type, notnull, pk`; `index_name, unique,
+     * seqno, column, desc`; `definition`) on every non-SQLite dialect of every implementation — SQLite's pragmas
+     * name them so already — so a consumer may read by name (PDO does) or by ordinal (the reference does)
+     * (spec/dialects.md "Introspection result shapes").
      */
     public function columnsInfoSql(): string
     {
@@ -284,7 +286,7 @@ final class SqlServerDialect implements Dialect
     public function viewDefinitionSql(): string
     {
         return <<<'SQL'
-            select m.definition from sys.sql_modules m join sys.views v on v.object_id = m.object_id
+            select m.definition as [definition] from sys.sql_modules m join sys.views v on v.object_id = m.object_id
             where v.object_id = object_id(@relation)
             SQL;
     }
@@ -292,7 +294,8 @@ final class SqlServerDialect implements Dialect
     public function indexesInfoSql(): string
     {
         return <<<'SQL'
-            select i.name, cast(i.is_unique as bigint), cast(ic.key_ordinal - 1 as bigint), c.name, cast(ic.is_descending_key as bigint)
+            select i.name as [index_name], cast(i.is_unique as bigint) as [unique], cast(ic.key_ordinal - 1 as bigint) as [seqno],
+                   c.name as [column], cast(ic.is_descending_key as bigint) as [desc]
             from sys.indexes i
             join sys.index_columns ic on ic.object_id = i.object_id and ic.index_id = i.index_id and ic.is_included_column = 0
             join sys.columns c on c.object_id = ic.object_id and c.column_id = ic.column_id

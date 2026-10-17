@@ -388,7 +388,12 @@ final class SqlServerDialectTest extends TestCase
         self::assertStringContainsString('as [notnull]', $columns);
         self::assertStringContainsString('as [pk]', $columns);
         self::assertStringContainsString('i.object_id = object_id(@relation)', $this->dialect->indexesInfoSql());
+        foreach (['as [index_name]', 'as [unique]', 'as [seqno]', 'as [column]', 'as [desc]'] as $alias) {
+            self::assertStringContainsString($alias, $this->dialect->indexesInfoSql());
+        }
+
         self::assertStringContainsString('v.object_id = object_id(@relation)', $this->dialect->viewDefinitionSql());
+        self::assertStringContainsString('as [definition]', $this->dialect->viewDefinitionSql());
         self::assertStringNotContainsString("\r", $columns . $this->dialect->indexesInfoSql() . $this->dialect->versionTableSql());
     }
 

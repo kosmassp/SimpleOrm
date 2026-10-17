@@ -446,6 +446,49 @@ final class SqlServerLiveTest extends TestCase
         self::assertNull(self::scalar($db, "select object_id(N'schema_version', N'U')") ?: null);
     }
 
+    #[Test]
+    public function the_run_lock_is_exclusive_across_connections_and_released_on_rollback(): void
+    {
+        $dialect = new SqlServerDialect();
+        $connectionString = $this->server?->connectionString() ?? '';
+        $holder = $dialect->createConnection($connectionString);
+        $other = $dialect->createConnection($connectionString);
+        // applock_test answers 1 where the lock could be granted now, 0 where another owner holds it.
+        $probe = "select applock_test('public', N'simpleorm:migrations', 'Exclusive', 'Transaction')";
+
+        $dialect->beginMigrationRunLock($holder);
+        $other->exec('BEGIN TRANSACTION');
+        self::assertSame(0, (int) $other->query($probe)->fetchColumn());
+        $other->exec('ROLLBACK');
+
+        $holder->exec('ROLLBACK');   // the lock is transaction-owned: it dies with the transaction, never leaking past a rollback
+        $other->exec('BEGIN TRANSACTION');
+        self::assertSame(1, (int) $other->query($probe)->fetchColumn());
+        $other->exec('ROLLBACK');
+
+        unset($holder, $other);   // release both before tearDown drops the database
+    }
+
+    #[Test]
+    public function every_fetch_mode_loads_the_same_graph(): void
+    {
+        $db = $this->openSample();
+        $ada = SampleDatabase::insertUser($db, 'Ada', 'ada@example.com');
+        $bob = SampleDatabase::insertUser($db, 'Bob', 'bob@example.com');
+        $first = SampleDatabase::insertTransaction($db, $ada, '1.00');
+        $second = SampleDatabase::insertTransaction($db, $ada, '2.00');
+        $third = SampleDatabase::insertTransaction($db, $bob, '3.00');
+
+        foreach ([FetchMode::MultiQuery, FetchMode::SubSelect, FetchMode::Join] as $mode) {
+            $users = $db->from(User::class)->orderBy('id')->include('transactions')->fetch($mode)->toList();
+            $graph = array_map(
+                static fn (User $u): array => [$u->id, array_map(static fn (Transaction $t): int => $t->id, $u->transactions)],
+                $users,
+            );
+            self::assertSame([[$ada->id, [$first->id, $second->id]], [$bob->id, [$third->id]]], $graph, $mode->name);
+        }
+    }
+
     // --- temporals on legacy columns ------------------------------------------------------------------------------------------
 
     #[Test]

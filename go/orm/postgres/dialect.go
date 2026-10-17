@@ -89,31 +89,36 @@ func (*Dialect) IsMarkerlessTemporal(databaseTypeName string) bool {
 }
 
 // --- introspection (§7.25): pg_catalog, flags as bigint ---
+//
+// The result columns carry the spec's names on every non-SQLite dialect of every
+// implementation (spec/dialects.md "Introspection result shapes"), so a consumer
+// may read by name or, as this port and the reference do, by ordinal. `pk` is a
+// presence flag here, not an ordinal.
 
 func (*Dialect) ColumnsInfoSQL() string {
-	return "select a.attname,\n" +
-		"       format_type(a.atttypid, a.atttypmod),\n" +
-		"       (case when a.attnotnull then 1 else 0 end)::bigint,\n" +
+	return "select a.attname as name,\n" +
+		"       format_type(a.atttypid, a.atttypmod) as type,\n" +
+		"       (case when a.attnotnull then 1 else 0 end)::bigint as \"notnull\",\n" +
 		"       (case when exists (\n" +
 		"           select 1 from pg_index i\n" +
 		"           where i.indrelid = a.attrelid and i.indisprimary and a.attnum = any(i.indkey)\n" +
-		"       ) then 1 else 0 end)::bigint\n" +
+		"       ) then 1 else 0 end)::bigint as pk\n" +
 		"from pg_attribute a\n" +
 		"where a.attrelid = to_regclass(@relation) and a.attnum > 0 and not a.attisdropped\n" +
 		"order by a.attnum"
 }
 
 func (*Dialect) ViewDefinitionSQL() string {
-	return "select pg_get_viewdef(c.oid, true) from pg_class c\n" +
+	return "select pg_get_viewdef(c.oid, true) as definition from pg_class c\n" +
 		"where c.oid = to_regclass(@relation) and c.relkind in ('v', 'm')"
 }
 
 func (*Dialect) IndexesInfoSQL() string {
-	return "select ic.relname,\n" +
-		"       (case when i.indisunique then 1 else 0 end)::bigint,\n" +
-		"       k.n::bigint,\n" +
-		"       a.attname,\n" +
-		"       (case when (i.indoption[k.n] & 1) <> 0 then 1 else 0 end)::bigint\n" +
+	return "select ic.relname as index_name,\n" +
+		"       (case when i.indisunique then 1 else 0 end)::bigint as \"unique\",\n" +
+		"       k.n::bigint as seqno,\n" +
+		"       a.attname as \"column\",\n" +
+		"       (case when (i.indoption[k.n] & 1) <> 0 then 1 else 0 end)::bigint as \"desc\"\n" +
 		"from pg_index i\n" +
 		"join pg_class ic on ic.oid = i.indexrelid\n" +
 		"cross join lateral generate_series(0, i.indnkeyatts - 1) as k(n)\n" +

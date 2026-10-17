@@ -8,6 +8,8 @@ use ReflectionClass;
 use ReflectionProperty;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Mapping\TypeConverter;
+use SimpleOrm\Metadata\Attributes\Column;
+use SimpleOrm\Metadata\ColumnType;
 use Traversable;
 
 /**
@@ -18,7 +20,9 @@ use Traversable;
  * strings are values, never collections) expands `IN (@ids)` to generated
  * placeholders (`@ids_0..@ids_N`); an empty collection becomes SQL `NULL`. On a
  * dialect with native array parameters (`$arrayParameters`, ADR-0025) the
- * collection binds as one parameter instead and the SQL is left untouched.
+ * collection binds as one parameter instead and the SQL is left untouched. An
+ * args property may declare its neutral token with `#[Column(type: …)]`; a
+ * `bytes` token binds the value as a binary parameter (ADR-0040 add.1).
  */
 final class ParameterBinder
 {
@@ -30,6 +34,7 @@ final class ParameterBinder
         bool $arrayParameters = false,
     ): BoundSql {
         $properties = self::publicProperties($args);
+        $tokens = self::declaredTokens($args);
         $placeholders = SqlPlaceholders::find($sql);
         $argsType = $args::class;
 
@@ -56,18 +61,20 @@ final class ParameterBinder
             }
 
             $context = "{$queryName} @{$placeholder}";
+            $token = $tokens[$name] ?? null;
             if (self::isCollection($value)) {
                 $items = is_array($value) ? array_values($value) : iterator_to_array($value, preserve_keys: false);
                 if ($arrayParameters) {
+                    // One array literal: its elements are text inside it, never separate binary parameters.
                     $parameters[$placeholder] = array_map(
-                        static fn (mixed $item): mixed => $converter->toDatabase($item, $context),
+                        static fn (mixed $item): mixed => $converter->toDatabase($item, $context, type: $token),
                         $items,
                     );
                 } else {
-                    $text = self::expandList($text, $placeholder, $items, $converter, $context, $parameters);
+                    $text = self::expandList($text, $placeholder, $items, $converter, $context, $token, $parameters);
                 }
             } else {
-                $parameters[$placeholder] = $converter->toDatabase($value, $context);
+                $parameters[$placeholder] = $converter->toParameter($value, $context, type: $token);
             }
         }
 
@@ -88,13 +95,14 @@ final class ParameterBinder
         array $values,
         TypeConverter $converter,
         string $context,
+        ?ColumnType $token,
         array &$parameters,
     ): string {
         $names = [];
         foreach ($values as $index => $value) {
             $name = "{$placeholder}_{$index}";
             $names[] = $name;
-            $parameters[$name] = $converter->toDatabase($value, $context);
+            $parameters[$name] = $converter->toParameter($value, $context, type: $token);
         }
 
         // An empty list becomes NULL: "x IN (NULL)" is valid SQL matching no rows.
@@ -119,6 +127,31 @@ final class ParameterBinder
             }
 
             $result[$property->getName()] = $property->isInitialized($args) ? $property->getValue($args) : null;
+        }
+
+        return $result;
+    }
+
+    /**
+     * The neutral type token an args property declares with `#[Column(type: …)]`, by property
+     * name — the same override an entity property uses (CODING-STANDARD §10). PHP types alone
+     * cannot say `bytes` (one string type), `date`, `time`, or `datetimeoffset`; an args property
+     * without the attribute binds by its value, as before. Only the token is read: an args type is
+     * not an entity, so the attribute's column name means nothing here.
+     *
+     * @return array<string, ColumnType>
+     */
+    private static function declaredTokens(object $args): array
+    {
+        $result = [];
+        $reflection = new ReflectionClass($args);
+        foreach ($reflection->getProperties(ReflectionProperty::IS_PUBLIC) as $property) {
+            foreach ($property->getAttributes(Column::class) as $attribute) {
+                $type = $attribute->newInstance()->type;
+                if ($type !== null) {
+                    $result[$property->getName()] = $type;
+                }
+            }
         }
 
         return $result;

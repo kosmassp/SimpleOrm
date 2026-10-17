@@ -175,7 +175,7 @@ final class CrudCasesTest extends TestCase
         $map = $db->maps()->load($entity::class);
         foreach ($expected as $columnName => $expectedValue) {
             $property = self::propertyByColumn($map, $columnName);
-            $actual = ConformanceValues::encodeForCompare($property->getValue($entity));
+            $actual = ConformanceValues::encodeForCompare($property->getValue($entity), $property);
             self::assertSame(ConformanceValues::expectedText($expectedValue), $actual, "{$fileName}: column {$columnName}");
         }
     }

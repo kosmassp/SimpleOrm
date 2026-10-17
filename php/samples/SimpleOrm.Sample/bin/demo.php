@@ -87,7 +87,7 @@ try {
     $runner = new MigrationRunner($db->connection(), $db->options()->dialect, $db->maps(), $set, $snapshots);
 
     $applied = $runner->migrate();
-    expect($applied === 11, "11 versions applied, got {$applied}");
+    expect($applied === 12, "12 versions applied, got {$applied}");
     ok('migrate', "{$applied} versions applied");
     expect($runner->migrate() === 0, 'a second migrate applies nothing');
     ok('migrate again', 'nothing pending');

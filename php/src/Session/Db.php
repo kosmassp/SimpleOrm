@@ -253,7 +253,7 @@ final class Db
         $parameters = [];
         $bindParameter = static function (mixed $value, ?PropertyMap $property) use (&$parameters, $converter, $queryName): string {
             $name = 'c' . count($parameters);
-            $parameters[$name] = $converter->toDatabase($value, "{$queryName} @{$name}", $property?->enumAsInt() ?? false, $property?->type);
+            $parameters[$name] = $converter->toParameter($value, "{$queryName} @{$name}", $property?->enumAsInt() ?? false, $property?->type);
 
             return '@' . $name;
         };
@@ -386,7 +386,7 @@ final class Db
         $parameters = [];
         foreach ($keyValues as $i => $value) {
             $predicates[] = $dialect->quoteIdentifier($map->keyProperties[$i]->columnName) . " = :k{$i}";
-            $parameters["k{$i}"] = $this->converter->toDatabase($value, "{$map->entityName()} key[{$i}]", type: $map->keyProperties[$i]->type);
+            $parameters["k{$i}"] = $this->converter->toParameter($value, "{$map->entityName()} key[{$i}]", type: $map->keyProperties[$i]->type);
         }
 
         $sql = 'select ' . implode(', ', array_map(
@@ -824,7 +824,7 @@ final class Db
                 continue;
             }
 
-            $parameters[$property->columnName] = $this->converter->toDatabase(
+            $parameters[$property->columnName] = $this->converter->toParameter(
                 $property->getValue($entity),
                 "{$map->entityName()}.{$property->propertyName()}",
                 $property->enumAsInt(),
@@ -1052,7 +1052,7 @@ final class Db
 
         $parameters = [];
         foreach ($bound as $property) {
-            $parameters[$property->columnName] = $this->converter->toDatabase(
+            $parameters[$property->columnName] = $this->converter->toParameter(
                 $property->getValue($entity),
                 "{$map->entityName()}.{$property->propertyName()}",
                 $property->enumAsInt(),
@@ -1119,7 +1119,7 @@ final class Db
         $parameters = [];
         if ($byEntity) {
             foreach ($map->keyProperties as $key) {
-                $parameters[$key->columnName] = $this->converter->toDatabase(
+                $parameters[$key->columnName] = $this->converter->toParameter(
                     $key->getValue($keyOrEntity),
                     "{$map->entityName()}.{$key->propertyName()}",
                     type: $key->type,
@@ -1128,7 +1128,7 @@ final class Db
 
             if ($checkVersion) {
                 $version = $map->versionProperty;
-                $parameters[$version->columnName] = $this->converter->toDatabase(
+                $parameters[$version->columnName] = $this->converter->toParameter(
                     $version->getValue($keyOrEntity),
                     "{$map->entityName()}.{$version->propertyName()}",
                     type: $version->type,
@@ -1137,7 +1137,7 @@ final class Db
         } else {
             $keyValues = self::validateKey($map, $keyOrEntity);
             foreach ($keyValues as $i => $value) {
-                $parameters[$map->keyProperties[$i]->columnName] = $this->converter->toDatabase(
+                $parameters[$map->keyProperties[$i]->columnName] = $this->converter->toParameter(
                     $value,
                     "{$map->entityName()} key[{$i}]",
                     type: $map->keyProperties[$i]->type,

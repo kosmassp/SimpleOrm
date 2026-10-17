@@ -29,7 +29,7 @@ public sealed class MigrationRunnerTests : IDisposable
         var runner = new MigrationRunner(db, typeof(User).Assembly, "SimpleOrm.Sample.Migrations");
 
         Assert.True(await runner.HasPendingAsync(CancellationToken.None));
-        Assert.Equal(11, await runner.MigrateAsync(CancellationToken.None));     // V0001..V0011
+        Assert.Equal(12, await runner.MigrateAsync(CancellationToken.None));     // V0001..V0012
         Assert.Equal(0, await runner.MigrateAsync(CancellationToken.None));      // idempotent
         Assert.False(await runner.HasPendingAsync(CancellationToken.None));
 
@@ -38,7 +38,7 @@ public sealed class MigrationRunnerTests : IDisposable
         Assert.Equal(["admin", "user"], roles.Select(r => r.Name));
 
         var status = await runner.StatusAsync(CancellationToken.None);
-        Assert.Equal(17, status.Count);                                          // one row per (version, object)
+        Assert.Equal(18, status.Count);                                          // one row per (version, object)
         Assert.All(status, e => Assert.Equal(MigrationState.Applied, e.State));
     }
 

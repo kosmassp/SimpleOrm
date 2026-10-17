@@ -46,7 +46,7 @@ tests/Conformance one data-driven runner per conformance folder
 tests/Samples     drives samples/SimpleOrm.Sample the way dotnet/tests drive the C# sample
 samples/SimpleOrm.Sample
                   a standalone consumer project (own composer.json, path repository to ../..):
-                  the sample model, its V0001–V0011 migrations + snapshots, repositories, a
+                  the sample model, its V0001–V0012 migrations + snapshots, repositories, a
                   registry, and bin/demo.php — see its README
 ```
 

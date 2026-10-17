@@ -123,6 +123,7 @@ func createSampleSchema(t *testing.T, db *orm.Db) {
 		orm.CreateTable[sample.UserRole],
 		orm.CreateTable[sample.Transaction],
 		orm.CreateTable[sample.TransactionDetail],
+		orm.CreateTable[sample.UserProfile],
 	} {
 		if err := create(ctx, db); err != nil {
 			t.Fatalf("create sample table: %v", err)
@@ -1129,4 +1130,12 @@ func TestLive_SchemaGuardOverASmallRegistry(t *testing.T) {
 			t.Errorf("expected %s in the report, got: %v", code, broken)
 		}
 	}
+}
+
+// TestLive_BytesRoundTrip writes and matches varbinary values (ADR-0040 add.1). Its last write, a NULL
+// into varbinary(max), is also the probe for the null-typing ruling waiting for a SQL Server engine
+// (spec/dialects.md): go-mssqldb binds nil as an nvarchar(1) NULL, which may refuse (error 257).
+func TestLive_BytesRoundTrip(t *testing.T) {
+	db, _ := newSampleSession(t, orm.Options{})
+	testsupport.BytesRoundTrip(t, db)
 }

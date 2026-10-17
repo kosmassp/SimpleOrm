@@ -223,7 +223,7 @@ final class StepScriptRunner
                 $property = self::property($map, $name);
                 Assert::assertSame(
                     ConformanceValues::expectedText($equals),
-                    ConformanceValues::encodeForCompare($property->getValue($entity)),
+                    ConformanceValues::encodeForCompare($property->getValue($entity), $property),
                     $context,
                 );
             }

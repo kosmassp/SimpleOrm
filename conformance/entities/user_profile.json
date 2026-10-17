@@ -34,6 +34,11 @@
       "nullable": true
     },
     {
+      "column": "avatar",
+      "type": "bytes",
+      "nullable": true
+    },
+    {
       "column": "address_street",
       "type": "string",
       "nullable": true

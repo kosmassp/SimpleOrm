@@ -14,6 +14,8 @@ type UserProfile struct {
 	User      *User   `orm:"many_to_one=UserID"`
 	Bio       *string `orm:"column"`
 	AvatarURL *string `orm:"column"`
+	// Avatar is the fixture's one bytes column (ADR-0040 add.1, migration V0012).
+	Avatar *[]byte `orm:"column"`
 	// Address is the owned value type (ADR-0030): stored as address_* columns
 	// of this table; a pointer, so an all-NULL row reads back as no address.
 	Address *Address `orm:"owned"`

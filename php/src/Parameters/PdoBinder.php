@@ -24,7 +24,9 @@ use SimpleOrm\Types\Iso8601;
  * `float` still binds as text; compare floats against declared-affinity
  * columns or cast in SQL. An `array` value (only a dialect with
  * `supportsArrayParameters()` leaves one, ADR-0025) binds as a PostgreSQL array
- * literal string ({@see PostgresArrayLiteral}). Parameter names are given without their leading `:`
+ * literal string ({@see PostgresArrayLiteral}). A {@see BinaryParameter} — a value
+ * whose property's metadata token is `bytes` — binds as `PARAM_LOB` (ADR-0040
+ * add.1): PHP strings carry no text/bytes distinction of their own. Parameter names are given without their leading `:`
  * (as `BoundSql::$parameters` does).
  */
 final class PdoBinder
@@ -37,6 +39,12 @@ final class PdoBinder
     public static function bindAndExecute(PDOStatement $statement, array $parameters): void
     {
         foreach ($parameters as $name => $value) {
+            if ($value instanceof BinaryParameter) {
+                // A `bytes`-typed property's value (ADR-0040 add.1): a binary parameter on every dialect.
+                $statement->bindValue(':' . $name, $value->bytes, PDO::PARAM_LOB);
+                continue;
+            }
+
             if ($value instanceof DateTimeImmutable) {
                 // A dialect with BindsTemporalsNatively (ADR-0025) leaves the UTC instant a DateTimeImmutable, and
                 // PDO cannot bind one: the ISO-8601 string under an untyped parameter is its equivalent, the server

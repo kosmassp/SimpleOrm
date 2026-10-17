@@ -35,6 +35,7 @@ use SimpleOrm\Tests\Sample\Models\User;
 use SimpleOrm\Tests\Sample\Models\UserProfile;
 use SimpleOrm\Tests\Sample\Models\UserRole;
 use SimpleOrm\Tests\Support\ConformanceClock;
+use SimpleOrm\Tests\Support\BytesRoundTrip;
 use SimpleOrm\Tests\Support\SampleDatabase;
 use SimpleOrm\Tests\Support\SqlServerDatabase;
 use SimpleOrm\Types\Decimal;
@@ -140,6 +141,17 @@ final class SqlServerLiveTest extends TestCase
         self::assertEquals(new DateTimeImmutable('2026-08-28T09:30:00Z'), $reloaded->createdAtUtc);
         self::assertSame(0, $reloaded->createdAtUtc->getOffset());
         self::assertNull($reloaded->updatedAtUtc);
+    }
+
+    /**
+     * ADR-0040 add.1: bytes bind as PDO::PARAM_LOB, never a string into varbinary. Its last write,
+     * a NULL into varbinary(max), is also the probe for the null-typing ruling waiting for a SQL
+     * Server engine (spec/dialects.md): an untyped null may arrive as nvarchar and refuse (257).
+     */
+    #[Test]
+    public function bytes_round_trip_through_crud_criteria_and_registry_queries(): void
+    {
+        BytesRoundTrip::run($this->openSample());
     }
 
     #[Test]

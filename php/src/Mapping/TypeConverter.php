@@ -10,6 +10,7 @@ use Exception;
 use InvalidArgumentException;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Metadata\ColumnType;
+use SimpleOrm\Parameters\BinaryParameter;
 use SimpleOrm\Types\Decimal;
 use SimpleOrm\Types\Iso8601;
 use UnitEnum;
@@ -118,6 +119,19 @@ final class TypeConverter
             $context,
             'no conversion or handler stores a ' . get_debug_type($value) . '; register a TypeHandler (§7.9)',
         );
+    }
+
+    /**
+     * {@see toDatabase()} for a value about to be bound as a statement parameter: the same
+     * conversion, then a string whose token is `bytes` is wrapped as a {@see BinaryParameter}
+     * so `PdoBinder` binds it as `PDO::PARAM_LOB` (ADR-0040 add.1). Snapshots and comparisons
+     * keep calling {@see toDatabase()} — the wrapper exists only on the way to PDO.
+     */
+    public function toParameter(mixed $value, string $context, bool $enumAsInt = false, ?ColumnType $type = null): mixed
+    {
+        $bound = $this->toDatabase($value, $context, $enumAsInt, $type);
+
+        return $type === ColumnType::Bytes && is_string($bound) ? new BinaryParameter($bound) : $bound;
     }
 
     /**

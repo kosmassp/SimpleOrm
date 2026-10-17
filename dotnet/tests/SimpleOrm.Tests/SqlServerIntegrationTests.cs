@@ -60,6 +60,39 @@ public sealed class SqlServerIntegrationTests(SqlServerFixture fixture)
         Assert.Null(read.UpdatedAtUtc);
     }
 
+    private sealed record AvatarArgs(byte[] Avatar);
+
+    private static readonly Query<AvatarArgs, long> ProfileIdsByAvatar = Query.Inline(
+        "select id from user_profiles where avatar = @Avatar");
+
+    [SqlServerFact]
+    public async Task Bytes_round_trip_through_crud_criteria_and_registry_queries()
+    {
+        // ADR-0040 add.1: a NUL, a backslash, 0xff, and an invalid UTF-8 sequence, then bytes
+        // spelling an escape literal — what text binding would corrupt.
+        byte[] first = [0x00, 0x5c, 0xff, 0x27, 0x41, 0xc3, 0x28, 0x0a];
+        byte[] second = [0x5c, 0x78, 0x34, 0x31, 0x5c, 0x5c, 0x00];
+        await using var db = await OpenAsync();
+        var user = await InsertUserAsync(db, "Ada");
+        var profile = new UserProfile { UserId = user.Id, Avatar = first, CreatedAtUtc = TestDb.SeedTime };
+        await db.InsertAsync(profile, CancellationToken.None);
+
+        Assert.Equal(first, (await db.GetAsync<UserProfile>(profile.Id, CancellationToken.None)).Avatar);
+        Assert.Single(await db.Query<UserProfile>()
+            .Where(Criteria.Eq("Avatar", first)).ToListAsync(CancellationToken.None));
+        Assert.Equal([profile.Id], await db.QueryAsync(ProfileIdsByAvatar, new AvatarArgs(first), CancellationToken.None));
+
+        profile.Avatar = second;
+        await db.UpdateOnlyAsync(profile, [nameof(UserProfile.Avatar)], CancellationToken.None);
+        Assert.Equal(second, (await db.GetAsync<UserProfile>(profile.Id, CancellationToken.None)).Avatar);
+
+        // A NULL into varbinary(max) — the probe for the ruling waiting for a SQL Server engine
+        // (spec/dialects.md): an untyped null parameter may arrive as nvarchar and refuse (error 257).
+        profile.Avatar = null;
+        await db.UpdateAsync(profile, CancellationToken.None);
+        Assert.Null((await db.GetAsync<UserProfile>(profile.Id, CancellationToken.None)).Avatar);
+    }
+
     [SqlServerFact]
     public async Task Criteria_pages_with_and_without_explicit_ordering()
     {

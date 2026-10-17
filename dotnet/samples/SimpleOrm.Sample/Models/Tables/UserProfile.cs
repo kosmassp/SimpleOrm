@@ -30,6 +30,13 @@ public sealed class UserProfile : BaseModel
     public string? AvatarUrl { get; set; }
 
     /// <summary>
+    /// The fixture's one <c>bytes</c> column (ADR-0040 add.1, migration V0012): every
+    /// implementation and every live leg round-trips binary values through it.
+    /// </summary>
+    [Column]
+    public byte[]? Avatar { get; set; }
+
+    /// <summary>
     /// Owned value type (ADR-0030): <see cref="Models.Address"/> stored as
     /// <c>address_*</c> columns of this table. Nullable, so every member column
     /// is nullable and an all-NULL row reads back as no address.

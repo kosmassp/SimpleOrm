@@ -1173,3 +1173,9 @@ func TestLive_DescribeStatementReadsTheResultColumnsWithoutExecuting(t *testing.
 		t.Errorf("got %+v, %v", described, err)
 	}
 }
+
+// TestLive_BytesRoundTrip writes and matches bytea values text binding would corrupt (ADR-0040 add.1).
+func TestLive_BytesRoundTrip(t *testing.T) {
+	db, _ := openSample(t, orm.Options{})
+	testsupport.BytesRoundTrip(t, db)
+}

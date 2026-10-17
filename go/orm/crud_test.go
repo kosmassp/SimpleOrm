@@ -368,3 +368,8 @@ func TestInsert_ClientGuidKeyStrategyRoundTrips(t *testing.T) {
 		t.Fatalf("expected nil, nil, got %v, %v", missing, err)
 	}
 }
+
+// A bytes property round-trips byte for byte through CRUD, criteria, and a registry query (ADR-0040 add.1).
+func TestCrud_BytesRoundTrip(t *testing.T) {
+	testsupport.BytesRoundTrip(t, testsupport.OpenSample(t))
+}

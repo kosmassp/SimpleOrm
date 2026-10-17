@@ -1,7 +1,7 @@
 # SimpleOrm.Sample (PHP)
 
 The PHP counterpart of `dotnet/samples/SimpleOrm.Sample`: the fixture entity
-model, its eleven-version migration history with snapshots, two repositories, a
+model, its twelve-version migration history with snapshots, two repositories, a
 query/command registry, and a runnable end-to-end demo. It is a consumer of the
 port, not part of it: it depends on `simpleorm/simpleorm` through a Composer
 path repository and uses only the public API.
@@ -15,7 +15,7 @@ src/Models/Views/                UserTransactionTotal (self-contained view, ADR-
 src/Models/Statements/           DailySales + DailySalesArgs (statement entity, ADR-0008 add.2)
 src/Models/Procedures/           UserActivityReport (declaration-only on SQLite)
 src/Models/MaterializedViews/    MonthlySalesTotal (declaration-only on SQLite)
-src/Migrations/                  V0001..V0011 root versions composing per-object steps under
+src/Migrations/                  V0001..V0012 root versions composing per-object steps under
                                  Table/<Entity>/ and View/<Entity>/, with V000N.schema.json snapshots
 src/Repositories/                Repository (the ADR-0016 generic base), UserRepository, TransactionRepository
 src/Registry/                    Queries (incl. §7.10 json_group_array nesting), Commands, their args and rows

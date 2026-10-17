@@ -12,6 +12,7 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use SimpleOrm\Dialect\SqliteDialect;
 use SimpleOrm\Errors\SimpleOrmException;
+use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Parameters\PdoBinder;
 use SimpleOrm\Session\Db;
@@ -174,7 +175,9 @@ final class CasesTest extends TestCase
     {
         $row = [];
         foreach ($map->properties as $property) {
-            $row[$property->columnName] = self::encodeValue($property->getValue($entity));
+            $row[$property->columnName] = $property->type === ColumnType::Bytes && is_string($value = $property->getValue($entity))
+                ? base64_encode($value)   // a bytes property: the documented base64 encoding
+                : self::encodeValue($property->getValue($entity));
         }
 
         return $row;

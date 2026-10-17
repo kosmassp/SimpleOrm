@@ -23,6 +23,10 @@ func loadFromDeclarations(l *Loader, t reflect.Type) (*core.EntityMap, error) {
 	convention := l.options.Convention()
 	errs := &errorCollector{entityType: t}
 
+	if refuseEmbeddedEntities(t, errs) {
+		return nil, errs.mappingErrors()
+	}
+
 	def, hasDescriptor := Descriptor(t)
 	kind, relationName, schema, sql, declaredParams := resolveSource(t, def, hasDescriptor, convention, errs)
 
@@ -43,6 +47,57 @@ func loadFromDeclarations(l *Loader, t reflect.Type) (*core.EntityMap, error) {
 	}
 
 	return assemble(t, kind, relationName, schema, sql, declaredParams, specs, indexSpecs, relationships, convention, errs)
+}
+
+// refuseEmbeddedEntities is the one Go-reachable analog of MAP-028 (ADR-0040;
+// CODING-STANDARD §4 and §10). Go has no abstract types and no type "extends"
+// another, so the abstract-class and assembly-scan cases cannot occur — but
+// method promotion can carry a base's declaration: an embedded struct whose
+// Entity() descriptor names a relation source or indexes of its own would have
+// that descriptor promoted onto the embedding struct, which would silently
+// adopt the embedded struct's table (Descriptor reads it through the method
+// set). The embedded struct is an entity in its own right, so it may not be
+// embedded by one: every such pair is MAP-028, naming both types, and the outer
+// is never read through the promoted method. An embedded struct with no
+// descriptor (the sample's BaseModel), or one declaring only foreign keys or
+// links, shares its fields and nothing else — embedding is composition.
+func refuseEmbeddedEntities(t reflect.Type, errs *errorCollector) bool {
+	refused := false
+	var walk func(parent reflect.Type)
+	walk = func(parent reflect.Type) {
+		for i := 0; i < parent.NumField(); i++ {
+			field := parent.Field(i)
+			if !field.Anonymous || field.PkgPath != "" || field.Type.Kind() != reflect.Struct {
+				continue
+			}
+			embedded := field.Type
+			// Deepest declaration first: a promoted descriptor would name the
+			// intermediate struct, not the one that actually declares it.
+			before := len(errs.errors)
+			walk(embedded)
+			if len(errs.errors) > before {
+				refused = true
+				continue
+			}
+			if def, ok := Descriptor(embedded); ok && declaresRelationOrIndexes(def) {
+				errs.add("MAP-028", target(parent, field.Name),
+					"embeds '%s', which declares a relation source or indexes of its own; an embedded struct that is an entity cannot be embedded by one — "+
+						"embed a plain struct that only shares fields, or hold it as a navigation", embedded.Name())
+				refused = true
+			}
+		}
+	}
+	walk(t)
+	return refused
+}
+
+// declaresRelationOrIndexes reports whether a descriptor carries a relation
+// source (a non-zero Source: Table("") with no name is the convention table)
+// or declared indexes — the class-level declarations ADR-0040 reads without
+// inheritance.
+func declaresRelationOrIndexes(def core.EntityDef) bool {
+	s := def.Source
+	return s.Kind != core.RelationTable || s.Name != "" || s.Schema != "" || s.SQL != "" || len(s.Parameters) > 0 || len(def.Indexes) > 0
 }
 
 // resolveSource reads the descriptor's relation source (ADR-0008): a type

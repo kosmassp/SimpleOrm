@@ -8,6 +8,8 @@ use DateTimeImmutable;
 use DateTimeZone;
 use Exception;
 use InvalidArgumentException;
+use SimpleOrm\Dialect\BinaryText;
+use SimpleOrm\Dialect\TemporalText;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Parameters\BinaryParameter;
@@ -29,6 +31,8 @@ final class TypeConverter
     public function __construct(
         private readonly TypeHandlerRegistry $handlers,
         private readonly bool $bindsTemporalsNatively = false,
+        private readonly TemporalText $temporalText = TemporalText::Iso8601,
+        private readonly BinaryText $binaryText = BinaryText::Raw,
     ) {
     }
 
@@ -60,7 +64,7 @@ final class TypeConverter
             ColumnType::Bool => $this->toBool($value),
             ColumnType::String => (string) $value,
             ColumnType::Guid => $this->toGuid($value, $context),
-            ColumnType::Bytes => is_resource($value) ? (string) stream_get_contents($value) : (string) $value,   // pdo_pgsql returns bytea as a stream
+            ColumnType::Bytes => $this->toBytes($value),
             ColumnType::DateTime => $this->toUtcDateTime($value, $context),
             ColumnType::DateTimeOffset => $this->toOffsetDateTime($value, $context),
             ColumnType::Date => $this->toDate($value, $context),
@@ -158,14 +162,38 @@ final class TypeConverter
             ColumnType::Time => $value->format('H:i:s.u') . '0',
             ColumnType::DateTimeOffset => $this->bindsTemporalsNatively
                 ? self::toUtc($value)
-                : $value->format('Y-m-d\TH:i:s.u') . '0' . $value->format('P'),
-            default => $this->bindsTemporalsNatively ? self::toUtc($value) : Iso8601::format($value),
+                : ($this->temporalText === TemporalText::Odbc
+                    ? $value->format('Y-m-d H:i:s.u') . '0 ' . $value->format('P')
+                    : $value->format('Y-m-d\TH:i:s.u') . '0' . $value->format('P')),
+            default => $this->bindsTemporalsNatively
+                ? self::toUtc($value)
+                : ($this->temporalText === TemporalText::Odbc
+                    ? self::toUtc($value)->format('Y-m-d H:i:s.u') . '0 +00:00'   // the ODBC parser's form (TemporalText)
+                    : Iso8601::format($value)),
         };
     }
 
     private static function toUtc(DateTimeImmutable $value): DateTimeImmutable
     {
         return $value->getOffset() === 0 ? $value : $value->setTimezone(new DateTimeZone('UTC'));
+    }
+
+    /**
+     * A `bytes` column as read: `pdo_pgsql` hands a stream, `pdo_sqlite` the bytes, and a driver
+     * declaring {@see BinaryText::Hex} (`pdo_odbc`) the column's hexadecimal text, decoded here.
+     */
+    private function toBytes(mixed $value): string
+    {
+        if (is_resource($value)) {
+            return (string) stream_get_contents($value);
+        }
+
+        $text = (string) $value;
+        if ($this->binaryText === BinaryText::Hex && $text !== '' && strlen($text) % 2 === 0 && ctype_xdigit($text)) {
+            return (string) hex2bin($text);
+        }
+
+        return $text;
     }
 
     private function toInt(mixed $value, ColumnType $type, string $context): int

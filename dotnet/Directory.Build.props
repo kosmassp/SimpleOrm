@@ -5,7 +5,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- false: Microsoft.Data.SqlClient refuses to open any connection under globalization-invariant mode
+         ("Globalization Invariant Mode is not supported"); the CLI and the tests need SQL Server (ADR-0040 add.2). -->
+    <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
 
 </Project>

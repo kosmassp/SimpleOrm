@@ -12,6 +12,9 @@ use PDOStatement;
 use ReflectionClass;
 use ReflectionNamedType;
 use ReflectionProperty;
+use SimpleOrm\Dialect\BinaryText;
+use SimpleOrm\Dialect\PdoConventions;
+use SimpleOrm\Dialect\TemporalText;
 use SimpleOrm\Errors\ConcurrencyException;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Mapping\ResultMapper;
@@ -66,7 +69,12 @@ final class Db
     ) {
         $this->connection = $connection;
         $this->maps = new EntityMapLoader($options->mapping);
-        $this->converter = new TypeConverter($options->typeHandlers, $options->dialect->bindsTemporalsNatively());
+        $this->converter = new TypeConverter(
+            $options->typeHandlers,
+            $options->dialect->bindsTemporalsNatively(),
+            $options->dialect instanceof PdoConventions ? $options->dialect->temporalText() : TemporalText::Iso8601,
+            $options->dialect instanceof PdoConventions ? $options->dialect->binaryText() : BinaryText::Raw,
+        );
         $this->mapper = new ResultMapper($this->maps, $this->converter);
         $this->loading = new DbLoading($this);
         $this->eagerJoin = new DbEagerJoin($this);

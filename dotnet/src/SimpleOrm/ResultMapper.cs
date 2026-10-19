@@ -23,31 +23,33 @@ internal sealed class ResultMapper(EntityMapLoader loader, TypeConverter convert
     public Func<DbDataReader, T> CreatePlan<T>(DbDataReader reader, string queryName)
     {
         var columns = new string[reader.FieldCount];
+        var fieldTypes = new Type[reader.FieldCount];
         for (var i = 0; i < reader.FieldCount; i++)
         {
             columns[i] = reader.GetName(i);
+            fieldTypes[i] = reader.GetFieldType(i);   // the provider's type: what a typed getter may read (ADR-0040 add.2)
         }
 
-        var key = typeof(T).FullName + "|" + string.Join(",", columns);
-        return (Func<DbDataReader, T>)_plans.GetOrAdd(key, _ => BuildPlan<T>(columns, queryName));
+        var key = typeof(T).FullName + "|" + string.Join(",", columns) + "|" + string.Join(",", fieldTypes.Select(t => t.FullName));
+        return (Func<DbDataReader, T>)_plans.GetOrAdd(key, _ => BuildPlan<T>(columns, fieldTypes, queryName));
     }
 
-    private Func<DbDataReader, T> BuildPlan<T>(string[] columns, string queryName)
+    private Func<DbDataReader, T> BuildPlan<T>(string[] columns, Type[] fieldTypes, string queryName)
     {
         if (IsScalar(typeof(T)))
         {
-            return CompileScalar<T>(queryName);
+            return CompileScalar<T>(fieldTypes[0], queryName);
         }
 
         return AttributeMapLoader.HasMappingAttributes(typeof(T))
-            ? Compile<T>(EntityBindings<T>(columns, queryName), queryName)
-            : Compile<T>(DtoBindings<T>(columns, queryName), queryName);
+            ? Compile<T>(EntityBindings<T>(columns, queryName), fieldTypes, queryName)
+            : Compile<T>(DtoBindings<T>(columns, queryName), fieldTypes, queryName);
     }
 
-    private Func<DbDataReader, T> CompileScalar<T>(string queryName)
+    private Func<DbDataReader, T> CompileScalar<T>(Type fieldType, string queryName)
     {
         var reader = Expression.Parameter(typeof(DbDataReader), "reader");
-        var body = ReadCell(reader, new Binding { Ordinal = 0, TargetType = typeof(T), TargetName = "scalar" }, typeof(T), queryName);
+        var body = ReadCell(reader, new Binding { Ordinal = 0, TargetType = typeof(T), TargetName = "scalar" }, fieldType, typeof(T), queryName);
         return Expression.Lambda<Func<DbDataReader, T>>(body, reader).Compile();
     }
 
@@ -222,11 +224,11 @@ internal sealed class ResultMapper(EntityMapLoader loader, TypeConverter convert
         return plan;
     }
 
-    private Func<DbDataReader, T> Compile<T>(Plan plan, string queryName)
+    private Func<DbDataReader, T> Compile<T>(Plan plan, Type[] fieldTypes, string queryName)
     {
         var reader = Expression.Parameter(typeof(DbDataReader), "reader");
 
-        Expression Read(Binding binding) => ReadCell(reader, binding, typeof(T), queryName);
+        Expression Read(Binding binding) => ReadCell(reader, binding, fieldTypes[binding.Ordinal], typeof(T), queryName);
 
         var instance = Expression.Variable(typeof(T), "instance");
         var body = new List<Expression>
@@ -292,14 +294,16 @@ internal sealed class ResultMapper(EntityMapLoader loader, TypeConverter convert
     /// (no boxing, no converter dispatch); everything with rules — dates (the UTC
     /// rule), enums, handler-registered types — stays on the converter path.
     /// </summary>
-    private Expression ReadCell(ParameterExpression reader, Binding binding, Type resultOwner, string queryName)
+    private Expression ReadCell(ParameterExpression reader, Binding binding, Type fieldType, Type resultOwner, string queryName)
     {
         var context = $"{queryName} → {resultOwner.Name}.{binding.TargetName}";
         var ordinal = Expression.Constant(binding.Ordinal);
         var target = binding.TargetType;
         var underlying = Nullable.GetUnderlyingType(target) ?? target;
 
-        var getter = DirectGetter(underlying);
+        // The typed getter only when the provider's field type is the target's: SQL Server
+        // returns count(...) as Int32, where GetInt64 throws — the converter path widens.
+        var getter = fieldType == underlying ? DirectGetter(underlying) : null;
         if (getter is not null && !converter.HasHandler(underlying))
         {
             Expression value = Expression.Call(reader, getter, ordinal);

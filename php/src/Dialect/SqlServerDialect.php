@@ -35,7 +35,7 @@ use Throwable;
  * Declared-type compatibility, storage types, and introspection are pure functions of the strings in
  * spec/dialects.md; only {@see self::createConnection()} and {@see self::beginMigrationRunLock()} touch a server.
  */
-final class SqlServerDialect implements Dialect
+final class SqlServerDialect implements Dialect, PdoConventions
 {
     /** The indexable `nvarchar`/`varbinary` length of a key column (SQL Server's 900-byte index key limit, spec/dialects.md). */
     private const KEY_LENGTH = '450';
@@ -232,6 +232,18 @@ final class SqlServerDialect implements Dialect
     public function bindsTemporalsNatively(): bool
     {
         return false;   // SQL Server converts the ISO-8601 string to datetimeoffset implicitly (spec/dialects.md "Temporals")
+    }
+
+    /** ODBC Driver 17 converts temporal text on the client and takes only the space-separated, explicit-offset form (ADR-0040 add.2). */
+    public function temporalText(): TemporalText
+    {
+        return TemporalText::Odbc;
+    }
+
+    /** `pdo_odbc` fetches a `varbinary` as its hexadecimal text (ADR-0040 add.2). */
+    public function binaryText(): BinaryText
+    {
+        return BinaryText::Hex;
     }
 
     public function supportsMaterializedViews(): bool

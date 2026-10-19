@@ -1,3 +1,5 @@
+using System.Data;
+using System.Data.Common;
 using System.Globalization;
 
 namespace SimpleOrm;
@@ -210,6 +212,50 @@ internal sealed class TypeConverter(TypeHandlerRegistry handlers, bool bindsTemp
                     "MAP-030", context,
                     $"no conversion or handler stores a {value.GetType().Name}; register an ITypeHandler (§7.9)");
         }
+    }
+
+    /// <summary>
+    /// Binds one value onto a parameter: the <see cref="ToDatabase"/> form, and for a null the
+    /// provider type its non-null value would have carried (<see cref="NullDbType"/>) — a
+    /// typed null, as the ports bind (ADR-0040 add.2). Without it SqlClient declares an
+    /// untyped NULL as <c>nvarchar</c>, which SQL Server refuses into <c>varbinary</c>.
+    /// </summary>
+    public void BindValue(DbParameter parameter, object? value, string context, bool enumAsInt, Type clrType)
+    {
+        var bound = ToDatabase(value, context, enumAsInt);
+        parameter.Value = bound;
+        if (bound is DBNull && NullDbType(clrType) is { } dbType)
+        {
+            parameter.DbType = dbType;
+        }
+    }
+
+    /// <summary>
+    /// The provider type a null parameter declares for a property of the given CLR type: the
+    /// <see cref="DbType"/> of what <see cref="ToDatabase"/> would have produced for a value
+    /// (<see cref="ArrayElementStorageType"/>). Null when unknowable — a handler-registered type.
+    /// </summary>
+    public DbType? NullDbType(Type clrType)
+    {
+        var storage = ArrayElementStorageType(clrType);
+        if (storage == typeof(byte[])) return DbType.Binary;
+        if (storage == typeof(string)) return DbType.String;
+        if (storage == typeof(bool)) return DbType.Boolean;
+        if (storage == typeof(byte)) return DbType.Byte;
+        if (storage == typeof(short)) return DbType.Int16;
+        if (storage == typeof(int)) return DbType.Int32;
+        if (storage == typeof(long)) return DbType.Int64;
+        if (storage == typeof(float)) return DbType.Single;
+        if (storage == typeof(double)) return DbType.Double;
+        if (storage == typeof(decimal)) return DbType.Decimal;
+        if (storage == typeof(Guid)) return DbType.Guid;
+        if (storage == typeof(DateTime)) return DbType.DateTime;
+        if (storage == typeof(DateTimeOffset)) return DbType.DateTimeOffset;
+#if NET
+        if (storage == typeof(DateOnly)) return DbType.Date;
+        if (storage == typeof(TimeOnly)) return DbType.Time;
+#endif
+        return null;
     }
 
     /// <summary>

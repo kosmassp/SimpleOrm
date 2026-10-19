@@ -1018,8 +1018,8 @@ func TestLive_IntrospectionQueriesReportTheSpecifiedShapes(t *testing.T) {
 	}{
 		"id":           {"bigint", true, true},
 		"name":         {"nvarchar(max)", true, false},
-		"email":        {"nvarchar(450)", true, false}, // listed by a unique index: the indexable length
-		"display_name": {"nvarchar(max)", false, false},
+		"email":        {"nvarchar(450)", true, false},  // listed by a unique index: the indexable length
+		"display_name": {"nvarchar(450)", false, false}, // a column of a declared index: the indexable length (spec/dialects.md storage types)
 		"created_at":   {"datetimeoffset", true, false},
 		"updated_at":   {"datetimeoffset", false, false},
 	} {

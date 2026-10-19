@@ -191,7 +191,7 @@ internal sealed class CommandParameterBinder(DbCommand command, TypeConverter co
         var name = "@c" + _next++;
         var parameter = command.CreateParameter();
         parameter.ParameterName = name;
-        parameter.Value = converter.ToDatabase(value, queryName + " " + name, property?.EnumAsInt ?? false);
+        converter.BindValue(parameter, value, queryName + " " + name, property?.EnumAsInt ?? false, property?.ClrType ?? typeof(object));
         command.Parameters.Add(parameter);
         return name;
     }

@@ -12,11 +12,15 @@ namespace SimpleOrm.Tests;
 /// </summary>
 public sealed class SqlServerFixture : IAsyncLifetime
 {
-    // Encrypt=false: Microsoft.Data.SqlClient defaults to Encrypt=Mandatory since
-    // 4.0, which refuses LocalDB's self-signed certificate; the instance is
-    // in-process on this machine, nothing crosses a wire.
-    private const string MasterConnectionString =
-        @"Server=(localdb)\MSSQLLocalDB;Database=master;Integrated Security=true;Encrypt=false;Connect Timeout=60";
+    // The live-testing contract (spec/dialects.md "Testing contract"): the admin
+    // connection string comes from SIMPLEORM_SQLSERVER; without it, the LocalDB
+    // default instance. Encrypt=false there: Microsoft.Data.SqlClient defaults to
+    // Encrypt=Mandatory since 4.0, which refuses LocalDB's self-signed certificate;
+    // the instance is in-process on this machine, nothing crosses a wire.
+    private static readonly string MasterConnectionString =
+        Environment.GetEnvironmentVariable("SIMPLEORM_SQLSERVER") is { Length: > 0 } configured
+            ? configured
+            : @"Server=(localdb)\MSSQLLocalDB;Database=master;Integrated Security=true;Encrypt=false;Connect Timeout=60";
 
     // Probed once per run; the first open also spins the LocalDB instance up.
     private static readonly Lazy<bool> Probe = new(() =>
@@ -37,8 +41,9 @@ public sealed class SqlServerFixture : IAsyncLifetime
 
     public static bool Available => Probe.Value;
 
+    /// <summary>The admin connection string pointed at this fixture's database.</summary>
     public string ConnectionString =>
-        $@"Server=(localdb)\MSSQLLocalDB;Database={_database};Integrated Security=true;Encrypt=false;Connect Timeout=60";
+        new SqlConnectionStringBuilder(MasterConnectionString) { InitialCatalog = _database }.ConnectionString;
 
     public async Task InitializeAsync()
     {

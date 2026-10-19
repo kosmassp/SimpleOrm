@@ -153,7 +153,7 @@ public sealed partial class Db
     {
         var parameter = command.CreateParameter();
         parameter.ParameterName = "@" + property.ColumnName;
-        parameter.Value = _converter.ToDatabase(value, $"{property.Property.DeclaringType!.Name}.{property.PropertyName}", property.EnumAsInt);
+        _converter.BindValue(parameter, value, $"{property.Property.DeclaringType!.Name}.{property.PropertyName}", property.EnumAsInt, property.ClrType);
         command.Parameters.Add(parameter);
     }
 }

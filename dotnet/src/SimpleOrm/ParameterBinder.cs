@@ -68,7 +68,10 @@ internal static class ParameterBinder
             }
             else
             {
-                AddParameter(command, "@" + placeholder, converter.ToDatabase(value, context));
+                var parameter = command.CreateParameter();
+                parameter.ParameterName = "@" + placeholder;
+                converter.BindValue(parameter, value, context, enumAsInt: false, property.PropertyType);   // a typed null (ADR-0040 add.2)
+                command.Parameters.Add(parameter);
             }
         }
 

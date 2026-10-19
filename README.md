@@ -415,6 +415,17 @@ so `migrate down` on SQL Server needs `Down()` overrides (`MIG-020` names this);
 `diff`/force-sync are untested against SQL Server; procedures stay dormant until
 Level 4. Tests run on SQL Server LocalDB when present and skip cleanly when not.
 
+Two requirements the first live run against a real engine taught (ADR-0040 add.2): the
+process must **not** run in globalization-invariant mode (`Microsoft.Data.SqlClient`
+refuses every connection with "Globalization Invariant Mode is not supported"; the
+CLI and the tests set `InvariantGlobalization` to false), and a table whose triggers
+lack `SET NOCOUNT ON` inflates the affected-row count the version check reads — see
+spec/dialects.md Clarification 22 for the measurement and the pending ruling. The
+live tests take the admin connection string from `SIMPLEORM_SQLSERVER` (C#: an
+ADO.NET connection string; Go: `sqlserver://user:password@host:1433?database=master`;
+PHP: a `sqlsrv:` or `odbc:` DSN such as `odbc:Driver={ODBC Driver 17 for SQL
+Server};Server=host,1433;Database=master;UID=…;PWD=…`) and skip as a group without it.
+
 ## PostgreSQL dialect (ADR-0025)
 
 The second Level 4 dialect — the one several Level 1 seams were designed for,

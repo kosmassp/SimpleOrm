@@ -419,23 +419,18 @@ Named here so that no implementation attempts it ahead of the reference:
   drivers, pgx's statement cache after a schema change, and go-mssqldb's untyped
   NULL are ruled — Clarifications 14, 15, and 16.)
 
-**Waiting for a SQL Server engine** (ADR-0040 add.1; the first machine with an
-engine runs these first):
+**Measured on a SQL Server engine** (ADR-0040 add.2, 2026-10-19 — SQL Server
+2016 on the owner's LAN, reached by every implementation's live leg):
 
-- **The first green run of the SQL Server live legs** in all three
-  implementations — no engine here, and go-mssqldb cannot address LocalDB (a TCP
-  server is its default). They include the first verification of Clarification
-  16 (typed nulls), built but never run against SQL Server, and the NULL written
-  into `varbinary(max)` by every SQL Server leg's bytes round trip — which also
-  shows whether an untyped null through ADO.NET or PDO ODBC shares go-mssqldb's
-  hazard.
-- **`RowsAffected` summing trigger row counts** (go-mssqldb): a `CRUD-010`
-  hazard on schemas whose triggers lack `SET NOCOUNT ON`. Open until tested
-  against real triggers on a SQL Server machine; no rule yet. The candidate fix
-  is `SET NOCOUNT ON; <write>; SELECT @@ROWCOUNT` on SQL Server, and with
-  triggers in the mapping (Level 4, ADR-0040 add.1) the strategy can be keyed
-  off declared triggers the way EF Core's `HasTrigger()` does (for orientation:
-  Hibernate trusts the raw count and asks trigger authors for `SET NOCOUNT ON`).
+- **The SQL Server live legs ran green in all three implementations** — C#
+  through `Microsoft.Data.SqlClient`, PHP through `pdo_odbc` with ODBC Driver
+  17, Go through go-mssqldb — after the fixes recorded as Clarifications 17–21.
+  Clarification 16 (typed nulls) is verified: the NULL avatar write passed in
+  Go as built, exposed the reference's untyped `DBNull` (fixed, Clarification
+  18), and needed nothing in PHP.
+- **`RowsAffected` under triggers** is measured (Clarification 22) and awaits
+  the owner's ruling; nothing in the three implementations changed for it.
+
 
 ## Testing contract
 
@@ -637,3 +632,60 @@ ports found (ADR-0040 add.1).
     the verification. C# and PHP: whether ADO.NET's untyped `DBNull` and PDO
     ODBC's `PARAM_NULL` reach SQL Server as a character type is the same live
     question, answered by the same NULL write in their SQL Server legs.
+
+17. **A typed getter follows the provider's field type, never the target's alone**
+    (ADR-0040 add.2, the first SQL Server run). The reference compiled
+    `GetInt64` for a `long` target, and SQL Server returns `count(...)` as
+    `int`: the typed getter threw where the converter would have widened. The
+    rule: a provider-native read (`GetInt64`, `GetString`, …) is chosen only when
+    the reader's field type **is** the target type; otherwise the value goes
+    through the converter, which widens integers losslessly (`int16` → `int32` →
+    `int64`) and refuses the rest with `MAP-031`. A plan is keyed by the
+    provider's field types as well as the column names, so one statement
+    returning different shapes on two dialects compiles two plans.
+18. **Typed nulls are the reference's rule too.** Clarification 16's Go rule
+    held the first time the SQL Server legs ran: ADO.NET's untyped `DBNull`
+    reaches SQL Server as `nvarchar`, which it refuses into `varbinary(max)`
+    (the NULL avatar write). The reference now binds every null with the
+    `DbType` of what its non-null value would have bound as — `Binary` for
+    `bytes`, `String` for a temporal bound as text, the numeric type otherwise —
+    derived from the property's metadata type, at every bind site (CRUD, the
+    column-list update, hooks, criteria, registry arguments). A value whose
+    storage type is unknowable (a handler-registered type) stays untyped. PDO
+    ODBC's `PARAM_NULL` needed nothing: it binds a typeless NULL the server
+    accepts.
+19. **PDO ODBC conventions (PHP, SQL Server through `pdo_odbc`).** ODBC Driver
+    17 converts parameter text on the client with the SQL Server ODBC parser,
+    which takes only `yyyy-mm-dd hh:mm:ss[.fffffff] [+|-]hh:mm` — a `T`
+    separator or a `Z` is SQLSTATE 22018 — and it fetches every column as
+    character data, so a `varbinary` arrives as upper-case hexadecimal text. The
+    PHP port carries both as an optional dialect capability beside the mirrored
+    seam, `PdoConventions` (`temporalText()`: `Iso8601` | `Odbc`;
+    `binaryText()`: `Raw` | `Hex`), declared by `SqlServerDialect` and honoured
+    by the converter: temporals bind in the ODBC form (the stored value is the
+    same instant; what the server returns and what the markers mean are
+    unchanged), and a hexadecimal binary read is decoded. `pdo_sqlite` and
+    `pdo_pgsql` declare nothing and keep ISO-8601 and raw bytes. A `pdo_sqlsrv`
+    driver, where installed, converts server-side and would declare nothing
+    either.
+20. **Globalization-invariant mode and SqlClient.** `Microsoft.Data.SqlClient`
+    refuses to open any connection in a process running with
+    `InvariantGlobalization=true` ("Globalization Invariant Mode is not
+    supported"): collations need culture data. The reference's CLI and tests
+    therefore run with it off; an application using the SQL Server dialect must
+    too. SQLite and PostgreSQL are unaffected.
+21. **An indexed `nvarchar` column reads back as `nvarchar(450)`** from
+    introspection, because that is what Clarification 11 writes; a live
+    expectation of `nvarchar(max)` for `users.display_name` (indexed) was the
+    Go leg's mistake, not the dialect's.
+22. **`RowsAffected` under a trigger, measured** (SQL Server 2016, 2026-10-19):
+    a one-row `UPDATE` on a table whose `AFTER UPDATE` trigger inserts two log
+    rows without `SET NOCOUNT ON` reports **3** rows affected through the
+    driver; `SET NOCOUNT ON; <update>; SELECT @@ROWCOUNT` reports **1**; an
+    `OUTPUT inserted.id` without `INTO` is refused outright on the triggered
+    table (error 334). So the version-checked write's "exactly one row" rule
+    would raise `CRUD-010` falsely on such a table today, in every
+    implementation. No rule yet — the owner decides between the `@@ROWCOUNT`
+    rendering for SQL Server writes and leaving the burden with trigger authors
+    (Hibernate's stance); triggers in the mapping (Level 4) would let the
+    strategy key off declared triggers.

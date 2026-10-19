@@ -3442,3 +3442,56 @@ implementation's own tests (C# `BaseClassRuleTests`, PHP `BaseClassRulesTest` +
 **Status.** Accepted; the ADR's implementation is complete. Nothing else
 inheritance-related changed: single-table and table-per-type stay out
 permanently.
+
+### ADR-0040 addendum 2 — the SQL Server legs run for the first time; what they found (2026-10-19)
+
+The owner stood up a SQL Server 2016 on the LAN and gave this machine access.
+The 48 live tests that had never executed — C# 10 (now 33 with the bytes and
+typed-null additions), PHP 16, Go 22 — ran in all three implementations the
+same day. Go passed 23 of 24 as written; C# and PHP each failed first, for
+reasons the SQLite and PostgreSQL suites could never have reached.
+
+**What the engine found.**
+
+1. **The reference's typed-getter fast path was wrong on SQL Server.** The
+   mapper compiled `GetInt64` for a `long` target; SQL Server returns
+   `count(...)` as `int`, and the getter threw `MAP-031` where the converter
+   widens. A typed getter is now chosen only when the provider's field type is
+   the target's, and plans are keyed by field types (Clarification 17).
+2. **The reference bound untyped nulls.** The NULL avatar write — the very probe
+   ADR-0040 add.1 set for go-mssqldb — failed in C#: ADO.NET declares a bare
+   `DBNull` as `nvarchar`, refused into `varbinary(max)`. The Go rule of
+   Clarification 16 is now the reference's: every null binds with the `DbType`
+   of its storage type, at every bind site (Clarification 18). Go's typed null
+   passed as built; PHP's `PARAM_NULL` needed nothing.
+3. **`Microsoft.Data.SqlClient` refuses globalization-invariant mode**, which
+   `Directory.Build.props` had switched on for every project — so the CLI could
+   never have opened a SQL Server connection either. Off now, with the
+   requirement documented (Clarification 20, README).
+4. **PHP through ODBC needs its own conventions.** ODBC Driver 17 converts
+   parameter text client-side and rejects ISO-8601's `T` and `Z` (SQLSTATE
+   22018, nine of the sixteen PHP tests), and fetches `varbinary` as
+   hexadecimal text. A PHP-only optional capability, `PdoConventions`
+   (`temporalText`, `binaryText`), declared by `SqlServerDialect` and read by the
+   converter, carries both; the stored instants and the marker rules are
+   unchanged (Clarification 19; CODING-STANDARD §10).
+5. **Go's introspection expectation** for the indexed `users.display_name`
+   column said `nvarchar(max)`; Clarification 11 writes `nvarchar(450)`, and the
+   engine agreed with the dialect (Clarification 21).
+6. **The C# live fixture ignored `SIMPLEORM_SQLSERVER`** and only knew LocalDB;
+   it now honours the testing contract like the ports.
+
+**Item 3, measured** (Clarification 22): a one-row update on a table whose
+trigger inserts two rows without `SET NOCOUNT ON` reports 3 rows affected;
+`SET NOCOUNT ON; <update>; SELECT @@ROWCOUNT` reports 1; `OUTPUT` without
+`INTO` is refused on a triggered table. The `CRUD-010` hazard is real in every
+implementation today. The candidate fix is confirmed workable and the ruling
+is the owner's.
+
+**Verification, all three engines live on this machine.** C#: 429 passed, 0
+skipped. PHP: 811 tests, 3502 assertions, 0 skipped. Go: every package ok,
+`gofmt` and `go vet` clean.
+
+**Status.** Accepted. SQL Server is live-verified in C#, PHP, and Go; item 2 is
+closed (verified in Go, fixed in C#, moot in PHP); item 3 is measured and
+awaits the owner's ruling.

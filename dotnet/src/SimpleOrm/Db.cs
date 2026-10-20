@@ -779,7 +779,15 @@ public sealed partial class Db : IAsyncDisposable
             return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
 
+        // The absence of the scalar is never zero (spec/dialects.md Clarification
+        // 24): a batch that yields no count row is a dialect bug, not a conflict.
         var reported = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        if (reported is null or DBNull)
+        {
+            throw new InvalidOperationException(
+                $"the dialect reports affected rows by select, but the batch returned no count: {command.CommandText}");
+        }
+
         return Convert.ToInt32(reported, System.Globalization.CultureInfo.InvariantCulture);
     }
 

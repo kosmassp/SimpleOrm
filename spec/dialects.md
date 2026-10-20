@@ -746,3 +746,32 @@ ports found (ADR-0040 add.1).
     update, column-list update, and delete of one row succeed, a stale update
     and delete are `CRUD-010`, a by-key delete of the gone row is `CRUD-001`,
     and a registry command on the same session still reports its own count.
+24. **Reading the reported count** (the PHP and Go port gap lists of ADR-0040
+    add.3). The count is the first column of the first row of the first result
+    that has columns; a count-only result a driver surfaces before it (PDO can)
+    is skipped. It is read as an integer whatever the driver's shape (go-mssqldb
+    returns `@@rowcount` as a 32-bit integer, `pdo_odbc` as a string). A batch
+    that yields no such row, or a non-numeric value, is a dialect bug, not a
+    conflict: the session fails with an internal or driver error naming the
+    statement — the absence is **never zero**, so it is never `CRUD-010` or
+    `CRUD-001`. There is no error code for it, as for any other broken seam
+    contract.
+25. **`SET NOCOUNT` residue after an aborted batch.** The trailing `set nocount
+    off` runs only when the batch completes. A batch-aborting error inside the
+    wrapped write (a deadlock victim, a conversion error under `XACT_ABORT ON`)
+    leaves `NOCOUNT` on for the connection, so a registry command run on that
+    session afterwards reports no count (−1 through ADO.NET, 0 or −1
+    elsewhere) until the next generated write restores it or the connection is
+    reset. The session does not repair this: the error is the caller's to
+    handle, and the generated writes themselves are unaffected (they never read
+    the driver's count on SQL Server). Hand-written SQL that must count under
+    such a failure adds its own `set nocount off`.
+26. **The trigger of the SQL Server leg** is the same shape in every
+    implementation: `AFTER UPDATE, DELETE` on `transactions`, two single-row
+    `INSERT` statements into a log table, no `SET NOCOUNT ON`, created with
+    `create trigger` as the batch's only statement (`create or alter` needs
+    2016 SP1) and dropped afterwards. Six statements fire it — the full update,
+    the column-list update, the stale update, the stale delete, the entity
+    delete, and the by-key delete of the gone row (an `AFTER` trigger fires
+    once per statement, rows or not) — so the log holds 12 rows; the stale
+    instance's version stays what it was.

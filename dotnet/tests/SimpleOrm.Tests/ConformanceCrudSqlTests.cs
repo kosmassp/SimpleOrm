@@ -60,6 +60,7 @@ public sealed class ConformanceCrudSqlTests
             File.WriteAllText(path, spec.ToJsonString(new JsonSerializerOptions
             {
                 WriteIndented = true,
+                NewLine = "\n",   // the repo pins LF
                 Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
             }) + "\n");
             return;

@@ -182,7 +182,9 @@ public sealed class SqlServerIntegrationTests(SqlServerFixture fixture)
             EmptyArgs.Value, CancellationToken.None);
         await db.ExecuteAsync<EmptyArgs>(
             Query.Inline(
-                "create or alter trigger trg_transactions_audit on transactions after update, delete as begin "
+                // `create trigger`, not `create or alter`: the latter needs 2016 SP1, and the
+                // trigger is dropped below. It must be the batch's only statement.
+                "create trigger trg_transactions_audit on transactions after update, delete as begin "
                 + "insert into trigger_log (event) values (N'first'); insert into trigger_log (event) values (N'second'); end"),
             EmptyArgs.Value, CancellationToken.None);
         try

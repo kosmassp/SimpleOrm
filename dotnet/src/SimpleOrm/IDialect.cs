@@ -190,8 +190,8 @@ public interface IDialect
     /// row count as a trailing single-row, single-column select instead of the
     /// driver's count (ADR-0040 add.3). On SQL Server a trigger without
     /// <c>SET NOCOUNT ON</c> makes the driver add the trigger's rows to the
-    /// statement's, so the "exactly one row" rule behind <c>CRUD-010</c> and
-    /// <c>CRUD-001</c> would misjudge a triggered table; its renderings end in
+    /// statement's, so the "zero rows affected" rule behind <c>CRUD-010</c> and
+    /// <c>CRUD-001</c> would pass a stale write on a triggered table; its renderings end in
     /// <c>select @@rowcount</c> and the session reads that scalar. SQLite and
     /// PostgreSQL report the statement's own count and keep the driver's. Only the
     /// generated writes are affected: a registry command's count is always the

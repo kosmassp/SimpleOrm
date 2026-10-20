@@ -1,0 +1,15 @@
+{
+  "name": "soft_delete_update",
+  "comment": "A delete on a [SoftDelete] entity (Role) as the dialect sees it: the column-list UPDATE of the flag and the [UpdatedAt] stamp (spec/hooks.md).",
+  "entity": "Role",
+  "statement": "update_only",
+  "properties": [
+    "IsDeleted",
+    "UpdatedAtUtc"
+  ],
+  "expect": {
+    "sqlite": "update roles set is_deleted = @is_deleted, updated_at = @updated_at where id = @id",
+    "sqlserver": "set nocount on; update [roles] set [is_deleted] = @is_deleted, [updated_at] = @updated_at where [id] = @id; select @@rowcount; set nocount off",
+    "postgres": "update \"roles\" set \"is_deleted\" = @is_deleted, \"updated_at\" = @updated_at where \"id\" = @id"
+  }
+}

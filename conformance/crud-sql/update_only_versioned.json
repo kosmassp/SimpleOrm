@@ -1,0 +1,15 @@
+{
+  "name": "update_only_versioned",
+  "comment": "The column-list UPDATE (ADR-0028) as the hooks shape it: the listed property plus the [UpdatedAt] stamp the session appends (spec/hooks.md), the version rules of the full-row form.",
+  "entity": "Transaction",
+  "statement": "update_only",
+  "properties": [
+    "Amount",
+    "UpdatedAtUtc"
+  ],
+  "expect": {
+    "sqlite": "update transactions set amount = @amount, updated_at = @updated_at, version = version + 1 where id = @id and version = @version",
+    "sqlserver": "set nocount on; update [transactions] set [amount] = @amount, [updated_at] = @updated_at, [version] = [version] + 1 where [id] = @id and [version] = @version; select @@rowcount; set nocount off",
+    "postgres": "update \"transactions\" set \"amount\" = @amount, \"updated_at\" = @updated_at, \"version\" = \"version\" + 1 where \"id\" = @id and \"version\" = @version"
+  }
+}

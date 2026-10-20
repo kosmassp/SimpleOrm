@@ -1,0 +1,11 @@
+{
+  "name": "update_full_row_unversioned",
+  "comment": "The full-row UPDATE of an unversioned entity (User): keyed WHERE only.",
+  "entity": "User",
+  "statement": "update",
+  "expect": {
+    "sqlite": "update users set name = @name, email = @email, display_name = @display_name, created_at = @created_at, updated_at = @updated_at where id = @id",
+    "sqlserver": "set nocount on; update [users] set [name] = @name, [email] = @email, [display_name] = @display_name, [created_at] = @created_at, [updated_at] = @updated_at where [id] = @id; select @@rowcount; set nocount off",
+    "postgres": "update \"users\" set \"name\" = @name, \"email\" = @email, \"display_name\" = @display_name, \"created_at\" = @created_at, \"updated_at\" = @updated_at where \"id\" = @id"
+  }
+}

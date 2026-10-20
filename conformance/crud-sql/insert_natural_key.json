@@ -1,0 +1,11 @@
+{
+  "name": "insert_natural_key",
+  "comment": "The generated INSERT of a composite natural key (UserRole): every column, nothing read back.",
+  "entity": "UserRole",
+  "statement": "insert",
+  "expect": {
+    "sqlite": "insert into user_roles (user_id, role_id, granted_by, created_at, updated_at) values (@user_id, @role_id, @granted_by, @created_at, @updated_at)",
+    "sqlserver": "insert into [user_roles] ([user_id], [role_id], [granted_by], [created_at], [updated_at]) values (@user_id, @role_id, @granted_by, @created_at, @updated_at)",
+    "postgres": "insert into \"user_roles\" (\"user_id\", \"role_id\", \"granted_by\", \"created_at\", \"updated_at\") values (@user_id, @role_id, @granted_by, @created_at, @updated_at)"
+  }
+}

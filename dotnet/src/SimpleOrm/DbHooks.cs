@@ -139,7 +139,7 @@ public sealed partial class Db
             AddParameter(command, map.KeyProperties[i], keyValues[i]);
         }
 
-        var affected = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        var affected = await ExecuteAffectedAsync(command, ct).ConfigureAwait(false);
         if (affected == 0)
         {
             throw new SimpleOrmException(

@@ -164,6 +164,76 @@ public sealed class SqlServerIntegrationTests(SqlServerFixture fixture)
         Assert.Equal("CRUD-001", missing.Code);
     }
 
+    private static readonly Query<EmptyArgs, long> CountTriggerLog = Query.Inline("select count(id) from trigger_log");
+
+    [SqlServerFact]
+    public async Task Generated_writes_judge_their_own_row_count_under_a_trigger()
+    {
+        // ADR-0040 add.3 (item 3): an AFTER trigger that inserts two log rows per
+        // statement without SET NOCOUNT ON — the shape Clarification 22 measured.
+        // The driver then reports the trigger's rows with the statement's, so a
+        // stale version-checked write (0 rows of its own, 2 from the trigger) would
+        // pass for a success. The @@rowcount rendering judges the statement alone.
+        await using var db = await OpenAsync();
+        await db.ExecuteAsync<EmptyArgs>(
+            Query.Inline(
+                "if object_id(N'trigger_log', N'U') is null "
+                + "create table trigger_log (id bigint identity(1,1) primary key, event nvarchar(20) not null)"),
+            EmptyArgs.Value, CancellationToken.None);
+        await db.ExecuteAsync<EmptyArgs>(
+            Query.Inline(
+                "create or alter trigger trg_transactions_audit on transactions after update, delete as begin "
+                + "insert into trigger_log (event) values (N'first'); insert into trigger_log (event) values (N'second'); end"),
+            EmptyArgs.Value, CancellationToken.None);
+        try
+        {
+            var user = await InsertUserAsync(db, "Ada");
+            var transaction = new Transaction
+            {
+                UserId = user.Id,
+                Status = TransactionStatus.Pending,
+                Amount = 12.34m,
+                CreatedAtUtc = TestDb.SeedTime,
+            };
+            await db.InsertAsync(transaction, CancellationToken.None);
+            var stale = await db.GetAsync<Transaction>(transaction.Id, CancellationToken.None);
+
+            transaction.Amount = 56.78m;
+            await db.UpdateAsync(transaction, CancellationToken.None);               // one row of its own, two of the trigger's
+            Assert.Equal(1, transaction.Version);
+            transaction.Note = "column list";
+            await db.UpdateOnlyAsync(transaction, [nameof(Transaction.Note)], CancellationToken.None);
+            Assert.Equal(2, transaction.Version);
+
+            // The stale writes affect no row of their own; the trigger still fires
+            // (once per statement, rows or not) and logs two. Without the rendering
+            // the driver reports 2 and the conflict goes unnoticed.
+            stale.Amount = 99m;
+            await Assert.ThrowsAsync<ConcurrencyException>(() => db.UpdateAsync(stale, CancellationToken.None));
+            await Assert.ThrowsAsync<ConcurrencyException>(() => db.DeleteAsync<Transaction>(stale, CancellationToken.None));
+            Assert.Equal(0, stale.Version);
+
+            // A registry command on the same connection keeps the driver's count:
+            // the batch restored SET NOCOUNT, which is session-scoped on SQL Server.
+            Command<EmptyArgs> touch = Query.Inline("update users set display_name = display_name");
+            Assert.Equal(1, await db.ExecuteAsync(touch, EmptyArgs.Value, CancellationToken.None));
+
+            await db.DeleteAsync<Transaction>(transaction, CancellationToken.None);
+            var missing = await Assert.ThrowsAsync<SimpleOrmException>(
+                () => db.DeleteAsync<Transaction>(transaction.Id, CancellationToken.None));
+            Assert.Equal("CRUD-001", missing.Code);
+
+            // Six statements fired the trigger: two updates, two stale writes, the
+            // delete, and the by-key delete of the gone row.
+            Assert.Equal(12, await db.QuerySingleAsync(CountTriggerLog, EmptyArgs.Value, CancellationToken.None));
+        }
+        finally
+        {
+            await db.ExecuteAsync<EmptyArgs>(
+                Query.Inline("drop trigger trg_transactions_audit"), EmptyArgs.Value, CancellationToken.None);
+        }
+    }
+
     [SqlServerFact]
     public async Task Transaction_scope_commits_and_rolls_back()
     {

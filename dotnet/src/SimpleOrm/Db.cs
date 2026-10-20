@@ -657,7 +657,7 @@ public sealed partial class Db : IAsyncDisposable
             AddEntityParameter(command, property, entity);
         }
 
-        var affected = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        var affected = await ExecuteAffectedAsync(command, ct).ConfigureAwait(false);
         if (affected == 0)
         {
             if (map.VersionProperty is { } version)
@@ -729,7 +729,7 @@ public sealed partial class Db : IAsyncDisposable
             }
         }
 
-        var affected = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        var affected = await ExecuteAffectedAsync(command, ct).ConfigureAwait(false);
         if (affected == 0)
         {
             if (checkVersion)
@@ -762,6 +762,25 @@ public sealed partial class Db : IAsyncDisposable
         }
 
         return map;
+    }
+
+    /// <summary>
+    /// The affected-row count of a generated UPDATE or DELETE — the one number the
+    /// <c>CRUD-010</c>/<c>CRUD-001</c> rules judge. The driver's count, unless the
+    /// dialect reports it by a trailing select (<see cref="IDialect.ReportsAffectedRowsBySelect"/>,
+    /// ADR-0040 add.3: SQL Server's <c>select @@rowcount</c>, immune to a trigger's
+    /// rows); then the statement's first scalar is the count. Registry commands
+    /// never come through here: their count is the driver's.
+    /// </summary>
+    private async Task<int> ExecuteAffectedAsync(DbCommand command, CancellationToken ct)
+    {
+        if (!Options.Dialect.ReportsAffectedRowsBySelect)
+        {
+            return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
+        var reported = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return Convert.ToInt32(reported, System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private void AddEntityParameter(DbCommand command, PropertyMap property, object entity)

@@ -1,0 +1,11 @@
+{
+  "name": "update_full_row_versioned",
+  "comment": "The full-row UPDATE of a versioned entity (Transaction): every non-key, non-version, non-generated column, version = version + 1, the version required in the WHERE; on SQL Server the batch reports its own count (ADR-0040 add.3).",
+  "entity": "Transaction",
+  "statement": "update",
+  "expect": {
+    "sqlite": "update transactions set user_id = @user_id, status = @status, amount = @amount, note = @note, created_at = @created_at, updated_at = @updated_at, version = version + 1 where id = @id and version = @version",
+    "sqlserver": "set nocount on; update [transactions] set [user_id] = @user_id, [status] = @status, [amount] = @amount, [note] = @note, [created_at] = @created_at, [updated_at] = @updated_at, [version] = [version] + 1 where [id] = @id and [version] = @version; select @@rowcount; set nocount off",
+    "postgres": "update \"transactions\" set \"user_id\" = @user_id, \"status\" = @status, \"amount\" = @amount, \"note\" = @note, \"created_at\" = @created_at, \"updated_at\" = @updated_at, \"version\" = \"version\" + 1 where \"id\" = @id and \"version\" = @version"
+  }
+}

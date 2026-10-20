@@ -291,16 +291,32 @@ public sealed class SqlServerDialect : IDialect
             assignments.Add(QuoteIdentifier(version.ColumnName) + " = " + QuoteIdentifier(version.ColumnName) + " + 1");
         }
 
-        return "update " + QuoteIdentifier(map.RelationName!)
+        return ReportingAffectedRows("update " + QuoteIdentifier(map.RelationName!)
             + " set " + string.Join(", ", assignments)
             + " where " + KeyPredicate(map)
-            + (map.VersionProperty is { } v ? " and " + QuoteIdentifier(v.ColumnName) + " = @" + v.ColumnName : string.Empty);
+            + (map.VersionProperty is { } v ? " and " + QuoteIdentifier(v.ColumnName) + " = @" + v.ColumnName : string.Empty));
     }
 
     public string DeleteSql(EntityMap map, bool checkVersion)
-        => "delete from " + QuoteIdentifier(map.RelationName!)
+        => ReportingAffectedRows("delete from " + QuoteIdentifier(map.RelationName!)
             + " where " + KeyPredicate(map)
-            + (checkVersion && map.VersionProperty is { } v ? " and " + QuoteIdentifier(v.ColumnName) + " = @" + v.ColumnName : string.Empty);
+            + (checkVersion && map.VersionProperty is { } v ? " and " + QuoteIdentifier(v.ColumnName) + " = @" + v.ColumnName : string.Empty));
+
+    /// <summary>
+    /// The generated writes report their own row count (ADR-0040 add.3, owner
+    /// ruling on item 3). A trigger without <c>SET NOCOUNT ON</c> makes the driver
+    /// sum the trigger's rows into the statement's (3 reported for a 1-row update,
+    /// spec/dialects.md Clarification 22), so the batch suppresses the counts,
+    /// writes, and selects <c>@@rowcount</c> — the statement's own count, triggers
+    /// or not — which the session reads as a scalar. <c>SET NOCOUNT</c> is
+    /// session-scoped on SQL Server (it outlives the batch), so the batch restores
+    /// it: a registry command on the same connection keeps the driver's count.
+    /// Not <c>OUTPUT</c>: refused without <c>INTO</c> on a triggered table (error 334).
+    /// </summary>
+    public bool ReportsAffectedRowsBySelect => true;
+
+    private static string ReportingAffectedRows(string statement)
+        => "set nocount on; " + statement + "; select @@rowcount; set nocount off";
 
     private string KeyPredicate(EntityMap map)
         => string.Join(" and ", map.KeyProperties.Select(k => QuoteIdentifier(k.ColumnName) + " = @" + k.ColumnName));

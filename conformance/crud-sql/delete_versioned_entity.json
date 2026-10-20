@@ -1,0 +1,12 @@
+{
+  "name": "delete_versioned_entity",
+  "comment": "The version-checked DELETE (the entity form of a versioned entity, Transaction): the version required in the WHERE.",
+  "entity": "Transaction",
+  "statement": "delete",
+  "checkVersion": true,
+  "expect": {
+    "sqlite": "delete from transactions where id = @id and version = @version",
+    "sqlserver": "set nocount on; delete from [transactions] where [id] = @id and [version] = @version; select @@rowcount; set nocount off",
+    "postgres": "delete from \"transactions\" where \"id\" = @id and \"version\" = @version"
+  }
+}

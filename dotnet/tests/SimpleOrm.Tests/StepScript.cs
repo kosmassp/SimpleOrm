@@ -410,6 +410,8 @@ internal sealed class RecordingDialect(IDialect inner) : IDialect
     public string LimitOffsetClause(string? limitParameter, string? offsetParameter) => inner.LimitOffsetClause(limitParameter, offsetParameter);
     public bool PagingRequiresOrderBy => inner.PagingRequiresOrderBy;
     public bool SupportsRowValueIn => inner.SupportsRowValueIn;
+
+    public bool ReportsAffectedRowsBySelect => inner.ReportsAffectedRowsBySelect;
     public string SelectSql(SelectAst select, BindCriteriaParameter bindParameter) => inner.SelectSql(select, bindParameter);
     public bool SupportsArrayParameters => inner.SupportsArrayParameters;
     public bool BindsTemporalsNatively => inner.BindsTemporalsNatively;

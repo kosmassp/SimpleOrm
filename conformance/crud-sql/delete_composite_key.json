@@ -1,0 +1,12 @@
+{
+  "name": "delete_composite_key",
+  "comment": "The by-key DELETE of a composite natural key (UserRole): every key part ANDed.",
+  "entity": "UserRole",
+  "statement": "delete",
+  "checkVersion": false,
+  "expect": {
+    "sqlite": "delete from user_roles where user_id = @user_id and role_id = @role_id",
+    "sqlserver": "set nocount on; delete from [user_roles] where [user_id] = @user_id and [role_id] = @role_id; select @@rowcount; set nocount off",
+    "postgres": "delete from \"user_roles\" where \"user_id\" = @user_id and \"role_id\" = @role_id"
+  }
+}

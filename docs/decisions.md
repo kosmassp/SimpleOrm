@@ -3495,3 +3495,101 @@ skipped. PHP: 811 tests, 3502 assertions, 0 skipped. Go: every package ok,
 **Status.** Accepted. SQL Server is live-verified in C#, PHP, and Go; item 2 is
 closed (verified in Go, fixed in C#, moot in PHP); item 3 is measured and
 awaits the owner's ruling.
+
+### ADR-0040 addendum 3 — item 3 ruled: the SQL Server dialect reports the affected-row count itself (2026-10-20)
+
+Addendum 2 measured item 3 (spec/dialects.md Clarification 22): on a SQL
+Server table whose `AFTER` trigger lacks `SET NOCOUNT ON`, the driver reports
+the trigger's rows together with the statement's — 3 for a one-row update that
+logs two rows; `SET NOCOUNT ON; <update>; SELECT @@ROWCOUNT` reports 1;
+`OUTPUT` without `INTO` is refused on the triggered table (error 334). The
+hazard, restated for the rule the implementations actually apply (spec/crud.md:
+*zero* rows affected is `CRUD-010` or `CRUD-001`, there is no "exactly one"
+check): an `AFTER` trigger fires once per statement, rows or not, so a **stale**
+version-checked write affects no row of its own and the driver still reports
+the trigger's two — the conflict passed for a success, in every implementation
+as they stood. Not a false `CRUD-010`: a silent lost update.
+
+**Ruling (owner, 2026-10-19).** Implement the `@@ROWCOUNT` rendering, in all
+three implementations, as a seam capability — not Hibernate's stance of leaving
+the burden with trigger authors (a lost update is not a convenience), not
+`OUTPUT` (refused where it matters), and not keyed off declared triggers yet:
+triggers in the mapping (Level 4, §3) may later narrow the rendering to the
+tables that need it; today every generated SQL Server write pays one round trip
+of the same size.
+
+**Decision.** `IDialect.ReportsAffectedRowsBySelect` (PHP
+`reportsAffectedRowsBySelect()`, Go `ReportsAffectedRowsBySelect()`): false on
+SQLite and PostgreSQL, whose drivers report the statement's own count triggers
+or not, and whose renderings stay byte-identical; true on SQL Server, where
+`UpdateSql`, `UpdateOnlySql`, and `DeleteSql` render one batch,
+`set nocount on; <statement>; select @@rowcount; set nocount off`. The trailing
+`set nocount off` is not in the measured form: `SET NOCOUNT` is session-scoped
+on SQL Server, and without the restore every later registry command on the
+connection would report no count at all (−1 through ADO.NET) — the ruling's own
+condition that registry commands keep the driver's count. The session reads the
+batch's first scalar as the count on exactly the paths that judge it — one
+helper per implementation (`Db.ExecuteAffectedAsync`, `Db::affectedRows()`,
+`(*Db).executeWrite`) behind the full-row, column-list, dirty, hook-stamped, and
+soft-delete updates and the by-key and version-checked deletes — leaving the
+`CRUD-010`/`CRUD-001` decisions where they were. Registry commands (`Execute`)
+keep the driver's count on every dialect: hand-written SQL is the author's.
+Inserts are unchanged (`scope_identity()` was already trigger-safe). The
+absence of the scalar is never zero (Clarification 24). Spec: dialects.md (the
+seam row, the flags table, "Update and delete — the affected-row count",
+Clarification 23, the testing contract), crud.md (the count the rules judge).
+
+**Conformance.** A new folder, `conformance/crud-sql/` (9 cases): a fixture
+entity and one generated write — insert (generated and natural key), full-row
+update (versioned and not), column-list update (the hook-stamped and the
+soft-delete forms), delete (version-checked, by key on a versioned entity,
+composite) — with the exact SQL per dialect; every implementation renders every
+case through every dialect it ships. The generated CRUD renderings had never
+been pinned across implementations before; the AST folder pins selects only.
+
+**The ports, by the ADR-0031 method** (one Sonnet agent each, the spec and the
+conformance files as their only source, forbidden to open another
+implementation), then an Opus uniformity review. PHP's 8 and Go's 9 gap
+questions became Clarifications 24–26: how the reported count is read (the
+first result with columns, an integer whatever the driver's shape — go-mssqldb
+hands back a 32-bit integer, `pdo_odbc` a string — and never zero when absent),
+`SET NOCOUNT` residue after a batch-aborting error (the session does not repair
+it; the generated writes never read the driver's count there), and the trigger
+shape of the SQL Server leg (two single-row inserts, `create trigger`, six
+statements → 12 rows, the stale version unchanged). The review found and fixed:
+the Go trigger inserted its two rows with one multi-row `INSERT` (the others
+use two statements — the shape the measurement used); neither port asserted the
+stale instance's version stays put. In the reference it found: the seam
+member's doc said "exactly one row" (fixed); `Convert.ToInt32(null)` would have
+read a missing scalar as 0 and raised a false `CRUD-010` (now an internal error
+naming the statement, the ports' behaviour); the live test's
+`create or alter trigger` needs SQL Server 2016 SP1 (now `create trigger`, as
+the ports). Nothing in the ports was a divergence; no §10 row was added.
+
+**Verification.** PostgreSQL live on this machine (Laragon's 16.4 started for
+the run), SQLite as always: C# 428 passed / 12 skipped (the SQL Server leg),
+PHP 823 tests (18 skipped, the SQL Server leg), Go every package ok, `gofmt`
+and `go vet` clean; the PostgreSQL legs green in all three. **The SQL Server
+live verification of the trigger-safe writes is PENDING**: the owner's SQL
+Server 2016 at the LAN address is switched off while the owner is offsite, so
+the three trigger tests — `Generated_writes_judge_their_own_row_count_under_a_trigger`
+(C#), `generated_writes_report_their_own_count_under_an_after_trigger_without_nocount`
+(PHP), `TestLive_VersionCheckedWritesUnderAnAfterTriggerWithoutNocount` (Go)
+— and the rewritten session read path they exercise have never run against an
+engine. When the server is back, with `SIMPLEORM_SQLSERVER` set to each
+implementation's admin connection string (the forms of addendum 2; the
+credentials are never in the repo), run from the repository root:
+
+```
+cd dotnet && dotnet test SimpleOrm.sln --filter "FullyQualifiedName~SqlServer"
+cd php && composer test-live -- --filter SqlServer
+go test -C go -count=1 -p 2 ./orm/sqlserver/ -run Live
+```
+
+Each run must show the trigger test passing (not skipped) and the rest of the
+leg green; a failure there is a finding against this addendum, not against the
+ruling.
+
+**Status.** Accepted. Item 3 is closed by ruling and built in C#, PHP, and Go;
+its live SQL Server verification is pending the engine. Nothing else is
+pending; the Level 4 items remain (§3, §11).

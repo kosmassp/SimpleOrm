@@ -58,6 +58,14 @@ interface Dialect
     /** The generated DELETE by key; with `$checkVersion`, the WHERE also requires the version (§7.16). */
     public function deleteSql(EntityMap $map, bool $checkVersion): string;
 
+    /**
+     * Whether the generated UPDATE and DELETE renderings end in a one-row, one-column select of the statement's own
+     * affected-row count, which the session reads instead of the driver's count (ADR-0040 add.3, spec/dialects.md
+     * Clarification 23). True on SQL Server, whose driver adds an AFTER trigger's rows to the statement's; never
+     * consulted for registry commands or inserts.
+     */
+    public function reportsAffectedRowsBySelect(): bool;
+
     // --- criteria rendering (§10.4, ADR-0020) ---------------------------------------------
 
     /** Renders the limit/offset clause from pre-bound parameter names; either may be null. */

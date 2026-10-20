@@ -1053,6 +1053,32 @@ final class Db
         }
     }
 
+    /**
+     * The affected-row count of an executed generated UPDATE or DELETE, the one number `CRUD-010` and `CRUD-001` judge
+     * (ADR-0040 add.3): the driver's `rowCount()`, unless the dialect renders the statement to end in a select of its
+     * own count (SQL Server, whose driver adds an AFTER trigger's rows) — then the batch's first scalar. `pdo_odbc`
+     * hands that scalar back as a string, hence the cast. Registry commands never come through here.
+     */
+    private function affectedRows(PDOStatement $statement): int
+    {
+        if (!$this->options->dialect->reportsAffectedRowsBySelect()) {
+            return $statement->rowCount();
+        }
+
+        // The count is the first result that has a column; a result without columns is a row-count result.
+        while ($statement->columnCount() === 0 && $statement->nextRowset()) {
+            // advance to the rowset that carries the count
+        }
+
+        $count = $statement->columnCount() === 0 ? false : $statement->fetchColumn();
+        $statement->closeCursor();
+        if ($count === false || $count === null || !is_numeric($count)) {
+            throw new LogicException('the generated write did not report its affected-row count; the dialect renders it with a trailing select');
+        }
+
+        return (int) $count;
+    }
+
     /** @param list<PropertyMap> $bound */
     private function runUpdate(EntityMap $map, object $entity, string $sql, array $bound): void
     {
@@ -1070,7 +1096,7 @@ final class Db
 
         PdoBinder::bindAndExecute($statement, $parameters);
 
-        if ($statement->rowCount() === 0) {
+        if ($this->affectedRows($statement) === 0) {
             if ($map->versionProperty !== null) {
                 throw new ConcurrencyException(
                     $map->entityName(),
@@ -1155,7 +1181,7 @@ final class Db
 
         PdoBinder::bindAndExecute($statement, $parameters);
 
-        if ($statement->rowCount() === 0) {
+        if ($this->affectedRows($statement) === 0) {
             if ($checkVersion) {
                 throw new ConcurrencyException($map->entityName(), 'delete affected no rows: the version is stale or the row is gone');
             }

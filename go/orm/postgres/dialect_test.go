@@ -357,13 +357,14 @@ func TestIsMarkerlessTemporal_OnlyTimestampWithoutTimeZone(t *testing.T) {
 func TestCapabilityFlags(t *testing.T) {
 	d := postgres.New()
 	for name, flag := range map[string]struct{ got, want bool }{
-		"PagingRequiresOrderBy":    {d.PagingRequiresOrderBy(), false},
-		"SupportsRowValueIn":       {d.SupportsRowValueIn(), true},
-		"SupportsArrayParameters":  {d.SupportsArrayParameters(), true},
-		"BindsTemporalsNatively":   {d.BindsTemporalsNatively(), true},
-		"SupportsMaterializedView": {d.SupportsMaterializedViews(), true},
-		"SupportsProcedures":       {d.SupportsProcedures(), true},
-		"SupportsTransactionalDDL": {d.SupportsTransactionalDDL(), true},
+		"PagingRequiresOrderBy":       {d.PagingRequiresOrderBy(), false},
+		"SupportsRowValueIn":          {d.SupportsRowValueIn(), true},
+		"SupportsArrayParameters":     {d.SupportsArrayParameters(), true},
+		"BindsTemporalsNatively":      {d.BindsTemporalsNatively(), true},
+		"SupportsMaterializedView":    {d.SupportsMaterializedViews(), true},
+		"SupportsProcedures":          {d.SupportsProcedures(), true},
+		"SupportsTransactionalDDL":    {d.SupportsTransactionalDDL(), true},
+		"ReportsAffectedRowsBySelect": {d.ReportsAffectedRowsBySelect(), false},
 	} {
 		if flag.got != flag.want {
 			t.Errorf("%s: got %v, want %v", name, flag.got, flag.want)

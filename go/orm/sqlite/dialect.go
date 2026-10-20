@@ -296,6 +296,10 @@ func (*Dialect) DeleteSQL(m *core.EntityMap, checkVersion bool) string {
 	return sql
 }
 
+// ReportsAffectedRowsBySelect is false: the driver's count is the statement's own, triggers or not
+// (spec/dialects.md "Update and delete — the affected-row count").
+func (*Dialect) ReportsAffectedRowsBySelect() bool { return false }
+
 func keyPredicate(m *core.EntityMap) string {
 	parts := make([]string, len(m.KeyProperties))
 	for i, key := range m.KeyProperties {

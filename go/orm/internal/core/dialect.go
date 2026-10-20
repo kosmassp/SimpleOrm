@@ -56,6 +56,12 @@ type Dialect interface {
 	// DeleteSQL renders the generated DELETE by key; with checkVersion the WHERE also requires the version (§7.16).
 	DeleteSQL(m *EntityMap, checkVersion bool) string
 
+	// ReportsAffectedRowsBySelect: true → UpdateSQL, UpdateOnlySQL, and DeleteSQL end in a one-row,
+	// one-column select of the statement's own affected-row count, and the session judges that scalar
+	// instead of the driver's count (ADR-0040 add.3, spec/dialects.md Clarification 23; SQL Server, whose
+	// driver adds an AFTER trigger's rows to the statement's). Never consulted by a registry command.
+	ReportsAffectedRowsBySelect() bool
+
 	// --- criteria rendering (§10.4, ADR-0020) ---
 
 	// LimitOffsetClause renders the paging clause from pre-bound placeholder names; either may be "".

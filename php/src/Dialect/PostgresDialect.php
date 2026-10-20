@@ -169,6 +169,11 @@ final class PostgresDialect implements Dialect
         return $sql;
     }
 
+    public function reportsAffectedRowsBySelect(): bool
+    {
+        return false;   // the driver's count is the statement's own (ADR-0040 add.3)
+    }
+
     private function keyPredicate(EntityMap $map): string
     {
         return implode(' and ', array_map(

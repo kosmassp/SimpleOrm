@@ -208,9 +208,9 @@ func TestInsertSQL_NaturalKeyHasNoKeyReadBack(t *testing.T) {
 
 func TestUpdateSQL_VersionIncrementsAndGuardsTheWhereClause(t *testing.T) {
 	got := sqlserver.New().UpdateSQL(transactionMap(t))
-	want := "update [transactions] set [user_id] = @user_id, [status] = @status, [amount] = @amount, [note] = @note, " +
+	want := "set nocount on; update [transactions] set [user_id] = @user_id, [status] = @status, [amount] = @amount, [note] = @note, " +
 		"[created_at] = @created_at, [updated_at] = @updated_at, [version] = [version] + 1 " +
-		"where [id] = @id and [version] = @version"
+		"where [id] = @id and [version] = @version; select @@rowcount; set nocount off"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -220,7 +220,7 @@ func TestUpdateOnlySQL_RendersExactlyTheListedColumnsWithTheVersionRules(t *test
 	d := sqlserver.New()
 	transactions := transactionMap(t)
 	got := d.UpdateOnlySQL(transactions, []*core.PropertyMap{transactions.Property("Status")})
-	want := "update [transactions] set [status] = @status, [version] = [version] + 1 where [id] = @id and [version] = @version"
+	want := "set nocount on; update [transactions] set [status] = @status, [version] = [version] + 1 where [id] = @id and [version] = @version; select @@rowcount; set nocount off"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -239,7 +239,7 @@ func TestUpdateOnlySQL_RendersExactlyTheListedColumnsWithTheVersionRules(t *test
 
 func TestUpdateSQL_ExcludesKeyVersionAndGeneratedColumns(t *testing.T) {
 	got := sqlserver.New().UpdateSQL(usersMap())
-	want := "update [users] set [name] = @name, [display_name] = @display_name where [id] = @id"
+	want := "set nocount on; update [users] set [name] = @name, [display_name] = @display_name where [id] = @id; select @@rowcount; set nocount off"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -248,17 +248,17 @@ func TestUpdateSQL_ExcludesKeyVersionAndGeneratedColumns(t *testing.T) {
 func TestDeleteSQL_PlainAndVersionCheckedForms(t *testing.T) {
 	d := sqlserver.New()
 	transactions := transactionMap(t)
-	if got, want := d.DeleteSQL(transactions, false), "delete from [transactions] where [id] = @id"; got != want {
+	if got, want := d.DeleteSQL(transactions, false), "set nocount on; delete from [transactions] where [id] = @id; select @@rowcount; set nocount off"; got != want {
 		t.Errorf("plain: got %q, want %q", got, want)
 	}
-	if got, want := d.DeleteSQL(transactions, true), "delete from [transactions] where [id] = @id and [version] = @version"; got != want {
+	if got, want := d.DeleteSQL(transactions, true), "set nocount on; delete from [transactions] where [id] = @id and [version] = @version; select @@rowcount; set nocount off"; got != want {
 		t.Errorf("version-checked: got %q, want %q", got, want)
 	}
 	// checkVersion on an unversioned entity is a no-op: no version to add.
-	if got, want := d.DeleteSQL(usersMap(), true), "delete from [users] where [id] = @id"; got != want {
+	if got, want := d.DeleteSQL(usersMap(), true), "set nocount on; delete from [users] where [id] = @id; select @@rowcount; set nocount off"; got != want {
 		t.Errorf("no version column: got %q, want %q", got, want)
 	}
-	if got, want := d.DeleteSQL(userRolesMap(), false), "delete from [user_roles] where [user_id] = @user_id and [role_id] = @role_id"; got != want {
+	if got, want := d.DeleteSQL(userRolesMap(), false), "set nocount on; delete from [user_roles] where [user_id] = @user_id and [role_id] = @role_id; select @@rowcount; set nocount off"; got != want {
 		t.Errorf("composite key: got %q, want %q", got, want)
 	}
 }
@@ -473,13 +473,14 @@ func TestIsMarkerlessTemporal(t *testing.T) {
 func TestCapabilityFlags(t *testing.T) {
 	d := sqlserver.New()
 	flags := map[string][2]bool{
-		"PagingRequiresOrderBy":     {d.PagingRequiresOrderBy(), true},
-		"SupportsRowValueIn":        {d.SupportsRowValueIn(), false},
-		"SupportsArrayParameters":   {d.SupportsArrayParameters(), false},
-		"BindsTemporalsNatively":    {d.BindsTemporalsNatively(), false},
-		"SupportsMaterializedViews": {d.SupportsMaterializedViews(), false},
-		"SupportsProcedures":        {d.SupportsProcedures(), true},
-		"SupportsTransactionalDDL":  {d.SupportsTransactionalDDL(), true},
+		"PagingRequiresOrderBy":       {d.PagingRequiresOrderBy(), true},
+		"SupportsRowValueIn":          {d.SupportsRowValueIn(), false},
+		"SupportsArrayParameters":     {d.SupportsArrayParameters(), false},
+		"BindsTemporalsNatively":      {d.BindsTemporalsNatively(), false},
+		"SupportsMaterializedViews":   {d.SupportsMaterializedViews(), false},
+		"SupportsProcedures":          {d.SupportsProcedures(), true},
+		"SupportsTransactionalDDL":    {d.SupportsTransactionalDDL(), true},
+		"ReportsAffectedRowsBySelect": {d.ReportsAffectedRowsBySelect(), true},
 	}
 	for name, pair := range flags {
 		if pair[0] != pair[1] {

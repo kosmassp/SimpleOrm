@@ -18,10 +18,12 @@ use SimpleOrm\Migrations\SqlVersionStep;
 use SimpleOrm\Query\Criteria;
 use SimpleOrm\Query\FetchMode;
 use SimpleOrm\Query\SortOrder;
+use SimpleOrm\Session\Command;
 use SimpleOrm\Session\Db;
 use SimpleOrm\Session\DbOptions;
 use SimpleOrm\Session\TrackingMode;
 use SimpleOrm\Tests\Dialect\Fixtures\SqlServer\BadSqlServerRegistry;
+use SimpleOrm\Tests\Dialect\Fixtures\SqlServer\ByIdArgs;
 use SimpleOrm\Tests\Dialect\Fixtures\SqlServer\CompChild;
 use SimpleOrm\Tests\Dialect\Fixtures\SqlServer\CompParent;
 use SimpleOrm\Tests\Dialect\Fixtures\SqlServer\GuidDoc;
@@ -277,6 +279,72 @@ final class SqlServerLiveTest extends TestCase
         self::assertTrue($db->get(Transaction::class, $first->id)->amount->equals(Decimal::of('12')));
         $db->delete(Transaction::class, $first);
         self::assertNull($db->getOrDefault(Transaction::class, $first->id));
+    }
+
+    /**
+     * ADR-0040 add.3, spec/dialects.md Clarifications 22–23: an `AFTER UPDATE, DELETE` trigger that inserts two log rows
+     * without `SET NOCOUNT ON` makes the driver add them to a statement's count, so a stale version-checked write (no
+     * row of its own) would pass for a success. The dialect's generated writes report their own count instead; a
+     * registry command on the same session keeps the driver's (the batch ends with `set nocount off`).
+     */
+    #[Test]
+    public function generated_writes_report_their_own_count_under_an_after_trigger_without_nocount(): void
+    {
+        $db = $this->openSample();
+        $pdo = $db->connection();
+        $ada = SampleDatabase::insertUser($db, 'Ada', 'ada@example.com');
+        $transaction = SampleDatabase::insertTransaction($db, $ada, '10');
+        $stale = $db->get(Transaction::class, $transaction->id);   // still version 0
+
+        $pdo->exec('create table transaction_log (id int identity(1,1) primary key, note nvarchar(20) not null)');
+        $pdo->exec(
+            'create trigger trg_transactions_log on transactions after update, delete as begin '
+            . "insert into transaction_log (note) values (N'first'); insert into transaction_log (note) values (N'second'); end",
+        );
+
+        try {
+            $transaction->amount = Decimal::of('12');
+            $db->update($transaction);
+            self::assertSame(1, $transaction->version);
+
+            $transaction->amount = Decimal::of('14');
+            $db->updateOnly($transaction, ['amount']);
+            self::assertSame(2, $transaction->version);
+
+            $stale->amount = Decimal::of('99');
+            try {
+                $db->update($stale);
+                self::fail('expected CRUD-010 from the stale update');
+            } catch (ConcurrencyException $e) {
+                self::assertSame('CRUD-010', $e->errorCode);
+            }
+
+            try {
+                $db->delete(Transaction::class, $stale);   // the version-checked form
+                self::fail('expected CRUD-010 from the stale delete');
+            } catch (ConcurrencyException $e) {
+                self::assertSame('CRUD-010', $e->errorCode);
+            }
+
+            self::assertSame(0, $stale->version);   // a refused write leaves the stale version untouched
+
+            // The session setting is restored: a registry command still reports its own count.
+            $touch = Command::inline(ByIdArgs::class, 'update users set display_name = display_name where id = @id');
+            self::assertSame(1, $db->execute($touch, new ByIdArgs($ada->id)));
+
+            $db->delete(Transaction::class, $transaction);
+            try {
+                $db->delete(Transaction::class, $transaction->id);   // by key, the row is gone
+                self::fail('expected CRUD-001 from the by-key delete of a gone row');
+            } catch (SimpleOrmException $e) {
+                self::assertSame('CRUD-001', $e->errorCode);
+            }
+
+            // Six statements fired the trigger, two log rows each.
+            self::assertSame(12, (int) self::scalar($db, 'select count(*) from transaction_log'));
+        } finally {
+            $pdo->exec('drop trigger if exists trg_transactions_log');
+        }
     }
 
     #[Test]

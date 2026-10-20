@@ -436,12 +436,25 @@ func (d *Dialect) UpdateSQL(m *core.EntityMap) string {
 			set = append(set, p)
 		}
 	}
-	return d.renderUpdate(m, set)
+	return reportingCount(d.renderUpdate(m, set))
 }
 
 func (d *Dialect) UpdateOnlySQL(m *core.EntityMap, properties []*core.PropertyMap) string {
-	return d.renderUpdate(m, properties)
+	return reportingCount(d.renderUpdate(m, properties))
 }
+
+// reportingCount wraps a generated UPDATE or DELETE so the batch reports its own affected-row count
+// (ADR-0040 add.3, spec/dialects.md Clarification 23): the counts are suppressed (a trigger's rows would
+// join the statement's), the statement's @@rowcount comes back as the batch's one scalar, and nocount is
+// switched off again because the setting outlives the batch and a registry command on the same connection
+// keeps the driver's count. Not OUTPUT: it is refused on a triggered table.
+func reportingCount(statement string) string {
+	return "set nocount on; " + statement + "; select @@rowcount; set nocount off"
+}
+
+// ReportsAffectedRowsBySelect is true: UpdateSQL, UpdateOnlySQL, and DeleteSQL render the count-reporting
+// batch and the session reads its scalar (spec/dialects.md Clarification 23).
+func (*Dialect) ReportsAffectedRowsBySelect() bool { return true }
 
 func (d *Dialect) renderUpdate(m *core.EntityMap, set []*core.PropertyMap) string {
 	var assignments []string
@@ -465,7 +478,7 @@ func (d *Dialect) DeleteSQL(m *core.EntityMap, checkVersion bool) string {
 	if version := m.VersionProperty; checkVersion && version != nil {
 		sql += " and " + d.QuoteIdentifier(version.ColumnName) + " = @" + version.ColumnName
 	}
-	return sql
+	return reportingCount(sql)
 }
 
 func (d *Dialect) keyPredicate(m *core.EntityMap) string {

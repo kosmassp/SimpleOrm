@@ -1,379 +1,44 @@
+using System.Data.Common;
 using System.Reflection;
-using System.Text;
 using Microsoft.Data.Sqlite;
 
 namespace SimpleOrm.Sqlite;
 
 /// <summary>
-/// Rebuilds the versioned schema snapshots (<c>V000N.schema.json</c>) by replaying
-/// the migration history into a throwaway shadow database and introspecting the
-/// touched tables after each version (ADR-0017). The full rebuild replays from
-/// empty; the range form (<c>--from V000N [--to V000M]</c>) **trusts version N as
-/// correct** — the baseline state is reconstructed from the committed snapshots at
-/// ≤ N without verifying anything below N, versions ≤ N are baselined, and only
-/// (N, M] replays and re-snapshots. Tables only; views self-reflect.
+/// The SQLite shadow database (ADR-0043 <see cref="IShadowHost"/>): a temp file,
+/// deleted afterwards — the throwaway the shadow replayer used before every
+/// dialect had one. Triggers read back from <c>sqlite_master</c>, which keeps the
+/// text as submitted.
 /// </summary>
-public static class SqliteShadow
+public sealed class SqliteShadowHost : IShadowHost, ITriggerReadBack
 {
-    public sealed class Result
-    {
-        public List<string> WrittenFiles { get; } = [];
+    private string? _file;
 
-        public List<string> Notes { get; } = [];
+    public Task<string> ProvisionAsync(string? adminConnectionString, CancellationToken ct)
+    {
+        _file = Path.Combine(Path.GetTempPath(), "simpleorm-shadow-" + Guid.NewGuid().ToString("n") + ".db");
+        return Task.FromResult($"Data Source={_file}");
     }
 
-    public static async Task<Result> RebuildSnapshotsAsync(
-        Assembly assembly,
-        string? migrationsNamespace,
-        string migrationsDir,
-        long fromVersion = 0,
-        long toVersion = long.MaxValue,
-        CancellationToken ct = default)
+    public Task DropAsync(CancellationToken ct)
     {
-        var result = new Result();
-        var versions = DiscoverVersions(assembly, migrationsNamespace);
-        if (versions.Count == 0)
+        if (_file is null)
         {
-            result.Notes.Add("no migration versions found");
-            return result;
+            return Task.CompletedTask;
         }
 
-        var entityByRelation = MapEntities(assembly);
-        var shadowFile = Path.Combine(Path.GetTempPath(), "simpleorm-shadow-" + Guid.NewGuid().ToString("n") + ".db");
-        var generatedAt = DateTimeOffset.UtcNow;
-        try
-        {
-            var db = await Db.OpenAsync(
-                $"Data Source={shadowFile}", new DbOptions { Dialect = new SqliteDialect() }, ct).ConfigureAwait(false);
-            await using (db.ConfigureAwait(false))
-            {
-                using var probe = new SqliteConnection($"Data Source={shadowFile}");
-                probe.Open();
-
-                if (fromVersion > 0)
-                {
-                    // Trust: rebuild the state at N from the committed snapshots, verify nothing below.
-                    RestoreBaseline(probe, migrationsDir, fromVersion, result);
-                    await new MigrationRunner(db, versions) { ReplayDrafts = true }.BaselineAsync(fromVersion, ct).ConfigureAwait(false);
-                }
-
-                foreach (var version in versions.Where(v => v.Version > fromVersion && v.Version <= toVersion))
-                {
-                    var runner = new MigrationRunner(db, versions.Where(v => v.Version <= version.Version)) { ReplayDrafts = true };   // a draft replays here (Level 3 M5)
-                    var touched = (await runner.StatusAsync(ct).ConfigureAwait(false))
-                        .Where(e => e.Version == version.Version)
-                        .Select(e => e.ObjectName)
-                        .Distinct()
-                        .ToArray();
-                    await runner.MigrateAsync(ct).ConfigureAwait(false);
-
-                    foreach (var relation in touched)
-                    {
-                        if (!entityByRelation.TryGetValue(relation, out var entity))
-                        {
-                            result.Notes.Add(
-                                $"V{version.Version:0000}: '{relation}' has no mapped entity; snapshot skipped");
-                            continue;
-                        }
-
-                        string? content = null;
-                        if (entity.IsTrigger)
-                        {
-                            // Triggers self-reflect too (ADR-0042): the stored create text parses back
-                            // to the neutral declaration — tokens un-expanded — which is the snapshot.
-                            var snapshot = SqliteTriggerDdl.Read(probe, relation, out var note);
-                            if (snapshot is not null)
-                            {
-                                content = SchemaSnapshot.ExportTrigger(snapshot, version.Version, generatedAt);
-                            }
-                            else if (note is not null)
-                            {
-                                result.Notes.Add($"V{version.Version:0000}: {note}");   // hand-written: skipped with a note
-                            }
-                        }
-                        else if (entity.Kind == RelationKind.Table)
-                        {
-                            var schema = Introspect(probe, relation);
-                            if (schema is not null)
-                            {
-                                content = SchemaSnapshot.Export(schema, version.Version, generatedAt);
-                            }
-                        }
-                        else
-                        {
-                            // Views self-reflect: their history is the DDL, verbatim from sqlite_master.
-                            var ddl = ViewDdl(probe, relation);
-                            if (ddl is not null)
-                            {
-                                content = SchemaSnapshot.ExportDdl(
-                                    relation, entity.KindToken, ddl, version.Version, generatedAt);
-                            }
-                        }
-
-                        if (content is null)
-                        {
-                            continue;   // dropped at this version — its snapshot history ends here
-                        }
-
-                        var directory = Path.Combine(migrationsDir, entity.KindFolder, entity.TypeName);
-                        Directory.CreateDirectory(directory);
-                        var file = Path.Combine(directory, $"V{version.Version:0000}.schema.json");
-                        File.WriteAllText(file, content + "\n");
-                        result.WrittenFiles.Add(file);
-                    }
-                }
-            }
-        }
-        finally
-        {
-            SqliteConnection.ClearAllPools();
-            TryDelete(shadowFile);
-            TryDelete(shadowFile + "-wal");
-            TryDelete(shadowFile + "-shm");
-        }
-
-        return result;
+        SqliteConnection.ClearAllPools();
+        TryDelete(_file);
+        TryDelete(_file + "-wal");
+        TryDelete(_file + "-shm");
+        _file = null;
+        return Task.CompletedTask;
     }
 
-    // --- trusted baseline (--from) --------------------------------------------------
+    public ITriggerReadBack? TriggerReadBack => this;
 
-    private static void RestoreBaseline(SqliteConnection connection, string migrationsDir, long fromVersion, Result result)
-    {
-        var tableRoot = Path.Combine(migrationsDir, "Table");
-        if (Directory.Exists(tableRoot))
-        {
-            foreach (var objectDir in Directory.GetDirectories(tableRoot))
-            {
-                var latest = Directory.GetFiles(objectDir, "V*.schema.json")
-                    .Select(file => (File: file, Parsed: SchemaSnapshot.Parse(File.ReadAllText(file))))
-                    .Where(s => s.Parsed.AsOfVersion <= fromVersion)
-                    .OrderByDescending(s => s.Parsed.AsOfVersion)
-                    .FirstOrDefault();
-                if (latest.File is null)
-                {
-                    continue;   // table born after the trusted version
-                }
-
-                Execute(connection, SnapshotDdl.CreateTableSql(latest.Parsed.Schema));
-                foreach (var indexSql in SnapshotDdl.CreateIndexSql(latest.Parsed.Schema))
-                {
-                    Execute(connection, indexSql);
-                }
-
-                result.Notes.Add(
-                    $"baseline: {latest.Parsed.Schema.Name} restored from V{latest.Parsed.AsOfVersion:0000} snapshot (trusted)");
-            }
-        }
-        else
-        {
-            result.Notes.Add($"--from V{fromVersion:0000}: no committed snapshots under {tableRoot}; starting empty");
-        }
-
-        // Views restore after tables — their DDL snapshots are executable as stored.
-        foreach (var kindFolder in new[] { "View", "MaterializedView" })
-        {
-            var kindRoot = Path.Combine(migrationsDir, kindFolder);
-            if (!Directory.Exists(kindRoot))
-            {
-                continue;
-            }
-
-            foreach (var objectDir in Directory.GetDirectories(kindRoot))
-            {
-                var latest = Directory.GetFiles(objectDir, "V*.schema.json")
-                    .Select(file => SchemaSnapshot.ParseDdl(File.ReadAllText(file)))
-                    .Where(s => s.AsOfVersion <= fromVersion)
-                    .OrderByDescending(s => s.AsOfVersion)
-                    .FirstOrDefault();
-                if (latest.Ddl is null)
-                {
-                    continue;
-                }
-
-                Execute(connection, latest.Ddl);
-                result.Notes.Add(
-                    $"baseline: {latest.Object} restored from V{latest.AsOfVersion:0000} snapshot (trusted)");
-            }
-        }
-
-        // Triggers restore last — their relations exist by now (ADR-0042).
-        var triggerRoot = Path.Combine(migrationsDir, "Trigger");
-        if (Directory.Exists(triggerRoot))
-        {
-            var dialect = new SqliteDialect();
-            foreach (var objectDir in Directory.GetDirectories(triggerRoot))
-            {
-                var latest = Directory.GetFiles(objectDir, "V*.schema.json")
-                    .Select(file => SchemaSnapshot.ParseTrigger(File.ReadAllText(file)))
-                    .Where(s => s.AsOfVersion <= fromVersion)
-                    .OrderByDescending(s => s.AsOfVersion)
-                    .FirstOrDefault();
-                if (latest.Snapshot is null)
-                {
-                    continue;
-                }
-
-                foreach (var sql in dialect.CreateTriggerSql(latest.Snapshot.Relation, latest.Snapshot.OnView, latest.Snapshot.Definition))
-                {
-                    Execute(connection, sql);
-                }
-
-                result.Notes.Add(
-                    $"baseline: {latest.Snapshot.Definition.Name} restored from V{latest.AsOfVersion:0000} snapshot (trusted)");
-            }
-        }
-    }
-
-    /// <summary>The stored create statement of a view, normalized — null when absent (dropped).</summary>
-    private static string? ViewDdl(SqliteConnection connection, string relation)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = "select sql from sqlite_master where type = 'view' and name = @name";
-        command.Parameters.AddWithValue("@name", relation);
-        return command.ExecuteScalar() is string sql ? SchemaSnapshot.NormalizeDdl(sql) : null;
-    }
-
-    // --- introspection --------------------------------------------------------------
-
-    /// <summary>The live shape of a table, or null when the relation is not a table (view, or dropped).</summary>
-    private static TableSchema? Introspect(SqliteConnection connection, string relation)
-    {
-        if (!Scalar(connection, "select count(*) from sqlite_master where type = 'table' and name = @name", relation))
-        {
-            return null;
-        }
-
-        var columns = new List<TableSchema.Column>();
-        var keyCount = 0;
-        using (var command = connection.CreateCommand())
-        {
-            command.CommandText = "select name, type, \"notnull\", pk from pragma_table_info(@name)";
-            command.Parameters.AddWithValue("@name", relation);
-            using var reader = command.ExecuteReader();
-            var raw = new List<(string Name, string Type, bool NotNull, long Pk)>();
-            while (reader.Read())
-            {
-                raw.Add((reader.GetString(0), reader.GetString(1), reader.GetInt64(2) != 0, reader.GetInt64(3)));
-            }
-
-            keyCount = raw.Count(c => c.Pk > 0);
-            foreach (var c in raw)
-            {
-                var isKey = c.Pk > 0;
-                // The rowid alias: a lone INTEGER PRIMARY KEY column is database-generated.
-                var generated = isKey && keyCount == 1
-                    && string.Equals(c.Type, "INTEGER", StringComparison.OrdinalIgnoreCase);
-                columns.Add(new TableSchema.Column(c.Name, c.Type, nullable: !c.NotNull && !isKey, isKey, generated));
-            }
-        }
-
-        var indexes = new List<TableSchema.Index>();
-        using (var listCommand = connection.CreateCommand())
-        {
-            listCommand.CommandText = "select name, \"unique\" from pragma_index_list(@name) where origin = 'c'";
-            listCommand.Parameters.AddWithValue("@name", relation);
-            var found = new List<(string Name, bool Unique)>();
-            using (var reader = listCommand.ExecuteReader())
-            {
-                while (reader.Read())
-                {
-                    found.Add((reader.GetString(0), reader.GetInt64(1) != 0));
-                }
-            }
-
-            foreach (var (name, unique) in found)
-            {
-                using var partsCommand = connection.CreateCommand();
-                partsCommand.CommandText =
-                    "select name, \"desc\" from pragma_index_xinfo(@name) where key = 1 order by seqno";
-                partsCommand.Parameters.AddWithValue("@name", name);
-                var parts = new List<TableSchema.Index.Part>();
-                using var partsReader = partsCommand.ExecuteReader();
-                while (partsReader.Read())
-                {
-                    parts.Add(new TableSchema.Index.Part(partsReader.GetString(0), partsReader.GetInt64(1) != 0));
-                }
-
-                indexes.Add(new TableSchema.Index(name, parts, unique));
-            }
-        }
-
-        return new TableSchema(relation, columns, indexes);
-    }
-
-    // --- helpers --------------------------------------------------------------------
-
-    private static IReadOnlyList<MigrationVersion> DiscoverVersions(Assembly assembly, string? migrationsNamespace)
-        => assembly.GetTypes()
-            .Where(t => !t.IsAbstract
-                && typeof(MigrationVersion).IsAssignableFrom(t)
-                && t.GetConstructor(Type.EmptyTypes) is not null
-                && (migrationsNamespace is null
-                    || (t.Namespace ?? string.Empty).StartsWith(migrationsNamespace, StringComparison.Ordinal)))
-            .Select(t => (MigrationVersion)Activator.CreateInstance(t)!)
-            .OrderBy(v => v.Version)
-            .ToArray();
-
-    private sealed class MappedEntity(string typeName, RelationKind kind, bool isTrigger = false)
-    {
-        public string TypeName { get; } = typeName;
-
-        public RelationKind Kind { get; } = kind;
-
-        /// <summary>A trigger object (ADR-0042): the type is the trigger class, the folder <c>Trigger/</c>.</summary>
-        public bool IsTrigger { get; } = isTrigger;
-
-        public string KindFolder => IsTrigger ? "Trigger" : Kind switch
-        {
-            RelationKind.Table => "Table",
-            RelationKind.View => "View",
-            RelationKind.MaterializedView => "MaterializedView",
-            _ => "Procedure",
-        };
-
-        public string KindToken => Kind switch
-        {
-            RelationKind.View => "view",
-            RelationKind.MaterializedView => "materialized_view",
-            _ => "procedure",
-        };
-    }
-
-    private static Dictionary<string, MappedEntity> MapEntities(Assembly assembly)
-    {
-        var loader = new EntityMapLoader();
-        var byRelation = new Dictionary<string, MappedEntity>(StringComparer.OrdinalIgnoreCase);
-        foreach (var type in EntityMapLoader.ScannedEntityTypes(assembly.GetExportedTypes()))   // ADR-0041: a base class refuses the scan
-        {
-            var map = loader.Load(type);
-            if (map.RelationName is not null && map.Kind != RelationKind.Statement)
-            {
-                byRelation[map.RelationName] = new MappedEntity(type.Name, map.Kind);
-            }
-
-            foreach (var trigger in map.Triggers)
-            {
-                byRelation[trigger.Name] = new MappedEntity(trigger.TriggerType.Name, map.Kind, isTrigger: true);
-            }
-        }
-
-        return byRelation;
-    }
-
-    private static void Execute(SqliteConnection connection, string sql)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = sql;
-        command.ExecuteNonQuery();
-    }
-
-    private static bool Scalar(SqliteConnection connection, string sql, string name)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = sql;
-        command.Parameters.AddWithValue("@name", name);
-        return (long)command.ExecuteScalar()! > 0;
-    }
+    public TriggerSnapshot? Read(DbConnection connection, string triggerName, out string? note)
+        => SqliteTriggerDdl.Read((SqliteConnection)connection, triggerName, out note);
 
     private static void TryDelete(string path)
     {
@@ -389,4 +54,23 @@ public static class SqliteShadow
             // A straggling handle on Windows; the temp file is harmless.
         }
     }
+}
+
+/// <summary>
+/// The shadow replayer on SQLite (ADR-0017): <see cref="SchemaShadow"/> with the
+/// SQLite dialect and its temp-file host — kept as the entry point the tests and
+/// the pre-ADR-0043 callers know.
+/// </summary>
+public static class SqliteShadow
+{
+    public static Task<SchemaShadow.Result> RebuildSnapshotsAsync(
+        Assembly assembly,
+        string? migrationsNamespace,
+        string migrationsDir,
+        long fromVersion = 0,
+        long toVersion = long.MaxValue,
+        CancellationToken ct = default)
+        => SchemaShadow.RebuildSnapshotsAsync(
+            assembly, migrationsNamespace, migrationsDir, new SqliteDialect(), new SqliteShadowHost(),
+            adminConnectionString: null, fromVersion, toVersion, ct);
 }

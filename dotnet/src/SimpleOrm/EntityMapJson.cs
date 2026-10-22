@@ -203,6 +203,18 @@ public static class EntityMapJson
                 writer.WriteString("renamedFrom", property.RenamedFrom);   // a declared rename (Level 3 M5)
             }
 
+            // Storage facets (ADR-0043): written only when declared, after renamedFrom.
+            if (property.Length is { } length)
+            {
+                writer.WriteNumber("length", length);
+            }
+
+            if (property.Precision is { } precision)
+            {
+                writer.WriteNumber("precision", precision);
+                writer.WriteNumber("scale", property.Scale ?? 0);
+            }
+
             writer.WriteEndObject();
         }
 

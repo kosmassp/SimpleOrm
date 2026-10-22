@@ -143,5 +143,20 @@ public sealed class EntityMapBuilder<T>
             _spec.EnumAsInt = true;
             return this;
         }
+
+        /// <summary>The declared length of a string or bytes column (ADR-0043 storage facets); the dialect renders it its own way.</summary>
+        public PropertyConfiguration Length(int length)
+        {
+            _spec.Length = length;
+            return this;
+        }
+
+        /// <summary>The declared precision and scale of a decimal column (ADR-0043 storage facets).</summary>
+        public PropertyConfiguration Precision(int precision, int scale = 0)
+        {
+            _spec.Precision = precision;
+            _spec.Scale = scale;
+            return this;
+        }
     }
 }

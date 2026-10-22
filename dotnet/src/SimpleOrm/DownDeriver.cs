@@ -9,7 +9,9 @@ namespace SimpleOrm;
 /// data-preservingly; everything else — restored columns, dropped columns, index
 /// changes, a view's previous definition — comes from the snapshot diff.
 /// <c>Down()</c> remains the manual override; a change the snapshots can't express
-/// (type/nullability) still refuses with <c>MIG-020</c>.
+/// (type/nullability) still refuses with <c>MIG-020</c>. Every statement renders
+/// through the dialect (ADR-0043): the snapshots are the dialect's, and so is the
+/// rollback — a snapshot stamped for another dialect is <c>MIG-014</c>.
 /// </summary>
 internal static class DownDeriver
 {
@@ -29,13 +31,19 @@ internal static class DownDeriver
         }
 
         var before = snapshots.LatestBefore(objectName, version);
+        SchemaSnapshot.RequireDialect(at.Dialect, dialect, $"V{version:0000} {objectName}");
+        if (before is not null)
+        {
+            SchemaSnapshot.RequireDialect(before.Dialect, dialect, $"V{version:0000} {objectName} (the previous snapshot)");
+        }
+
         if (at.Trigger is not null)
         {
             return DeriveTrigger(objectName, at.Trigger, before?.Trigger, dialect);
         }
 
         return at.Ddl is not null
-            ? DeriveView(objectName, at.Ddl, before?.Ddl)
+            ? DeriveView(objectName, at.Ddl, before?.Ddl, dialect)
             : DeriveTable(objectName, version, at.Table!, before?.Table, upRenames, notices, dialect);
     }
 
@@ -63,18 +71,25 @@ internal static class DownDeriver
         return statements;
     }
 
-    private static IReadOnlyList<MigrationStatement> DeriveView(string objectName, string ddlAt, string? ddlBefore)
+    /// <summary>
+    /// A view's rollback: the apply guard in reverse (<c>MIG-012</c> — a definition
+    /// hotfixed outside the code is not silently destroyed by a rollback either),
+    /// the drop, and the previous neutral definition rendered by the dialect.
+    /// </summary>
+    private static IReadOnlyList<MigrationStatement> DeriveView(string objectName, string ddlAt, string? ddlBefore, IDialect dialect)
     {
+        SchemaSnapshot.TryParseViewDdl(ddlAt, out _, out _, out var materialized);
         var statements = new List<MigrationStatement>
         {
-            // The apply guard in reverse (MIG-012): a definition hotfixed outside
-            // the code is not silently destroyed by a rollback either.
             new(ddlAt, "derived expect " + objectName, guardView: objectName),
-            new("drop view if exists " + objectName, "derived drop " + objectName),
+            new(dialect.DropViewSql(objectName, materialized), "derived drop " + objectName),
         };
         if (ddlBefore is not null)
         {
-            statements.Add(new MigrationStatement(ddlBefore, "derived restore " + objectName));
+            var restore = SchemaSnapshot.TryParseViewDdl(ddlBefore, out var name, out var body, out var wasMaterialized)
+                ? dialect.CreateViewSql(name, body, wasMaterialized)
+                : ddlBefore;   // not a view create (a procedure's DDL): executable as stored
+            statements.Add(new MigrationStatement(restore, "derived restore " + objectName));
         }
 
         return statements;
@@ -107,6 +122,31 @@ internal static class DownDeriver
             StringComparer.OrdinalIgnoreCase);
         var previous = before.Columns.ToDictionary(c => c.Name, c => c, StringComparer.OrdinalIgnoreCase);
 
+        // The one underivable change refuses before any statement is planned.
+        foreach (var name in current.Keys.Where(previous.ContainsKey))
+        {
+            var now = current[name];
+            var then = previous[name];
+            if (!string.Equals(now.StorageType, then.StorageType, StringComparison.OrdinalIgnoreCase)
+                || now.Nullable != then.Nullable)
+            {
+                throw new SimpleOrmException(
+                    "MIG-020", $"V{version:0000} {objectName}",
+                    $"column {name} changed type/nullability at this version; that rollback cannot be derived — override Down()");
+            }
+        }
+
+        // Indexes match structurally (ADR-0017 add.2) here too. The indexes this
+        // version added drop first: SQLite and SQL Server refuse to drop a column an
+        // index still covers (ADR-0043).
+        var atIndexes = at.Indexes.ToDictionary(MigrationGenerator.IndexSignature, i => i, StringComparer.Ordinal);
+        var beforeIndexes = before.Indexes.ToDictionary(MigrationGenerator.IndexSignature, i => i, StringComparer.Ordinal);
+        foreach (var pair in atIndexes.Where(p => !beforeIndexes.ContainsKey(ApplyRenames(p.Key, nameAtToBefore))))
+        {
+            statements.Add(new MigrationStatement(
+                dialect.DropIndexSql(objectName, pair.Value.Name), "derived drop index"));
+        }
+
         foreach (var column in previous.Values.Where(c => !current.ContainsKey(c.Name)))
         {
             var sql = dialect.AddColumnSql(objectName, column.Name, column.StorageType, nullable: true, defaultSql: null);
@@ -129,32 +169,10 @@ internal static class DownDeriver
                 dialect.DropColumnSql(objectName, name), "derived remove " + objectName));
         }
 
-        foreach (var name in current.Keys.Where(previous.ContainsKey))
-        {
-            var now = current[name];
-            var then = previous[name];
-            if (!string.Equals(now.StorageType, then.StorageType, StringComparison.OrdinalIgnoreCase)
-                || now.Nullable != then.Nullable)
-            {
-                throw new SimpleOrmException(
-                    "MIG-020", $"V{version:0000} {objectName}",
-                    $"column {name} changed type/nullability at this version; that rollback cannot be derived — override Down()");
-            }
-        }
-
-        // Indexes match structurally (ADR-0017 add.2) here too.
-        var atIndexes = at.Indexes.ToDictionary(MigrationGenerator.IndexSignature, i => i, StringComparer.Ordinal);
-        var beforeIndexes = before.Indexes.ToDictionary(MigrationGenerator.IndexSignature, i => i, StringComparer.Ordinal);
-        foreach (var pair in atIndexes.Where(p => !beforeIndexes.ContainsKey(ApplyRenames(p.Key, nameAtToBefore))))
-        {
-            statements.Add(new MigrationStatement(
-                dialect.DropIndexSql(objectName, pair.Value.Name), "derived drop index"));
-        }
-
         foreach (var pair in beforeIndexes.Where(p =>
             !atIndexes.Keys.Any(sig => ApplyRenames(sig, nameAtToBefore) == p.Key)))
         {
-            statements.Add(new MigrationStatement(SnapshotDdl.CreateIndexSql(objectName, pair.Value), "derived add index"));
+            statements.Add(new MigrationStatement(dialect.CreateIndexSql(objectName, pair.Value), "derived add index"));
         }
 
         return statements;

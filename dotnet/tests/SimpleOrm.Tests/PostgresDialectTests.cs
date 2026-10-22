@@ -133,10 +133,10 @@ public sealed class PostgresDialectTests
     public void Storage_types_are_format_type_spellings()
     {
         var transactions = Maps.Load<Transaction>();
-        Assert.Equal("numeric", Dialect.StorageType(transactions.Properties.Single(p => p.PropertyName == "Amount")));
-        Assert.Equal("text", Dialect.StorageType(transactions.Properties.Single(p => p.PropertyName == "Status")));
-        Assert.Equal("timestamp with time zone", Dialect.StorageType(transactions.Properties.Single(p => p.PropertyName == "CreatedAtUtc")));
-        Assert.Equal("bigint", Dialect.StorageType(transactions.Properties.Single(p => p.PropertyName == "Id")));
+        Assert.Equal("numeric", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "Amount")));
+        Assert.Equal("text", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "Status")));
+        Assert.Equal("timestamp with time zone", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "CreatedAtUtc")));
+        Assert.Equal("bigint", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "Id")));
     }
 
     [Theory]

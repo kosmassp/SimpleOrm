@@ -83,7 +83,7 @@ public static class SchemaSnapshot
             map.RelationName!,
             map.Properties
                 .Select(p => new TableSchema.Column(
-                    p.ColumnName, dialect.StorageType(p), p.IsNullable, p.IsKey, p.IsGenerated))
+                    p.ColumnName, dialect.StorageType(map, p), p.IsNullable, p.IsKey, p.IsGenerated))
                 .ToArray(),
             map.Indexes
                 .Select(i => new TableSchema.Index(
@@ -93,15 +93,58 @@ public static class SchemaSnapshot
                 .ToArray());
 
     public static string Export(EntityMap map, IDialect dialect, long asOfVersion, DateTimeOffset generatedAt)
-        => Export(FromMap(map, dialect), asOfVersion, generatedAt);
+        => Export(FromMap(map, dialect), asOfVersion, generatedAt, dialect.Name);
 
-    public static string Export(TableSchema schema, long asOfVersion, DateTimeOffset generatedAt)
+    /// <summary>The dialect every unstamped snapshot belongs to (format v2 files carry no stamp).</summary>
+    public const string DefaultDialect = "sqlite";
+
+    /// <summary>
+    /// The dialect stamp (format v3, ADR-0043): written right after <c>object</c>
+    /// for every kind, and only when the dialect is not the default — so every
+    /// snapshot written before this format, and every SQLite tree, is unchanged.
+    /// </summary>
+    private static void WriteDialect(Utf8JsonWriter writer, string? dialect)
+    {
+        if (dialect is not null && !string.Equals(dialect, DefaultDialect, StringComparison.OrdinalIgnoreCase))
+        {
+            writer.WriteString("dialect", dialect);
+        }
+    }
+
+    /// <summary>The dialect a snapshot document is stamped for; <see cref="DefaultDialect"/> when unstamped.</summary>
+    public static string DialectOf(JsonElement root)
+        => root.TryGetProperty("dialect", out var dialect) ? dialect.GetString()! : DefaultDialect;
+
+    /// <summary>As <see cref="DialectOf(JsonElement)"/>, from the document text.</summary>
+    public static string DialectOf(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return DialectOf(document.RootElement);
+    }
+
+    /// <summary>
+    /// Refuses a snapshot stamped for another dialect (<c>MIG-014</c>): a tree and
+    /// its snapshots belong to one dialect, like its checksums.
+    /// </summary>
+    public static void RequireDialect(string stamped, IDialect dialect, string what)
+    {
+        if (!string.Equals(stamped, dialect.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new SimpleOrmException(
+                "MIG-014", what,
+                $"the snapshot is stamped for dialect '{stamped}' but '{dialect.Name}' is in use; "
+                + $"rerun snapshot/shadow with --dialect {dialect.Name}, or point at the tree written for {stamped}");
+        }
+    }
+
+    public static string Export(TableSchema schema, long asOfVersion, DateTimeOffset generatedAt, string? dialect = null)
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
         {
             writer.WriteStartObject();
             writer.WriteString("object", schema.Name);
+            WriteDialect(writer, dialect);
             writer.WriteNumber("asOfVersion", asOfVersion);
             writer.WriteString("generatedAt", generatedAt.UtcDateTime.ToString("o", CultureInfo.InvariantCulture));
 
@@ -166,13 +209,14 @@ public static class SchemaSnapshot
     /// compared by DDL, not by columns. The DDL is whitespace-normalized — layout
     /// changes in the attribute SQL are not schema changes — and stays executable.
     /// </summary>
-    public static string ExportDdl(string objectName, string kind, string ddl, long asOfVersion, DateTimeOffset generatedAt)
+    public static string ExportDdl(string objectName, string kind, string ddl, long asOfVersion, DateTimeOffset generatedAt, string? dialect = null)
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
         {
             writer.WriteStartObject();
             writer.WriteString("object", objectName);
+            WriteDialect(writer, dialect);
             writer.WriteString("kind", kind);
             writer.WriteNumber("asOfVersion", asOfVersion);
             writer.WriteString("generatedAt", generatedAt.UtcDateTime.ToString("o", CultureInfo.InvariantCulture));
@@ -189,13 +233,14 @@ public static class SchemaSnapshot
     /// its kind, version, time, then the declaration — timing, events in the fixed
     /// order, <c>updateOf</c> when declared, the body whitespace-collapsed.
     /// </summary>
-    public static string ExportTrigger(TriggerSnapshot snapshot, long asOfVersion, DateTimeOffset generatedAt)
+    public static string ExportTrigger(TriggerSnapshot snapshot, long asOfVersion, DateTimeOffset generatedAt, string? dialect = null)
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
         {
             writer.WriteStartObject();
             writer.WriteString("object", snapshot.Definition.Name);
+            WriteDialect(writer, dialect);
             writer.WriteString("kind", "trigger");
             writer.WriteString("relation", snapshot.Relation);
             writer.WriteString("relationKind", snapshot.OnView ? "view" : "table");
@@ -289,25 +334,71 @@ public static class SchemaSnapshot
             root.GetProperty("asOfVersion").GetInt64());
     }
 
+    private static readonly System.Text.RegularExpressions.Regex ViewDdl = new(
+        @"^create\s+(or\s+(alter|replace)\s+)?(?<mat>materialized\s+)?view\s+(if\s+not\s+exists\s+)?(?<name>\S+)\s+as\s+(?<body>.+)$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly System.Text.RegularExpressions.Regex DropViewDdl = new(
+        @"^drop\s+(materialized\s+)?view\s+(if\s+exists\s+)?(?<name>\S+)\s*;?$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
     /// <summary>
-    /// Canonical, comparable, still-executable DDL: whitespace collapses (layout is
-    /// not schema), and a view create's prefix is canonicalized to lowercase
-    /// <c>create [materialized] view &lt;name&gt; as</c> — databases rewrite that
-    /// prefix when storing it (SQLite drops <c>IF NOT EXISTS</c> and recases
-    /// <c>CREATE VIEW</c>), so the rendered and the introspected form must meet in
-    /// the middle. The body is compared as written.
+    /// Canonical, comparable, still-executable, **dialect-neutral** DDL (ADR-0017
+    /// add.1, ADR-0043): whitespace collapses (layout is not schema), and a view
+    /// create's prefix is canonicalized to lowercase
+    /// <c>create [materialized] view &lt;name&gt; as</c> with <c>or alter</c>,
+    /// <c>or replace</c>, <c>if not exists</c>, and the name's quoting stripped —
+    /// databases rewrite that prefix when storing it (SQLite drops
+    /// <c>IF NOT EXISTS</c> and recases <c>CREATE VIEW</c>; SQL Server blanks
+    /// <c>OR ALTER</c>), and each dialect quotes the name its own way, while the
+    /// body is the one SQL the entity declares. So a view's identity never depends
+    /// on the dialect's prefix or quoting, and the SQLite files, unquoted already,
+    /// are unchanged. The body is compared as written.
     /// </summary>
     public static string NormalizeDdl(string sql)
     {
         var collapsed = string.Join(" ", sql.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        var match = System.Text.RegularExpressions.Regex.Match(
-            collapsed,
-            @"^create\s+(?<mat>materialized\s+)?view\s+(if\s+not\s+exists\s+)?(?<name>\S+)\s+as\s+(?<body>.+)$",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var match = ViewDdl.Match(collapsed);
         return match.Success
             ? "create " + (match.Groups["mat"].Success ? "materialized " : string.Empty)
-                + "view " + match.Groups["name"].Value + " as " + match.Groups["body"].Value
+                + "view " + Unquote(match.Groups["name"].Value) + " as " + match.Groups["body"].Value
             : collapsed;
+    }
+
+    /// <summary>Splits a normalized view DDL into its parts, so a dialect can render it again (<see cref="IDialect.CreateViewSql(string, string, bool)"/>); false for anything else.</summary>
+    public static bool TryParseViewDdl(string normalizedDdl, out string name, out string body, out bool materialized)
+    {
+        var match = ViewDdl.Match(normalizedDdl);
+        name = match.Success ? Unquote(match.Groups["name"].Value) : string.Empty;
+        body = match.Success ? match.Groups["body"].Value : string.Empty;
+        materialized = match.Success && match.Groups["mat"].Success;
+        return match.Success;
+    }
+
+    /// <summary>Whether a (whitespace-collapsed) statement drops the named view — the shadow's "history ends here" signal (ADR-0043).</summary>
+    public static bool IsDropView(string normalizedSql, string viewName)
+    {
+        var match = DropViewDdl.Match(normalizedSql);
+        return match.Success && string.Equals(Unquote(match.Groups["name"].Value), viewName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Strips one layer of identifier quoting (<c>"name"</c>, <c>[name]</c>, <c>`name`</c>); a schema-qualified name keeps its qualifier.</summary>
+    private static string Unquote(string identifier)
+    {
+        var parts = identifier.Split('.');
+        for (var i = 0; i < parts.Length; i++)
+        {
+            var part = parts[i];
+            if (part.Length >= 2 && ((part[0] == '"' && part[^1] == '"') || (part[0] == '[' && part[^1] == ']') || (part[0] == '`' && part[^1] == '`')))
+            {
+                part = part.Substring(1, part.Length - 2);
+                part = part.Replace("\"\"", "\"").Replace("]]", "]");
+            }
+
+            parts[i] = part;
+        }
+
+        return string.Join(".", parts);
     }
 
     public static (TableSchema Schema, long AsOfVersion) Parse(string json)

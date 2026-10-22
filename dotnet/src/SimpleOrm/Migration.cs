@@ -84,6 +84,16 @@ public abstract class MigrationStep
     /// </summary>
     internal virtual IReadOnlyList<(string From, string To)> UpRenames(EntityMapLoader maps, IDialect dialect) => [];
 
+    /// <summary>
+    /// The trigger declaration this step leaves behind (ADR-0043): for a trigger
+    /// step, the last declaration it creates, or null when it drops the trigger;
+    /// <c>IsTriggerStep</c> false for every other step. The shadow replayer
+    /// snapshots triggers from here — the history is the code, and an engine's
+    /// catalog may not hand the declaration back (SQL Server's <c>inserted</c>
+    /// has lost the column list).
+    /// </summary>
+    internal virtual (bool IsTriggerStep, TriggerSnapshot? Declared) TriggerOutcome(EntityMapLoader maps, IDialect dialect) => (false, null);
+
     private (long Version, string Description) Parse()
     {
         var match = NamePattern.Match(GetType().Name);
@@ -309,7 +319,7 @@ public abstract class TriggerMigration<TEntity, TTrigger> : MigrationStep
     internal override string ObjectName(EntityMapLoader maps) => EntityMapLoader.TriggerNameOf(typeof(TTrigger));
 
     internal override IReadOnlyList<MigrationStatement> RenderUp(EntityMapLoader maps, IDialect dialect)
-        => Render(maps, dialect, Action);
+        => Compose(maps, dialect, Action).Build();
 
     internal override DownPlan RenderDown(EntityMapLoader maps, IDialect dialect)
     {
@@ -319,11 +329,14 @@ public abstract class TriggerMigration<TEntity, TTrigger> : MigrationStep
         PostDown(post);
         return new DownPlan(
             pre.Statements.Select(s => new MigrationStatement(s, "pre-down")).ToArray(),
-            Render(maps, dialect, Down),
+            Compose(maps, dialect, Down).Build(),
             post.Statements.Select(s => new MigrationStatement(s, "post-down")).ToArray());
     }
 
-    private IReadOnlyList<MigrationStatement> Render(
+    internal override (bool IsTriggerStep, TriggerSnapshot? Declared) TriggerOutcome(EntityMapLoader maps, IDialect dialect)
+        => (true, Compose(maps, dialect, Action).LastDeclared);
+
+    private TriggerActions Compose(
         EntityMapLoader maps, IDialect dialect, Action<TriggerActions> compose)
     {
         var map = maps.Load<TEntity>();
@@ -336,7 +349,7 @@ public abstract class TriggerMigration<TEntity, TTrigger> : MigrationStep
         var declared = map.Triggers.FirstOrDefault(t => t.TriggerType == typeof(TTrigger));
         var actions = new TriggerActions(map, declared, ObjectName(maps), dialect);
         compose(actions);
-        return actions.Build();
+        return actions;
     }
 }
 
@@ -564,6 +577,9 @@ public sealed class TriggerActions
 
     private bool OnView => _map.Kind == RelationKind.View;
 
+    /// <summary>The declaration the composed actions leave behind — the last create, or null after a drop (the shadow's source, ADR-0043).</summary>
+    internal TriggerSnapshot? LastDeclared { get; private set; }
+
     /// <summary>The initial create, rendered from the entity's linked declaration (drop if present, then create) — <c>DDL-001</c> when the entity does not link this trigger.</summary>
     public MigrationAction CreateTrigger()
     {
@@ -573,15 +589,23 @@ public sealed class TriggerActions
                 "DDL-001", _map.EntityType.Name, $"does not link a trigger declaring '{_name}'; CreateTrigger() renders from the metadata — use Recreate(…) for a literal declaration");
         }
 
+        LastDeclared = new TriggerSnapshot(Relation, OnView, _declared.Definition);
         return Track(new MigrationAction("create " + _name, Statements(_declared.Definition)));
     }
 
     /// <summary>Drop if present, then create from a literal declaration (frozen like a column spec; <c>updateOf</c> are column names).</summary>
     public MigrationAction Recreate(TriggerTiming timing, TriggerEvent events, string sql, params string[] updateOf)
-        => Track(new MigrationAction("recreate " + _name, Statements(new TriggerDefinition(_name, timing, events, sql, updateOf))));
+    {
+        var definition = new TriggerDefinition(_name, timing, events, sql, updateOf);
+        LastDeclared = new TriggerSnapshot(Relation, OnView, definition);
+        return Track(new MigrationAction("recreate " + _name, Statements(definition)));
+    }
 
     public MigrationAction DropTrigger()
-        => Track(new MigrationAction("drop " + _name, _dialect.DropTriggerSql(Relation, _name)));
+    {
+        LastDeclared = null;
+        return Track(new MigrationAction("drop " + _name, _dialect.DropTriggerSql(Relation, _name)));
+    }
 
     /// <summary>
     /// Precondition (<c>MIG-012</c>): the trigger's live definition must be what the
@@ -703,5 +727,9 @@ public sealed class SqlVersion(long version, params SqlVersion.Step[] steps) : M
 
         internal override IReadOnlyList<(string From, string To)> UpRenames(EntityMapLoader maps, IDialect dialect)
             => step.Renames;
+
+        /// <summary>A data-driven trigger step declares through <c>trigger</c>; a raw step says nothing (the shadow falls back to the catalog).</summary>
+        internal override (bool IsTriggerStep, TriggerSnapshot? Declared) TriggerOutcome(EntityMapLoader maps, IDialect dialect)
+            => step.Trigger is not null ? (true, step.Trigger) : (false, null);
     }
 }

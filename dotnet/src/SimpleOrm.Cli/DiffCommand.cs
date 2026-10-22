@@ -134,7 +134,7 @@ public static class DiffCommand
                 var snapshotDir = Path.Combine(options.OutDir, "Table", type.Name);
                 var baseline = Directory.Exists(snapshotDir)
                     ? Directory.GetFiles(snapshotDir, "V*.schema.json")
-                        .Select(f => SchemaSnapshot.Parse(File.ReadAllText(f)))
+                        .Select(f => SchemaSnapshot.Parse(ReadStamped(f, options.Dialect)))
                         .Where(s => s.AsOfVersion < version)
                         .OrderByDescending(s => s.AsOfVersion)
                         .Select(s => s.Schema)
@@ -166,7 +166,7 @@ public static class DiffCommand
                 var snapshotDir = Path.Combine(options.OutDir, folder, type.Name);
                 var previous = Directory.Exists(snapshotDir)
                     ? Directory.GetFiles(snapshotDir, "V*.schema.json")
-                        .Select(f => SchemaSnapshot.ParseDdl(File.ReadAllText(f)))
+                        .Select(f => SchemaSnapshot.ParseDdl(ReadStamped(f, options.Dialect)))
                         .Where(s => s.AsOfVersion < version)
                         .OrderByDescending(s => s.AsOfVersion)
                         .Select(s => (string?)s.Ddl)
@@ -443,6 +443,14 @@ public static class DiffCommand
         replaceable.AddRange(stepFiles);
         replaceable.AddRange(objectDirs.SelectMany(dir => Directory.GetFiles(dir, $"{prefix}.schema.json")));
         return null;
+    }
+
+    /// <summary>Reads a snapshot file, refusing one stamped for another dialect (<c>MIG-014</c>, ADR-0043).</summary>
+    private static string ReadStamped(string file, IDialect dialect)
+    {
+        var json = File.ReadAllText(file);
+        SchemaSnapshot.RequireDialect(SchemaSnapshot.DialectOf(json), dialect, file);
+        return json;
     }
 
     /// <summary>The latest trigger snapshot of a folder strictly below the version, or null.</summary>

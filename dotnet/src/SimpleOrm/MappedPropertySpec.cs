@@ -26,6 +26,15 @@ internal sealed class MappedPropertySpec
     /// <summary>The previous column name declared by <c>[RenamedFrom]</c> (Level 3 M5).</summary>
     public string? RenamedFrom { get; set; }
 
+    /// <summary>The declared length of a string/bytes column (ADR-0043 storage facets); null = the dialect's default.</summary>
+    public int? Length { get; set; }
+
+    /// <summary>The declared precision of a decimal column; null = the dialect's default.</summary>
+    public int? Precision { get; set; }
+
+    /// <summary>The declared scale of a decimal column; meaningful only with <see cref="Precision"/>.</summary>
+    public int? Scale { get; set; }
+
     public bool EnumAsInt { get; set; }
 
     public Type? ForeignKeyReferences { get; set; }

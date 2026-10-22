@@ -7,6 +7,8 @@ namespace SimpleOrm.Sqlite;
 /// <summary>SQLite implementation of <see cref="IDialect"/> backed by Microsoft.Data.Sqlite.</summary>
 public sealed class SqliteDialect : IDialect
 {
+    public string Name => "sqlite";
+
     public DbConnection CreateConnection(string connectionString)
         => new SqliteConnection(connectionString);
 
@@ -38,8 +40,15 @@ public sealed class SqliteDialect : IDialect
 
     public bool SupportsTransactionalDdl => true;
 
+    // The fifth column (ADR-0043): the rowid alias — a lone INTEGER PRIMARY KEY — is the
+    // one database-generated column SQLite has.
     public string ColumnsInfoSql
-        => "select name, type, \"notnull\", pk from pragma_table_info(@relation)";
+        => "select name, type, \"notnull\", pk, "
+            + "case when pk = 1 and upper(type) = 'INTEGER' and (select count(*) from pragma_table_info(@relation) where pk > 0) = 1 then 1 else 0 end as generated "
+            + "from pragma_table_info(@relation)";
+
+    /// <summary>sqlite_master keeps the text as submitted (minus IF NOT EXISTS, the prefix recased): the guard compares text.</summary>
+    public bool ViewDefinitionIsVerbatim => true;
 
     public string ViewDefinitionSql
         => "select sql from sqlite_master where type = 'view' and name = @relation";
@@ -115,7 +124,18 @@ public sealed class SqliteDialect : IDialect
         => "drop index " + index;
 
     public string CreateViewSql(EntityMap map)
-        => "create view if not exists " + map.RelationName + " as\n" + map.DefiningSql;
+        => CreateViewSql(map.RelationName!, map.DefiningSql!, map.Kind == RelationKind.MaterializedView);
+
+    public string CreateViewSql(string view, string body, bool materialized)
+        => "create view if not exists " + view + " as\n" + body;   // no materialized views here (DDL-002 upstream)
+
+    public string DropViewSql(string view, bool materialized)
+        => "drop view if exists " + view;
+
+    /// <summary>The snapshot rendering (ADR-0017): the reference text, SQLite-spelled, STRICT.</summary>
+    public string CreateTableSql(TableSchema schema) => SnapshotDdl.CreateTableSql(schema);
+
+    public string CreateIndexSql(string table, TableSchema.Index index) => SnapshotDdl.CreateIndexSql(table, index);
 
     // --- triggers (ADR-0042) ---------------------------------------------------------
 
@@ -275,7 +295,8 @@ public sealed class SqliteDialect : IDialect
     private static string KeyPredicate(EntityMap map)
         => string.Join(" and ", map.KeyProperties.Select(k => k.ColumnName + " = @" + k.ColumnName));
 
-    public string StorageType(PropertyMap property) => ColumnType(property);
+    /// <summary>SQLite's storage classes have no facets: a declared length or precision is ignored here.</summary>
+    public string StorageType(EntityMap map, PropertyMap property) => ColumnType(property);
 
     /// <summary>CLR → SQLite storage type per the §7.9 conventions (dates/decimals/GUIDs as TEXT).</summary>
     private static string ColumnType(PropertyMap property)

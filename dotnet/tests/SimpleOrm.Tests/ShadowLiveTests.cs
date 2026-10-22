@@ -65,12 +65,47 @@ public static class ShadowLiveTests
         }
     }
 
+    /// <summary>
+    /// Force sync against a live engine (ADR-0043): the live table is V0001's shape, the
+    /// model has the note column; the plan is exactly one additive statement and no
+    /// <c>DDL-004</c> — which is only true when the dialect spells its storage types the
+    /// way its introspection reports them back (ruling 8).
+    /// </summary>
+    internal static async Task ForceSyncPlansOnlyTheMissingColumnAsync(IDialect dialect, IShadowHost host, string admin, MigrationVersion first, string expectedAdd)
+    {
+        var connectionString = await host.ProvisionAsync(admin, CancellationToken.None);
+        try
+        {
+            await using var db = await Db.OpenAsync(connectionString, new DbOptions { Dialect = dialect }, CancellationToken.None);
+            await new MigrationRunner(db, [first]).MigrateAsync(CancellationToken.None);
+
+            var plan = await SchemaSync.PlanAsync(db, [typeof(ShadowTree.ShadowWidget)], CancellationToken.None);
+            Assert.Empty(plan.Unsupported);
+            Assert.Empty(plan.Deletions);
+            Assert.Equal(expectedAdd, Assert.Single(plan.Additive));
+
+            await SchemaSync.ApplyAsync(db, plan.Additive, CancellationToken.None);
+            var after = await SchemaSync.PlanAsync(db, [typeof(ShadowTree.ShadowWidget)], CancellationToken.None);
+            Assert.True(after.IsEmpty, "the live schema should match the model after the sync");
+        }
+        finally
+        {
+            await host.DropAsync(CancellationToken.None);
+        }
+    }
+
     [Collection(PostgresCollection.Name)]
     public sealed class OnPostgres
     {
         [PostgresFact]
         public Task The_shadow_reproduces_the_metadata_snapshots_on_postgres()
             => RoundTripAsync(new PostgresDialect(), new PostgresShadowHost(), PostgresFixture.AdminConnectionString, new ShadowTree.Postgres.V0001(), new ShadowTree.Postgres.V0004());
+
+        [PostgresFact]
+        public Task Force_sync_plans_only_the_missing_column_on_postgres()
+            => ForceSyncPlansOnlyTheMissingColumnAsync(
+                new PostgresDialect(), new PostgresShadowHost(), PostgresFixture.AdminConnectionString, new ShadowTree.Postgres.V0001(),
+                "alter table \"shadow_widgets\" add column \"note\" text");
     }
 
     [Collection(SqlServerCollection.Name)]
@@ -79,6 +114,12 @@ public static class ShadowLiveTests
         [SqlServerFact]
         public Task The_shadow_reproduces_the_metadata_snapshots_on_sql_server()
             => RoundTripAsync(new SqlServerDialect(), new SqlServerShadowHost(), SqlServerFixture.MasterConnectionString, new ShadowTree.SqlServer.V0001(), new ShadowTree.SqlServer.V0004());
+
+        [SqlServerFact]
+        public Task Force_sync_plans_only_the_missing_column_on_sql_server()
+            => ForceSyncPlansOnlyTheMissingColumnAsync(
+                new SqlServerDialect(), new SqlServerShadowHost(), SqlServerFixture.MasterConnectionString, new ShadowTree.SqlServer.V0001(),
+                "alter table [shadow_widgets] add [note] nvarchar(max)");
     }
 }
 

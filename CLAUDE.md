@@ -98,6 +98,7 @@ dotnet/
                               TransactionDetail) — the fixture entities for tests and conformance
   tests/SimpleOrm.Tests/      integration tests + the conformance runner
 docs/decisions.md             ADR-style log; append whenever a decision below changes
+docs/guide/                   the developer guide — one page per topic, C# first with the PHP and Go shapes; snippets from the samples
 ```
 
 ```

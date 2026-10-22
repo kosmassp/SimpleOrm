@@ -8,9 +8,11 @@ language-neutral [spec](spec/) and a [conformance suite](conformance/) grow alon
 it so the library can later be ported (Go, Java, PHP) and extended to other dialects
 (PostgreSQL, MySQL, SQL Server).
 
-**Status: all eight Level 1 milestones complete.** See
-[CLAUDE.md](CLAUDE.md) for the full project brief and
-[docs/decisions.md](docs/decisions.md) for the decision log.
+**Status: Levels 0–3 complete in C#, PHP, and Go; Level 4 in progress.** New here? Start
+with the **[developer guide](docs/guide/README.md)** — getting started, mapping, queries,
+CRUD, criteria, relationships, tracking, hooks, migrations, triggers, SchemaGuard, dialects,
+errors, testing, and the PHP and Go shapes. See [CLAUDE.md](CLAUDE.md) for the full project
+brief and [docs/decisions.md](docs/decisions.md) for the decision log.
 
 ## Usage
 

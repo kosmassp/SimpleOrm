@@ -619,7 +619,10 @@ public sealed class MigrationRunner
         }
         catch (SimpleOrmException)
         {
+            // Any failure inside the probe is drift (the body does not parse against the current
+            // schema, most likely); the savepoint is released after the rollback so its name is free.
             await ExecuteAsync(transaction, "rollback to savepoint simpleorm_probe", ct).ConfigureAwait(false);
+            await ExecuteAsync(transaction, "release savepoint simpleorm_probe", ct).ConfigureAwait(false);
             return false;
         }
     }

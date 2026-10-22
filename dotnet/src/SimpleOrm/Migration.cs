@@ -86,8 +86,9 @@ public abstract class MigrationStep
 
     /// <summary>
     /// The trigger declaration this step leaves behind (ADR-0043): for a trigger
-    /// step, the last declaration it creates, or null when it drops the trigger;
-    /// <c>IsTriggerStep</c> false for every other step. The shadow replayer
+    /// step that creates or drops, the last declaration it creates, or null when
+    /// it drops the trigger; <c>IsTriggerStep</c> false for every other step —
+    /// a guard-only trigger step included, which leaves the trigger as it was. The shadow replayer
     /// snapshots triggers from here — the history is the code, and an engine's
     /// catalog may not hand the declaration back (SQL Server's <c>inserted</c>
     /// has lost the column list).
@@ -334,7 +335,10 @@ public abstract class TriggerMigration<TEntity, TTrigger> : MigrationStep
     }
 
     internal override (bool IsTriggerStep, TriggerSnapshot? Declared) TriggerOutcome(EntityMapLoader maps, IDialect dialect)
-        => (true, Compose(maps, dialect, Action).LastDeclared);
+    {
+        var actions = Compose(maps, dialect, Action);
+        return actions.Declares ? (true, actions.LastDeclared) : (false, null);   // a guard-only step leaves the trigger as it was: the catalog decides
+    }
 
     private TriggerActions Compose(
         EntityMapLoader maps, IDialect dialect, Action<TriggerActions> compose)
@@ -583,6 +587,9 @@ public sealed class TriggerActions
     /// <summary>The declaration the composed actions leave behind — the last create, or null after a drop (the shadow's source, ADR-0043).</summary>
     internal TriggerSnapshot? LastDeclared { get; private set; }
 
+    /// <summary>Whether any action created or dropped the trigger; a guard-only step leaves it as it was, and the shadow falls back to the catalog.</summary>
+    internal bool Declares { get; private set; }
+
     /// <summary>The initial create, rendered from the entity's linked declaration (drop if present, then create) — <c>DDL-001</c> when the entity does not link this trigger.</summary>
     public MigrationAction CreateTrigger()
     {
@@ -593,6 +600,7 @@ public sealed class TriggerActions
         }
 
         LastDeclared = new TriggerSnapshot(Relation, OnView, _declared.Definition);
+        Declares = true;
         return Track(new MigrationAction("create " + _name, Statements(_declared.Definition)));
     }
 
@@ -601,12 +609,14 @@ public sealed class TriggerActions
     {
         var definition = new TriggerDefinition(_name, timing, events, sql, updateOf);
         LastDeclared = new TriggerSnapshot(Relation, OnView, definition);
+        Declares = true;
         return Track(new MigrationAction("recreate " + _name, Statements(definition)));
     }
 
     public MigrationAction DropTrigger()
     {
         LastDeclared = null;
+        Declares = true;
         return Track(new MigrationAction("drop " + _name, _dialect.DropTriggerSql(Relation, _name)));
     }
 

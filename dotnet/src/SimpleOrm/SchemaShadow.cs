@@ -253,7 +253,8 @@ public static class SchemaShadow
             foreach (var objectDir in Directory.GetDirectories(tableRoot))
             {
                 var latest = Directory.GetFiles(objectDir, "V*.schema.json")
-                    .Select(file => (File: file, Parsed: SchemaSnapshot.Parse(ReadStamped(file, dialect))))
+                    .Select(file => (File: file, Json: File.ReadAllText(file)))
+                    .Select(file => (file.File, file.Json, Parsed: SchemaSnapshot.Parse(file.Json)))
                     .Where(s => s.Parsed.AsOfVersion <= fromVersion)
                     .OrderByDescending(s => s.Parsed.AsOfVersion)
                     .FirstOrDefault();
@@ -261,6 +262,8 @@ public static class SchemaShadow
                 {
                     continue;   // table born after the trusted version
                 }
+
+                RequireStamp(latest.File, latest.Json, dialect);
 
                 await ExecuteAsync(db, dialect.CreateTableSql(latest.Parsed.Schema), ct).ConfigureAwait(false);
                 foreach (var index in latest.Parsed.Schema.Indexes)
@@ -288,15 +291,19 @@ public static class SchemaShadow
 
             foreach (var objectDir in Directory.GetDirectories(kindRoot))
             {
-                var latest = Directory.GetFiles(objectDir, "V*.schema.json")
-                    .Select(file => SchemaSnapshot.ParseDdl(ReadStamped(file, dialect)))
-                    .Where(s => s.AsOfVersion <= fromVersion)
-                    .OrderByDescending(s => s.AsOfVersion)
+                var latestFile = Directory.GetFiles(objectDir, "V*.schema.json")
+                    .Select(file => (File: file, Json: File.ReadAllText(file)))
+                    .Select(file => (file.File, file.Json, Parsed: SchemaSnapshot.ParseDdl(file.Json)))
+                    .Where(s => s.Parsed.AsOfVersion <= fromVersion)
+                    .OrderByDescending(s => s.Parsed.AsOfVersion)
                     .FirstOrDefault();
-                if (latest.Ddl is null)
+                if (latestFile.File is null)
                 {
                     continue;
                 }
+
+                RequireStamp(latestFile.File, latestFile.Json, dialect);
+                var latest = latestFile.Parsed;
 
                 var sql = SchemaSnapshot.TryParseViewDdl(latest.Ddl, out var name, out var body, out var materialized)
                     ? dialect.CreateViewSql(name, body, materialized)
@@ -313,15 +320,19 @@ public static class SchemaShadow
         {
             foreach (var objectDir in Directory.GetDirectories(triggerRoot))
             {
-                var latest = Directory.GetFiles(objectDir, "V*.schema.json")
-                    .Select(file => SchemaSnapshot.ParseTrigger(ReadStamped(file, dialect)))
-                    .Where(s => s.AsOfVersion <= fromVersion)
-                    .OrderByDescending(s => s.AsOfVersion)
+                var latestFile = Directory.GetFiles(objectDir, "V*.schema.json")
+                    .Select(file => (File: file, Json: File.ReadAllText(file)))
+                    .Select(file => (file.File, file.Json, Parsed: SchemaSnapshot.ParseTrigger(file.Json)))
+                    .Where(s => s.Parsed.AsOfVersion <= fromVersion)
+                    .OrderByDescending(s => s.Parsed.AsOfVersion)
                     .FirstOrDefault();
-                if (latest.Snapshot is null)
+                if (latestFile.File is null)
                 {
                     continue;
                 }
+
+                RequireStamp(latestFile.File, latestFile.Json, dialect);
+                var latest = latestFile.Parsed;
 
                 foreach (var sql in dialect.CreateTriggerSql(latest.Snapshot.Relation, latest.Snapshot.OnView, latest.Snapshot.Definition))
                 {
@@ -334,13 +345,9 @@ public static class SchemaShadow
         }
     }
 
-    /// <summary>Reads a committed snapshot, refusing one stamped for another dialect (<c>MIG-014</c>).</summary>
-    private static string ReadStamped(string file, IDialect dialect)
-    {
-        var json = File.ReadAllText(file);
-        SchemaSnapshot.RequireDialect(SchemaSnapshot.DialectOf(json), dialect, file);
-        return json;
-    }
+    /// <summary>The consulted snapshot's stamp must be the dialect's (<c>MIG-014</c>) — checked on the baseline the shadow uses, not on every file in the folder.</summary>
+    private static void RequireStamp(string file, string json, IDialect dialect)
+        => SchemaSnapshot.RequireDialect(SchemaSnapshot.DialectOf(json), dialect, file);
 
     // --- introspection (dialect-neutral, through the seam's fixed shapes) -------------
 

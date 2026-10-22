@@ -1,0 +1,42 @@
+{
+  "name": "trigger_derived_down",
+  "comment": "ADR-0042 + ADR-0018 on SQL Server (ADR-0043): one statement-level trigger; the rollback guards on this version's rendering, drops it, and recreates the previous declaration through the dialect. No `triggers` deep expect: SQL Server's stored text renders {new: id} as `inserted`, so the declaration cannot be read back — the guard's MIG-012 comparison on the rendering is the proof that the live trigger is the expected one.",
+  "snapshots": [
+    { "object": "widgets", "dialect": "sqlserver", "asOfVersion": 1, "generatedAt": "2026-10-22T12:00:00.0000000Z",
+      "columns": [ { "column": "id", "type": "bigint", "nullable": false, "key": true, "generated": true },
+                   { "column": "name", "type": "nvarchar(max)", "nullable": true } ],
+      "indexes": [] },
+    { "object": "trg_widgets", "dialect": "sqlserver", "kind": "trigger", "relation": "widgets", "relationKind": "table",
+      "asOfVersion": 1, "generatedAt": "2026-10-22T12:00:00.0000000Z",
+      "timing": "after", "events": ["update"],
+      "sql": "update widgets set name = name where id in (select n.id from {new: id} n);" },
+    { "object": "trg_widgets", "dialect": "sqlserver", "kind": "trigger", "relation": "widgets", "relationKind": "table",
+      "asOfVersion": 2, "generatedAt": "2026-10-22T12:00:00.0000000Z",
+      "timing": "after", "events": ["update", "delete"],
+      "sql": "update widgets set name = name where id in (select o.id from {old: id} o);" }
+  ],
+  "versions": [
+    { "version": 1, "steps": [
+        { "object": "widgets", "description": "create",
+          "up": ["create table [widgets] ([id] bigint identity(1,1) primary key, [name] nvarchar(max))"] },
+        { "object": "trg_widgets", "description": "create_trigger",
+          "trigger": { "relation": "widgets", "relationKind": "table", "timing": "after", "events": ["update"],
+                       "sql": "update widgets set name = name where id in (select n.id from {new: id} n);" } } ] },
+    { "version": 2, "steps": [
+        { "object": "trg_widgets", "description": "change_trigger",
+          "expectTrigger": { "relation": "widgets", "relationKind": "table", "timing": "after", "events": ["update"],
+                             "sql": "update widgets set name = name where id in (select n.id from {new: id} n);" },
+          "trigger": { "relation": "widgets", "relationKind": "table", "timing": "after", "events": ["update", "delete"],
+                       "sql": "update widgets set name = name where id in (select o.id from {old: id} o);" } } ] }
+  ],
+  "run": [
+    { "command": "migrate",
+      "expect": { "applied": [[1, "widgets"], [1, "trg_widgets"], [2, "trg_widgets"]] } },
+    { "command": "down", "to": 1,
+      "expect": { "applied": [[1, "widgets"], [1, "trg_widgets"]] } },
+    { "command": "down", "to": 0,
+      "expect": { "applied": [] } },
+    { "command": "migrate",
+      "expect": { "applied": [[1, "widgets"], [1, "trg_widgets"], [2, "trg_widgets"]] } }
+  ]
+}

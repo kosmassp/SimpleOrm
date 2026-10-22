@@ -164,7 +164,7 @@ public sealed class SqlServerDialectTests
     public void Storage_types_follow_the_sql_server_conventions()
     {
         var transactions = Maps.Load<Transaction>();
-        Assert.Equal("decimal(38,9)", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "Amount")));
+        Assert.Equal("decimal(18,2)", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "Amount")));   // the fixture facet (ADR-0043)
         Assert.Equal("nvarchar(100)", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "Status")));
         Assert.Equal("datetimeoffset", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "CreatedAtUtc")));
         Assert.Equal("bigint", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "Id")));

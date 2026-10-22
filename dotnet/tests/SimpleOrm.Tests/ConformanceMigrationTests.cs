@@ -1,6 +1,8 @@
+using System.Data.Common;
 using System.Text.Json;
-using Microsoft.Data.Sqlite;
+using SimpleOrm.Postgres;
 using SimpleOrm.Sqlite;
+using SimpleOrm.SqlServer;
 using Xunit;
 
 namespace SimpleOrm.Tests;
@@ -12,142 +14,167 @@ namespace SimpleOrm.Tests;
 /// A case may carry `snapshots` (the derived-rollback history, ADR-0018), step
 /// `renames`/`expectDefinition` (typed renames; the MIG-012 view guard), a raw
 /// `sql` command (the outside hotfix), `force` on migrate/down, and deep expects
-/// (`columns` per table, `ddl` per view).
+/// (`columns` per table, `ddl` per view, `triggers` per trigger). The root folder
+/// runs on SQLite; the `postgres/` and `sqlserver/` subfolders (ADR-0043) run the
+/// same runner against a live server, each case in a throwaway database the
+/// dialect's shadow host provisions, and skip where no server answers.
 /// </summary>
 public sealed class ConformanceMigrationTests
 {
-    public static TheoryData<string> CaseFiles
-    {
-        get
-        {
-            var data = new TheoryData<string>();
-            foreach (var file in Directory.GetFiles(Path.Combine(ConformanceDirectory(), "migrations-cases"), "*.json"))
-            {
-                data.Add(Path.GetFileName(file));
-            }
+    public static TheoryData<string> CaseFiles => CaseFilesIn(string.Empty);
 
-            return data;
+    public static TheoryData<string> PostgresCaseFiles => CaseFilesIn("postgres");
+
+    public static TheoryData<string> SqlServerCaseFiles => CaseFilesIn("sqlserver");
+
+    private static TheoryData<string> CaseFilesIn(string dialectFolder)
+    {
+        var data = new TheoryData<string>();
+        foreach (var file in Directory.GetFiles(Path.Combine(ConformanceDirectory(), "migrations-cases", dialectFolder), "*.json"))
+        {
+            data.Add(Path.GetFileName(file));
         }
+
+        return data;
     }
 
     [Theory]
     [MemberData(nameof(CaseFiles))]
-    public async Task Case_behaves_as_specified(string fileName)
+    public Task Case_behaves_as_specified(string fileName)
+        => RunAsync(fileName, string.Empty, new SqliteDialect(), new SqliteShadowHost(), adminConnectionString: null);
+
+    [PostgresTheory]
+    [MemberData(nameof(PostgresCaseFiles))]
+    public Task Postgres_case_behaves_as_specified(string fileName)
+        => RunAsync(fileName, "postgres", new PostgresDialect(), new PostgresShadowHost(), PostgresFixture.AdminConnectionString);
+
+    [SqlServerTheory]
+    [MemberData(nameof(SqlServerCaseFiles))]
+    public Task SqlServer_case_behaves_as_specified(string fileName)
+        => RunAsync(fileName, "sqlserver", new SqlServerDialect(), new SqlServerShadowHost(), SqlServerFixture.MasterConnectionString);
+
+    private static async Task RunAsync(string fileName, string dialectFolder, IDialect dialect, IShadowHost host, string? adminConnectionString)
     {
         using var document = JsonDocument.Parse(
-            File.ReadAllText(Path.Combine(ConformanceDirectory(), "migrations-cases", fileName)));
+            File.ReadAllText(Path.Combine(ConformanceDirectory(), "migrations-cases", dialectFolder, fileName)));
         var spec = document.RootElement;
         var defaultVersions = ParseVersions(spec.GetProperty("versions"));
 
-        var path = Path.Combine(Path.GetTempPath(), $"simpleorm_migcase_{Guid.NewGuid():N}.db");
         var snapshotDir = Path.Combine(Path.GetTempPath(), $"simpleorm_migcase_{Guid.NewGuid():N}");
+        var connectionString = await host.ProvisionAsync(adminConnectionString, CancellationToken.None);
         try
         {
             var snapshots = LoadSnapshots(spec, snapshotDir);
-            await using var db = await Db.OpenAsync(
-                $"Data Source={path}", new DbOptions { Dialect = new SqliteDialect() }, CancellationToken.None);
-
-            foreach (var step in spec.GetProperty("run").EnumerateArray())
+            var db = await Db.OpenAsync(connectionString, new DbOptions { Dialect = dialect }, CancellationToken.None);
+            await using (db)
             {
-                var versions = step.TryGetProperty("versions", out var overrideVersions)
-                    ? ParseVersions(overrideVersions)
-                    : defaultVersions;
-                var runner = new MigrationRunner(db, versions, snapshots);
-                var force = step.TryGetProperty("force", out var forceFlag) && forceFlag.GetBoolean();
-                var expect = step.GetProperty("expect");
+                foreach (var step in spec.GetProperty("run").EnumerateArray())
+                {
+                    var versions = step.TryGetProperty("versions", out var overrideVersions)
+                        ? ParseVersions(overrideVersions)
+                        : defaultVersions;
+                    var runner = new MigrationRunner(db, versions, snapshots);
+                    var force = step.TryGetProperty("force", out var forceFlag) && forceFlag.GetBoolean();
+                    var expect = step.GetProperty("expect");
 
-                string? error = null;
-                try
-                {
-                    switch (step.GetProperty("command").GetString())
+                    string? error = null;
+                    try
                     {
-                        case "migrate":
-                            await runner.MigrateAsync(force, notify: null, CancellationToken.None);
-                            break;
-                        case "down":
-                            await runner.MigrateDownAsync(
-                                step.GetProperty("to").GetInt64(), force, notify: null, CancellationToken.None);
-                            break;
-                        case "baseline":
-                            await runner.BaselineAsync(step.GetProperty("version").GetInt64(), CancellationToken.None);
-                            break;
-                        case "sql":
-                            // The urgency hotfix: statements applied outside migrations.
-                            await SchemaSync.ApplyAsync(
-                                db,
-                                step.GetProperty("statements").EnumerateArray().Select(s => s.GetString()!),
-                                CancellationToken.None);
-                            break;
-                        default:
-                            throw new InvalidOperationException("unknown command");
-                    }
-                }
-                catch (SimpleOrmException exception)
-                {
-                    error = exception.Code;
-                }
-
-                if (expect.TryGetProperty("error", out var expectedError))
-                {
-                    Assert.Equal(expectedError.GetString(), error);
-                }
-                else
-                {
-                    Assert.Null(error);
-                    if (expect.TryGetProperty("applied", out var applied))
-                    {
-                        var expected = applied.EnumerateArray()
-                            .Select(row => (row[0].GetInt64(), row[1].GetString()!))
-                            .OrderBy(r => r)
-                            .ToArray();
-                        Assert.Equal(expected, await ReadAppliedAsync(db));
-                    }
-                }
-
-                if (expect.TryGetProperty("columns", out var columnExpects))
-                {
-                    foreach (var table in columnExpects.EnumerateObject())
-                    {
-                        var expected = table.Value.EnumerateArray().Select(c => c.GetString()!).OrderBy(c => c).ToArray();
-                        Assert.Equal(expected, ReadColumns(path, table.Name));
-                    }
-                }
-
-                if (expect.TryGetProperty("triggers", out var triggerExpects))
-                {
-                    // The live trigger, read back through the dialect and parsed to its declaration (ADR-0042);
-                    // null expects it gone.
-                    foreach (var trigger in triggerExpects.EnumerateObject())
-                    {
-                        var live = ReadTrigger(path, trigger.Name);
-                        if (trigger.Value.ValueKind == JsonValueKind.Null)
+                        switch (step.GetProperty("command").GetString())
                         {
-                            Assert.Null(live);
-                            continue;
+                            case "migrate":
+                                await runner.MigrateAsync(force, notify: null, CancellationToken.None);
+                                break;
+                            case "down":
+                                await runner.MigrateDownAsync(
+                                    step.GetProperty("to").GetInt64(), force, notify: null, CancellationToken.None);
+                                break;
+                            case "baseline":
+                                await runner.BaselineAsync(step.GetProperty("version").GetInt64(), CancellationToken.None);
+                                break;
+                            case "sql":
+                                // The urgency hotfix: statements applied outside migrations.
+                                await SchemaSync.ApplyAsync(
+                                    db,
+                                    step.GetProperty("statements").EnumerateArray().Select(s => s.GetString()!),
+                                    CancellationToken.None);
+                                break;
+                            default:
+                                throw new InvalidOperationException("unknown command");
                         }
-
-                        Assert.NotNull(live);
-                        var expectedTrigger = SchemaSnapshot.ParseTrigger(trigger.Value, trigger.Name);
-                        Assert.Equal(expectedTrigger.Relation, live.Relation);
-                        Assert.True(expectedTrigger.Definition.SameAs(live.Definition), $"trigger {trigger.Name} differs from the expected declaration");
                     }
-                }
-
-                if (expect.TryGetProperty("ddl", out var ddlExpects))
-                {
-                    foreach (var view in ddlExpects.EnumerateObject())
+                    catch (SimpleOrmException exception)
                     {
-                        Assert.Equal(
-                            SchemaSnapshot.NormalizeDdl(view.Value.GetString()!),
-                            ReadViewDdl(path, view.Name));
+                        error = exception.Code;
+                    }
+
+                    if (expect.TryGetProperty("error", out var expectedError))
+                    {
+                        Assert.Equal(expectedError.GetString(), error);
+                    }
+                    else
+                    {
+                        Assert.Null(error);
+                        if (expect.TryGetProperty("applied", out var applied))
+                        {
+                            var expected = applied.EnumerateArray()
+                                .Select(row => (row[0].GetInt64(), row[1].GetString()!))
+                                .OrderBy(r => r)
+                                .ToArray();
+                            Assert.Equal(expected, await ReadAppliedAsync(db));
+                        }
+                    }
+
+                    if (expect.TryGetProperty("columns", out var columnExpects))
+                    {
+                        foreach (var table in columnExpects.EnumerateObject())
+                        {
+                            var expected = table.Value.EnumerateArray().Select(c => c.GetString()!).OrderBy(c => c, StringComparer.Ordinal).ToArray();
+                            var live = await SchemaShadow.IntrospectAsync(db, table.Name, CancellationToken.None);
+                            Assert.Equal(expected, live?.Columns.Select(c => c.Name).OrderBy(c => c, StringComparer.Ordinal).ToArray() ?? []);
+                        }
+                    }
+
+                    if (expect.TryGetProperty("triggers", out var triggerExpects))
+                    {
+                        // The live trigger, read back through the dialect and parsed to its declaration (ADR-0042);
+                        // null expects it gone. A dialect without a lossless read-back cannot run such a case.
+                        var readBack = host.TriggerReadBack ?? throw new InvalidOperationException(
+                            $"{dialect.Name} cannot read a trigger back; the case must not carry a 'triggers' expect");
+                        using var probe = dialect.CreateConnection(connectionString);
+                        await probe.OpenAsync(CancellationToken.None);
+                        foreach (var trigger in triggerExpects.EnumerateObject())
+                        {
+                            var live = readBack.Read(probe, trigger.Name, out _);
+                            if (trigger.Value.ValueKind == JsonValueKind.Null)
+                            {
+                                Assert.Null(live);
+                                continue;
+                            }
+
+                            Assert.NotNull(live);
+                            var expectedTrigger = SchemaSnapshot.ParseTrigger(trigger.Value, trigger.Name);
+                            Assert.Equal(expectedTrigger.Relation, live.Relation);
+                            Assert.True(expectedTrigger.Definition.SameAs(live.Definition), $"trigger {trigger.Name} differs from the expected declaration");
+                        }
+                    }
+
+                    if (expect.TryGetProperty("ddl", out var ddlExpects))
+                    {
+                        // Verbatim dialects only: the stored text, normalized.
+                        foreach (var view in ddlExpects.EnumerateObject())
+                        {
+                            Assert.Equal(
+                                SchemaSnapshot.NormalizeDdl(view.Value.GetString()!),
+                                await ReadViewDdlAsync(dialect, connectionString, view.Name));
+                        }
                     }
                 }
             }
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
-            File.Delete(path);
+            await host.DropAsync(CancellationToken.None);
             if (Directory.Exists(snapshotDir))
             {
                 Directory.Delete(snapshotDir, recursive: true);
@@ -208,44 +235,23 @@ public sealed class ConformanceMigrationTests
             var rows = await db.QueryAsync(query, EmptyArgs.Value, CancellationToken.None);
             return rows.Select(r => (r.Version, r.Object)).OrderBy(r => r).ToArray();
         }
-        catch (SqliteException)
+        catch (DbException)
         {
-            return [];
+            return [];   // no version table yet
         }
     }
 
-    private static string[] ReadColumns(string databasePath, string table)
+    private static async Task<string?> ReadViewDdlAsync(IDialect dialect, string connectionString, string view)
     {
-        using var connection = new SqliteConnection($"Data Source={databasePath}");
-        connection.Open();
+        using var connection = dialect.CreateConnection(connectionString);
+        await connection.OpenAsync(CancellationToken.None);
         using var command = connection.CreateCommand();
-        command.CommandText = "select name from pragma_table_info(@t) order by name";
-        command.Parameters.AddWithValue("@t", table);
-        var columns = new List<string>();
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
-        {
-            columns.Add(reader.GetString(0));
-        }
-
-        return [.. columns];
-    }
-
-    private static TriggerSnapshot? ReadTrigger(string databasePath, string trigger)
-    {
-        using var connection = new SqliteConnection($"Data Source={databasePath}");
-        connection.Open();
-        return SqliteTriggerDdl.Read(connection, trigger);
-    }
-
-    private static string? ReadViewDdl(string databasePath, string view)
-    {
-        using var connection = new SqliteConnection($"Data Source={databasePath}");
-        connection.Open();
-        using var command = connection.CreateCommand();
-        command.CommandText = "select sql from sqlite_master where type = 'view' and name = @v";
-        command.Parameters.AddWithValue("@v", view);
-        return command.ExecuteScalar() is string sql ? SchemaSnapshot.NormalizeDdl(sql) : null;
+        command.CommandText = dialect.ViewDefinitionSql;
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "@relation";
+        parameter.Value = view;
+        command.Parameters.Add(parameter);
+        return await command.ExecuteScalarAsync(CancellationToken.None) is string sql ? SchemaSnapshot.NormalizeDdl(sql) : null;
     }
 
     public sealed record AppliedRow(long Version, string Object);

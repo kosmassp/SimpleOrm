@@ -17,7 +17,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
     // default instance. Encrypt=false there: Microsoft.Data.SqlClient defaults to
     // Encrypt=Mandatory since 4.0, which refuses LocalDB's self-signed certificate;
     // the instance is in-process on this machine, nothing crosses a wire.
-    private static readonly string MasterConnectionString =
+    internal static readonly string MasterConnectionString =
         Environment.GetEnvironmentVariable("SIMPLEORM_SQLSERVER") is { Length: > 0 } configured
             ? configured
             : @"Server=(localdb)\MSSQLLocalDB;Database=master;Integrated Security=true;Encrypt=false;Connect Timeout=60";
@@ -92,6 +92,18 @@ public sealed class SqlServerFactAttribute : FactAttribute
         if (!SqlServerFixture.Available)
         {
             Skip = "SQL Server LocalDB is not available on this machine";
+        }
+    }
+}
+
+/// <summary>A theory that runs only where a SQL Server answers (the per-dialect conformance folders, ADR-0043).</summary>
+public sealed class SqlServerTheoryAttribute : TheoryAttribute
+{
+    public SqlServerTheoryAttribute()
+    {
+        if (!SqlServerFixture.Available)
+        {
+            Skip = "SQL Server is not available (set SIMPLEORM_SQLSERVER, or install LocalDB)";
         }
     }
 }

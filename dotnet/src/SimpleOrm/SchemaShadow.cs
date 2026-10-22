@@ -28,7 +28,7 @@ public static class SchemaShadow
         public List<string> Notes { get; } = [];
     }
 
-    public static async Task<Result> RebuildSnapshotsAsync(
+    public static Task<Result> RebuildSnapshotsAsync(
         Assembly assembly,
         string? migrationsNamespace,
         string migrationsDir,
@@ -38,16 +38,32 @@ public static class SchemaShadow
         long fromVersion = 0,
         long toVersion = long.MaxValue,
         CancellationToken ct = default)
+        => RebuildSnapshotsAsync(
+            DiscoverVersions(assembly, migrationsNamespace),
+            EntityMapLoader.ScannedEntityTypes(assembly.GetExportedTypes()),   // ADR-0041: a base class refuses the scan
+            migrationsDir, dialect, host, adminConnectionString, fromVersion, toVersion, ct);
+
+    /// <summary>As above, from explicit versions and entity types — the form the tests and an application without an assembly scan use.</summary>
+    public static async Task<Result> RebuildSnapshotsAsync(
+        IReadOnlyList<MigrationVersion> versions,
+        IEnumerable<Type> entityTypes,
+        string migrationsDir,
+        IDialect dialect,
+        IShadowHost host,
+        string? adminConnectionString,
+        long fromVersion = 0,
+        long toVersion = long.MaxValue,
+        CancellationToken ct = default)
     {
         var result = new Result();
-        var versions = DiscoverVersions(assembly, migrationsNamespace);
+        versions = versions.OrderBy(v => v.Version).ToArray();
         if (versions.Count == 0)
         {
             result.Notes.Add("no migration versions found");
             return result;
         }
 
-        var entityByRelation = MapEntities(assembly);
+        var entityByRelation = MapEntities(entityTypes);
         var generatedAt = DateTimeOffset.UtcNow;
         var stamp = dialect.Name;
         var connectionString = await host.ProvisionAsync(adminConnectionString, ct).ConfigureAwait(false);
@@ -409,11 +425,11 @@ public static class SchemaShadow
         };
     }
 
-    private static Dictionary<string, MappedEntity> MapEntities(Assembly assembly)
+    private static Dictionary<string, MappedEntity> MapEntities(IEnumerable<Type> entityTypes)
     {
         var loader = new EntityMapLoader();
         var byRelation = new Dictionary<string, MappedEntity>(StringComparer.OrdinalIgnoreCase);
-        foreach (var type in EntityMapLoader.ScannedEntityTypes(assembly.GetExportedTypes()))   // ADR-0041: a base class refuses the scan
+        foreach (var type in entityTypes)
         {
             var map = loader.Load(type);
             if (map.RelationName is not null && map.Kind != RelationKind.Statement)

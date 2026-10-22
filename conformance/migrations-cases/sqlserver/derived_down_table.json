@@ -1,0 +1,47 @@
+{
+  "name": "derived_down_table",
+  "comment": "ADR-0018 on SQL Server (ADR-0043): the same derived rollbacks as the SQLite case, through the dialect's renderings — sp_rename inverts the rename, the drop column batch drops a default constraint first, the version's index drops before the column it covers. Snapshots carry the sqlserver stamp and the columns query's spellings. Runs on a live server (skip-gated).",
+  "versions": [
+    { "version": 1, "steps": [ { "object": "widgets", "description": "create",
+        "up": ["create table [widgets] ([id] bigint identity(1,1) primary key, [name] nvarchar(max) not null)"] } ] },
+    { "version": 2, "steps": [ { "object": "widgets", "description": "add_note",
+        "up": ["alter table [widgets] add [note] nvarchar(450)", "create index [ix_widgets_note] on [widgets] ([note])"] } ] },
+    { "version": 3, "steps": [ { "object": "widgets", "description": "rename_name",
+        "up": ["exec sp_rename N'widgets.name', N'full_name', 'COLUMN'"],
+        "renames": [ { "from": "name", "to": "full_name" } ] } ] }
+  ],
+  "snapshots": [
+    { "object": "widgets", "dialect": "sqlserver", "asOfVersion": 1,
+      "columns": [
+        { "column": "id", "type": "bigint", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "nvarchar(max)", "nullable": false } ],
+      "indexes": [] },
+    { "object": "widgets", "dialect": "sqlserver", "asOfVersion": 2,
+      "columns": [
+        { "column": "id", "type": "bigint", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "nvarchar(max)", "nullable": false },
+        { "column": "note", "type": "nvarchar(450)", "nullable": true } ],
+      "indexes": [ { "name": "ix_widgets_note", "columns": [ { "column": "note", "direction": "asc" } ] } ] },
+    { "object": "widgets", "dialect": "sqlserver", "asOfVersion": 3,
+      "columns": [
+        { "column": "full_name", "type": "nvarchar(max)", "nullable": false },
+        { "column": "id", "type": "bigint", "nullable": false, "key": true, "generated": true },
+        { "column": "note", "type": "nvarchar(450)", "nullable": true } ],
+      "indexes": [ { "name": "ix_widgets_note", "columns": [ { "column": "note", "direction": "asc" } ] } ] }
+  ],
+  "run": [
+    { "command": "migrate",
+      "expect": { "applied": [[1, "widgets"], [2, "widgets"], [3, "widgets"]],
+                  "columns": { "widgets": ["full_name", "id", "note"] } } },
+    { "command": "down", "to": 2,
+      "expect": { "applied": [[1, "widgets"], [2, "widgets"]],
+                  "columns": { "widgets": ["id", "name", "note"] } } },
+    { "command": "down", "to": 1,
+      "expect": { "applied": [[1, "widgets"]],
+                  "columns": { "widgets": ["id", "name"] } } },
+    { "command": "down", "to": 0, "expect": { "applied": [] } },
+    { "command": "migrate",
+      "expect": { "applied": [[1, "widgets"], [2, "widgets"], [3, "widgets"]],
+                  "columns": { "widgets": ["full_name", "id", "note"] } } }
+  ]
+}

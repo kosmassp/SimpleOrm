@@ -1,0 +1,38 @@
+{
+  "name": "derived_down_drops_index_before_column",
+  "comment": "ADR-0043: a version that adds a column and an index over it rolls back index first — SQLite and SQL Server refuse to drop a column an index still covers. The derived order is renames, then the version's new indexes dropped, restored columns added, added columns dropped, and the previous version's indexes recreated.",
+  "versions": [
+    { "version": 1, "steps": [ { "object": "widgets", "description": "create",
+        "up": ["create table widgets (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT"] } ] },
+    { "version": 2, "steps": [ { "object": "widgets", "description": "add_indexed_note",
+        "up": [
+          "alter table widgets add column note TEXT",
+          "create index ix_widgets_note on widgets (note)"
+        ] } ] }
+  ],
+  "snapshots": [
+    { "object": "widgets", "asOfVersion": 1,
+      "columns": [
+        { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "TEXT", "nullable": false } ],
+      "indexes": [] },
+    { "object": "widgets", "asOfVersion": 2,
+      "columns": [
+        { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "TEXT", "nullable": false },
+        { "column": "note", "type": "TEXT", "nullable": true } ],
+      "indexes": [
+        { "name": "ix_widgets_note", "columns": [ { "column": "note", "direction": "asc" } ] } ] }
+  ],
+  "run": [
+    { "command": "migrate",
+      "expect": { "applied": [[1, "widgets"], [2, "widgets"]],
+                  "columns": { "widgets": ["id", "name", "note"] } } },
+    { "command": "down", "to": 1,
+      "expect": { "applied": [[1, "widgets"]],
+                  "columns": { "widgets": ["id", "name"] } } },
+    { "command": "migrate",
+      "expect": { "applied": [[1, "widgets"], [2, "widgets"]],
+                  "columns": { "widgets": ["id", "name", "note"] } } }
+  ]
+}

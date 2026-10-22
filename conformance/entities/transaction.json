@@ -32,7 +32,9 @@
     {
       "column": "amount",
       "type": "decimal",
-      "nullable": false
+      "nullable": false,
+      "precision": 18,
+      "scale": 2
     },
     {
       "column": "version",

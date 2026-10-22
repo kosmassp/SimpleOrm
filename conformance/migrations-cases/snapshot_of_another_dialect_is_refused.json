@@ -1,0 +1,29 @@
+{
+  "name": "snapshot_of_another_dialect_is_refused",
+  "comment": "ADR-0043 (MIG-014): a tree and its snapshots belong to one dialect. A snapshot stamped for postgres offered to a sqlite rollback refuses for the whole range before anything executes — the applied rows stay as they were. Unstamped snapshots are sqlite's (format v2 compatibility).",
+  "versions": [
+    { "version": 1, "steps": [ { "object": "widgets", "description": "create",
+        "up": ["create table widgets (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT"] } ] },
+    { "version": 2, "steps": [ { "object": "widgets", "description": "add_note",
+        "up": ["alter table widgets add column note TEXT"] } ] }
+  ],
+  "snapshots": [
+    { "object": "widgets", "asOfVersion": 1,
+      "columns": [
+        { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "TEXT", "nullable": false } ],
+      "indexes": [] },
+    { "object": "widgets", "dialect": "postgres", "asOfVersion": 2,
+      "columns": [
+        { "column": "id", "type": "bigint", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "text", "nullable": false },
+        { "column": "note", "type": "text", "nullable": true } ],
+      "indexes": [] }
+  ],
+  "run": [
+    { "command": "migrate", "expect": { "applied": [[1, "widgets"], [2, "widgets"]] } },
+    { "command": "down", "to": 1, "expect": { "error": "MIG-014" } },
+    { "command": "migrate", "expect": { "applied": [[1, "widgets"], [2, "widgets"]],
+                                        "columns": { "widgets": ["id", "name", "note"] } } }
+  ]
+}

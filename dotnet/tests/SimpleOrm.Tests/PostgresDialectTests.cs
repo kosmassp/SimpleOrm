@@ -133,7 +133,7 @@ public sealed class PostgresDialectTests
     public void Storage_types_are_format_type_spellings()
     {
         var transactions = Maps.Load<Transaction>();
-        Assert.Equal("numeric", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "Amount")));
+        Assert.Equal("numeric(18,2)", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "Amount")));   // the fixture facet (ADR-0043)
         Assert.Equal("text", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "Status")));
         Assert.Equal("timestamp with time zone", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "CreatedAtUtc")));
         Assert.Equal("bigint", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "Id")));

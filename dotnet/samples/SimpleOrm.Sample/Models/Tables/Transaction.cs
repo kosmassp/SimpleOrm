@@ -26,7 +26,8 @@ public sealed class Transaction : BaseModel
     [Column]
     public TransactionStatus Status { get; set; }
 
-    [Column]
+    /// <summary>Storage facets (ADR-0043): <c>decimal(18,2)</c> on SQL Server, <c>numeric(18,2)</c> on PostgreSQL, <c>TEXT</c> on SQLite as before.</summary>
+    [Column(Precision = 18, Scale = 2)]
     public decimal Amount { get; set; }
 
     [Version]

@@ -1,15 +1,33 @@
 {
   "name": "user_transaction_totals_v6",
-  "comment": "The DDL-shaped snapshot (ADR-0017 add.1): views record their normalized defining DDL — whitespace collapsed, the create-view prefix canonicalized — because the definition is the schema.",
+  "comment": "The DDL-shaped snapshot (ADR-0017 add.1, dialect-neutral content since ADR-0043): views record their normalized defining DDL — whitespace collapsed, the create-view prefix canonicalized with `or alter`/`or replace`/`if not exists` and the name's quoting stripped — because the definition is the schema and the body is the one SQL the entity declares. Only the dialect stamp differs per dialect.",
   "entity": "UserTransactionTotal",
   "kind": "view",
   "asOfVersion": 6,
   "generatedAt": "2026-08-29T12:00:00.0000000Z",
   "expect": {
-    "object": "user_transaction_totals",
-    "kind": "view",
-    "asOfVersion": 6,
-    "generatedAt": "2026-08-29T12:00:00.0000000Z",
-    "ddl": "create view user_transaction_totals as select u.id as user_id, u.name as user_name, count(t.id) as transaction_count, coalesce(sum(t.amount), 0) as total_amount, max(t.created_at) as last_transaction_at from users u left join transactions t on t.user_id = u.id group by u.id, u.name"
+    "sqlite": {
+      "object": "user_transaction_totals",
+      "kind": "view",
+      "asOfVersion": 6,
+      "generatedAt": "2026-08-29T12:00:00.0000000Z",
+      "ddl": "create view user_transaction_totals as select u.id as user_id, u.name as user_name, count(t.id) as transaction_count, coalesce(sum(t.amount), 0) as total_amount, max(t.created_at) as last_transaction_at from users u left join transactions t on t.user_id = u.id group by u.id, u.name"
+    },
+    "sqlserver": {
+      "object": "user_transaction_totals",
+      "dialect": "sqlserver",
+      "kind": "view",
+      "asOfVersion": 6,
+      "generatedAt": "2026-08-29T12:00:00.0000000Z",
+      "ddl": "create view user_transaction_totals as select u.id as user_id, u.name as user_name, count(t.id) as transaction_count, coalesce(sum(t.amount), 0) as total_amount, max(t.created_at) as last_transaction_at from users u left join transactions t on t.user_id = u.id group by u.id, u.name"
+    },
+    "postgres": {
+      "object": "user_transaction_totals",
+      "dialect": "postgres",
+      "kind": "view",
+      "asOfVersion": 6,
+      "generatedAt": "2026-08-29T12:00:00.0000000Z",
+      "ddl": "create view user_transaction_totals as select u.id as user_id, u.name as user_name, count(t.id) as transaction_count, coalesce(sum(t.amount), 0) as total_amount, max(t.created_at) as last_transaction_at from users u left join transactions t on t.user_id = u.id group by u.id, u.name"
+    }
   }
 }

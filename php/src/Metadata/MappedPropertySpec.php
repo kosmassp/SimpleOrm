@@ -11,7 +11,8 @@ use ReflectionProperty;
  * (§7.2; mirrors the C# reference's `MappedPropertySpec`): the loaders (attribute,
  * convention, manual builder) each resolve a property's neutral type and
  * declared flags into one of these; {@see MapAssembler} resolves the column
- * name and turns it into a {@see PropertyMap}.
+ * name and turns it into a {@see PropertyMap}. `$length`/`$precision`/`$scale` are the facets exactly as declared
+ * (ADR-0043): the assembler validates them (`MAP-032`) before they become the property's resolved facets.
  */
 final readonly class MappedPropertySpec
 {
@@ -29,6 +30,9 @@ final readonly class MappedPropertySpec
         public AuditRole $audit = AuditRole::None,
         public bool $isSoftDelete = false,
         public ?string $renamedFrom = null,
+        public ?int $length = null,
+        public ?int $precision = null,
+        public ?int $scale = null,
     ) {
     }
 }

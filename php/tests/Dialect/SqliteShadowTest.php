@@ -10,9 +10,10 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
-use SimpleOrm\Dialect\SqliteShadow;
+use SimpleOrm\Dialect\SqliteDialect;
 use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Migrations\MigrationSet;
+use SimpleOrm\Migrations\SchemaShadow;
 use SimpleOrm\Migrations\SchemaSnapshot;
 use SimpleOrm\Migrations\TableSchema;
 use SimpleOrm\Migrations\TableSchemaColumn;
@@ -48,7 +49,7 @@ final class SqliteShadowTest extends TestCase
         $outDir = $this->tempDir('full');
         $set = MigrationSet::fromDirectory($this->fixtureDir(), self::NAMESPACE);
 
-        $result = SqliteShadow::rebuildSnapshots($set, new EntityMapLoader(), $outDir);
+        $result = SchemaShadow::for(new SqliteDialect())->rebuildSnapshots($set, new EntityMapLoader(), $outDir);
 
         self::assertCount(3, $result->writtenFiles);
 
@@ -100,11 +101,11 @@ final class SqliteShadowTest extends TestCase
 
         // Seed the trusted history with a full rebuild, then hand the out dir
         // only the snapshots at or below the trusted version.
-        $full = SqliteShadow::rebuildSnapshots($set, $maps, $committedDir);
+        $full = SchemaShadow::for(new SqliteDialect())->rebuildSnapshots($set, $maps, $committedDir);
         self::assertCount(3, $full->writtenFiles);
         self::copySnapshotsAtOrBelow($committedDir, $outDir, 2);
 
-        $result = SqliteShadow::rebuildSnapshots($set, $maps, $outDir, fromVersion: 2, toVersion: 3);
+        $result = SchemaShadow::for(new SqliteDialect())->rebuildSnapshots($set, $maps, $outDir, fromVersion: 2, toVersion: 3);
 
         // Only V0003 (widgets) is in the slice; V0001/V0002 were neither replayed nor rewritten.
         self::assertCount(1, $result->writtenFiles);

@@ -6,6 +6,7 @@ namespace SimpleOrm\Migrations;
 
 use SimpleOrm\Dialect\Dialect;
 use SimpleOrm\Metadata\EntityMap;
+use SimpleOrm\Metadata\RelationKind;
 
 /** View actions (§7.22); executed in declaration order. */
 final class ViewActions
@@ -36,14 +37,19 @@ final class ViewActions
 
     public function dropView(): MigrationAction
     {
-        return $this->track(new MigrationAction('drop ' . $this->view(), ['drop view ' . $this->dialect->quoteIdentifier($this->view())]));
+        // The plain view's string is frozen (recorded checksums hash it); a materialized view (PostgreSQL only) renders through the seam.
+        $sql = $this->map->kind === RelationKind::MaterializedView
+            ? $this->dialect->dropViewSql($this->view(), true)
+            : 'drop view ' . $this->dialect->quoteIdentifier($this->view());
+
+        return $this->track(new MigrationAction('drop ' . $this->view(), [$sql]));
     }
 
     /** Drops (if present) and re-creates from the current defining SQL. */
     public function recreateView(): MigrationAction
     {
         $statements = [
-            'drop view if exists ' . $this->dialect->quoteIdentifier($this->view()),
+            $this->dialect->dropViewSql($this->view(), $this->map->kind === RelationKind::MaterializedView),
             $this->dialect->createViewSql($this->map),
             ...$this->dialect->createIndexSql($this->map),
         ];

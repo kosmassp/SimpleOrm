@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SimpleOrm\Migrations\Diff;
 
 use ReflectionClass;
+use SimpleOrm\Dialect\Dialect;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Metadata\EntityTrigger;
@@ -119,7 +120,7 @@ final class DiffCommand
 
             if ($map->kind === RelationKind::Table) {
                 $snapshotDir = $options->outDir . '/Table/' . $shortName;
-                $baseline = self::latestTableSnapshotBelow($snapshotDir, $version);
+                $baseline = self::latestTableSnapshotBelow($snapshotDir, $version, $options->dialect);
                 if ($baseline === null && in_array($type, $migratedBelow, true)) {
                     $unrecorded[] = $map->relationName;
 
@@ -150,7 +151,7 @@ final class DiffCommand
                 $folder = $map->kind === RelationKind::View ? 'View' : 'MaterializedView';
                 $current = SchemaSnapshot::normalizeDdl($options->dialect->createViewSql($map));
                 $snapshotDir = $options->outDir . '/' . $folder . '/' . $shortName;
-                $previous = self::latestDdlSnapshotBelow($snapshotDir, $version);
+                $previous = self::latestDdlSnapshotBelow($snapshotDir, $version, $options->dialect);
                 if ($previous === null && in_array($type, $migratedBelow, true)) {
                     $unrecorded[] = $map->relationName;
 
@@ -175,7 +176,7 @@ final class DiffCommand
         $migratedTriggersBelow = self::triggersMigratedBelow($allSteps, $version);
         foreach ($declaredTriggers as $triggerClass => $declared) {
             $current = SchemaSnapshot::fromTrigger($declared['map'], $declared['trigger']);
-            $previous = self::latestTriggerSnapshotBelow($options->outDir . '/Trigger/' . self::shortName($triggerClass), $version)?->schema;
+            $previous = self::latestTriggerSnapshotBelow($options->outDir . '/Trigger/' . self::shortName($triggerClass), $version, $options->dialect)?->schema;
             if ($previous === null && in_array($triggerClass, $migratedTriggersBelow, true)) {
                 $unrecorded[] = $current->name();
 
@@ -196,7 +197,7 @@ final class DiffCommand
             }
         }
 
-        $removedTriggers = self::removedTriggers($options->outDir, $allSteps, $version, $declaredTriggers, $problems);
+        $removedTriggers = self::removedTriggers($options->outDir, $allSteps, $version, $declaredTriggers, $problems, $options->dialect);
         foreach ($removedTriggers as $removed) {
             $removals[] = 'trigger ' . $removed['previous']->name();
             $triggerChanges[] = $removed;
@@ -208,7 +209,7 @@ final class DiffCommand
             return $fail(
                 'no recorded schema below ' . $prefix . ' for ' . implode(', ', $unrecorded)
                 . ' — earlier versions migrate them but no snapshot describes them, so the diff would create them '
-                . "anew; run simpleorm shadow --to {$below} (sqlite) or snapshot on a database migrated to {$below}, then retry",
+                . "anew; run simpleorm shadow --to {$below} or snapshot on a database migrated to {$below}, then retry",
             );
         }
 
@@ -523,7 +524,7 @@ final class DiffCommand
      * @param list<string> $problems appended to, by reference
      * @return list<array{entity: class-string, triggerClass: class-string, current: ?TriggerSchema, previous: ?TriggerSchema}>
      */
-    private static function removedTriggers(string $outDir, array $allSteps, int $version, array $declared, array &$problems): array
+    private static function removedTriggers(string $outDir, array $allSteps, int $version, array $declared, array &$problems, Dialect $dialect): array
     {
         $root = $outDir . '/Trigger';
         if (!is_dir($root)) {
@@ -540,7 +541,7 @@ final class DiffCommand
                 continue;
             }
 
-            $previous = self::latestTriggerSnapshotBelow($directory, $version);
+            $previous = self::latestTriggerSnapshotBelow($directory, $version, $dialect);
             if ($previous === null) {
                 continue;
             }
@@ -583,8 +584,8 @@ final class DiffCommand
         return $removed;
     }
 
-    /** The latest trigger snapshot strictly below `$version`, or null when none is recorded (ADR-0042). */
-    private static function latestTriggerSnapshotBelow(string $dir, int $version): ?ParsedTriggerSnapshot
+    /** The latest trigger snapshot strictly below `$version`, or null when none is recorded (ADR-0042); `MIG-014` when it is stamped for another dialect (ADR-0043). */
+    private static function latestTriggerSnapshotBelow(string $dir, int $version, Dialect $dialect): ?ParsedTriggerSnapshot
     {
         if (!is_dir($dir)) {
             return null;
@@ -598,11 +599,15 @@ final class DiffCommand
             }
         }
 
+        if ($best !== null) {
+            SchemaSnapshot::assertDialect($best->dialect, $dialect, $best->schema->name(), $best->asOfVersion);
+        }
+
         return $best;
     }
 
-    /** The latest table snapshot strictly below `$version`, or null when none is recorded (a new table, or unrecorded history). */
-    private static function latestTableSnapshotBelow(string $dir, int $version): ?TableSchema
+    /** The latest table snapshot strictly below `$version`, or null when none is recorded (a new table, or unrecorded history); `MIG-014` on a foreign stamp. */
+    private static function latestTableSnapshotBelow(string $dir, int $version, Dialect $dialect): ?TableSchema
     {
         if (!is_dir($dir)) {
             return null;
@@ -614,15 +619,21 @@ final class DiffCommand
             $parsed = SchemaSnapshot::parse(file_get_contents($file));
             if ($parsed->asOfVersion < $version && $parsed->asOfVersion > $bestVersion) {
                 $bestVersion = $parsed->asOfVersion;
-                $best = $parsed->schema;
+                $best = $parsed;
             }
         }
 
-        return $best;
+        if ($best === null) {
+            return null;
+        }
+
+        SchemaSnapshot::assertDialect($best->dialect, $dialect, $best->schema->name, $best->asOfVersion);
+
+        return $best->schema;
     }
 
-    /** The latest view/materialized-view DDL snapshot strictly below `$version`, or null when none is recorded. */
-    private static function latestDdlSnapshotBelow(string $dir, int $version): ?string
+    /** The latest view/materialized-view DDL snapshot strictly below `$version`, or null when none is recorded; `MIG-014` on a foreign stamp. */
+    private static function latestDdlSnapshotBelow(string $dir, int $version, Dialect $dialect): ?string
     {
         if (!is_dir($dir)) {
             return null;
@@ -634,11 +645,17 @@ final class DiffCommand
             $parsed = SchemaSnapshot::parseDdl(file_get_contents($file));
             if ($parsed->asOfVersion < $version && $parsed->asOfVersion > $bestVersion) {
                 $bestVersion = $parsed->asOfVersion;
-                $best = $parsed->ddl;
+                $best = $parsed;
             }
         }
 
-        return $best;
+        if ($best === null) {
+            return null;
+        }
+
+        SchemaSnapshot::assertDialect($best->dialect, $dialect, $best->object, $best->asOfVersion);
+
+        return $best->ddl;
     }
 
     /**

@@ -60,7 +60,7 @@ final class MigrationGenerator
      */
     public static function diffMap(EntityMap $map, Dialect $dialect, ?TableSchema $snapshot, array $renames): TableDiff
     {
-        return self::diff(SchemaSnapshot::fromMap($map, $dialect), $snapshot, $renames, self::declaredRenames($map));
+        return self::diff(SchemaSnapshot::fromMap($map, $dialect), $snapshot, $renames, $dialect, self::declaredRenames($map));
     }
 
     /**
@@ -88,10 +88,11 @@ final class MigrationGenerator
      * is pure data — which is how the conformance diff cases exercise it.
      *
      * @param array<string, string> $renames explicit old-column => new-column pairs (`--rename`): strict, an unknown side is unsupported
+     * @param Dialect $dialect renders the added indexes' create statements (ADR-0043: `createIndexSqlFromSchema`)
      * @param array<string, string> $declaredRenames the model's `#[RenamedFrom]` pairs (old => new): permanent and lenient, they
      *        apply only when the snapshot has the old column and lacks the new one, and an explicit rename of the same old column wins
      */
-    public static function diff(TableSchema $currentSchema, ?TableSchema $snapshot, array $renames, array $declaredRenames = []): TableDiff
+    public static function diff(TableSchema $currentSchema, ?TableSchema $snapshot, array $renames, Dialect $dialect, array $declaredRenames = []): TableDiff
     {
         if ($snapshot === null) {
             return new TableDiff(isNew: true, added: [], removed: [], renamed: [], addedIndexSql: [], removedIndexNames: [], unsupported: []);
@@ -206,7 +207,7 @@ final class MigrationGenerator
         $addedIndexSql = [];
         foreach ($currentSchema->indexes as $index) {
             if (!isset($oldSignatures[self::indexSignature($index)])) {
-                $addedIndexSql[] = SnapshotDdl::createIndexSql($currentSchema->name, $index);
+                $addedIndexSql[] = $dialect->createIndexSqlFromSchema($currentSchema->name, $index);
             }
         }
 

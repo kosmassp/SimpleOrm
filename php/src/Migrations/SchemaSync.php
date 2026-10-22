@@ -57,7 +57,7 @@ final class SchemaSync
                         $plan->additive[] = $dialect->addColumnSql(
                             $relation,
                             $property->columnName,
-                            $dialect->storageType($property),
+                            $dialect->storageType($map, $property),
                             true,
                             null,
                         );
@@ -72,7 +72,7 @@ final class SchemaSync
                     continue;
                 }
 
-                $expected = $dialect->storageType($property);
+                $expected = $dialect->storageType($map, $property);
                 if (strcasecmp($column['declaredType'], $expected) !== 0 || $column['notNull'] === $property->nullable) {
                     $plan->unsupported[] = sprintf(
                         '%s.%s: is %s%s, model wants %s%s — write a migration',

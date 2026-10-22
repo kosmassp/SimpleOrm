@@ -84,6 +84,7 @@ final class MapAssembler
                 $seenColumns[$column] = $propertyName;
             }
 
+            $facets = self::validateFacets("{$shortName}.{$propertyName}", $kind, $spec, $errors);
             $property = new PropertyMap(
                 $spec->property,
                 $column,
@@ -98,6 +99,9 @@ final class MapAssembler
                 audit: $spec->audit,
                 softDelete: $spec->isSoftDelete,
                 renamedFrom: $spec->renamedFrom === null ? null : trim($spec->renamedFrom),
+                length: $facets['length'],
+                precision: $facets['precision'],
+                scale: $facets['scale'],
             );
             $owner?->addMember($property);
             $properties[] = $property;
@@ -129,6 +133,63 @@ final class MapAssembler
             $relationships,
             $triggers,
         );
+    }
+
+    /**
+     * The declared storage facets of one property (Level 4, ADR-0043, spec/metadata-model.md "Storage facets"), every
+     * violation `MAP-032` and the one rule every loader path shares: `length` belongs on a string or bytes column,
+     * `precision`/`scale` on a decimal, a `scale` needs a `precision` and cannot exceed it, a length or precision must be
+     * positive (a scale may be 0), and a source other than a table has no column DDL to carry any of them. A scale left
+     * out beside a precision resolves to 0, so the resolved pair is `precision` + `scale` or neither.
+     *
+     * @param list<MappingError> $errors
+     * @return array{length: ?int, precision: ?int, scale: ?int}
+     */
+    private static function validateFacets(string $target, RelationKind $kind, MappedPropertySpec $spec, array &$errors): array
+    {
+        $none = ['length' => null, 'precision' => null, 'scale' => null];
+        if ($spec->length === null && $spec->precision === null && $spec->scale === null) {
+            return $none;
+        }
+
+        $problems = [];
+        if ($kind !== RelationKind::Table) {
+            $problems[] = "storage facets are only valid on a table-backed entity, not a {$kind->value}: a {$kind->value} has no column DDL";
+        }
+
+        if ($spec->length !== null) {
+            if ($spec->type !== ColumnType::String && $spec->type !== ColumnType::Bytes) {
+                $problems[] = "length applies to a string or bytes column, not {$spec->type->value}";
+            } elseif ($spec->length < 1) {
+                $problems[] = "length must be positive, found {$spec->length}";
+            }
+        }
+
+        if ($spec->precision !== null || $spec->scale !== null) {
+            if ($spec->type !== ColumnType::Decimal) {
+                $problems[] = "precision and scale apply to a decimal column, not {$spec->type->value}";
+            } elseif ($spec->precision === null) {
+                $problems[] = 'scale needs a precision: declare both (precision: 18, scale: 2)';
+            } elseif ($spec->precision < 1) {
+                $problems[] = "precision must be positive, found {$spec->precision}";
+            } elseif ($spec->scale !== null && ($spec->scale < 0 || $spec->scale > $spec->precision)) {
+                $problems[] = "scale must be between 0 and the precision ({$spec->precision}), found {$spec->scale}";
+            }
+        }
+
+        if ($problems !== []) {
+            foreach ($problems as $problem) {
+                $errors[] = new MappingError('MAP-032', $target, $problem);
+            }
+
+            return $none;
+        }
+
+        return [
+            'length' => $spec->length,
+            'precision' => $spec->precision,
+            'scale' => $spec->precision === null ? null : ($spec->scale ?? 0),
+        ];
     }
 
     /**

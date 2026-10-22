@@ -13,6 +13,7 @@ use SimpleOrm\Errors\ConcurrencyException;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Migrations\MigrationRunner;
 use SimpleOrm\Migrations\MigrationSet;
+use SimpleOrm\Migrations\SchemaSync;
 use SimpleOrm\Migrations\SqlVersion;
 use SimpleOrm\Migrations\SqlVersionStep;
 use SimpleOrm\Query\Criteria;
@@ -703,6 +704,30 @@ final class SqlServerLiveTest extends TestCase
         self::assertEquals($clock(), $stored->updatedAtUtc);
         self::assertEquals($clock(), $stored->createdAtUtc);
         self::assertSame(1, self::rowCount($observer, TransactionDetail::class));
+    }
+
+    // --- force sync through the seam (ADR-0043) ------------------------------------------------------------------------------------
+
+    #[Test]
+    public function force_sync_finds_nothing_to_do_on_a_schema_created_from_the_metadata_and_gates_what_drifted(): void
+    {
+        $db = $this->openSample();
+        $entities = [User::class, Role::class, UserRole::class, UserProfile::class, Transaction::class, TransactionDetail::class];
+
+        // Every storage type the model renders (decimal(18,2), nvarchar(450) for indexed strings, datetimeoffset, ...) is spelled as the
+        // columns query reconstructs it, so a fresh schema has nothing to sync.
+        $plan = SchemaSync::plan($db->connection(), $db->options()->dialect, $db->maps(), $entities);
+        self::assertSame([[], [], []], [$plan->additive, $plan->deletions, $plan->unsupported]);
+
+        // Drift: an extra column and an extra index are gated deletions, rendered by the dialect.
+        $db->connection()->exec('alter table [users] add [legacy] nvarchar(450)');
+        $db->connection()->exec('create index [ix_hot] on [users] ([legacy])');
+        $plan = SchemaSync::plan($db->connection(), $db->options()->dialect, $db->maps(), $entities);
+
+        self::assertCount(2, $plan->deletions);
+        self::assertStringEndsWith('alter table [users] drop column [legacy]', $plan->deletions[0]);
+        self::assertSame('drop index [ix_hot] on [users]', $plan->deletions[1]);
+        self::assertSame([], $plan->additive);
     }
 
     // --- SchemaGuard ------------------------------------------------------------------------------------------------------------------

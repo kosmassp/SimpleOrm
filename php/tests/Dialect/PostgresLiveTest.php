@@ -18,6 +18,7 @@ use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Migrations\MigrationRunner;
 use SimpleOrm\Migrations\MigrationSet;
 use SimpleOrm\Migrations\MigrationState;
+use SimpleOrm\Migrations\SchemaSync;
 use SimpleOrm\Migrations\SqlVersion;
 use SimpleOrm\Migrations\SqlVersionStep;
 use SimpleOrm\Query\Criteria;
@@ -725,6 +726,28 @@ final class PostgresLiveTest extends TestCase
         $detail->unitPrice = Decimal::of('2.50');
 
         return $detail;
+    }
+
+    // --- force sync through the seam (ADR-0043) ----------------------------------------------------------
+
+    #[Test]
+    public function force_sync_finds_nothing_to_do_on_a_schema_created_from_the_metadata_and_gates_what_drifted(): void
+    {
+        $db = $this->open();
+        $entities = [User::class, Role::class, UserRole::class, UserProfile::class, Transaction::class, TransactionDetail::class];
+
+        // Every storage type the model renders (numeric(18,2), text, bigint, boolean, timestamp with time zone, ...) is spelled as the
+        // columns query reports it, so a fresh schema has nothing to sync.
+        $plan = SchemaSync::plan($db->connection(), $db->options()->dialect, $db->maps(), $entities);
+        self::assertSame([[], [], []], [$plan->additive, $plan->deletions, $plan->unsupported]);
+
+        // Drift: an extra column and an extra index are gated deletions, rendered by the dialect.
+        $db->connection()->exec('alter table "users" add column "legacy" text');
+        $db->connection()->exec('create index "ix_hot" on "users" ("legacy")');
+        $plan = SchemaSync::plan($db->connection(), $db->options()->dialect, $db->maps(), $entities);
+
+        self::assertSame(['alter table "users" drop column "legacy"', 'drop index "ix_hot"'], $plan->deletions);
+        self::assertSame([], $plan->additive);
     }
 
     // --- SchemaGuard -------------------------------------------------------------------------------------

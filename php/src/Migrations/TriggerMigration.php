@@ -68,6 +68,15 @@ abstract class TriggerMigration extends MigrationStep
         );
     }
 
+    /**
+     * The composed up actions — what the shadow reads (`declared()`/`leavesDeclaration()`) to snapshot the trigger from
+     * the step rather than from a catalog that may not hand it back as declared (ADR-0043).
+     */
+    public function upActions(EntityMapLoader $maps, Dialect $dialect): TriggerActions
+    {
+        return $this->compose($maps, $dialect, $this->action(...));
+    }
+
     private function compose(EntityMapLoader $maps, Dialect $dialect, Closure $compose): TriggerActions
     {
         $map = $maps->load($this->entityClass());

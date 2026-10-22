@@ -9,7 +9,6 @@ use DateTimeZone;
 use ReflectionClass;
 use SimpleOrm\Dialect\Dialect;
 use SimpleOrm\Dialect\Dialects;
-use SimpleOrm\Dialect\SqliteShadow;
 use SimpleOrm\Discovery\ClassScanner;
 use SimpleOrm\Errors\SchemaValidationException;
 use SimpleOrm\Errors\SimpleOrmException;
@@ -23,6 +22,7 @@ use SimpleOrm\Migrations\Diff\DiffOptions;
 use SimpleOrm\Migrations\MigrationRunner;
 use SimpleOrm\Migrations\MigrationSet;
 use SimpleOrm\Migrations\MigrationState;
+use SimpleOrm\Migrations\SchemaShadow;
 use SimpleOrm\Migrations\SchemaSnapshot;
 use SimpleOrm\Migrations\SchemaSync;
 use SimpleOrm\Migrations\SnapshotSet;
@@ -41,7 +41,11 @@ use SimpleOrm\Validation\SchemaGuard;
  * namespace `--migrations-namespace` (default `<namespace>\Migrations`);
  * snapshots default to the migrations directory, and so does `--out` for
  * `snapshot`/`diff`/`shadow`. `--dialect` names a dialect {@see Dialects} ships
- * (`sqlite` by default); `shadow` accepts only `sqlite`.
+ * (`sqlite` by default) and selects it for every command, `shadow` included
+ * (ADR-0043): on SQL Server and PostgreSQL `--db` is then the **admin** connection
+ * the throwaway `simpleorm_shadow_<hex>` database is created and dropped on; every
+ * non-SQLite snapshot `snapshot`/`shadow` write carries the dialect stamp and
+ * `diff`/`migrate down`/`shadow --from` refuse a foreign one (`MIG-014`).
  */
 final class Application
 {
@@ -208,7 +212,7 @@ final class Application
                 $file = $directory . '/' . sprintf('V%04d.schema.json', $perObject[$name]);
                 file_put_contents(
                     $file,
-                    SchemaSnapshot::exportTrigger(SchemaSnapshot::fromTrigger($map, $trigger), $perObject[$name], $generatedAt) . "\n",
+                    SchemaSnapshot::exportTrigger(SchemaSnapshot::fromTrigger($map, $trigger), $perObject[$name], $generatedAt, $dialect->name()) . "\n",
                 );
                 echo 'wrote ' . $file . PHP_EOL;
             }
@@ -223,11 +227,17 @@ final class Application
             // the dialect cannot create (materialized views here) have no
             // history to record.
             [$folder, $content] = match (true) {
-                $map->kind === RelationKind::Table => ['Table', SchemaSnapshot::export(SchemaSnapshot::fromMap($map, $dialect), $version, $generatedAt)],
-                $map->kind === RelationKind::View => ['View', SchemaSnapshot::exportDdl($map->relationName, 'view', $dialect->createViewSql($map), $version, $generatedAt)],
+                $map->kind === RelationKind::Table => [
+                    'Table',
+                    SchemaSnapshot::export(SchemaSnapshot::fromMap($map, $dialect), $version, $generatedAt, $dialect->name()),
+                ],
+                $map->kind === RelationKind::View => [
+                    'View',
+                    SchemaSnapshot::exportDdl($map->relationName, 'view', $dialect->createViewSql($map), $version, $generatedAt, $dialect->name()),
+                ],
                 $map->kind === RelationKind::MaterializedView && $dialect->supportsMaterializedViews() => [
                     'MaterializedView',
-                    SchemaSnapshot::exportDdl($map->relationName, 'materialized_view', $dialect->createViewSql($map), $version, $generatedAt),
+                    SchemaSnapshot::exportDdl($map->relationName, 'materialized_view', $dialect->createViewSql($map), $version, $generatedAt, $dialect->name()),
                 ],
                 default => [null, null],
             };
@@ -314,15 +324,7 @@ final class Application
 
     private static function shadow(Arguments $arguments): int
     {
-        $dialectName = $arguments->option('dialect');
-        if ($dialectName !== null && strcasecmp($dialectName, 'sqlite') !== 0) {
-            return self::fail(
-                "shadow replays into a throwaway SQLite database and supports only --dialect sqlite; "
-                    . "snapshot tooling is SQLite-only in every implementation (spec/dialects.md) — '{$dialectName}' "
-                    . 'rollbacks need Down() overrides until it learns that dialect',
-            );
-        }
-
+        $dialect = self::dialectFor($arguments);
         $outDir = $arguments->option('out') ?? self::migrationsDir($arguments);
 
         $from = 0;
@@ -346,7 +348,9 @@ final class Application
         }
 
         $set = MigrationSet::fromDirectory(self::migrationsDir($arguments), self::migrationsNamespace($arguments));
-        $result = SqliteShadow::rebuildSnapshots($set, new EntityMapLoader(), $outDir, $from, $to);
+        // SQLite ignores --db (a temp file); the other dialects create and drop the throwaway database on it (the admin connection).
+        $admin = $dialect->name() === Dialects::SQLITE ? '' : ($arguments->option('db') ?? '');
+        $result = SchemaShadow::for($dialect, $admin)->rebuildSnapshots($set, new EntityMapLoader(), $outDir, $from, $to);
 
         foreach ($result->notes as $note) {
             echo $note . PHP_EOL;
@@ -421,8 +425,11 @@ final class Application
                                           [RenamedFrom] columns diff as one rename
               shadow [--out <dir>] [--from V000N] [--to V000M]
                                           rebuild snapshots by replaying migrations in a
-                                          throwaway database; --from trusts version N as
-                                          correct and regenerates only (N, M]
+                                          throwaway database (a temp file on sqlite; on
+                                          sqlserver/postgres --db is the ADMIN connection
+                                          and simpleorm_shadow_<hex> is created and dropped
+                                          there); --from trusts version N as correct and
+                                          regenerates only (N, M]
 
             options:
               --src <dir>              PSR-4-reachable root holding entities and registries
@@ -432,8 +439,10 @@ final class Application
                                        migrations namespace (default: <namespace>\Migrations)
               --snapshots <dir>        snapshots for migrate down (default: the migrations dir)
               --out <dir>              output for snapshot/diff/shadow (default: the migrations dir)
-              --db <value>             a bare SQLite path, a sqlite: DSN, or Data Source=...
-              --dialect <name>         sqlite (default); other dialects are not ported yet (ADR-0026)
+              --db <value>             a bare SQLite path, a sqlite: DSN, or Data Source=...; a pgsql:/sqlsrv:/odbc: DSN
+                                       for the other dialects (for shadow: the admin connection, CREATE DATABASE rights)
+              --dialect <name>         sqlite (default), sqlserver, or postgres; selects the dialect for every command —
+                                       a snapshot stamped for another dialect is refused (MIG-014)
             TXT . PHP_EOL;
 
         return 2;

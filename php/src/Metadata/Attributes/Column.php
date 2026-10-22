@@ -20,6 +20,9 @@ final readonly class Column
     public function __construct(
         public ?string $name = null,
         public ?ColumnType $type = null,
+        public ?int $length = null,
+        public ?int $precision = null,
+        public ?int $scale = null,
     ) {
     }
 }

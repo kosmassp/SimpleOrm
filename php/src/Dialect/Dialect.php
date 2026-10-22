@@ -9,6 +9,8 @@ use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\PropertyMap;
 use SimpleOrm\Metadata\TriggerDefinition;
+use SimpleOrm\Migrations\TableSchema;
+use SimpleOrm\Migrations\TableSchemaIndex;
 use SimpleOrm\Query\SelectAst;
 
 /**
@@ -21,6 +23,12 @@ use SimpleOrm\Query\SelectAst;
  */
 interface Dialect
 {
+    /**
+     * The dialect's name as the CLI spells it — `sqlite`, `sqlserver`, `postgres` (ADR-0043): stamped into every non-SQLite
+     * snapshot (`"dialect"`, format v3) and compared by every snapshot reader (`MIG-014`).
+     */
+    public function name(): string;
+
     /** An unopened-until-used PDO connection for the given connection string (a PDO DSN, or a bare SQLite path). */
     public function createConnection(string $connectionString): PDO;
 
@@ -41,6 +49,35 @@ interface Dialect
 
     /** `CREATE (MATERIALIZED) VIEW` from the map's defining SQL. */
     public function createViewSql(EntityMap $map): string;
+
+    /**
+     * The same table DDL from a **snapshot** shape (ADR-0043; spec/dialects.md "Migration-action DDL"): storage types as
+     * recorded, one generated key inline as the dialect's identity, any other key as the trailing constraint. Backs the
+     * shadow's trusted baseline. (PHP has no overloading: the C# `CreateTableSql(schema)` is a separate name here.)
+     */
+    public function createTableSqlFromSchema(TableSchema $schema): string;
+
+    /**
+     * One index of a snapshot (ADR-0043) — `CreateIndexSql(table, index)`: the derived rollback restores previous
+     * indexes with it, the generator emits added ones.
+     */
+    public function createIndexSqlFromSchema(string $table, TableSchemaIndex $index): string;
+
+    /**
+     * A view from its neutral snapshot parts (ADR-0043) — `CreateViewSql(view, body, materialized)`: the text
+     * {@see self::createViewSql()} renders for the same name and body. Backs the derived rollback, the shadow baseline,
+     * and the `MIG-012` probe.
+     */
+    public function createViewSqlFromBody(string $view, string $body, bool $materialized): string;
+
+    /** The idempotent drop of a view (ADR-0043); `$materialized` names a materialized view where the dialect has them. */
+    public function dropViewSql(string $view, bool $materialized): string;
+
+    /**
+     * Whether {@see self::viewDefinitionSql()} returns the view text as submitted (SQLite, SQL Server) or reformats it
+     * (PostgreSQL's `pg_get_viewdef`) — decides the `MIG-012` view guard's mode: normalized text, or the probe round trip.
+     */
+    public function viewDefinitionIsVerbatim(): bool;
 
     /** The generated INSERT (§7.14): explicit column list, every non-generated column, RETURNING the key when the database generates it. Placeholders are `@<column>`. */
     public function insertSql(EntityMap $map): string;
@@ -106,7 +143,7 @@ interface Dialect
 
     // --- introspection (§7.25) --------------------------------------------------------------
 
-    /** Columns of a relation: parameter `@relation`; result columns `name, type, notnull, pk` (empty = relation missing). */
+    /** Columns of a relation: parameter `@relation`; result columns `name, type, notnull, pk, generated` (empty = relation missing; `generated`, ADR-0043). */
     public function columnsInfoSql(): string;
 
     /** A view's stored create DDL: parameter `@relation`; no rows = view absent (backs `MIG-012` and view snapshots). */
@@ -118,8 +155,12 @@ interface Dialect
     /** The declared-type → neutral-type compatibility table (§7.19 `VAL-011`). */
     public function isDeclaredTypeCompatible(string $declaredType, ColumnType $type): bool;
 
-    /** The storage (declared) type a mapped property renders to — what CREATE TABLE emits (ADR-0017). */
-    public function storageType(PropertyMap $property): string;
+    /**
+     * The storage (declared) type a mapped property renders to — what CREATE TABLE emits and what `columnsInfoSql`
+     * reports back, spelled identically (ADR-0017, ADR-0043). The map says whether the column is a key or belongs to a
+     * declared index (SQL Server's indexable length); the property's storage facets override the defaults.
+     */
+    public function storageType(EntityMap $map, PropertyMap $property): string;
 
     // --- migrations (§7.23) -----------------------------------------------------------------
 

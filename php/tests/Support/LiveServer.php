@@ -7,6 +7,7 @@ namespace SimpleOrm\Tests\Support;
 use PDO;
 use PDOException;
 use PHPUnit\Framework\Assert;
+use SimpleOrm\Dialect\PdoDsn;
 
 /**
  * The probe behind every live (non-SQLite) test leg (spec/dialects.md "Testing
@@ -72,28 +73,9 @@ final class LiveServer
         return 'simpleorm_test_' . bin2hex(random_bytes(8));
     }
 
-    /**
-     * Replaces one `key=value` entry of a PDO DSN (case-insensitive key), so the
-     * admin DSN becomes the fixture database's DSN.
-     */
+    /** Replaces one `key=value` entry of a PDO DSN (the library's own editor, {@see PdoDsn}). */
     public static function withDsnValue(string $dsn, string $key, string $value): string
     {
-        $parts = [];
-        $replaced = false;
-        foreach (explode(';', $dsn) as $part) {
-            if (stripos(ltrim($part), $key . '=') === 0) {
-                $parts[] = $key . '=' . $value;
-                $replaced = true;
-                continue;
-            }
-
-            $parts[] = $part;
-        }
-
-        if (!$replaced) {
-            $parts[] = $key . '=' . $value;
-        }
-
-        return implode(';', $parts);
+        return PdoDsn::withValue($dsn, $key, $value);
     }
 }

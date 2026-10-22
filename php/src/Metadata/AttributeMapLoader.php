@@ -385,6 +385,9 @@ final class AttributeMapLoader
                 audit: count($hooks) === 1 ? self::auditRole($hooks[0]) : AuditRole::None,
                 isSoftDelete: count($hooks) === 1 && $hooks[0] === 'SoftDelete',
                 renamedFrom: $renamedFrom?->column,
+                length: $column->length,
+                precision: $column->precision,
+                scale: $column->scale,
             );
         }
     }
@@ -894,6 +897,9 @@ final class AttributeMapLoader
                 $resolved->nullable,
                 explicitColumn: $column->name,
                 owner: $spec,
+                length: $column->length,
+                precision: $column->precision,
+                scale: $column->scale,
             );
             $mapped++;
         }

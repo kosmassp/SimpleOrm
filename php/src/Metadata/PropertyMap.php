@@ -14,7 +14,10 @@ use ReflectionProperty;
  * handler lookup (`class-string` for enums, `Decimal`, `DateTimeImmutable`;
  * a builtin name otherwise; null when the property is untyped). `$audit` and `$softDelete` carry the
  * declared hooks (Level 3 M3, spec/hooks.md) — at most one per property. `$renamedFrom` is the declared previous
- * column name (Level 3 M5, spec/migrations.md "Draft migrations"): only the diff generator reads it.
+ * column name (Level 3 M5, spec/migrations.md "Draft migrations"): only the diff generator reads it. `$length`
+ * and `$precision` + `$scale` are the declared storage facets (Level 4, ADR-0043, spec/metadata-model.md "Storage
+ * facets"): validated by the assembler, so `$scale` is set exactly when `$precision` is (a scale left out is 0);
+ * only `Dialect::storageType()` and the export read them.
  */
 final readonly class PropertyMap
 {
@@ -33,6 +36,9 @@ final readonly class PropertyMap
         public AuditRole $audit = AuditRole::None,
         public bool $softDelete = false,
         public ?string $renamedFrom = null,
+        public ?int $length = null,
+        public ?int $precision = null,
+        public ?int $scale = null,
     ) {
     }
 

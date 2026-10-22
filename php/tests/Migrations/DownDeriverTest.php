@@ -176,7 +176,8 @@ final class DownDeriverTest extends TestCase
         self::assertSame('create view totals as select 2 as answer', $statements[0]->sql);
         self::assertSame('totals', $statements[0]->guardView);
         self::assertSame('drop view if exists totals', $statements[1]->sql);
-        self::assertSame('create view totals as select 1 as answer', $statements[2]->sql);
+        // Rendered by the dialect from the neutral snapshot (ADR-0043), not the recorded text.
+        self::assertSame("create view if not exists totals as\nselect 1 as answer", $statements[2]->sql);
     }
 
     private function idColumn(): TableSchemaColumn

@@ -32,7 +32,7 @@ final class MigrationRunner
     private readonly SnapshotSet $snapshots;
 
     /**
-     * @param bool $replayDrafts `@internal` — set only by the tooling (`SqliteShadow`): a throwaway database is no one's
+     * @param bool $replayDrafts `@internal` — set only by the tooling (`SchemaShadow`): a throwaway database is no one's
      *        history, so `shadow` replays a draft; the application has no way to bypass `MIG-013` (ADR-0038)
      */
     public function __construct(
@@ -375,8 +375,7 @@ final class MigrationRunner
         }
 
         $live = $this->readViewDefinition($statement->guardView);
-        $normalized = $live === null ? null : SchemaSnapshot::normalizeDdl($live);
-        if ($normalized === $statement->sql) {
+        if ($live !== null && $this->liveViewMatches($live, $statement->sql)) {
             return;
         }
 
@@ -468,6 +467,38 @@ final class MigrationRunner
         $value = $statement->fetchColumn();
 
         return $value === false ? null : (string) $value;
+    }
+
+    /**
+     * Whether a live view definition is the expected one (the `MIG-012` guard, ADR-0043). Where the engine stores the text
+     * as submitted (`viewDefinitionIsVerbatim`: SQLite, SQL Server) both sides normalize and compare as text. Where it
+     * reformats the parse tree (PostgreSQL's `pg_get_viewdef`) the expected body is created as a **probe view** inside the
+     * run, read back the same way, and dropped, and the engine's two renderings are compared — equal exactly when the parse
+     * trees are. The probe runs under a savepoint, so a body the current schema cannot parse counts as drift instead of
+     * poisoning the transaction.
+     */
+    private function liveViewMatches(string $live, string $expectedDdl): bool
+    {
+        $parts = SchemaSnapshot::splitViewDdl($expectedDdl);
+        if ($this->dialect->viewDefinitionIsVerbatim() || $parts === null) {
+            return SchemaSnapshot::normalizeDdl($live) === $expectedDdl;
+        }
+
+        $probe = 'simpleorm_expect_' . bin2hex(random_bytes(6));
+        $this->connection->exec('savepoint simpleorm_probe');
+        try {
+            $this->connection->exec($this->dialect->createViewSqlFromBody($probe, $parts['body'], $parts['materialized']));
+            $expected = $this->readViewDefinition($probe);
+            $this->connection->exec($this->dialect->dropViewSql($probe, $parts['materialized']));
+            $this->connection->exec('release savepoint simpleorm_probe');
+        } catch (PDOException) {
+            $this->connection->exec('rollback to savepoint simpleorm_probe');
+            $this->connection->exec('release savepoint simpleorm_probe');
+
+            return false;   // the expected body does not even parse against the current schema: drift
+        }
+
+        return $expected !== null && trim($expected) === trim($live);
     }
 
     private function execute(string $sql): void

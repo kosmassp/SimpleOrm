@@ -17,6 +17,9 @@ use SimpleOrm\Metadata\TriggerDefinition;
 use SimpleOrm\Metadata\TriggerEvent;
 use SimpleOrm\Metadata\TriggerTiming;
 use SimpleOrm\Metadata\TriggerTokenKind;
+use SimpleOrm\Migrations\TableSchema;
+use SimpleOrm\Migrations\TableSchemaIndex;
+use SimpleOrm\Migrations\TableSchemaIndexPart;
 use SimpleOrm\Query\AnsiSelectRenderer;
 use SimpleOrm\Query\SelectAst;
 
@@ -28,6 +31,11 @@ use SimpleOrm\Query\SelectAst;
  */
 final class SqliteDialect implements Dialect
 {
+    public function name(): string
+    {
+        return Dialects::SQLITE;
+    }
+
     public function createConnection(string $connectionString): PDO
     {
         $pdo = new PDO('sqlite:' . self::resolvePath($connectionString));
@@ -72,7 +80,7 @@ final class SqliteDialect implements Dialect
                 continue;
             }
 
-            $line = $property->columnName . ' ' . self::columnType($property);
+            $line = $property->columnName . ' ' . $this->storageType($map, $property);
             if (!$property->nullable) {
                 $line .= ' NOT NULL';
             }
@@ -109,7 +117,64 @@ final class SqliteDialect implements Dialect
 
     public function createViewSql(EntityMap $map): string
     {
-        return 'create view if not exists ' . $map->relationName . " as\n" . $map->definingSql;
+        return $this->createViewSqlFromBody((string) $map->relationName, (string) $map->definingSql, false);
+    }
+
+    /**
+     * The snapshot-driven table DDL (ADR-0043), the reference text the others mirror: a lone generated key is the rowid
+     * alias `INTEGER PRIMARY KEY`, any other key the trailing `primary key (…)` line, and the body closes `) STRICT`.
+     */
+    public function createTableSqlFromSchema(TableSchema $schema): string
+    {
+        $lines = [];
+        $plainKeys = [];
+        $hasGeneratedKey = false;
+        foreach ($schema->columns as $column) {
+            if ($column->key && $column->generated) {
+                $hasGeneratedKey = true;
+                $lines[] = $column->name . ' INTEGER PRIMARY KEY';   // the rowid alias spelling
+
+                continue;
+            }
+
+            if ($column->key) {
+                $plainKeys[] = $column->name;
+            }
+
+            $lines[] = $column->name . ' ' . $column->storageType . ($column->nullable ? '' : ' NOT NULL');
+        }
+
+        if ($plainKeys !== [] && !$hasGeneratedKey) {
+            $lines[] = 'primary key (' . implode(', ', $plainKeys) . ')';
+        }
+
+        return "create table if not exists {$schema->name} (\n    " . implode(",\n    ", $lines) . "\n) STRICT";
+    }
+
+    public function createIndexSqlFromSchema(string $table, TableSchemaIndex $index): string
+    {
+        return 'create ' . ($index->unique ? 'unique ' : '') . 'index if not exists ' . $index->name
+            . ' on ' . $table . ' (' . implode(', ', array_map(
+                static fn (TableSchemaIndexPart $part): string => $part->columnName . ($part->descending ? ' desc' : ''),
+                $index->columns,
+            )) . ')';
+    }
+
+    /** SQLite has no materialized views; the flag is ignored (the capability flag refuses them upstream, `DDL-002`). */
+    public function createViewSqlFromBody(string $view, string $body, bool $materialized): string
+    {
+        return 'create view if not exists ' . $view . " as\n" . $body;
+    }
+
+    public function dropViewSql(string $view, bool $materialized): string
+    {
+        return 'drop view if exists ' . $view;
+    }
+
+    /** `sqlite_master.sql` keeps the text as submitted (only the leading keywords are recased). */
+    public function viewDefinitionIsVerbatim(): bool
+    {
+        return true;
     }
 
     public function insertSql(EntityMap $map): string
@@ -238,7 +303,12 @@ final class SqliteDialect implements Dialect
 
     public function columnsInfoSql(): string
     {
-        return 'select name, type, "notnull", pk from pragma_table_info(@relation)';
+        // The fifth column is the rowid alias: a lone INTEGER primary key is database-generated (ADR-0043).
+        return 'select name, type, "notnull", pk, '
+            . "case when pk = 1 and upper(type) = 'INTEGER' "
+            . 'and (select count(*) from pragma_table_info(@relation) where pk > 0) = 1 '
+            . 'then 1 else 0 end as generated '
+            . 'from pragma_table_info(@relation)';
     }
 
     public function viewDefinitionSql(): string
@@ -280,7 +350,8 @@ final class SqliteDialect implements Dialect
         };
     }
 
-    public function storageType(PropertyMap $property): string
+    /** SQLite's storage classes carry no size: the storage facets are ignored (spec/dialects.md "Storage types"). */
+    public function storageType(EntityMap $map, PropertyMap $property): string
     {
         return self::columnType($property);
     }

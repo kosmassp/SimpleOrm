@@ -19,6 +19,7 @@ use SimpleOrm\Tests\Sample\Models\Transaction;
 use SimpleOrm\Tests\Sample\Models\User;
 use SimpleOrm\Tests\Sample\Models\UserRole;
 use SimpleOrm\Tests\Sample\Models\UserTransactionTotal;
+use SimpleOrm\Tests\Support\StorageMaps;
 
 /**
  * Pins every string `SqlServerDialect` renders against `spec/dialects.md` (ADR-0024) — pure rendering, no database:
@@ -98,7 +99,7 @@ final class SqlServerDialectTest extends TestCase
                 . "    [id] bigint identity(1,1) primary key,\n"
                 . "    [user_id] bigint not null,\n"
                 . "    [status] nvarchar(100) not null,\n"
-                . "    [amount] decimal(38, 9) not null,\n"
+                . "    [amount] decimal(18,2) not null,\n"
                 . "    [version] bigint not null,\n"
                 . "    [note] nvarchar(max),\n"
                 . "    [created_at] datetimeoffset not null,\n"
@@ -261,7 +262,14 @@ final class SqlServerDialectTest extends TestCase
             'alter table [users] add [nick] nvarchar(max)',
             $this->dialect->addColumnSql('users', 'nick', 'nvarchar(max)', true, null),
         );
-        self::assertSame('alter table [users] drop column [nick]', $this->dialect->dropColumnSql('users', 'nick'));
+        // ADR-0043: the batch drops a leftover default constraint first (error 5074), byte for byte as spec/dialects.md gives it.
+        self::assertSame(
+            "declare @df sysname = (select dc.name from sys.default_constraints dc join sys.columns c on c.object_id = dc.parent_object_id "
+                . "and c.column_id = dc.parent_column_id where dc.parent_object_id = object_id(N'users') and c.name = N'nick'); "
+                . "if @df is not null exec(N'alter table [users] drop constraint ' + quotename(@df)); "
+                . 'alter table [users] drop column [nick]',
+            $this->dialect->dropColumnSql('users', 'nick'),
+        );
         self::assertSame('drop table [users]', $this->dialect->dropTableSql('users'));
         self::assertSame('drop index [ix_users_name] on [users]', $this->dialect->dropIndexSql('users', 'ix_users_name'));
     }
@@ -292,7 +300,7 @@ final class SqlServerDialectTest extends TestCase
             'int32' => 'int',
             'int64' => 'bigint',
             'bool' => 'bit',
-            'decimal' => 'decimal(38, 9)',
+            'decimal' => 'decimal(38,9)',
             'double' => 'float',
             'float' => 'real',
             'string' => 'nvarchar(max)',
@@ -308,14 +316,14 @@ final class SqlServerDialectTest extends TestCase
         ];
 
         foreach (ColumnType::cases() as $type) {
-            self::assertSame($expected[$type->value], $this->dialect->storageType(self::property($type)), "storage type of {$type->value}");
+            self::assertSame($expected[$type->value], $this->dialect->storageType(StorageMaps::of(self::property($type)), self::property($type)), "storage type of {$type->value}");
         }
 
         // A key column takes the indexable length; no other token changes.
-        self::assertSame('nvarchar(450)', $this->dialect->storageType(self::property(ColumnType::String, key: true)));
-        self::assertSame('nvarchar(450)', $this->dialect->storageType(self::property(ColumnType::Custom, key: true)));
-        self::assertSame('varbinary(450)', $this->dialect->storageType(self::property(ColumnType::Bytes, key: true)));
-        self::assertSame('bigint', $this->dialect->storageType(self::property(ColumnType::Int64, key: true)));
+        self::assertSame('nvarchar(450)', $this->dialect->storageType(StorageMaps::of(self::property(ColumnType::String, key: true)), self::property(ColumnType::String, key: true)));
+        self::assertSame('nvarchar(450)', $this->dialect->storageType(StorageMaps::of(self::property(ColumnType::Custom, key: true)), self::property(ColumnType::Custom, key: true)));
+        self::assertSame('varbinary(450)', $this->dialect->storageType(StorageMaps::of(self::property(ColumnType::Bytes, key: true)), self::property(ColumnType::Bytes, key: true)));
+        self::assertSame('bigint', $this->dialect->storageType(StorageMaps::of(self::property(ColumnType::Int64, key: true)), self::property(ColumnType::Int64, key: true)));
     }
 
     #[Test]

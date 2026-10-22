@@ -165,6 +165,25 @@ final class ApplicationTest extends TestCase
         self::assertSame(1, $exit);
     }
 
+    #[Test]
+    public function shadow_accepts_every_dialect_but_a_server_one_needs_the_admin_connection(): void
+    {
+        // ADR-0043: `shadow` is no longer SQLite-only; on SQL Server and PostgreSQL `--db` is the admin connection.
+        ob_start();
+        $exit = Application::main([
+            'shadow',
+            '--src', self::SRC,
+            '--namespace', self::NAMESPACE,
+            '--migrations', $this->workDir . '/Migrations',
+            '--out', $this->workDir . '/shadow',
+            '--dialect', 'postgres',
+        ]);
+        ob_end_clean();
+
+        self::assertSame(1, $exit);
+        self::assertDirectoryDoesNotExist($this->workDir . '/shadow', 'nothing was provisioned or written');
+    }
+
     /** @param list<string> $args the command and its options, without the shared --src/--namespace/--migrations/--db */
     private function exec(array $args): array
     {

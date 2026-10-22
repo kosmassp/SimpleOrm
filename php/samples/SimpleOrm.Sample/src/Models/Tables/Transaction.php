@@ -44,7 +44,7 @@ final class Transaction extends BaseModel
     #[Column]
     public TransactionStatus $status = TransactionStatus::Pending;
 
-    #[Column]
+    #[Column(precision: 18, scale: 2)]
     public Decimal $amount;
 
     #[Version]

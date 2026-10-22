@@ -9,6 +9,7 @@ use SimpleOrm\Dialect\Dialect;
 use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\PropertyMap;
+use SimpleOrm\Metadata\TriggerDefinition;
 use SimpleOrm\Query\SelectAst;
 
 /**
@@ -183,5 +184,20 @@ abstract class DelegatingDialect implements Dialect
     public function dropIndexSql(string $table, string $index): string
     {
         return $this->inner->dropIndexSql($table, $index);
+    }
+
+    public function createTriggerSql(string $relation, bool $onView, TriggerDefinition $trigger): array
+    {
+        return $this->inner->createTriggerSql($relation, $onView, $trigger);
+    }
+
+    public function dropTriggerSql(string $relation, string $name): array
+    {
+        return $this->inner->dropTriggerSql($relation, $name);
+    }
+
+    public function triggerDefinitionSql(): string
+    {
+        return $this->inner->triggerDefinitionSql();
     }
 }

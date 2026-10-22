@@ -49,6 +49,7 @@ func assemble(
 	specs []*MappedPropertySpec,
 	indexSpecs []*IndexSpec,
 	relationshipSpecs []*RelationshipSpec,
+	triggerLinks []core.TriggerLink,
 	convention core.NamingConvention,
 	errs *errorCollector,
 ) (*core.EntityMap, error) {
@@ -59,15 +60,18 @@ func assemble(
 	keyStrategy := resolveKeyStrategy(entityType, kind, properties, errs)
 	indexes := resolveIndexColumns(entityType, relationName, indexSpecs, byProperty, convention, errs)
 	relationships := resolveRelationships(entityType, relationshipSpecs, byProperty, errs)
+	triggers := resolveTriggers(entityType, kind, triggerLinks, properties, byProperty, errs)
 
 	if mapping := errs.mappingErrors(); mapping != nil {
 		return nil, mapping
 	}
 
-	return core.NewEntityMap(
+	m := core.NewEntityMap(
 		entityType, kind, relationName, schema, definingSQL, statementParameters,
 		properties, keyStrategy, indexes, relationships,
-	), nil
+	)
+	m.Triggers = triggers
+	return m, nil
 }
 
 // buildProperties resolves each spec's column name through the convention,

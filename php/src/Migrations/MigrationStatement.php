@@ -15,10 +15,32 @@ namespace SimpleOrm\Migrations;
  */
 final readonly class MigrationStatement
 {
+    /**
+     * @param string|null $guardView set on a view guard: the view whose live definition must equal `$sql`
+     * @param string|null $guardTrigger set on a trigger guard (ADR-0042): the trigger name whose live definitions
+     *        (`Dialect::triggerDefinitionSql()` rows) must be exactly the `$guardExpected` set
+     * @param list<string> $guardExpected the expected create statements of a trigger guard, normalized
+     */
     public function __construct(
         public string $sql,
         public string $origin,
         public ?string $guardView = null,
+        public ?string $guardTrigger = null,
+        public array $guardExpected = [],
     ) {
+    }
+
+    /**
+     * The `MIG-012` trigger guard (ADR-0042) for the create statements a declaration renders to: each normalized
+     * ({@see SchemaSnapshot::normalizeTriggerDdl()}); `$sql` joins them, so the expectation counts into the checksum.
+     *
+     * @param list<string> $createStatements
+     */
+    public static function expectTrigger(string $origin, string $triggerName, array $createStatements): self
+    {
+        $expected = array_map(SchemaSnapshot::normalizeTriggerDdl(...), $createStatements);
+        sort($expected, SORT_STRING);   // the guard compares sets; the checksum joins them in this one order
+
+        return new self(implode("\n;\n", $expected), $origin, null, $triggerName, $expected);
     }
 }

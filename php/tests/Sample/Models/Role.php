@@ -12,11 +12,13 @@ use SimpleOrm\Metadata\Attributes\ManyToMany;
 use SimpleOrm\Metadata\Attributes\RenamedFrom;
 use SimpleOrm\Metadata\Attributes\SoftDelete;
 use SimpleOrm\Metadata\Attributes\Table;
+use SimpleOrm\Metadata\Attributes\Trigger;
 use SimpleOrm\Session\Navigations;
 
-/** Table `roles`. Mirrors dotnet/samples `Role`: the name column is explicit (`role_name`, renamed by V0004). */
+/** Table `roles`. Mirrors dotnet/samples `Role`: the name column is explicit (`role_name`, renamed by V0004). Links the audit trigger (ADR-0042). */
 #[Table('roles')]
 #[Index(['name'], unique: true)]
+#[Trigger(RoleAuditTrigger::class)]
 final class Role extends BaseModel
 {
     use Navigations;

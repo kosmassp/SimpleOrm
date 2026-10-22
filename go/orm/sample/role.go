@@ -21,5 +21,7 @@ func (Role) Entity() orm.EntityDef {
 		Source:     orm.Table("roles"),
 		Indexes:    []orm.IndexDef{orm.Index("Name").Unique()},
 		ManyToMany: []orm.ManyToManyDef{orm.ManyToMany[UserRole]("Users")},
+		// RoleAuditTrigger writes one role_changes row per updated role (Level 4, ADR-0042).
+		Triggers: []orm.TriggerLink{orm.Trigger[RoleAuditTrigger]()},
 	}
 }

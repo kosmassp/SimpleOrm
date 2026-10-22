@@ -81,10 +81,14 @@ public static class SqliteShadow
                         {
                             // Triggers self-reflect too (ADR-0042): the stored create text parses back
                             // to the neutral declaration — tokens un-expanded — which is the snapshot.
-                            var snapshot = SqliteTriggerDdl.Read(probe, relation);
+                            var snapshot = SqliteTriggerDdl.Read(probe, relation, out var note);
                             if (snapshot is not null)
                             {
                                 content = SchemaSnapshot.ExportTrigger(snapshot, version.Version, generatedAt);
+                            }
+                            else if (note is not null)
+                            {
+                                result.Notes.Add($"V{version.Version:0000}: {note}");   // hand-written: skipped with a note
                             }
                         }
                         else if (entity.Kind == RelationKind.Table)

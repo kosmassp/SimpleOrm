@@ -1,4 +1,4 @@
-// Package sample holds the fixture entities of the Go port — the ten models of
+// Package sample holds the fixture entities of the Go port — the models of
 // dotnet/samples/SimpleOrm.Sample/Models, one to one (CODING-STANDARD §7) —
 // and their migrations tree. Their metadata exports are pinned by
 // conformance/entities/*.json; the tests and conformance runners build the

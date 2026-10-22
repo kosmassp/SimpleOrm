@@ -66,6 +66,21 @@ type (
 	// ManyToManyDef is a link-resolved collection navigation in a descriptor.
 	ManyToManyDef = core.ManyToManyDef
 
+	// TriggerDef is the declaration a trigger class returns from its Trigger method (Level 4, ADR-0042): name, timing, events, update-of properties, one neutral body.
+	TriggerDef = core.TriggerDef
+	// TriggerDeclarer is implemented by a trigger class: `func (T) Trigger() orm.TriggerDef`.
+	TriggerDeclarer = core.TriggerDeclarer
+	// TriggerLink is an entity descriptor's link to a trigger class (`orm.Trigger[T]()`).
+	TriggerLink = core.TriggerLink
+	// TriggerTiming is when a trigger fires: before, after, instead of.
+	TriggerTiming = core.TriggerTiming
+	// TriggerEvents is the combinable set of events a trigger fires on: `orm.EventUpdate | orm.EventDelete`.
+	TriggerEvents = core.TriggerEvents
+	// TriggerDefinition is a declaration resolved against its entity and normalized (what the export, snapshots, and dialects use).
+	TriggerDefinition = core.TriggerDefinition
+	// EntityTrigger is one linked trigger on an entity map: the class and its resolved definition.
+	EntityTrigger = core.EntityTrigger
+
 	// Decimal is the exact, string-backed decimal value (§7.9).
 	Decimal = core.Decimal
 	// GUID is the 128-bit identifier behind the guid token.
@@ -135,6 +150,14 @@ const (
 	RelationshipManyToMany = core.RelationshipManyToMany
 	RelationshipOneToOne   = core.RelationshipOneToOne
 
+	// The trigger timings and events (Level 4, ADR-0042): `Events: orm.EventUpdate | orm.EventDelete`.
+	TimingBefore    = core.TimingBefore
+	TimingAfter     = core.TimingAfter
+	TimingInsteadOf = core.TimingInsteadOf
+	EventInsert     = core.EventInsert
+	EventUpdate     = core.EventUpdate
+	EventDelete     = core.EventDelete
+
 	// The declarable cascades (Level 3 M2): `orm:"one_to_many=TransactionID,cascade=persist+remove"`.
 	CascadePersist = core.CascadePersist
 	CascadeRemove  = core.CascadeRemove
@@ -194,6 +217,9 @@ func ForeignKey[T any](property string) ForeignKeyDef { return core.ForeignKey[T
 
 // ManyToMany declares that the collection property resolves through the link entity TLink.
 func ManyToMany[TLink any](property string) ManyToManyDef { return core.ManyToMany[TLink](property) }
+
+// Trigger links the trigger class T from an entity descriptor: `Triggers: []orm.TriggerLink{orm.Trigger[RoleAuditTrigger]()}`.
+func Trigger[T any]() TriggerLink { return core.Trigger[T]() }
 
 // --- criteria factories (spec/query-ast.md) ---
 
@@ -294,3 +320,7 @@ func HasCode(err error, code string) bool { return core.HasCode(err, code) }
 
 // TypeOf is reflect.TypeFor spelled for registries: Entities: []reflect.Type{orm.TypeOf[User]()}.
 func TypeOf[T any]() reflect.Type { return reflect.TypeFor[T]() }
+
+// IsTriggerType reports whether t is a trigger class (it declares a Trigger() method, Level 4, ADR-0042): never an
+// entity — scans skip it and loading it is MAP-029.
+func IsTriggerType(t reflect.Type) bool { return core.IsTriggerType(t) }

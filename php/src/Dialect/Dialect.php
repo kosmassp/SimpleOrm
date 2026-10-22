@@ -8,6 +8,7 @@ use PDO;
 use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\PropertyMap;
+use SimpleOrm\Metadata\TriggerDefinition;
 use SimpleOrm\Query\SelectAst;
 
 /**
@@ -140,4 +141,32 @@ interface Dialect
     public function dropTableSql(string $table): string;
 
     public function dropIndexSql(string $table, string $index): string;
+
+    // --- triggers (Level 4, ADR-0042; spec/dialects.md "Triggers") ------------------------------
+
+    /**
+     * The create statements of a trigger from its neutral declaration: the header, the granularity, the wrapper, and
+     * the token expansions (`{new: …}`, `{old: …}`, `{now}`) are the dialect's; no drop. One statement on SQL Server,
+     * one per event on SQLite, the function then the trigger on PostgreSQL. `DDL-005` for a form the dialect lacks
+     * (`before` on SQL Server, `instead of` on a table elsewhere).
+     *
+     * @param string $relation the table or view the trigger is on (unquoted)
+     * @return list<string>
+     */
+    public function createTriggerSql(string $relation, bool $onView, TriggerDefinition $trigger): array;
+
+    /**
+     * Drops a trigger idempotently with whatever the dialect created beside it (SQLite: every possible per-event name;
+     * PostgreSQL: the trigger then its function).
+     *
+     * @return list<string>
+     */
+    public function dropTriggerSql(string $relation, string $name): array;
+
+    /**
+     * Introspection: parameter `@relation` is the **trigger name**; one column `definition`, one row per statement the
+     * dialect created for it — each, normalized, equal to the matching {@see self::createTriggerSql()} statement; no
+     * rows when absent (backs the `MIG-012` trigger guard and the shadow's read-back).
+     */
+    public function triggerDefinitionSql(): string;
 }

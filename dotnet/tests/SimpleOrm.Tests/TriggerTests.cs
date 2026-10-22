@@ -322,6 +322,44 @@ public sealed class TriggerTests : IDisposable
         Assert.Equal(1, await CountTriggersAsync(db));
     }
 
+    [Fact]
+    public async Task The_sqlite_read_back_merges_per_event_triggers_only_when_they_form_one_declaration()
+    {
+        await using var db = await OpenAsync();
+        await SchemaSync.ApplyAsync(db, ["create table widgets (id INTEGER PRIMARY KEY, name TEXT) STRICT"], CancellationToken.None);
+
+        // The narrowing lives on the update trigger, which sorts after the delete one by name.
+        var narrowed = new TriggerDefinition("trg_w", TriggerTiming.After, TriggerEvent.Update | TriggerEvent.Delete, "select 1 from {old: id} o;", ["name"]);
+        await SchemaSync.ApplyAsync(db, new SqliteDialect().CreateTriggerSql("widgets", false, narrowed), CancellationToken.None);
+
+        // Per-event triggers that disagree (another body on one event) were not written from one declaration.
+        await SchemaSync.ApplyAsync(db,
+        [
+            "create trigger trg_x_update after update on widgets for each row\nbegin\nselect 1;\nend",
+            "create trigger trg_x_delete after delete on widgets for each row\nbegin\nselect 2;\nend",
+        ], CancellationToken.None);
+
+        using var connection = new SqliteConnection($"Data Source={_path}");
+        connection.Open();
+        var live = SqliteTriggerDdl.Read(connection, "trg_w", out var note);
+        Assert.NotNull(live);
+        Assert.Null(note);
+        Assert.Equal(["name"], live.Definition.UpdateOf);
+        Assert.Equal(TriggerEvent.Update | TriggerEvent.Delete, live.Definition.Events);
+
+        Assert.Null(SqliteTriggerDdl.Read(connection, "trg_x", out note));
+        Assert.Contains("do not form one declaration", note);
+        Assert.Null(SqliteTriggerDdl.Read(connection, "trg_absent", out note));
+        Assert.Null(note);
+    }
+
+    [Fact]
+    public void The_scan_counts_an_unlinked_declaration_class_for_the_name_rule()
+    {
+        var conflict = Assert.Single(EntityMapLoader.TriggerConflicts([typeof(SharedOwnerA), typeof(SameNameTrigger)]));
+        Assert.Equal(("MAP-029", "trg_shared"), (conflict.Code, conflict.Target));
+    }
+
     private static TriggerSnapshot Declare(TriggerEvent events, string sql)
         => new("widgets", false, new TriggerDefinition("trg_widgets", TriggerTiming.After, events, sql));
 

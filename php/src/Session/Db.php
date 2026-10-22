@@ -749,6 +749,41 @@ final class Db
         }
     }
 
+    /**
+     * Creates the triggers the entity links, from their declarations (Level 4, ADR-0042) — a dev/test utility like
+     * {@see self::createTable()}, separate from it: each trigger is dropped if present, then created (**replace**
+     * semantics, so it is safe to call again), through the dialect (`DDL-005` where it has no form for a declaration).
+     * Versioned migrations stay the schema-evolution path (`TriggerMigration`). Only tables and views take triggers
+     * (`DDL-001`); an entity that links none is a no-op.
+     */
+    public function createTriggers(string $entityType): void
+    {
+        $map = $this->maps->load($entityType);
+        if ($map->kind !== RelationKind::Table && $map->kind !== RelationKind::View) {
+            throw new SimpleOrmException(
+                'DDL-001',
+                $map->entityName(),
+                "is {$map->kind->value}-backed; only tables (and views, for INSTEAD OF) take triggers",
+            );
+        }
+
+        $dialect = $this->options->dialect;
+        $relation = (string) $map->relationName;
+        // Rendered before anything runs: a form the dialect lacks (DDL-005) must refuse with nothing half-created.
+        $statements = [];
+        foreach ($map->triggers as $trigger) {
+            array_push(
+                $statements,
+                ...$dialect->dropTriggerSql($relation, $trigger->definition->name),
+                ...$dialect->createTriggerSql($relation, $map->kind === RelationKind::View, $trigger->definition),
+            );
+        }
+
+        foreach ($statements as $sql) {
+            $this->connection()->exec($sql);
+        }
+    }
+
     /** Generated select-all: explicit column list, ordered by the key when one exists. `QRY-005` for statements/procedures. */
     public function queryAll(string $entityType): array
     {

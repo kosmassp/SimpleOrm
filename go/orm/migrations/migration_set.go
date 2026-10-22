@@ -3,6 +3,7 @@ package migrations
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/metadata"
@@ -80,6 +81,10 @@ func checkActionShape(step Step) error {
 	case stepKindView:
 		if _, ok := step.(interface{ Action(*ViewActions) }); !ok {
 			return core.Errorf("MIG-001", concreteTypeName(step), "must implement Action(*orm.ViewActions)")
+		}
+	case stepKindTrigger:
+		if _, ok := step.(interface{ Action(*TriggerActions) }); !ok {
+			return core.Errorf("MIG-001", concreteTypeName(step), "must implement Action(*orm.TriggerActions)")
 		}
 	}
 	return nil
@@ -173,6 +178,15 @@ func objectNameFor(desc stepDescriptor, maps *metadata.Loader) (string, error) {
 	if desc.kind == stepKindRaw {
 		return desc.objectName, nil
 	}
+	if desc.kind == stepKindTrigger {
+		// A trigger step's object is the trigger's name, read from its own class — not from the entity's link,
+		// which a removal step outlives (spec/migrations.md).
+		declaration, ok := core.TriggerDeclarationOf(desc.triggerType)
+		if !ok {
+			return "", core.Errorf("MAP-029", core.TypeName(desc.triggerType), "carries no trigger declaration; give it a Trigger() orm.TriggerDef method")
+		}
+		return strings.TrimSpace(declaration.Name), nil
+	}
 	m, err := maps.Load(desc.entityType)
 	if err != nil {
 		return "", err
@@ -194,8 +208,10 @@ func renderStep(
 		return renderTableStep(step, desc, objectName, description, maps, dialect, versionNumber)
 	case stepKindView:
 		return renderViewStep(step, desc, objectName, description, maps, dialect, versionNumber)
+	case stepKindTrigger:
+		return renderTriggerStep(step, desc, objectName, description, maps, dialect, versionNumber)
 	default:
-		return renderRawStep(desc, objectName, description, versionNumber), nil
+		return renderRawStep(desc, objectName, description, dialect, versionNumber)
 	}
 }
 
@@ -285,12 +301,35 @@ func renderViewStep(
 	}, nil
 }
 
-func renderRawStep(desc stepDescriptor, objectName, description string, versionNumber int64) RenderedStep {
+func renderRawStep(
+	desc stepDescriptor, objectName, description string, dialect core.Dialect, versionNumber int64,
+) (RenderedStep, error) {
 	var up []MigrationStatement
 	if desc.expectDefinition != "" {
 		up = append(up, MigrationStatement{
 			SQL: NormalizeDDL(desc.expectDefinition), Origin: "expect " + objectName, GuardView: objectName,
 		})
+	}
+	if desc.expectTrigger != nil {
+		definition := withName(desc.expectTrigger, objectName)
+		guard, err := triggerGuard(dialect, definition.Relation, definition.OnView(), definition.Definition(), "expect "+objectName)
+		if err != nil {
+			return RenderedStep{}, err
+		}
+		up = append(up, *guard)
+	}
+	if desc.trigger != nil {
+		definition := withName(desc.trigger, objectName)
+		creates, err := dialect.CreateTriggerSQL(definition.Relation, definition.OnView(), definition.Definition())
+		if err != nil {
+			return RenderedStep{}, err
+		}
+		for _, sql := range dialect.DropTriggerSQL(definition.Relation, objectName) {
+			up = append(up, MigrationStatement{SQL: sql, Origin: "drop trigger " + objectName})
+		}
+		for _, sql := range creates {
+			up = append(up, MigrationStatement{SQL: sql, Origin: "create trigger " + objectName})
+		}
 	}
 	for _, sql := range desc.up {
 		up = append(up, MigrationStatement{SQL: sql, Origin: "sql " + objectName})
@@ -307,5 +346,74 @@ func renderRawStep(desc stepDescriptor, objectName, description string, versionN
 		Up:          up,
 		Down:        DownPlan{Core: down},
 		Renames:     desc.renames,
+	}, nil
+}
+
+// withName is a data-driven declaration with the step's object as its trigger name — the object names the
+// trigger; the declaration's own Name is ignored.
+func withName(declaration *TriggerDeclaration, name string) *TriggerDeclaration {
+	copied := *declaration
+	copied.Name = name
+	return &copied
+}
+
+// renderTriggerStep renders a trigger step (Level 4, ADR-0042): the entity must be a table or a view
+// (DDL-001 otherwise), the actions render through the dialect from declarations, and the manual-override
+// rollback (Down, PreDown, PostDown) works as it does for every other step.
+func renderTriggerStep(
+	step Step, desc stepDescriptor, objectName, description string,
+	maps *metadata.Loader, dialect core.Dialect, versionNumber int64,
+) (RenderedStep, error) {
+	m, err := maps.Load(desc.entityType)
+	if err != nil {
+		return RenderedStep{}, err
 	}
+	if m.Kind != core.RelationTable && m.Kind != core.RelationView {
+		return RenderedStep{}, core.Errorf(
+			"DDL-001", core.TypeName(desc.entityType), "is %s-backed; a trigger step applies to tables and views", m.Kind)
+	}
+
+	action, ok := step.(interface{ Action(*TriggerActions) })
+	if !ok {
+		return RenderedStep{}, core.Errorf("MIG-001", concreteTypeName(step), "must implement Action(*orm.TriggerActions)")
+	}
+
+	var linked *core.EntityTrigger
+	for _, candidate := range m.Triggers {
+		if candidate.Type == desc.triggerType {
+			linked = candidate
+			break
+		}
+	}
+
+	up := newTriggerActions(m, linked, objectName, dialect)
+	action.Action(up)
+	upStatements, err := up.build()
+	if err != nil {
+		return RenderedStep{}, err
+	}
+
+	pre, post := &MigrationSQL{}, &MigrationSQL{}
+	if hook, ok := step.(PreDowner); ok {
+		hook.PreDown(pre)
+	}
+	if hook, ok := step.(PostDowner); ok {
+		hook.PostDown(post)
+	}
+	down := newTriggerActions(m, linked, objectName, dialect)
+	if hook, ok := step.(TriggerDowner); ok {
+		hook.Down(down)
+	}
+	downStatements, err := down.build()
+	if err != nil {
+		return RenderedStep{}, err
+	}
+
+	return RenderedStep{
+		Version:     versionNumber,
+		ObjectName:  objectName,
+		Description: description,
+		Up:          upStatements,
+		Down:        DownPlan{Pre: pre.render("pre-down"), Core: downStatements, Post: post.render("post-down")},
+	}, nil
 }

@@ -276,6 +276,29 @@ public sealed class Role { … }
   asked for it through the data-driven step form renders it and the database
   refuses. `DDL-005` stays the two forms of the renderings table.
 
+**Clarifications** (the uniformity review; ADR-0042):
+
+- **What a token is.** A token is `{…}` with no brace inside, outside a
+  single-quoted literal — nothing else is masked (a brace in a `/* … */`
+  comment or a quoted identifier is read as a token). A lone `{` or `}` that
+  opens or closes no token is text. The kind is case-insensitive (`{NOW}`,
+  `{ New : a }`); a row token's columns are trimmed, none may be empty, and a
+  repeated column is not an error. A body the dialect is asked to render
+  through the data-driven form is parsed by the same rules, and a malformed
+  token or a `--` comment there is `MAP-029` at rendering.
+- **The scan rule's name set** is every declaration class the scan sees — the
+  classes entities link and any declaration class in the scanned list itself,
+  linked or not (a class kept for its removal step still names the database
+  object). The error for a name conflict names the trigger name; for a class
+  linked twice, the class.
+- **The SQLite read-back** (the shadow, the conformance deep expect) merges the
+  per-event triggers only when they form one declaration — the names the
+  rendering gives them, one relation, one timing, one normalized body, no
+  event twice; the update-of list comes from the update trigger whatever the
+  name order. It folds only the exact expansions — one row variable and every
+  alias its column — and leaves any other `(select new.… as …)` as the
+  author's SQL. Anything else is a hand-written trigger: skipped with a note.
+
 ## Entity identity
 
 An entity's identity is its ordered key values, extracted from an instance.

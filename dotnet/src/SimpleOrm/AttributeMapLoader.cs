@@ -234,8 +234,37 @@ internal static class AttributeMapLoader
         var errors = new List<MappingError>();
         var linkedBy = new Dictionary<Type, List<string>>();
         var namedBy = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+        // Every declaration class counts for the name rule — the linked ones and any the scan sees unlinked
+        // (a class kept for its removal step still names the database object).
+        void Declares(Type triggerType)
+        {
+            var name = triggerType.GetCustomAttributes<TriggerAttribute>(inherit: false)
+                .Select(a => a.Name?.Trim()).FirstOrDefault(n => !string.IsNullOrEmpty(n));
+            if (name is null)
+            {
+                return;
+            }
+
+            if (!namedBy.TryGetValue(name, out var classes))
+            {
+                namedBy[name] = classes = [];
+            }
+
+            if (!classes.Contains(triggerType.Name))
+            {
+                classes.Add(triggerType.Name);
+            }
+        }
+
         foreach (var type in types.Where(t => t is { IsClass: true, IsAbstract: false } && !IsOwnedType(t)))
         {
+            if (IsTriggerType(type))
+            {
+                Declares(type);
+                continue;
+            }
+
             foreach (var link in type.GetCustomAttributes<TriggerAttribute>(inherit: false).Where(a => a.Trigger is not null))
             {
                 if (!linkedBy.TryGetValue(link.Trigger!, out var owners))
@@ -243,22 +272,12 @@ internal static class AttributeMapLoader
                     linkedBy[link.Trigger!] = owners = [];
                 }
 
-                owners.Add(type.Name);
-
-                var name = link.Trigger!.GetCustomAttributes<TriggerAttribute>(inherit: false)
-                    .Select(a => a.Name).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n));
-                if (name is not null)
+                if (!owners.Contains(type.Name))
                 {
-                    if (!namedBy.TryGetValue(name, out var classes))
-                    {
-                        namedBy[name] = classes = [];
-                    }
-
-                    if (!classes.Contains(link.Trigger!.Name))
-                    {
-                        classes.Add(link.Trigger!.Name);
-                    }
+                    owners.Add(type.Name);   // a class linked twice by one entity is that entity's own MAP-029, not a scan conflict
                 }
+
+                Declares(link.Trigger!);
             }
         }
 

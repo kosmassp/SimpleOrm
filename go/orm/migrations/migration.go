@@ -66,6 +66,7 @@ type stepKind int
 const (
 	stepKindTable stepKind = iota
 	stepKindView
+	stepKindTrigger
 	stepKindRaw
 )
 
@@ -75,6 +76,8 @@ const (
 type stepDescriptor struct {
 	kind       stepKind
 	entityType reflect.Type
+	// triggerType is a trigger step's declaration class (Level 4, ADR-0042); nil for every other kind.
+	triggerType reflect.Type
 
 	// Raw-step-only fields (SQLVersion).
 	objectName       string
@@ -82,6 +85,10 @@ type stepDescriptor struct {
 	down             []string
 	renames          []ColumnRename
 	expectDefinition string
+	// trigger and expectTrigger are the data-driven trigger forms (ADR-0042): a declaration rendered through the
+	// dialect ahead of up, and the MIG-012 guard that precedes it.
+	trigger       *TriggerDeclaration
+	expectTrigger *TriggerDeclaration
 }
 
 // Step is one object's migration step (§7.22): a class named
@@ -121,6 +128,20 @@ func (ViewMigration[T]) describe() stepDescriptor {
 	return stepDescriptor{kind: stepKindView, entityType: reflect.TypeFor[T]()}
 }
 
+// TriggerMigration is embedded by a trigger step to declare its entity and its trigger class (Level 4, ADR-0042,
+// the C# TriggerMigration<TEntity, TTrigger>); the step implements Action(*TriggerActions) and may implement
+// Down(*TriggerActions) (TriggerDowner), PreDown/PostDown. The step's schema_version object is the trigger
+// name, and its snapshots live under Trigger/<TTrigger>/.
+//
+//	type V0013_CreateRoleAuditTrigger struct{ orm.TriggerMigration[sample.Role, sample.RoleAuditTrigger] }
+//
+//	func (V0013_CreateRoleAuditTrigger) Action(a *orm.TriggerActions) { a.CreateTrigger() }
+type TriggerMigration[TEntity, TTrigger any] struct{}
+
+func (TriggerMigration[TEntity, TTrigger]) describe() stepDescriptor {
+	return stepDescriptor{kind: stepKindTrigger, entityType: reflect.TypeFor[TEntity](), triggerType: reflect.TypeFor[TTrigger]()}
+}
+
 // TableDowner is the manual rollback override for a table step (ADR-0018);
 // the default (no override) derives the rollback from the versioned snapshots
 // — a later phase.
@@ -131,6 +152,12 @@ type TableDowner interface {
 // ViewDowner is the manual rollback override for a view step.
 type ViewDowner interface {
 	Down(*ViewActions)
+}
+
+// TriggerDowner is the manual rollback override for a trigger step; the default derives it from the trigger
+// snapshots (guard, drop, the previous declaration re-rendered).
+type TriggerDowner interface {
+	Down(*TriggerActions)
 }
 
 // PreDowner runs data work before the rollback DDL (e.g. stash values a
@@ -219,6 +246,11 @@ type MigrationStatement struct {
 	SQL       string
 	Origin    string
 	GuardView string
+	// GuardTrigger names a trigger whose live statements (Dialect.TriggerDefinitionSQL) must be, normalized, the
+	// same set as Expected — the MIG-012 guard for triggers (ADR-0042). SQL then holds the expectation joined, so
+	// the checksum counts it like a view guard.
+	GuardTrigger string
+	Expected     []string
 }
 
 // DownPlan is a step's rendered rollback: data hooks around the DDL core.
@@ -498,6 +530,11 @@ type SQLVersionStep struct {
 	Down             []string
 	Renames          []ColumnRename
 	ExpectDefinition string
+	// Trigger is a trigger declaration rendered through the dialect (drop, then create) ahead of Up, the step's
+	// object being the trigger's name; ExpectTrigger is the MIG-012 guard that precedes it (ADR-0042). The
+	// declaration's own Name is ignored — the object names the trigger.
+	Trigger       *TriggerDeclaration
+	ExpectTrigger *TriggerDeclaration
 }
 
 // NewSQLVersion builds a data-driven version composing one raw step per entry in steps.
@@ -540,6 +577,8 @@ func (r rawStep) describe() stepDescriptor {
 		down:             r.data.Down,
 		renames:          r.data.Renames,
 		expectDefinition: r.data.ExpectDefinition,
+		trigger:          r.data.Trigger,
+		expectTrigger:    r.data.ExpectTrigger,
 	}
 }
 

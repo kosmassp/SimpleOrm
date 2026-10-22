@@ -28,6 +28,9 @@ final class EntityMapBuilder
 
     private ?string $schema = null;
 
+    /** @var list<string> the linked trigger classes (Level 4, ADR-0042) */
+    private array $triggerLinks = [];
+
     private readonly NamingConvention $naming;
 
     /** @param class-string $entityType */
@@ -46,8 +49,23 @@ final class EntityMapBuilder
     public static function for(string $entityType, ?NamingConvention $naming = null): self
     {
         BaseClassRules::assertConcrete($entityType);   // MAP-028 at registration time (ADR-0041)
+        TriggerRules::assertNotTriggerClass($entityType);   // MAP-029: a trigger class is a declaration object (ADR-0042)
 
         return new self($entityType, $naming);
+    }
+
+    /**
+     * Links a trigger class (Level 4, ADR-0042) — the builder's `#[Trigger(X::class)]`, under the same `MAP-029`
+     * rules the attribute loader enforces when {@see self::build()} assembles the map. A table takes any timing, a
+     * view only `InsteadOf`.
+     *
+     * @param class-string $triggerClass
+     */
+    public function trigger(string $triggerClass): self
+    {
+        $this->triggerLinks[] = $triggerClass;
+
+        return $this;
     }
 
     /** Sets the table name; when never called, the naming convention derives it from the class short name. */
@@ -113,6 +131,7 @@ final class EntityMapBuilder
             relationshipSpecs: [],
             convention: $this->naming,
             errors: $errors,
+            triggerLinks: $this->triggerLinks,
         );
 
         if ($map === null) {

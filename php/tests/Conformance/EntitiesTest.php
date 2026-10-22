@@ -12,6 +12,7 @@ use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Tests\Sample\Models\DailySales;
 use SimpleOrm\Tests\Sample\Models\MonthlySalesTotal;
 use SimpleOrm\Tests\Sample\Models\Role;
+use SimpleOrm\Tests\Sample\Models\RoleChange;
 use SimpleOrm\Tests\Sample\Models\Transaction;
 use SimpleOrm\Tests\Sample\Models\TransactionDetail;
 use SimpleOrm\Tests\Sample\Models\User;
@@ -37,6 +38,7 @@ final class EntitiesTest extends TestCase
         return [
             'user' => ['user', User::class],
             'role' => ['role', Role::class],
+            'role_change' => ['role_change', RoleChange::class],
             'user_role' => ['user_role', UserRole::class],
             'transaction' => ['transaction', Transaction::class],
             'transaction_detail' => ['transaction_detail', TransactionDetail::class],

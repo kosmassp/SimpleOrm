@@ -43,14 +43,41 @@ final class DownDeriver
     ): ?array {
         $at = $snapshots->at($objectName, $version);
         if ($at === null) {
+            // No snapshot at this version — a trigger's removal included (it leaves none, the object being gone):
+            // nothing derives, MIG-020, override down() — exactly like a dropped table (ADR-0042).
             return null;
         }
 
         $before = $snapshots->latestBefore($objectName, $version);
 
-        return $at->ddl !== null
-            ? self::deriveView($objectName, $at->ddl, $before?->ddl)
-            : self::deriveTable($objectName, $version, $at->table, $before?->table, $upRenames, $notices, $dialect);
+        return match (true) {
+            $at->trigger !== null => self::deriveTrigger($objectName, $at->trigger, $before?->trigger, $dialect),
+            $at->ddl !== null => self::deriveView($objectName, $at->ddl, $before?->ddl),
+            default => self::deriveTable($objectName, $version, $at->table, $before?->table, $upRenames, $notices, $dialect),
+        };
+    }
+
+    /**
+     * A trigger's rollback (ADR-0042, spec/migrations.md "Derived rollbacks"): the `MIG-012` guard on **this
+     * version's** rendering (a rollback must not silently destroy an outside hotfix either), the drop, and the
+     * previous declaration rendered through the dialect — a creation (no earlier snapshot) is the drop alone.
+     *
+     * @return list<MigrationStatement>
+     */
+    private static function deriveTrigger(string $objectName, TriggerSchema $at, ?TriggerSchema $before, Dialect $dialect): array
+    {
+        $statements = [MigrationStatement::expectTrigger('derived expect ' . $objectName, $at->name(), $at->createStatements($dialect))];
+        foreach ($dialect->dropTriggerSql($at->relation, $at->name()) as $sql) {
+            $statements[] = new MigrationStatement($sql, 'derived drop ' . $objectName);
+        }
+
+        if ($before !== null) {
+            foreach ($before->createStatements($dialect) as $sql) {
+                $statements[] = new MigrationStatement($sql, 'derived restore ' . $objectName);
+            }
+        }
+
+        return $statements;
     }
 
     /** @return list<MigrationStatement> */

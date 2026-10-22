@@ -555,10 +555,14 @@ func (r *Runner) deleteVersionRecord(ctx context.Context, tx *sql.Tx, version in
 	return nil
 }
 
-// applyStatement executes one rendered statement — or, for a guard, checks the view's live definition instead (MIG-012).
+// applyStatement executes one rendered statement — or, for a guard, checks the view's or trigger's live definition
+// instead (MIG-012).
 func (r *Runner) applyStatement(
 	ctx context.Context, tx *sql.Tx, version int64, statement MigrationStatement, options RunOptions,
 ) error {
+	if statement.GuardTrigger != "" {
+		return r.applyTriggerGuard(ctx, tx, version, statement, options)
+	}
 	if statement.GuardView == "" {
 		return r.execute(ctx, tx, statement.SQL)
 	}
@@ -607,4 +611,66 @@ func (r *Runner) execute(ctx context.Context, tx *sql.Tx, statement string) erro
 		return core.Errorf("MIG-021", "migration statement", "%s -- while executing: %s", err.Error(), statement)
 	}
 	return nil
+}
+
+// applyTriggerGuard is the MIG-012 guard for triggers (Level 4, ADR-0042), reusing the view guard's code and
+// semantics: the live rows of Dialect.TriggerDefinitionSQL (the stored or reconstructed create statements, one
+// per statement the dialect created) and the expectation (the dialect's rendering of the expected
+// declaration), both normalized, must be the same set. Absent or different refuses — the whole run being one
+// transaction, nothing is applied and the outside hotfix is preserved — unless forced, which recreates from
+// the code and reports the drift.
+func (r *Runner) applyTriggerGuard(
+	ctx context.Context, tx *sql.Tx, version int64, statement MigrationStatement, options RunOptions,
+) error {
+	live, err := r.readTriggerDefinitions(ctx, tx, statement.GuardTrigger)
+	if err != nil {
+		return err
+	}
+	if TriggerStatementsMatch(live, statement.Expected) {
+		return nil
+	}
+
+	target := fmt.Sprintf("V%04d %s", version, statement.GuardTrigger)
+	var drift, reason string
+	if len(live) == 0 {
+		drift = target + ": the trigger is absent; expected the previous definition"
+		reason = "the trigger is absent but a previous definition was expected"
+	} else {
+		drift = target + ": the live definition does not match the expected one — it was changed outside migrations"
+		reason = "the live definition was changed outside migrations"
+	}
+
+	if !options.AllowViewDrift {
+		return core.NewError("MIG-012", target, reason+"; review the drift, then rerun with --force to recreate it from the code")
+	}
+	if options.Notify != nil {
+		options.Notify(drift + "; recreating (--force)")
+	}
+	return nil
+}
+
+// ReadTriggerDefinitions is the live statements of a declared trigger through the dialect's
+// TriggerDefinitionSQL, as stored (callers normalize).
+func ReadTriggerDefinitions(ctx context.Context, q queryer, dialect core.Dialect, name string) ([]string, error) {
+	rows, err := q.QueryContext(ctx, dialect.TriggerDefinitionSQL(), sql.Named("relation", name))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var definitions []string
+	for rows.Next() {
+		var definition sql.NullString
+		if err := rows.Scan(&definition); err != nil {
+			return nil, err
+		}
+		if definition.Valid {
+			definitions = append(definitions, definition.String)
+		}
+	}
+	return definitions, rows.Err()
+}
+
+func (r *Runner) readTriggerDefinitions(ctx context.Context, tx *sql.Tx, name string) ([]string, error) {
+	return ReadTriggerDefinitions(ctx, tx, r.dialect, name)
 }

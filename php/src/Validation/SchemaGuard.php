@@ -21,6 +21,7 @@ use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Metadata\RelationKind;
+use SimpleOrm\Metadata\TriggerRules;
 use SimpleOrm\Migrations\MigrationRunner;
 use SimpleOrm\Migrations\MigrationSet;
 use SimpleOrm\Migrations\MigrationState;
@@ -92,6 +93,11 @@ final class SchemaGuard
             // entity - reported once, naming the extenders, and not validated as a relation.
             $bases = BaseClassRules::scan($classes);
             foreach (BaseClassRules::scanErrors($classes) as $error) {
+                $errors[] = new ValidationError($error->code, $error->target, $error->message);
+            }
+
+            // MAP-029 (ADR-0042): a trigger class linked by two entities, two classes declaring one name.
+            foreach (TriggerRules::scanErrors($classes) as $error) {
                 $errors[] = new ValidationError($error->code, $error->target, $error->message);
             }
 

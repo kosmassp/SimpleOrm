@@ -41,6 +41,6 @@ func loadByConvention(l *Loader, t reflect.Type) (*core.EntityMap, error) {
 
 	return assemble(
 		t, core.RelationTable, convention.TableName(t.Name()), "", "", nil,
-		specs, nil, nil, convention, errs,
+		specs, nil, nil, nil, convention, errs,
 	)
 }

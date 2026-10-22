@@ -66,6 +66,12 @@ func Load[T any](l *Loader) (*core.EntityMap, error) {
 }
 
 func (l *Loader) load(t reflect.Type) (*core.EntityMap, error) {
+	if core.IsTriggerType(t) {
+		// A trigger class (Level 4, ADR-0042) is a declaration object, never an entity: no columns, no key;
+		// scans skip it and a load of it is MAP-029.
+		return nil, &core.MappingErrors{EntityType: t, Errors: []*core.Error{core.NewError("MAP-029", t.Name(),
+			"is a trigger class (it declares a Trigger() method), not an entity; link it from an entity with orm.Trigger[T]()")}}
+	}
 	if core.IsOwnedType(t) {
 		// An owned value type (ADR-0030) has no map of its own; it is read
 		// through its owner. Loading it directly is a caller error.

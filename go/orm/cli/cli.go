@@ -267,6 +267,9 @@ func runForceSync(
 	defer conn.Close()
 
 	maps := metadata.NewLoader(nil)
+	if refusal := scanTriggers(maps, registry); refusal != "" {
+		return fail(stderr, refusal)
+	}
 	plan, err := migrations.PlanSync(ctx, conn, dialect, maps, registry.Entities)
 	if err != nil {
 		return fail(stderr, err.Error())
@@ -398,7 +401,13 @@ func runExportMetadata(registry orm.Registry, a arguments, stdout, stderr io.Wri
 	}
 
 	maps := metadata.NewLoader(nil)
+	if refusal := scanTriggers(maps, registry); refusal != "" {
+		return fail(stderr, refusal)
+	}
 	for _, entityType := range registry.Entities {
+		if orm.IsTriggerType(entityType) {
+			continue // a trigger class is no entity: scans skip it (ADR-0042)
+		}
 		m, err := maps.Load(entityType)
 		if err != nil {
 			return fail(stderr, err.Error())
@@ -473,12 +482,38 @@ func runSnapshot(ctx context.Context, registry orm.Registry, a arguments, stdout
 	}
 
 	maps := metadata.NewLoader(nil)
+	if refusal := scanTriggers(maps, registry); refusal != "" {
+		return fail(stderr, refusal)
+	}
 	generatedAt := time.Now().UTC()
 	for _, entityType := range registry.Entities {
+		if orm.IsTriggerType(entityType) {
+			continue // a trigger class is no entity: scans skip it (ADR-0042)
+		}
 		m, err := maps.Load(entityType)
 		if err != nil {
 			return fail(stderr, err.Error())
 		}
+
+		// A trigger snapshots by declaration at the last version touching it (spec/migrations.md "Snapshots"):
+		// dialect-neutral, so the dialect plays no part.
+		for _, trigger := range m.Triggers {
+			triggerVersion, touched := perObject[trigger.Definition.Name]
+			if !touched {
+				continue
+			}
+			content := migrations.ExportTrigger(migrations.DeclarationFromEntity(m, trigger), triggerVersion, generatedAt)
+			directory := filepath.Join(outDir, "Trigger", trigger.Type.Name())
+			if err := os.MkdirAll(directory, 0o777); err != nil {
+				return fail(stderr, err.Error())
+			}
+			file := filepath.Join(directory, fmt.Sprintf("V%04d.schema.json", triggerVersion))
+			if err := os.WriteFile(file, []byte(content+"\n"), 0o666); err != nil {
+				return fail(stderr, err.Error())
+			}
+			fmt.Fprintln(stdout, "wrote "+file)
+		}
+
 		version, ok := perObject[m.RelationName]
 		if !ok {
 			continue
@@ -540,6 +575,10 @@ func runDiff(ctx context.Context, registry orm.Registry, a arguments, stdout, st
 		return fail(stderr, err.Error())
 	}
 
+	if refusal := scanTriggers(metadata.NewLoader(nil), registry); refusal != "" {
+		return fail(stderr, refusal)
+	}
+
 	name, _ := a.option("name")
 
 	var isApplied func(context.Context, int64) (bool, error)
@@ -568,6 +607,7 @@ func runDiff(ctx context.Context, registry orm.Registry, a arguments, stdout, st
 	return migrations.ExecuteDiff(ctx, migrations.DiffOptions{
 		Set:          registry.Migrations,
 		EntityTypes:  registry.Entities,
+		TriggerTypes: registry.Triggers,
 		OutDir:       outDir,
 		Package:      pkg,
 		Dialect:      dialect,
@@ -638,9 +678,12 @@ func runShadow(ctx context.Context, registry orm.Registry, a arguments, stdout, 
 	if registry.Migrations == nil {
 		return fail(stderr, "the registry declares no migrations")
 	}
+	if refusal := scanTriggers(metadata.NewLoader(nil), registry); refusal != "" {
+		return fail(stderr, refusal)
+	}
 
 	result, err := sqlite.Shadow(ctx, sqlite.ShadowOptions{
-		Set: registry.Migrations, Entities: registry.Entities, OutDir: outDir, From: from, To: to,
+		Set: registry.Migrations, Entities: registry.Entities, Triggers: registry.Triggers, OutDir: outDir, From: from, To: to,
 	})
 	if err != nil {
 		return fail(stderr, err.Error())
@@ -683,13 +726,14 @@ except shadow which only replays into its own throwaway database):
   validate                    SchemaGuard: full report or exit 0
   snapshot --out <MigrationsDir>
                               write V000N.schema.json per object (tables by
-                              columns; views by DDL), versioned and timestamped
+                              columns; views by DDL; triggers by declaration),
+                              versioned and timestamped
   diff --out <MigrationsDir> [--package <import path>]
        [--name <Description>] [--rename table.old=new]... [--allow-remove]
        [--draft] [--amend [--force] [--db <value>]]
                               generate the next migration version from the model vs
                               the latest snapshots (tables by columns, views by
-                              DDL); no database needed; removals need
+                              DDL, triggers by declaration); no database needed; removals need
                               --allow-remove (DDL-003); inexpressible changes are
                               DDL-004 (write by hand); a migrated object with no
                               snapshot refuses (run shadow/snapshot first).
@@ -720,3 +764,20 @@ options:
   --package <path>    the migrations package's import path for generated code
                       (default: the first migration version's own package)
 `
+
+// scanTriggers is the scan rule for triggers (Level 4, ADR-0042, spec/metadata-model.md "Triggers"), run
+// before every command that enumerates entities — export-metadata, snapshot, diff, migrate --force's sync,
+// shadow (validate reports the same conflicts through SchemaGuard): a trigger class linked by two entities,
+// or two classes declaring one name, is one MAP-029 per conflict, and the command refuses before doing
+// anything. "" when there is none.
+func scanTriggers(maps *metadata.Loader, registry orm.Registry) string {
+	conflicts := maps.ScanTriggers(registry.Entities, registry.Triggers)
+	if len(conflicts) == 0 {
+		return ""
+	}
+	lines := make([]string, len(conflicts))
+	for i, conflict := range conflicts {
+		lines[i] = conflict.Error()
+	}
+	return strings.Join(lines, "\n")
+}

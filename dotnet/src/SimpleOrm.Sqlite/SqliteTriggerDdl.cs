@@ -25,12 +25,20 @@ public static class SqliteTriggerDdl
         @"\(select\s+(?<row>new|old)\.(?<first>\w+)\s+as\s+\w+(?<rest>(\s*,\s*(new|old)\.\w+\s+as\s+\w+)*)\)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-    private static readonly Regex Column = new(@"(new|old)\.(?<col>\w+)\s+as", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex ColumnPair = new(@"(?<row>new|old)\.(?<col>\w+)\s+as\s+(?<alias>\w+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private const string NowExpansion = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 
     /// <summary>Reads the trigger declared under <paramref name="name"/> (its per-event forms included) from the shadow database, or null when absent or hand-written.</summary>
     public static TriggerSnapshot? Read(SqliteConnection connection, string name)
+        => Read(connection, name, out _);
+
+    /// <summary>
+    /// As <see cref="Read(SqliteConnection, string)"/>; <paramref name="note"/> says why a trigger that exists
+    /// was not read back (a hand-written text, or per-event triggers that do not form one declaration) and is
+    /// null when the trigger is absent or read.
+    /// </summary>
+    public static TriggerSnapshot? Read(SqliteConnection connection, string name, out string? note)
     {
         var texts = new List<string>();
         using (var command = connection.CreateCommand())
@@ -44,32 +52,53 @@ public static class SqliteTriggerDdl
             }
         }
 
+        note = null;
         if (texts.Count == 0)
         {
-            return null;
+            return null;   // absent: dropped at this version
         }
 
         var parsed = texts.Select(Parse).ToArray();
         if (parsed.Any(p => p is null))
         {
+            note = $"trigger {name}: a stored definition does not match the dialect's grammar (hand-written?); skipped";
             return null;
         }
 
+        // The per-event triggers of one declaration share the relation, the timing, and the body, and carry
+        // the names the rendering gives them; anything else was not written from one declaration.
         var first = parsed[0]!.Value;
         var events = TriggerEvent.None;
-        foreach (var part in parsed)
+        IReadOnlyList<string> updateOf = [];
+        foreach (var part in parsed.Select(p => p!.Value))
         {
-            events |= part!.Value.Event;
+            var expectedName = SqliteDialect.TriggerObjectName(name, part.Event, parsed.Length);
+            if (!string.Equals(part.Name, expectedName, StringComparison.OrdinalIgnoreCase)
+                || (events & part.Event) != 0
+                || part.Timing != first.Timing
+                || !string.Equals(part.Relation, first.Relation, StringComparison.OrdinalIgnoreCase)
+                || new TriggerDefinition(name, part.Timing, part.Event, part.Body).NormalizedSql
+                    != new TriggerDefinition(name, first.Timing, first.Event, first.Body).NormalizedSql)
+            {
+                note = $"trigger {name}: the stored per-event triggers do not form one declaration; skipped";
+                return null;
+            }
+
+            events |= part.Event;
+            if (part.Event == TriggerEvent.Update)
+            {
+                updateOf = part.UpdateOf;   // the narrowing lives on the update trigger alone, whatever the name order
+            }
         }
 
         var onView = IsView(connection, first.Relation);
         return new TriggerSnapshot(
             first.Relation, onView,
-            new TriggerDefinition(name, first.Timing, events, first.Body, first.UpdateOf));
+            new TriggerDefinition(name, first.Timing, events, first.Body, updateOf));
     }
 
     /// <summary>One stored trigger text → its header and un-expanded body; null when the grammar does not match.</summary>
-    public static (string Relation, TriggerTiming Timing, TriggerEvent Event, string Body, IReadOnlyList<string> UpdateOf)? Parse(string sql)
+    public static (string Relation, TriggerTiming Timing, TriggerEvent Event, string Body, IReadOnlyList<string> UpdateOf, string Name)? Parse(string sql)
     {
         var match = Header.Match(sql.Trim());
         if (!match.Success)
@@ -92,11 +121,31 @@ public static class SqliteTriggerDdl
         var updateOf = match.Groups["cols"].Success
             ? match.Groups["cols"].Value.Split(',').Select(c => c.Trim()).ToArray()
             : [];
-        var body = RowSelect.Replace(match.Groups["body"].Value, m =>
-            "{" + m.Groups["row"].Value.ToLowerInvariant() + ": "
-            + string.Join(", ", Column.Matches(m.Value).Cast<Match>().Select(c => c.Groups["col"].Value)) + "}");
+        var body = RowSelect.Replace(match.Groups["body"].Value, FoldRowSelect);
         body = Regex.Replace(body, Regex.Escape(NowExpansion), "{now}", RegexOptions.IgnoreCase);
-        return (match.Groups["relation"].Value, timing, e, body, updateOf);
+        return (match.Groups["relation"].Value, timing, e, body, updateOf, match.Groups["name"].Value);
+    }
+
+    /// <summary>
+    /// <c>(select new.a as a, new.b as b)</c> → <c>{new: a, b}</c> — only the exact expansion: one row
+    /// variable throughout and every alias its column. Anything else is the author's SQL and stays as written.
+    /// </summary>
+    private static string FoldRowSelect(Match m)
+    {
+        var row = m.Groups["row"].Value.ToLowerInvariant();
+        var columns = new List<string>();
+        foreach (Match part in ColumnPair.Matches(m.Value))
+        {
+            if (!string.Equals(part.Groups["row"].Value, row, StringComparison.OrdinalIgnoreCase)
+                || part.Groups["col"].Value != part.Groups["alias"].Value)
+            {
+                return m.Value;
+            }
+
+            columns.Add(part.Groups["col"].Value);
+        }
+
+        return "{" + row + ": " + string.Join(", ", columns) + "}";
     }
 
     private static bool IsView(SqliteConnection connection, string relation)

@@ -14,7 +14,7 @@ import (
 	"github.com/kosmassp/SimpleOrm/go/orm/sample"
 )
 
-// entityTypes are the ten fixture entities of dotnet/samples/SimpleOrm.Sample,
+// entityTypes are the eleven fixture entities of dotnet/samples/SimpleOrm.Sample,
 // mirrored one to one in orm/sample (CODING-STANDARD §7).
 var entityTypes = []reflect.Type{
 	reflect.TypeFor[sample.User](),
@@ -27,6 +27,7 @@ var entityTypes = []reflect.Type{
 	reflect.TypeFor[sample.MonthlySalesTotal](),
 	reflect.TypeFor[sample.DailySales](),
 	reflect.TypeFor[sample.UserActivityReport](),
+	reflect.TypeFor[sample.RoleChange](),
 }
 
 // TestEntities_MatchConformanceFiles is the conformance runner for entity

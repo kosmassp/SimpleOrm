@@ -38,7 +38,7 @@ orm/internal/metadata   the loaders (struct tags + descriptor, convention, build
 orm/internal/mapping    the conversion table, the JSON handler, the result mapper
 orm/internal/params     @name binding and IN-list expansion
 orm/internal/render     the reference SELECT rendering
-orm/sample              the ten fixture entities and their migrations tree (mirrors dotnet/samples)
+orm/sample              the eleven fixture entities, the trigger class, and their migrations tree (mirrors dotnet/samples)
 orm/internal/conformance one data-driven runner per conformance folder
 ```
 
@@ -233,7 +233,7 @@ func (V0002_AddDisplayName) Action(actions *orm.TableActions) {
     actions.AddColumn("display_name", "TEXT").Post("update users set display_name = name")
 }
 
-//go:embed Table/*/*.schema.json View/*/*.schema.json
+//go:embed Table/*/*.schema.json View/*/*.schema.json Trigger/*/*.schema.json
 var Snapshots embed.FS                           // rollbacks derive from these (ADR-0018)
 ```
 
@@ -316,3 +316,50 @@ executes (the earlier versions stay unapplied too; a baseline *below* the
 draft is fine). `status` lists its steps as `Draft`, `shadow` replays it, and
 `diff --amend` regenerates it and keeps the marker. Review the generated code,
 then delete the method; the data-driven form is `orm.NewSQLVersion(...).AsDraft()`.
+
+### Triggers in the mapping (Level 4, ADR-0042)
+
+A trigger is its own declaration type — an empty struct whose `Trigger` method returns the declaration —
+and the entity links it from its descriptor. Nothing in the declaration or in the body names a dialect:
+
+```go
+type RoleAuditTrigger struct{}
+
+func (RoleAuditTrigger) Trigger() orm.TriggerDef {
+    return orm.TriggerDef{
+        Name: "trg_roles_audit", Timing: orm.TimingAfter, Events: orm.EventUpdate,   // events combine: EventUpdate | EventDelete
+        SQL: `insert into role_changes (role_id, role_name, changed_at)
+select n.id, n.role_name, {now}
+from {new: id, role_name} n;`,
+    }
+}
+
+func (Role) Entity() orm.EntityDef {
+    return orm.EntityDef{Source: orm.Table("roles"), Triggers: []orm.TriggerLink{orm.Trigger[RoleAuditTrigger]()}}
+}
+```
+
+The body is set-based SQL over the changed rows with three tokens: `{new: cols}` and `{old: cols}` (the inserted or
+updated rows, the deleted or pre-update rows, as a relation) and `{now}` (UTC now in the storage form). The
+dialect renders everything else — SQLite and PostgreSQL row triggers, SQL Server's statement trigger over
+`inserted`/`deleted` — and refuses a form it lacks with `DDL-005` (`before` on SQL Server, `instead of` on a
+table outside SQL Server). `UpdateOf` names properties and narrows an update trigger. Every misplaced or
+malformed declaration is `MAP-029`, collected with the entity's other errors; list the classes in
+`orm.Registry{Triggers: …}` so the scan rule (a class linked twice, a name declared twice) and the generator see them.
+
+Migrations create triggers as their own object kind, `Trigger/<Class>/`:
+
+```go
+// migrations/Trigger/RoleAuditTrigger/V0013_CreateRoleAuditTrigger.go
+type V0013_CreateRoleAuditTrigger struct{ orm.TriggerMigration[models.Role, models.RoleAuditTrigger] }
+
+func (V0013_CreateRoleAuditTrigger) Action(actions *orm.TriggerActions) { actions.CreateTrigger() }
+// literal forms (what `diff` emits): actions.Recreate(orm.TimingAfter, orm.EventUpdate, `…`, "col"…), actions.ExpectDefinition(…), actions.DropTrigger()
+```
+
+A trigger snapshot is its neutral declaration (`kind: "trigger"`), so one tree serves every dialect; `diff`
+compares declarations, `shadow` parses the stored SQLite trigger back to one, a rollback is derived (guard,
+drop, the previous declaration re-rendered), and a trigger changed outside the code refuses with `MIG-012`
+(`--force` recreates it with a notice). `orm.CreateTriggers[T](ctx, db)` is the dev/test utility beside
+`CreateTable` (replace semantics). A `--` line comment in a body is `MAP-029` (layout
+collapses in snapshots and would fold the rest of the body into it); use `/* */`.

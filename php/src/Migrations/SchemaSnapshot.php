@@ -9,8 +9,13 @@ use SimpleOrm\Dialect\Dialect;
 use SimpleOrm\Json\CanonicalWriter;
 use SimpleOrm\Metadata\EntityIndex;
 use SimpleOrm\Metadata\EntityMap;
+use SimpleOrm\Metadata\EntityTrigger;
 use SimpleOrm\Metadata\IndexColumn;
 use SimpleOrm\Metadata\PropertyMap;
+use SimpleOrm\Metadata\RelationKind;
+use SimpleOrm\Metadata\TriggerDefinition;
+use SimpleOrm\Metadata\TriggerEvent;
+use SimpleOrm\Metadata\TriggerTiming;
 use SimpleOrm\Types\Iso8601;
 
 /**
@@ -99,6 +104,81 @@ final class SchemaSnapshot
             'generatedAt' => self::formatGeneratedAt($generatedAt),
             'ddl' => self::normalizeDdl($ddl),
         ]);
+    }
+
+    /** A linked trigger as the snapshot and diff see it: its declaration on the entity's relation (ADR-0042). */
+    public static function fromTrigger(EntityMap $map, EntityTrigger $trigger): TriggerSchema
+    {
+        /** @var string $relationName trigger-bearing maps (table, view) always carry a relation name */
+        $relationName = $map->relationName;
+
+        return new TriggerSchema($relationName, $map->kind === RelationKind::View, $trigger->definition);
+    }
+
+    /**
+     * The trigger snapshot (ADR-0042, spec/migrations.md "Snapshots"): the neutral declaration — relation and its kind,
+     * timing, events in the fixed order, `updateOf` only when declared, the body whitespace-collapsed with its tokens
+     * unexpanded — so one snapshot serves every dialect. From metadata it is the linked declaration; from history
+     * (`shadow`) the stored trigger parsed back; the two agree byte for byte apart from `generatedAt`.
+     */
+    public static function exportTrigger(TriggerSchema $schema, int $asOfVersion, DateTimeImmutable $generatedAt): string
+    {
+        $definition = $schema->trigger;
+        $document = [
+            'object' => $definition->name,
+            'kind' => 'trigger',
+            'relation' => $schema->relation,
+            'relationKind' => $schema->relationKind(),
+            'asOfVersion' => $asOfVersion,
+            'generatedAt' => self::formatGeneratedAt($generatedAt),
+            'timing' => $definition->timing->value,
+            'events' => array_map(static fn (TriggerEvent $event): string => $event->value, $definition->events),
+        ];
+        if ($definition->updateOf !== []) {
+            $document['updateOf'] = $definition->updateOf;
+        }
+
+        $document['sql'] = $definition->normalizedSql();
+
+        return CanonicalWriter::write($document);
+    }
+
+    public static function parseTrigger(string $json): ParsedTriggerSnapshot
+    {
+        /** @var array{object: string, relation: string, relationKind?: string, asOfVersion: int|string, timing: string, events: list<string>, updateOf?: list<string>, sql: string} $data */
+        $data = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
+
+        return new ParsedTriggerSnapshot(
+            new TriggerSchema(
+                $data['relation'],
+                ($data['relationKind'] ?? 'table') === 'view',
+                new TriggerDefinition(
+                    $data['object'],
+                    TriggerTiming::from($data['timing']),
+                    TriggerEvent::fromTokens($data['events']),
+                    $data['sql'],
+                    $data['updateOf'] ?? [],
+                ),
+            ),
+            (int) $data['asOfVersion'],
+        );
+    }
+
+    /**
+     * A stored or rendered trigger statement made comparable (the `MIG-012` trigger guard, ADR-0042): whitespace
+     * collapsed and the leading `create [or replace] trigger|function` keywords lowercased — databases recase them
+     * when storing the text, the rest is compared as written.
+     */
+    public static function normalizeTriggerDdl(string $sql): string
+    {
+        $words = preg_split('/\s+/', trim($sql), -1, PREG_SPLIT_NO_EMPTY);
+        $collapsed = implode(' ', $words === false ? [] : $words);
+
+        return (string) preg_replace_callback(
+            '/^create(\s+or\s+replace)?\s+(trigger|function)\b/i',
+            static fn (array $matches): string => strtolower($matches[0]),
+            $collapsed,
+        );
     }
 
     public static function parseDdl(string $json): ParsedDdlSnapshot

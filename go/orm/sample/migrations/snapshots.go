@@ -7,5 +7,5 @@ import "embed"
 // embedded `Migrations/**/*.schema.json` resources
 // (CODING-STANDARD §10). Load with orm.SnapshotsFromFS(migrations.Snapshots).
 //
-//go:embed Table/*/*.schema.json View/*/*.schema.json
+//go:embed Table/*/*.schema.json View/*/*.schema.json Trigger/*/*.schema.json
 var Snapshots embed.FS

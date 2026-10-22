@@ -35,6 +35,7 @@ final readonly class EntityMap
      * @param list<PropertyMap> $properties
      * @param list<EntityIndex> $indexes
      * @param list<RelationshipMap> $relationships
+     * @param list<EntityTrigger> $triggers the linked triggers in link order (Level 4, ADR-0042); declarations only — migrations create them
      */
     public function __construct(
         public string $entityType,
@@ -47,6 +48,7 @@ final readonly class EntityMap
         public KeyStrategy $keyStrategy,
         public array $indexes,
         public array $relationships,
+        public array $triggers = [],
     ) {
         $this->keyProperties = array_values(array_filter($properties, static fn (PropertyMap $p): bool => $p->key));
         $version = array_values(array_filter($properties, static fn (PropertyMap $p): bool => $p->version));
@@ -85,6 +87,18 @@ final readonly class EntityMap
     public function softDeleteProperty(): ?PropertyMap
     {
         return $this->hooks['softDelete'];
+    }
+
+    /** The linked trigger with the given declared name, or null (Level 4, ADR-0042). */
+    public function trigger(string $name): ?EntityTrigger
+    {
+        foreach ($this->triggers as $trigger) {
+            if ($trigger->definition->name === $name) {
+                return $trigger;
+            }
+        }
+
+        return null;
     }
 
     /** The unqualified class name: the export's `entity` and the target of error messages. */

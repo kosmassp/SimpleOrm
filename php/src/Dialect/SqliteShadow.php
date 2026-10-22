@@ -20,6 +20,8 @@ use SimpleOrm\Migrations\TableSchema;
 use SimpleOrm\Migrations\TableSchemaColumn;
 use SimpleOrm\Migrations\TableSchemaIndex;
 use SimpleOrm\Migrations\TableSchemaIndexPart;
+use SimpleOrm\Migrations\TriggerMigration;
+use SimpleOrm\Migrations\TriggerSchema;
 use SimpleOrm\Migrations\VersionBuilder;
 use SimpleOrm\Migrations\ViewMigration;
 
@@ -126,6 +128,32 @@ final class SqliteShadow
             return;
         }
 
+        if ($step instanceof TriggerMigration) {
+            // ADR-0042: the stored trigger parsed back to its declaration; a hand-written one the grammar does not match
+            // is skipped with a note, an absent one (dropped at this version) ends the object's snapshot history.
+            $name = $step->objectName($maps);
+            $note = null;
+            $schema = SqliteTriggerParser::parse($name, SqliteTriggerParser::definitions($connection, $name), $note);
+            if ($schema === null) {
+                if ($note !== null) {
+                    $result->notes[] = sprintf('V%04d: %s', $version, $note);
+                }
+
+                return;
+            }
+
+            self::writeSnapshot(
+                $migrationsDir,
+                'Trigger',
+                self::shortName($step->triggerClass()),
+                $version,
+                SchemaSnapshot::exportTrigger($schema, $version, $generatedAt),
+                $result,
+            );
+
+            return;
+        }
+
         if ($step instanceof ViewMigration) {
             $map = $maps->load($step->entityClass());
             $ddl = self::viewDdl($connection, (string) $map->relationName);
@@ -205,6 +233,44 @@ final class SqliteShadow
                 $result->notes[] = sprintf('baseline: %s restored from V%04d snapshot (trusted)', $objectName, $atVersion);
             }
         }
+
+        // Triggers restore last (ADR-0042): their relation must exist; the declaration renders through the dialect.
+        $triggerRoot = "{$migrationsDir}/Trigger";
+        if (is_dir($triggerRoot)) {
+            foreach (SnapshotSet::subdirectories($triggerRoot) as $objectDir) {
+                $latest = self::latestTriggerSnapshotAtOrBelow($objectDir, $fromVersion);
+                if ($latest === null) {
+                    continue;
+                }
+
+                [$schema, $atVersion] = $latest;
+                $dialect = new SqliteDialect();
+                foreach ($schema->createStatements($dialect) as $sql) {
+                    self::execute($connection, $sql);
+                }
+
+                $result->notes[] = sprintf('baseline: %s restored from V%04d snapshot (trusted)', $schema->name(), $atVersion);
+            }
+        }
+    }
+
+    /** @return array{0: TriggerSchema, 1: int}|null */
+    private static function latestTriggerSnapshotAtOrBelow(string $dir, int $version): ?array
+    {
+        $best = null;
+        foreach (glob("{$dir}/V*.schema.json") ?: [] as $file) {
+            $content = file_get_contents($file);
+            if ($content === false) {
+                continue;
+            }
+
+            $parsed = SchemaSnapshot::parseTrigger($content);
+            if ($parsed->asOfVersion <= $version && ($best === null || $parsed->asOfVersion > $best->asOfVersion)) {
+                $best = $parsed;
+            }
+        }
+
+        return $best === null ? null : [$best->schema, $best->asOfVersion];
     }
 
     /** @return array{0: TableSchema, 1: int}|null */

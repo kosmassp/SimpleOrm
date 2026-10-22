@@ -14,6 +14,7 @@ use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use RuntimeException;
 use SimpleOrm\Dialect\SqliteDialect;
+use SimpleOrm\Dialect\SqliteTriggerParser;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Migrations\ColumnRename;
@@ -25,8 +26,10 @@ use SimpleOrm\Migrations\SchemaSync;
 use SimpleOrm\Migrations\SnapshotSet;
 use SimpleOrm\Migrations\SqlVersion;
 use SimpleOrm\Migrations\SqlVersionStep;
+use SimpleOrm\Migrations\SqlVersionTrigger;
 use SimpleOrm\Parameters\PdoBinder;
 use SimpleOrm\Tests\Support\ConformancePaths;
+use SimpleOrm\Tests\Support\TriggerCaseData;
 
 /**
  * The migrations-case runner (§9): mirrors
@@ -106,6 +109,10 @@ final class MigrationsCasesTest extends TestCase
                         self::assertSame(SchemaSnapshot::normalizeDdl($ddl), self::readViewDdl($dbPath, $view));
                     }
                 }
+
+                if (isset($expect['triggers'])) {
+                    self::assertTriggers($connection, $expect['triggers']);
+                }
             }
         } finally {
             unset($connection);
@@ -137,10 +144,12 @@ final class MigrationsCasesTest extends TestCase
                 return new SqlVersionStep(
                     objectName: $s['object'],
                     description: $s['description'],
-                    up: $s['up'],
+                    up: $s['up'] ?? [],
                     down: $s['down'] ?? [],
                     renames: $renames,
                     expectDefinition: $s['expectDefinition'] ?? null,
+                    trigger: isset($s['trigger']) ? self::triggerStep($s['trigger']) : null,
+                    expectTrigger: isset($s['expectTrigger']) ? self::triggerStep($s['expectTrigger']) : null,
                 );
             }, $v['steps']);
 
@@ -149,6 +158,47 @@ final class MigrationsCasesTest extends TestCase
                 ? SqlVersion::draft((int) $v['version'], ...$steps)
                 : new SqlVersion((int) $v['version'], ...$steps);
         }, $versionsJson);
+    }
+
+    /** A `trigger` / `expectTrigger` step object (ADR-0042): the declaration as data. @param array<string, mixed> $json */
+    private static function triggerStep(array $json): SqlVersionTrigger
+    {
+        $declaration = TriggerCaseData::definition('', $json);
+
+        return new SqlVersionTrigger(
+            (string) $json['relation'],
+            ($json['relationKind'] ?? 'table') === 'view',
+            $declaration->timing,
+            $declaration->events,
+            $declaration->sql,
+            $declaration->updateOf,
+        );
+    }
+
+    /**
+     * The deep `triggers` expect (ADR-0042): each live trigger read back through the dialect and parsed to its
+     * declaration — relation, timing, events, `updateOf` when declared, body with its tokens unexpanded — or `null` for absent.
+     *
+     * @param array<string, array<string, mixed>|null> $expected
+     */
+    private static function assertTriggers(PDO $connection, array $expected): void
+    {
+        foreach ($expected as $name => $declaration) {
+            $schema = SqliteTriggerParser::parse((string) $name, SqliteTriggerParser::definitions($connection, (string) $name));
+            if ($declaration === null) {
+                self::assertNull($schema, "trigger {$name} should be absent");
+
+                continue;
+            }
+
+            self::assertNotNull($schema, "trigger {$name} should exist and parse");
+            $wanted = TriggerCaseData::definition((string) $name, $declaration);
+            self::assertSame((string) $declaration['relation'], $schema->relation, "trigger {$name}: relation");
+            self::assertSame($wanted->timing, $schema->trigger->timing, "trigger {$name}: timing");
+            self::assertSame($wanted->events, $schema->trigger->events, "trigger {$name}: events");
+            self::assertSame($wanted->updateOf, $schema->trigger->updateOf, "trigger {$name}: updateOf");
+            self::assertSame($wanted->normalizedSql(), $schema->trigger->normalizedSql(), "trigger {$name}: body");
+        }
     }
 
     /** @param array<string, mixed> $spec */

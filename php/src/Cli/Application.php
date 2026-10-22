@@ -17,6 +17,7 @@ use SimpleOrm\Metadata\BaseClassRules;
 use SimpleOrm\Metadata\EntityMapJson;
 use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Metadata\RelationKind;
+use SimpleOrm\Metadata\TriggerRules;
 use SimpleOrm\Migrations\Diff\DiffCommand;
 use SimpleOrm\Migrations\Diff\DiffOptions;
 use SimpleOrm\Migrations\MigrationRunner;
@@ -190,12 +191,33 @@ final class Application
         $generatedAt = new DateTimeImmutable('now', new DateTimeZone('UTC'));
         foreach (self::mappedTypes($arguments) as $type) {
             $map = $db->maps()->load($type);
+            $dialect = $db->options()->dialect;
+
+            // Triggers snapshot by declaration (ADR-0042) under Trigger/<Class>/, at the last version touching each one.
+            foreach ($map->triggers as $trigger) {
+                $name = $trigger->definition->name;
+                if (!isset($perObject[$name])) {
+                    continue;
+                }
+
+                $directory = "{$outDir}/Trigger/" . self::shortName($trigger->triggerClass);
+                if (!is_dir($directory)) {
+                    mkdir($directory, 0777, true);
+                }
+
+                $file = $directory . '/' . sprintf('V%04d.schema.json', $perObject[$name]);
+                file_put_contents(
+                    $file,
+                    SchemaSnapshot::exportTrigger(SchemaSnapshot::fromTrigger($map, $trigger), $perObject[$name], $generatedAt) . "\n",
+                );
+                echo 'wrote ' . $file . PHP_EOL;
+            }
+
             if ($map->relationName === null || !isset($perObject[$map->relationName])) {
                 continue;
             }
 
             $version = $perObject[$map->relationName];
-            $dialect = $db->options()->dialect;
 
             // Tables snapshot by columns; views by DDL (ADR-0017 add.1). Kinds
             // the dialect cannot create (materialized views here) have no
@@ -386,7 +408,7 @@ final class Application
                                           write each entity's EntityMap JSON
               validate                    SchemaGuard: full report or exit 0
               snapshot [--out <dir>]      write V000N.schema.json per object (tables by
-                                          columns; views by DDL), versioned and timestamped
+                                          columns; views by DDL; triggers by declaration), versioned and timestamped
               diff [--out <dir>] [--name <Description>] [--rename table.old=new]...
                    [--allow-remove] [--draft] [--amend [--force] [--db <value>]]
                                           generate the next migration version from the model vs
@@ -482,12 +504,13 @@ final class Application
     private static function mappedTypes(Arguments $arguments): array
     {
         $classes = self::classes($arguments);
-        $baseErrors = BaseClassRules::scanErrors($classes);
-        if ($baseErrors !== []) {
+        // MAP-028 (ADR-0041) and MAP-029 (ADR-0042): the scan conflicts a lone load cannot see refuse every command at once.
+        $scanErrors = [...BaseClassRules::scanErrors($classes), ...TriggerRules::scanErrors($classes)];
+        if ($scanErrors !== []) {
             throw new SimpleOrmException(
-                'MAP-028',
+                $scanErrors[0]->code,
                 'assembly scan',
-                implode('; ', array_map(static fn ($error): string => $error->target . ' ' . $error->message, $baseErrors)),
+                implode('; ', array_map(static fn ($error): string => $error->code . ' ' . $error->target . ' ' . $error->message, $scanErrors)),
             );
         }
 

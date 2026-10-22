@@ -9,6 +9,7 @@ use SimpleOrm\Dialect\SqliteDialect;
 use SimpleOrm\Session\Db;
 use SimpleOrm\Session\DbOptions;
 use SimpleOrm\Tests\Sample\Models\Role;
+use SimpleOrm\Tests\Sample\Models\RoleChange;
 use SimpleOrm\Tests\Sample\Models\Transaction;
 use SimpleOrm\Tests\Sample\Models\TransactionDetail;
 use SimpleOrm\Tests\Sample\Models\User;
@@ -44,6 +45,7 @@ final class SampleDatabase
 
         $db->createTable(User::class);
         $db->createTable(Role::class);
+        $db->createTable(RoleChange::class);
         $db->createTable(UserRole::class);
         $db->createTable(UserProfile::class);
         $db->createTable(Transaction::class);

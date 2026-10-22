@@ -33,6 +33,14 @@ func DeriveDown(
 	}
 	before := snapshots.LatestBefore(objectName, version)
 
+	if at.Trigger != nil {
+		var beforeTrigger *TriggerDeclaration
+		if before != nil {
+			beforeTrigger = before.Trigger
+		}
+		return deriveTriggerDown(objectName, at.Trigger, beforeTrigger, dialect)
+	}
+
 	if at.Table == nil {
 		var beforeDDL *string
 		if before != nil {
@@ -59,6 +67,31 @@ func deriveViewDown(objectName, ddlAt string, ddlBefore *string) []MigrationStat
 		statements = append(statements, MigrationStatement{SQL: *ddlBefore, Origin: "derived restore " + objectName})
 	}
 	return statements
+}
+
+// deriveTriggerDown is a trigger's derived rollback (Level 4, spec/migrations.md "Derived rollbacks"): the
+// MIG-012 guard on this version's rendering — a rollback must not silently destroy an outside hotfix either —
+// then the drop, then the previous declaration rendered through the dialect; at the creating version (no
+// earlier snapshot) the drop is all.
+func deriveTriggerDown(objectName string, at, before *TriggerDeclaration, dialect core.Dialect) ([]MigrationStatement, error) {
+	guard, err := triggerGuard(dialect, at.Relation, at.OnView(), withName(at, objectName).Definition(), "derived expect "+objectName)
+	if err != nil {
+		return nil, err
+	}
+	statements := []MigrationStatement{*guard}
+	for _, sql := range dialect.DropTriggerSQL(at.Relation, objectName) {
+		statements = append(statements, MigrationStatement{SQL: sql, Origin: "derived drop " + objectName})
+	}
+	if before != nil {
+		creates, err := dialect.CreateTriggerSQL(before.Relation, before.OnView(), withName(before, objectName).Definition())
+		if err != nil {
+			return nil, err
+		}
+		for _, sql := range creates {
+			statements = append(statements, MigrationStatement{SQL: sql, Origin: "derived restore " + objectName})
+		}
+	}
+	return statements, nil
 }
 
 // namedColumn pairs a snapshot column with the display name a message or a

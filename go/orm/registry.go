@@ -122,19 +122,24 @@ type EmptyArgs struct{}
 // Registry is what an application declares once for SchemaGuard and the CLI —
 // explicit registration replaces the reference's assembly scanning
 // (CODING-STANDARD §10): the mapped entity types, the registered queries and
-// commands, the migration versions, and the embedded schema snapshots.
+// commands, the trigger classes, the migration versions, and the embedded schema snapshots.
 //
 //	var App = orm.Registry{
 //	    Entities:   []reflect.Type{orm.TypeOf[User](), orm.TypeOf[Role]()},
 //	    Entries:    []orm.Entry{UsersByName, MarkShipped},
 //	    Migrations: migrationSet,          // orm.NewMigrationSet(V0001{}, V0002{}, …)
-//	    Snapshots:  migrations.Snapshots,  // //go:embed Table/*/*.schema.json View/*/*.schema.json
+//	    Snapshots:  migrations.Snapshots,  // //go:embed Table/*/*.schema.json View/*/*.schema.json Trigger/*/*.schema.json
 //	}
 type Registry struct {
 	// Entities are the mapped types: every entity SchemaGuard checks against the database.
 	Entities []reflect.Type
 	// Entries are the registered queries and commands.
 	Entries []Entry
+	// Triggers are the trigger classes (Level 4, ADR-0042): every class an entity links, plus any class no entity
+	// links any more whose removal a generated step still needs (spec/migrations.md "The generator toolchain").
+	// The scan rule (a class linked twice, a name declared twice) and the generator read this list; a trigger
+	// class listed in Entities is skipped, as the C# scan skips it.
+	Triggers []reflect.Type
 	// Migrations is the application's migration versions; nil means none (MIG-030 never fires).
 	Migrations *migrations.Set
 	// Snapshots holds the V000N.schema.json files rollbacks derive from (ADR-0018) — the

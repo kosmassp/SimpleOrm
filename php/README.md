@@ -180,6 +180,42 @@ a pending draft (`MIG-013`, the whole plan, before anything executes) until you 
 removed the attribute; `status` lists it as `draft`, `shadow` replays it, `diff --amend` keeps the marker. A baseline
 below the draft is fine; a draft already recorded as applied is history, not pending work.
 
+### Triggers in the mapping (Level 4, ADR-0042)
+
+A trigger is its own **declaration class**; the entity links it. The declaration names no dialect — the body is
+set-based SQL with three tokens (`{new: cols}` the inserted/updated rows as a relation, `{old: cols}` the deleted or
+pre-update rows, `{now}` UTC now in the §7.9 storage form) and each dialect renders the rest (header, granularity,
+wrapper, expansions): SQLite one row-level trigger per event, SQL Server one statement-level trigger over `inserted`/
+`deleted`, PostgreSQL a PL/pgSQL function plus the trigger. Events are an **array of `TriggerEvent` cases**, a set kept
+in the fixed order `insert`, `update`, `delete`; `updateOf` names entity **properties**:
+
+```php
+#[Trigger('trg_roles_audit', TriggerTiming::After, [TriggerEvent::Update], <<<'SQL'
+    insert into role_changes (role_id, role_name, changed_at)
+    select n.id, n.role_name, {now}
+    from {new: id, role_name} n;
+    SQL)]
+final class RoleAuditTrigger {}
+
+#[Table('roles')]
+#[Trigger(RoleAuditTrigger::class)]       // repeatable: a table carries many triggers, a trigger belongs to one table
+final class Role { … }
+```
+
+`MAP-029` is every misplaced or malformed declaration, collected with the entity's other errors; the scan rule (a trigger
+class linked by two entities, two classes declaring one name) runs in `SchemaGuard` and every CLI command that
+enumerates entities. A form a dialect lacks is `DDL-005` when rendered (`before` on SQL Server, `instead_of` on a table
+elsewhere). The manual builder links with `EntityMapBuilder::for(X::class)->trigger(Y::class)`.
+
+Migrations create them: `TriggerMigration` (`entityClass()` + `triggerClass()`, object folder `Trigger/<Class>/`,
+`schema_version` object = the trigger name) with `createTrigger()` (the initial create, from the entity's declaration),
+`recreate(timing, events, sql, updateOf)`, `expectDefinition(...)` (the `MIG-012` guard: the live trigger must be exactly the
+dialect's rendering, else the run refuses; `--force` recreates with notice) and `dropTrigger()` — never raw SQL. The trigger
+snapshot is the neutral declaration (`"kind": "trigger"`), so one tree serves every dialect; `snapshot` writes it from
+metadata, `shadow` parses the stored SQLite trigger back (the two agree byte for byte), rollbacks derive from it, and
+`diff` emits literal-declaration steps (a removal is a bare `dropTrigger()`, gated by `--allow-remove`). In a dev/test
+session `$db->createTriggers(Role::class)` creates an entity's triggers (drop then create, so it is safe to repeat).
+
 ## The CLI
 
 `bin/simpleorm` has no assembly to load, so it takes a PSR-4 root instead:

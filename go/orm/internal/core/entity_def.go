@@ -33,6 +33,9 @@ type EntityDef struct {
 	// ManyToMany declares collection navigations resolved through an explicit
 	// link entity — declared, never inferred (ADR-0019).
 	ManyToMany []ManyToManyDef
+	// Triggers link the trigger classes this entity carries (Level 4, ADR-0042): a table takes every timing, a
+	// view only instead-of, no other source takes a trigger (MAP-029). Link order is the map's order.
+	Triggers []TriggerLink
 }
 
 // Source is the relation source (ADR-0008): exactly one kind per entity.

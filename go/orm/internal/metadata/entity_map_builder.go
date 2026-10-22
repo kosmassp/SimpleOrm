@@ -17,6 +17,7 @@ type EntityMapBuilder[T any] struct {
 	specs     []*MappedPropertySpec
 	tableName string
 	schema    string
+	triggers  []core.TriggerLink
 }
 
 // NewEntityMapBuilder creates an empty builder for T.
@@ -33,6 +34,13 @@ func (b *EntityMapBuilder[T]) ToTable(name string) *EntityMapBuilder[T] {
 // InSchema sets the schema; empty means unqualified.
 func (b *EntityMapBuilder[T]) InSchema(schema string) *EntityMapBuilder[T] {
 	b.schema = schema
+	return b
+}
+
+// Trigger links a trigger class under the same MAP-029 rules as the descriptor (Level 4, ADR-0042); call it with
+// orm.Trigger[YourTrigger]() beside the other registrations.
+func (b *EntityMapBuilder[T]) Trigger(link core.TriggerLink) *EntityMapBuilder[T] {
+	b.triggers = append(b.triggers, link)
 	return b
 }
 
@@ -77,7 +85,7 @@ func (b *EntityMapBuilder[T]) Build(convention core.NamingConvention) (*core.Ent
 		tableName = convention.TableName(entityType.Name())
 	}
 
-	return assemble(entityType, core.RelationTable, tableName, b.schema, "", nil, specs, nil, nil, convention, errs)
+	return assemble(entityType, core.RelationTable, tableName, b.schema, "", nil, specs, nil, nil, b.triggers, convention, errs)
 }
 
 // declaringTypeAt walks the index path (embedded structs included) to find

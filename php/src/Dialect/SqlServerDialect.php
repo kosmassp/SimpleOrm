@@ -6,12 +6,18 @@ namespace SimpleOrm\Dialect;
 
 use PDO;
 use PDOException;
+use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Metadata\EntityIndex;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\IndexColumn;
 use SimpleOrm\Metadata\KeyStrategy;
 use SimpleOrm\Metadata\PropertyMap;
+use SimpleOrm\Metadata\TriggerBody;
+use SimpleOrm\Metadata\TriggerDefinition;
+use SimpleOrm\Metadata\TriggerEvent;
+use SimpleOrm\Metadata\TriggerTiming;
+use SimpleOrm\Metadata\TriggerTokenKind;
 use SimpleOrm\Query\AnsiSelectRenderer;
 use SimpleOrm\Query\SelectAst;
 use Throwable;
@@ -484,5 +490,57 @@ final class SqlServerDialect implements Dialect, PdoConventions
     public function dropIndexSql(string $table, string $index): string
     {
         return 'drop index ' . $this->quoteIdentifier($index) . ' on ' . $this->quoteIdentifier($table);
+    }
+
+    /**
+     * ADR-0042: one statement-level `create trigger` listing the events (`insert, update, delete`), `after` or
+     * `instead of` — SQL Server has no `before` (`DDL-005`). The wrapper is `begin`/`end` with `set nocount on;`
+     * (never the author's), and an update-of narrowing is emulated by the `if not (update(…) or …) return;` prologue.
+     * `{new: …}` is `inserted`, `{old: …}` is `deleted`, `{now}` the UTC `datetimeoffset`. The create must open its
+     * batch, so the drop is a separate statement and `create or alter` is not used (2016 SP1).
+     */
+    public function createTriggerSql(string $relation, bool $onView, TriggerDefinition $trigger): array
+    {
+        if ($trigger->timing === TriggerTiming::Before) {
+            throw new SimpleOrmException(
+                'DDL-005',
+                $trigger->name,
+                'SQL Server has no BEFORE triggers; declare an after trigger (or an instead of trigger, which replaces the write)',
+            );
+        }
+
+        $body = TriggerBody::expand(
+            $trigger->sql,
+            $trigger->name,
+            static fn (TriggerTokenKind $kind, array $columns): string => $kind === TriggerTokenKind::New ? 'inserted' : 'deleted',
+            'todatetimeoffset(sysutcdatetime(), 0)',
+        );
+
+        // update(col) is false in a delete, so a declaration that also fires on delete applies the narrowing only
+        // when rows were inserted or updated.
+        $prologue = $trigger->updateOf === [] ? '' : '    if '
+            . ($trigger->hasEvent(TriggerEvent::Delete) ? 'exists (select 1 from inserted) and ' : '')
+            . 'not (' . implode(' or ', array_map(
+                fn (string $column): string => 'update(' . $this->quoteIdentifier($column) . ')',
+                $trigger->updateOf,
+            )) . ") return;\n";
+
+        return [
+            'create trigger ' . $this->quoteIdentifier($trigger->name) . ' on ' . $this->quoteIdentifier($relation) . ' '
+                . $trigger->timing->keyword() . ' '
+                . implode(', ', array_map(static fn (TriggerEvent $event): string => $event->value, $trigger->events))
+                . " as\nbegin\n    set nocount on;\n{$prologue}{$body}\nend",
+        ];
+    }
+
+    public function dropTriggerSql(string $relation, string $name): array
+    {
+        return ['if object_id(' . self::nLiteral($name) . ", N'TR') is not null drop trigger " . $this->quoteIdentifier($name)];
+    }
+
+    public function triggerDefinitionSql(): string
+    {
+        return "select m.definition as [definition] from sys.sql_modules m join sys.triggers t on t.object_id = m.object_id\n"
+            . 'where t.object_id = object_id(@relation)';
     }
 }

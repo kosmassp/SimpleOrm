@@ -417,13 +417,14 @@ public sealed partial class Db : IAsyncDisposable
                 "DDL-001", typeof(TEntity).Name, $"is {map.Kind}-backed; triggers belong to tables and views");
         }
 
-        foreach (var trigger in map.Triggers)
-        {
-            foreach (var sql in Options.Dialect.DropTriggerSql(map.RelationName!, trigger.Name)
+        // Rendered before anything runs: a form the dialect lacks (DDL-005) refuses with nothing half-created.
+        var statements = map.Triggers
+            .SelectMany(trigger => Options.Dialect.DropTriggerSql(map.RelationName!, trigger.Name)
                 .Concat(Options.Dialect.CreateTriggerSql(map.RelationName!, map.Kind == RelationKind.View, trigger.Definition)))
-            {
-                await ExecuteRawAsync(sql, ct).ConfigureAwait(false);
-            }
+            .ToArray();
+        foreach (var sql in statements)
+        {
+            await ExecuteRawAsync(sql, ct).ConfigureAwait(false);
         }
     }
 

@@ -323,6 +323,65 @@ public sealed class PostgresIntegrationTests(PostgresFixture fixture)
         Assert.Equal("VAL-020", refused.Code);
     }
 
+    [PostgresFact]
+    public async Task Triggers_create_fire_and_read_back_as_the_dialect_rendered_them()
+    {
+        // ADR-0042: the declared trigger renders as a function + trigger, fires per
+        // row, and TriggerDefinitionSql reports exactly the create statements back
+        // (normalized) — the symmetric contract the MIG-012 guard relies on.
+        await using var db = await OpenAsync();
+        await db.CreateTableAsync<RoleChange>(CancellationToken.None);
+        await db.ExecuteAsync<EmptyArgs>(Query.Inline("delete from role_changes"), EmptyArgs.Value, CancellationToken.None);
+        await db.CreateTriggersAsync<Role>(CancellationToken.None);
+        await db.CreateTriggersAsync<Role>(CancellationToken.None);   // replace semantics
+
+        var role = new Role { Name = "editor", CreatedAtUtc = TestDb.SeedTime };
+        await db.InsertAsync(role, CancellationToken.None);
+        role.Name = "author";
+        await db.UpdateAsync(role, CancellationToken.None);
+        var change = Assert.Single(await db.QueryAllAsync<RoleChange>(CancellationToken.None));
+        Assert.Equal((role.Id, "author"), (change.RoleId, change.RoleName));
+        Assert.Equal(DateTimeKind.Utc, change.ChangedAtUtc.Kind);
+
+        await AssertDefinitionsRoundTripAsync(db, "roles", "trg_roles_audit");
+
+        // A multi-event, narrowed declaration reads back the same way; the drop takes the function with it.
+        var narrowed = new TriggerDefinition(
+            "trg_roles_narrowed", TriggerTiming.Before, TriggerEvent.Update | TriggerEvent.Delete,
+            "insert into role_changes (role_id, role_name, changed_at) select o.id, o.role_name, {now} from {old: id, role_name} o;",
+            ["role_name"]);
+        foreach (var sql in Options.Dialect.CreateTriggerSql("roles", false, narrowed))
+        {
+            await db.ExecuteAsync<EmptyArgs>(Query.Inline(sql), EmptyArgs.Value, CancellationToken.None);
+        }
+
+        await AssertDefinitionsRoundTripAsync(db, "roles", "trg_roles_narrowed", narrowed);
+        foreach (var sql in Options.Dialect.DropTriggerSql("roles", "trg_roles_narrowed").Concat(Options.Dialect.DropTriggerSql("roles", "trg_roles_audit")))
+        {
+            await db.ExecuteAsync<EmptyArgs>(Query.Inline(sql), EmptyArgs.Value, CancellationToken.None);
+        }
+
+        Assert.Empty(await ReadDefinitionsAsync(db, "trg_roles_audit"));
+        Assert.Empty(await ReadDefinitionsAsync(db, "trg_roles_narrowed"));
+    }
+
+    private static async Task AssertDefinitionsRoundTripAsync(Db db, string relation, string trigger, TriggerDefinition? definition = null)
+    {
+        definition ??= db.Maps.Load<Role>().Triggers.Single(t => t.Name == trigger).Definition;
+        var expected = Options.Dialect.CreateTriggerSql(relation, false, definition)
+            .Select(SchemaSnapshot.NormalizeTriggerDdl).OrderBy(d => d, StringComparer.Ordinal);
+        var live = (await ReadDefinitionsAsync(db, trigger)).Select(SchemaSnapshot.NormalizeTriggerDdl).OrderBy(d => d, StringComparer.Ordinal);
+        Assert.Equal(expected, live);
+    }
+
+    private sealed record TriggerArgs(string Relation);
+
+    private static async Task<IReadOnlyList<string>> ReadDefinitionsAsync(Db db, string trigger)
+    {
+        Query<TriggerArgs, string> query = Query.Inline(Options.Dialect.TriggerDefinitionSql.Replace("@relation", "@Relation"));
+        return await db.QueryAsync(query, new TriggerArgs(trigger), CancellationToken.None);
+    }
+
     // --- fixtures -------------------------------------------------------------------
 
     /// <summary>Reserved words on purpose: table <c>order</c>, column <c>desc</c> (ADR-0025 quoting).</summary>

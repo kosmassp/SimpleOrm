@@ -1,0 +1,30 @@
+{
+  "name": "instead_of_on_table",
+  "comment": "INSTEAD OF on a table exists only on SQL Server; SQLite and PostgreSQL refuse with DDL-005 (they have it on views only).",
+  "relation": "widgets",
+  "relationKind": "table",
+  "trigger": {
+    "name": "trg_widgets_instead",
+    "timing": "instead_of",
+    "events": [
+      "delete"
+    ],
+    "sql": "update widgets set deleted = 1 where id in (select o.id from {old: id} o);"
+  },
+  "expect": {
+    "sqlite": {
+      "error": "DDL-005"
+    },
+    "sqlserver": {
+      "create": [
+        "create trigger [trg_widgets_instead] on [widgets] instead of delete as\nbegin\n    set nocount on;\nupdate widgets set deleted = 1 where id in (select o.id from deleted o);\nend"
+      ],
+      "drop": [
+        "if object_id(N'trg_widgets_instead', N'TR') is not null drop trigger [trg_widgets_instead]"
+      ]
+    },
+    "postgres": {
+      "error": "DDL-005"
+    }
+  }
+}

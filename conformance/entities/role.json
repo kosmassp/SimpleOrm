@@ -55,6 +55,16 @@
       "unique": true
     }
   ],
+  "triggers": [
+    {
+      "name": "trg_roles_audit",
+      "timing": "after",
+      "events": [
+        "update"
+      ],
+      "sql": "insert into role_changes (role_id, role_name, changed_at) select n.id, n.role_name, {now} from {new: id, role_name} n;"
+    }
+  ],
   "relationships": [
     {
       "kind": "many_to_many",

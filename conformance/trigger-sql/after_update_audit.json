@@ -1,0 +1,45 @@
+{
+  "name": "after_update_audit",
+  "comment": "The fixture trigger (ADR-0042): one neutral body, three renderings. {new: cols} is the changed rows as a relation (inserted on SQL Server, a one-row derived table over new. elsewhere); {now} the UTC time in the storage form; the wrapper — begin/end, set nocount on, the PostgreSQL function and its return null — is the dialect's. The drop is idempotent and takes what the dialect created beside the trigger.",
+  "relation": "roles",
+  "relationKind": "table",
+  "trigger": {
+    "name": "trg_roles_audit",
+    "timing": "after",
+    "events": [
+      "update"
+    ],
+    "sql": "insert into role_changes (role_id, role_name, changed_at)\nselect n.id, n.role_name, {now}\nfrom {new: id, role_name} n;"
+  },
+  "expect": {
+    "sqlite": {
+      "create": [
+        "create trigger trg_roles_audit after update on roles for each row\nbegin\ninsert into role_changes (role_id, role_name, changed_at)\nselect n.id, n.role_name, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\nfrom (select new.id as id, new.role_name as role_name) n;\nend"
+      ],
+      "drop": [
+        "drop trigger if exists trg_roles_audit",
+        "drop trigger if exists trg_roles_audit_insert",
+        "drop trigger if exists trg_roles_audit_update",
+        "drop trigger if exists trg_roles_audit_delete"
+      ]
+    },
+    "sqlserver": {
+      "create": [
+        "create trigger [trg_roles_audit] on [roles] after update as\nbegin\n    set nocount on;\ninsert into role_changes (role_id, role_name, changed_at)\nselect n.id, n.role_name, todatetimeoffset(sysutcdatetime(), 0)\nfrom inserted n;\nend"
+      ],
+      "drop": [
+        "if object_id(N'trg_roles_audit', N'TR') is not null drop trigger [trg_roles_audit]"
+      ]
+    },
+    "postgres": {
+      "create": [
+        "create or replace function \"trg_roles_audit_fn\"() returns trigger language plpgsql as $$\nbegin\ninsert into role_changes (role_id, role_name, changed_at)\nselect n.id, n.role_name, now()\nfrom (select new.\"id\" as \"id\", new.\"role_name\" as \"role_name\") n;\n    return null;\nend\n$$",
+        "create trigger \"trg_roles_audit\" after update on \"roles\" for each row execute function \"trg_roles_audit_fn\"()"
+      ],
+      "drop": [
+        "drop trigger if exists \"trg_roles_audit\" on \"roles\"",
+        "drop function if exists \"trg_roles_audit_fn\"()"
+      ]
+    }
+  }
+}

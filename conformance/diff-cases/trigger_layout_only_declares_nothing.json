@@ -1,0 +1,13 @@
+{
+  "name": "trigger_layout_only_declares_nothing",
+  "comment": "ADR-0042: layout is not schema — a body that differs only in whitespace is the same trigger, so no step is emitted.",
+  "kind": "trigger",
+  "current": { "object": "trg_widgets_audit", "relation": "widgets", "relationKind": "table", "asOfVersion": 0,
+    "timing": "after", "events": ["update"],
+    "sql": "insert into widget_log (widget_id)\n    select n.id\n    from {new: id} n;" },
+  "snapshot": { "object": "trg_widgets_audit", "relation": "widgets", "relationKind": "table", "asOfVersion": 3,
+    "generatedAt": "2026-10-22T12:00:00.0000000Z",
+    "timing": "after", "events": ["update"],
+    "sql": "insert into widget_log (widget_id) select n.id from {new: id} n;" },
+  "expect": { }
+}

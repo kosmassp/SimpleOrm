@@ -28,6 +28,33 @@ public sealed class EntityMapLoader
     /// <summary>An <c>[Owned]</c> value type (ADR-0030): carries mapping attributes but is never an entity — assembly scans skip it.</summary>
     public static bool IsOwnedType(Type type) => AttributeMapLoader.IsOwnedType(type);
 
+    /// <summary>A trigger class (ADR-0042): carries a <c>[Trigger(name, …)]</c> declaration, is never an entity — assembly scans skip it.</summary>
+    public static bool IsTriggerType(Type type) => AttributeMapLoader.IsTriggerType(type);
+
+    /// <summary>
+    /// The trigger name a trigger class declares (ADR-0042) — what a migration step
+    /// is keyed by even when no entity links the class any more (a removal step).
+    /// Throws <see cref="MappingException"/> (<c>MAP-029</c>) for a malformed declaration.
+    /// </summary>
+    public static string TriggerNameOf(Type triggerType)
+    {
+        var errors = new List<MappingError>();
+        var spec = AttributeMapLoader.ReadTriggerDeclaration(triggerType, triggerType.Name, errors);
+        if (spec is null)
+        {
+            throw new MappingException(triggerType, errors);
+        }
+
+        return spec.Name;
+    }
+
+    /// <summary>
+    /// The scan rule for triggers (ADR-0042, <c>MAP-029</c>): a trigger class linked
+    /// by two entities, or two classes declaring one trigger name. One error each.
+    /// </summary>
+    public static IReadOnlyList<MappingError> TriggerConflicts(IEnumerable<Type> types)
+        => AttributeMapLoader.TriggerConflicts(types);
+
     /// <summary>
     /// The scan rule of ADR-0041 (<c>MAP-028</c>): among the types an assembly scan
     /// considers, a concrete class without a relation source of its own that another
@@ -45,10 +72,27 @@ public sealed class EntityMapLoader
     /// enumerates entities (the CLI, the shadow rebuild) goes through this.
     /// </summary>
     public static IReadOnlyList<Type> ScannedEntityTypes(IEnumerable<Type> types)
-        => AttributeMapLoader.ScannedEntityTypes(types);
+    {
+        var all = types.ToArray();
+        var conflicts = AttributeMapLoader.TriggerConflicts(all);
+        if (conflicts.Count > 0)
+        {
+            throw new MappingException(
+                all.FirstOrDefault(t => t.Name == conflicts[0].Target) ?? all.First(t => t.IsDefined(typeof(TriggerAttribute), false)), conflicts);
+        }
+
+        return AttributeMapLoader.ScannedEntityTypes(all);
+    }
 
     private EntityMap LoadCore(Type entityType)
     {
+        if (AttributeMapLoader.IsTriggerType(entityType))
+        {
+            // ADR-0042: a trigger class declares a trigger; it is read through the entity that links it.
+            throw new MappingException(entityType, [new MappingError(
+                "MAP-029", entityType.Name, "is a trigger declaration, not an entity; it is read through the entity that links it")]);
+        }
+
         if (entityType.IsAbstract)
         {
             // ADR-0041: a base class shares members only; identity comes from the

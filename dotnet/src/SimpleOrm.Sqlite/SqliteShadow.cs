@@ -77,7 +77,17 @@ public static class SqliteShadow
                         }
 
                         string? content = null;
-                        if (entity.Kind == RelationKind.Table)
+                        if (entity.IsTrigger)
+                        {
+                            // Triggers self-reflect too (ADR-0042): the stored create text parses back
+                            // to the neutral declaration — tokens un-expanded — which is the snapshot.
+                            var snapshot = SqliteTriggerDdl.Read(probe, relation);
+                            if (snapshot is not null)
+                            {
+                                content = SchemaSnapshot.ExportTrigger(snapshot, version.Version, generatedAt);
+                            }
+                        }
+                        else if (entity.Kind == RelationKind.Table)
                         {
                             var schema = Introspect(probe, relation);
                             if (schema is not null)
@@ -181,6 +191,33 @@ public static class SqliteShadow
                     $"baseline: {latest.Object} restored from V{latest.AsOfVersion:0000} snapshot (trusted)");
             }
         }
+
+        // Triggers restore last — their relations exist by now (ADR-0042).
+        var triggerRoot = Path.Combine(migrationsDir, "Trigger");
+        if (Directory.Exists(triggerRoot))
+        {
+            var dialect = new SqliteDialect();
+            foreach (var objectDir in Directory.GetDirectories(triggerRoot))
+            {
+                var latest = Directory.GetFiles(objectDir, "V*.schema.json")
+                    .Select(file => SchemaSnapshot.ParseTrigger(File.ReadAllText(file)))
+                    .Where(s => s.AsOfVersion <= fromVersion)
+                    .OrderByDescending(s => s.AsOfVersion)
+                    .FirstOrDefault();
+                if (latest.Snapshot is null)
+                {
+                    continue;
+                }
+
+                foreach (var sql in dialect.CreateTriggerSql(latest.Snapshot.Relation, latest.Snapshot.OnView, latest.Snapshot.Definition))
+                {
+                    Execute(connection, sql);
+                }
+
+                result.Notes.Add(
+                    $"baseline: {latest.Snapshot.Definition.Name} restored from V{latest.AsOfVersion:0000} snapshot (trusted)");
+            }
+        }
     }
 
     /// <summary>The stored create statement of a view, normalized — null when absent (dropped).</summary>
@@ -273,13 +310,16 @@ public static class SqliteShadow
             .OrderBy(v => v.Version)
             .ToArray();
 
-    private sealed class MappedEntity(string typeName, RelationKind kind)
+    private sealed class MappedEntity(string typeName, RelationKind kind, bool isTrigger = false)
     {
         public string TypeName { get; } = typeName;
 
         public RelationKind Kind { get; } = kind;
 
-        public string KindFolder => Kind switch
+        /// <summary>A trigger object (ADR-0042): the type is the trigger class, the folder <c>Trigger/</c>.</summary>
+        public bool IsTrigger { get; } = isTrigger;
+
+        public string KindFolder => IsTrigger ? "Trigger" : Kind switch
         {
             RelationKind.Table => "Table",
             RelationKind.View => "View",
@@ -305,6 +345,11 @@ public static class SqliteShadow
             if (map.RelationName is not null && map.Kind != RelationKind.Statement)
             {
                 byRelation[map.RelationName] = new MappedEntity(type.Name, map.Kind);
+            }
+
+            foreach (var trigger in map.Triggers)
+            {
+                byRelation[trigger.Name] = new MappedEntity(trigger.TriggerType.Name, map.Kind, isTrigger: true);
             }
         }
 

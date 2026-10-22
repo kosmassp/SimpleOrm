@@ -114,6 +114,22 @@ internal sealed class MigrationStatement(string sql, string origin, string? guar
 
     /// <summary>When set, this is an expected-definition guard for the named view.</summary>
     public string? GuardView { get; } = guardView;
+
+    /// <summary>When set, this is an expected-definition guard for the named trigger (ADR-0042); <see cref="ExpectedDefinitions"/> holds the dialect's normalized create statements.</summary>
+    public string? GuardTrigger { get; init; }
+
+    public IReadOnlyList<string> ExpectedDefinitions { get; init; } = [];
+
+    /// <summary>The trigger guard: the expected statements are the dialect's rendering of a declaration, normalized; <see cref="Sql"/> joins them for the checksum.</summary>
+    public static MigrationStatement TriggerGuard(string triggerName, IReadOnlyList<string> expectedDefinitions, string origin)
+    {
+        var normalized = expectedDefinitions.Select(SchemaSnapshot.NormalizeTriggerDdl).OrderBy(d => d, StringComparer.Ordinal).ToArray();
+        return new MigrationStatement(string.Join("\n;\n", normalized), origin)
+        {
+            GuardTrigger = triggerName,
+            ExpectedDefinitions = normalized,
+        };
+    }
 }
 
 /// <summary>
@@ -257,6 +273,68 @@ public abstract class ViewMigration<TEntity> : MigrationStep
         }
 
         var actions = new ViewActions(map, dialect);
+        compose(actions);
+        return actions.Build();
+    }
+}
+
+/// <summary>
+/// A trigger's change (ADR-0042): the object is the trigger class — like a view,
+/// its folder is <c>Migrations/Trigger/&lt;Class&gt;/</c> and its
+/// <c>schema_version</c> object is the trigger name. The entity is named
+/// too, because the trigger belongs to its table and renders on it. Actions
+/// execute in declaration order; every rendering goes through the dialect,
+/// from the literal, dialect-neutral declaration — a step never holds a
+/// dialect's text, so one tree serves every dialect.
+/// </summary>
+public abstract class TriggerMigration<TEntity, TTrigger> : MigrationStep
+    where TEntity : class
+    where TTrigger : class
+{
+    public abstract void Action(TriggerActions actions);
+
+    public virtual void Down(TriggerActions actions)
+    {
+    }
+
+    public virtual void PreDown(MigrationSql sql)
+    {
+    }
+
+    public virtual void PostDown(MigrationSql sql)
+    {
+    }
+
+    /// <summary>The trigger name from the class's declaration — known even when no entity links the class any more (a removal step).</summary>
+    internal override string ObjectName(EntityMapLoader maps) => EntityMapLoader.TriggerNameOf(typeof(TTrigger));
+
+    internal override IReadOnlyList<MigrationStatement> RenderUp(EntityMapLoader maps, IDialect dialect)
+        => Render(maps, dialect, Action);
+
+    internal override DownPlan RenderDown(EntityMapLoader maps, IDialect dialect)
+    {
+        var pre = new MigrationSql();
+        PreDown(pre);
+        var post = new MigrationSql();
+        PostDown(post);
+        return new DownPlan(
+            pre.Statements.Select(s => new MigrationStatement(s, "pre-down")).ToArray(),
+            Render(maps, dialect, Down),
+            post.Statements.Select(s => new MigrationStatement(s, "post-down")).ToArray());
+    }
+
+    private IReadOnlyList<MigrationStatement> Render(
+        EntityMapLoader maps, IDialect dialect, Action<TriggerActions> compose)
+    {
+        var map = maps.Load<TEntity>();
+        if (map.Kind is not (RelationKind.Table or RelationKind.View))
+        {
+            throw new SimpleOrmException(
+                "DDL-001", typeof(TEntity).Name, $"is {map.Kind}-backed; a trigger belongs to a table or a view");
+        }
+
+        var declared = map.Triggers.FirstOrDefault(t => t.TriggerType == typeof(TTrigger));
+        var actions = new TriggerActions(map, declared, ObjectName(maps), dialect);
         compose(actions);
         return actions.Build();
     }
@@ -458,6 +536,86 @@ public sealed class ViewActions
 }
 
 /// <summary>
+/// Trigger actions (ADR-0042); executed in declaration order. Every action is
+/// rendered by the dialect from a declaration: from the entity's metadata
+/// (<see cref="CreateTrigger()"/>, the initial create), or from the literal,
+/// frozen declaration the step carries (<see cref="Recreate"/>,
+/// <see cref="ExpectDefinition"/> — what <c>simpleorm diff</c> emits). There is
+/// no raw-SQL action: a trigger's DDL is dialect-specific, and a step holding
+/// one dialect's text would tie the tree to it.
+/// </summary>
+public sealed class TriggerActions
+{
+    private readonly EntityMap _map;
+    private readonly EntityTrigger? _declared;
+    private readonly string _name;
+    private readonly IDialect _dialect;
+    private readonly List<MigrationAction> _actions = [];
+
+    internal TriggerActions(EntityMap map, EntityTrigger? declared, string name, IDialect dialect)
+    {
+        _map = map;
+        _declared = declared;
+        _name = name;
+        _dialect = dialect;
+    }
+
+    private string Relation => _map.RelationName!;
+
+    private bool OnView => _map.Kind == RelationKind.View;
+
+    /// <summary>The initial create, rendered from the entity's linked declaration (drop if present, then create) — <c>DDL-001</c> when the entity does not link this trigger.</summary>
+    public MigrationAction CreateTrigger()
+    {
+        if (_declared is null)
+        {
+            throw new SimpleOrmException(
+                "DDL-001", _map.EntityType.Name, $"does not link a trigger declaring '{_name}'; CreateTrigger() renders from the metadata — use Recreate(…) for a literal declaration");
+        }
+
+        return Track(new MigrationAction("create " + _name, Statements(_declared.Definition)));
+    }
+
+    /// <summary>Drop if present, then create from a literal declaration (frozen like a column spec; <c>updateOf</c> are column names).</summary>
+    public MigrationAction Recreate(TriggerTiming timing, TriggerEvent events, string sql, params string[] updateOf)
+        => Track(new MigrationAction("recreate " + _name, Statements(new TriggerDefinition(_name, timing, events, sql, updateOf))));
+
+    public MigrationAction DropTrigger()
+        => Track(new MigrationAction("drop " + _name, _dialect.DropTriggerSql(Relation, _name)));
+
+    /// <summary>
+    /// Precondition (<c>MIG-012</c>): the trigger's live definition must be what the
+    /// dialect renders for this declaration — otherwise it was changed outside the
+    /// code, and the run refuses unless forced. Generated change steps carry the
+    /// previous snapshot's declaration here; hand-written steps may too.
+    /// </summary>
+    public MigrationAction ExpectDefinition(TriggerTiming timing, TriggerEvent events, string sql, params string[] updateOf)
+        => Track(new MigrationAction("expect " + _name, [])
+        {
+            Guard = MigrationStatement.TriggerGuard(
+                _name,
+                _dialect.CreateTriggerSql(Relation, OnView, new TriggerDefinition(_name, timing, events, sql, updateOf)),
+                "expect " + _name),
+        });
+
+    private List<string> Statements(TriggerDefinition definition)
+    {
+        var statements = new List<string>(_dialect.DropTriggerSql(Relation, _name));
+        statements.AddRange(_dialect.CreateTriggerSql(Relation, OnView, definition));
+        return statements;
+    }
+
+    internal IReadOnlyList<MigrationStatement> Build()
+        => _actions.SelectMany(a => a.Render()).ToArray();
+
+    private MigrationAction Track(MigrationAction action)
+    {
+        _actions.Add(action);
+        return action;
+    }
+}
+
+/// <summary>
 /// A data-driven version — raw SQL steps constructed programmatically (used by the
 /// conformance suite; also the shape a future generator can target).
 /// </summary>
@@ -480,8 +638,15 @@ public sealed class SqlVersion(long version, params SqlVersion.Step[] steps) : M
 
     public sealed class Step(
         string objectName, string description, IReadOnlyList<string> up, IReadOnlyList<string>? down = null,
-        IReadOnlyList<(string From, string To)>? renames = null, string? expectDefinition = null)
+        IReadOnlyList<(string From, string To)>? renames = null, string? expectDefinition = null,
+        TriggerSnapshot? trigger = null, TriggerSnapshot? expectTrigger = null)
     {
+        /// <summary>A trigger declaration as data (ADR-0042): rendered through the dialect (drop, then create) ahead of <see cref="Up"/>.</summary>
+        public TriggerSnapshot? Trigger { get; } = trigger;
+
+        /// <summary>The expected live declaration, as data — the MIG-012 trigger guard.</summary>
+        public TriggerSnapshot? ExpectTrigger { get; } = expectTrigger;
+
         public string ObjectName { get; } = objectName;
 
         public string Description { get; } = description;
@@ -512,6 +677,21 @@ public sealed class SqlVersion(long version, params SqlVersion.Step[] steps) : M
             {
                 statements.Add(new MigrationStatement(
                     SchemaSnapshot.NormalizeDdl(step.ExpectDefinition), "expect " + step.ObjectName, step.ObjectName));
+            }
+
+            if (step.ExpectTrigger is { } expected)
+            {
+                statements.Add(MigrationStatement.TriggerGuard(
+                    step.ObjectName,
+                    dialect.CreateTriggerSql(expected.Relation, expected.OnView, expected.Definition),
+                    "expect " + step.ObjectName));
+            }
+
+            if (step.Trigger is { } trigger)
+            {
+                statements.AddRange(dialect.DropTriggerSql(trigger.Relation, step.ObjectName)
+                    .Concat(dialect.CreateTriggerSql(trigger.Relation, trigger.OnView, trigger.Definition))
+                    .Select(s => new MigrationStatement(s, "trigger " + step.ObjectName)));
             }
 
             statements.AddRange(step.Up.Select(s => new MigrationStatement(s, "sql " + step.ObjectName)));

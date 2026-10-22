@@ -117,6 +117,65 @@ public sealed class SqliteDialect : IDialect
     public string CreateViewSql(EntityMap map)
         => "create view if not exists " + map.RelationName + " as\n" + map.DefiningSql;
 
+    // --- triggers (ADR-0042) ---------------------------------------------------------
+
+    /// <summary>
+    /// SQLite triggers are row-level and single-event: a multi-event declaration
+    /// renders one trigger per event named <c>&lt;name&gt;_&lt;event&gt;</c>, a
+    /// single-event one keeps the declared name. INSTEAD OF exists only on views
+    /// (<c>DDL-005</c> on a table). The body's rows are one-row derived tables
+    /// over <c>new</c>/<c>old</c>; <c>{now}</c> is the §7.9 ISO-8601 UTC text.
+    /// </summary>
+    public IReadOnlyList<string> CreateTriggerSql(string relation, bool onView, TriggerDefinition trigger)
+    {
+        if (trigger.Timing == TriggerTiming.InsteadOf && !onView)
+        {
+            throw new SimpleOrmException("DDL-005", trigger.Name, "SQLite has INSTEAD OF triggers on views only; declare Before or After on a table");
+        }
+
+        var body = TriggerTokens.Render(trigger.Sql, segment => segment.Kind switch
+        {
+            "new" => TriggerTokens.RowSelect("new", segment.Columns, QuoteIdentifier),
+            "old" => TriggerTokens.RowSelect("old", segment.Columns, QuoteIdentifier),
+            _ => "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+        });
+        var events = trigger.EventList().ToArray();
+        return events
+            .Select(e => "create trigger " + TriggerObjectName(trigger.Name, e, events.Length)
+                + " " + Timing(trigger.Timing) + " " + EventWord(e)
+                + (e == TriggerEvent.Update && trigger.UpdateOf.Count > 0 ? " of " + string.Join(", ", trigger.UpdateOf) : string.Empty)
+                + " on " + relation + " for each row\nbegin\n" + body.Trim() + "\nend")
+            .ToArray();
+    }
+
+    public IReadOnlyList<string> DropTriggerSql(string relation, string triggerName)
+        => new[] { triggerName, triggerName + "_insert", triggerName + "_update", triggerName + "_delete" }
+            .Select(name => "drop trigger if exists " + name)
+            .ToArray();
+
+    /// <summary>The stored create text, as SQLite keeps it (the leading keywords recased); the declared name or its per-event forms.</summary>
+    public string TriggerDefinitionSql
+        => "select sql as definition from sqlite_master where type = 'trigger' "
+            + "and name in (@relation, @relation || '_insert', @relation || '_update', @relation || '_delete') order by name";
+
+    /// <summary>The stored object name: the declared name, or <c>&lt;name&gt;_&lt;event&gt;</c> when the declaration has several events.</summary>
+    public static string TriggerObjectName(string name, TriggerEvent e, int eventCount)
+        => eventCount == 1 ? name : name + "_" + EventWord(e);
+
+    private static string Timing(TriggerTiming timing) => timing switch
+    {
+        TriggerTiming.Before => "before",
+        TriggerTiming.After => "after",
+        _ => "instead of",
+    };
+
+    private static string EventWord(TriggerEvent e) => e switch
+    {
+        TriggerEvent.Insert => "insert",
+        TriggerEvent.Update => "update",
+        _ => "delete",
+    };
+
     public string CreateTableSql(EntityMap map)
     {
         var builder = new StringBuilder("create table if not exists ")

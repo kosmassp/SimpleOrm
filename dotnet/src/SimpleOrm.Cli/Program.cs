@@ -93,7 +93,8 @@ int Usage()
           validate                    SchemaGuard: full report or exit 0
           snapshot --out <MigrationsDir>
                                       write V000N.schema.json per object (tables by
-                                      columns; views by DDL), versioned and timestamped
+                                      columns; views by DDL; triggers by declaration),
+                                      versioned and timestamped
           diff --out <MigrationsDir> --namespace <ns>
                [--name <Description>] [--rename table.old=new]... [--allow-remove]
                [--draft] [--amend [--force] [--db <value>]]
@@ -102,7 +103,7 @@ int Usage()
                                       (MIG-013) until the attribute is removed after review
                                       generate the next migration version from the model vs
                                       the latest snapshots (tables by columns, views by
-                                      DDL); no database needed; removals need
+                                      DDL, triggers by declaration); no database needed; removals need
                                       --allow-remove (DDL-003); inexpressible changes are
                                       DDL-004 (write by hand); a migrated object with no
                                       snapshot refuses (run shadow/snapshot first).
@@ -331,6 +332,26 @@ async Task<int> SnapshotAsync()
             var file = Path.Combine(directory, $"V{version:0000}.schema.json");
             File.WriteAllText(file, content + "\n");
             Console.WriteLine("wrote " + file);
+        }
+
+        // Triggers snapshot by declaration (ADR-0042), one folder per trigger class.
+        foreach (var type in MappedTypes(LoadAssembly()))
+        {
+            var map = db.Maps.Load(type);
+            foreach (var trigger in map.Triggers)
+            {
+                if (!perObject.TryGetValue(trigger.Name, out var version))
+                {
+                    continue;
+                }
+
+                var directory = Path.Combine(outDir, "Trigger", trigger.TriggerType.Name);
+                Directory.CreateDirectory(directory);
+                var file = Path.Combine(directory, $"V{version:0000}.schema.json");
+                File.WriteAllText(file, SchemaSnapshot.ExportTrigger(
+                    new TriggerSnapshot(map.RelationName!, map.Kind == RelationKind.View, trigger.Definition), version, generatedAt) + "\n");
+                Console.WriteLine("wrote " + file);
+            }
         }
 
         return 0;

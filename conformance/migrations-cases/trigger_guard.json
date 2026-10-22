@@ -1,0 +1,40 @@
+{
+  "name": "trigger_guard",
+  "comment": "ADR-0042: a trigger step as data — the declaration rendered through the dialect (drop, then create) — and the MIG-012 guard reused for triggers: a change step declares the expected previous declaration (expectTrigger); a trigger rewritten outside the code refuses with MIG-012 (the atomic run leaves the hand-written one untouched); force recreates from the code. The deep expect reads the live trigger back as its declaration.",
+  "versions": [
+    { "version": 1, "steps": [
+        { "object": "widgets", "description": "create",
+          "up": ["create table widgets (id INTEGER PRIMARY KEY, name TEXT, log TEXT) STRICT"] },
+        { "object": "trg_widgets", "description": "create_trigger",
+          "trigger": { "relation": "widgets", "relationKind": "table", "timing": "after", "events": ["update"],
+                       "sql": "update widgets set log = 'v1' where id in (select n.id from {new: id} n);" } } ] },
+    { "version": 2, "steps": [
+        { "object": "trg_widgets", "description": "change_trigger",
+          "expectTrigger": { "relation": "widgets", "relationKind": "table", "timing": "after", "events": ["update"],
+                             "sql": "update widgets set log = 'v1' where id in (select n.id from {new: id} n);" },
+          "trigger": { "relation": "widgets", "relationKind": "table", "timing": "after", "events": ["update"],
+                       "sql": "update widgets set log = 'v2' where id in (select n.id from {new: id} n);" } } ] }
+  ],
+  "run": [
+    { "command": "migrate",
+      "versions": [
+        { "version": 1, "steps": [
+            { "object": "widgets", "description": "create",
+              "up": ["create table widgets (id INTEGER PRIMARY KEY, name TEXT, log TEXT) STRICT"] },
+            { "object": "trg_widgets", "description": "create_trigger",
+              "trigger": { "relation": "widgets", "relationKind": "table", "timing": "after", "events": ["update"],
+                           "sql": "update widgets set log = 'v1' where id in (select n.id from {new: id} n);" } } ] } ],
+      "expect": { "applied": [[1, "widgets"], [1, "trg_widgets"]],
+                  "triggers": { "trg_widgets": { "relation": "widgets", "timing": "after", "events": ["update"],
+                                                 "sql": "update widgets set log = 'v1' where id in (select n.id from {new: id} n);" } } } },
+    { "command": "sql",
+      "statements": ["drop trigger trg_widgets",
+                     "create trigger trg_widgets after update on widgets for each row begin update widgets set log = 'hotfix' where id = new.id; end"],
+      "expect": { } },
+    { "command": "migrate", "expect": { "error": "MIG-012" } },
+    { "command": "migrate", "force": true,
+      "expect": { "applied": [[1, "widgets"], [1, "trg_widgets"], [2, "trg_widgets"]],
+                  "triggers": { "trg_widgets": { "relation": "widgets", "timing": "after", "events": ["update"],
+                                                 "sql": "update widgets set log = 'v2' where id in (select n.id from {new: id} n);" } } } }
+  ]
+}

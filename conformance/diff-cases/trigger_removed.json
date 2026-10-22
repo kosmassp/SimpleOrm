@@ -1,0 +1,11 @@
+{
+  "name": "trigger_removed",
+  "comment": "ADR-0042: a snapshot history with no current declaration is a removal — emitted as a bare drop only under --allow-remove (DDL-003), like a removed column or index.",
+  "kind": "trigger",
+  "current": null,
+  "snapshot": { "object": "trg_widgets_audit", "relation": "widgets", "relationKind": "table", "asOfVersion": 3,
+    "generatedAt": "2026-10-22T12:00:00.0000000Z",
+    "timing": "after", "events": ["update"],
+    "sql": "insert into widget_log (widget_id) select n.id from {new: id} n;" },
+  "expect": { "isRemoved": true }
+}

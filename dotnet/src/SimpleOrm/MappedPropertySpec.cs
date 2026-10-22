@@ -94,3 +94,30 @@ internal sealed class RelationshipSpec
 
     public IReadOnlyList<string> LinkForeignKeysToTarget { get; init; } = [];
 }
+
+/// <summary>Loader-internal working shape of a linked trigger (ADR-0042) before column resolution: the declaration as read from its class.</summary>
+internal sealed class TriggerSpec
+{
+    public TriggerSpec(Type triggerType, string name, TriggerTiming timing, TriggerEvent events, string sql, IReadOnlyList<string> updateOfProperties)
+    {
+        TriggerType = triggerType;
+        Name = name;
+        Timing = timing;
+        Events = events;
+        Sql = sql;
+        UpdateOfProperties = updateOfProperties;
+    }
+
+    public Type TriggerType { get; }
+
+    public string Name { get; }
+
+    public TriggerTiming Timing { get; }
+
+    public TriggerEvent Events { get; }
+
+    public string Sql { get; }
+
+    /// <summary>Property names of the entity, resolved to columns at assembly.</summary>
+    public IReadOnlyList<string> UpdateOfProperties { get; }
+}

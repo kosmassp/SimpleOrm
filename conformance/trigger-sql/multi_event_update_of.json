@@ -1,0 +1,51 @@
+{
+  "name": "multi_event_update_of",
+  "comment": "Several events in one declaration with an UPDATE OF narrowing: SQLite has single-event triggers, so it renders one per event named <name>_<event> (the narrowing only on the update one) and drops every possible per-event name; SQL Server lists the events and emulates the narrowing with an if not (update(...)) return; prologue; PostgreSQL joins the events with or and narrows natively. {old: cols} is deleted on SQL Server.",
+  "relation": "widgets",
+  "relationKind": "table",
+  "trigger": {
+    "name": "trg_widgets_changes",
+    "timing": "after",
+    "events": [
+      "update",
+      "delete"
+    ],
+    "updateOf": [
+      "name",
+      "price"
+    ],
+    "sql": "insert into widget_log (widget_id, at) select o.id, {now} from {old: id} o;"
+  },
+  "expect": {
+    "sqlite": {
+      "create": [
+        "create trigger trg_widgets_changes_update after update of name, price on widgets for each row\nbegin\ninsert into widget_log (widget_id, at) select o.id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') from (select old.id as id) o;\nend",
+        "create trigger trg_widgets_changes_delete after delete on widgets for each row\nbegin\ninsert into widget_log (widget_id, at) select o.id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') from (select old.id as id) o;\nend"
+      ],
+      "drop": [
+        "drop trigger if exists trg_widgets_changes",
+        "drop trigger if exists trg_widgets_changes_insert",
+        "drop trigger if exists trg_widgets_changes_update",
+        "drop trigger if exists trg_widgets_changes_delete"
+      ]
+    },
+    "sqlserver": {
+      "create": [
+        "create trigger [trg_widgets_changes] on [widgets] after update, delete as\nbegin\n    set nocount on;\n    if not (update([name]) or update([price])) return;\ninsert into widget_log (widget_id, at) select o.id, todatetimeoffset(sysutcdatetime(), 0) from deleted o;\nend"
+      ],
+      "drop": [
+        "if object_id(N'trg_widgets_changes', N'TR') is not null drop trigger [trg_widgets_changes]"
+      ]
+    },
+    "postgres": {
+      "create": [
+        "create or replace function \"trg_widgets_changes_fn\"() returns trigger language plpgsql as $$\nbegin\ninsert into widget_log (widget_id, at) select o.id, now() from (select old.\"id\" as \"id\") o;\n    return null;\nend\n$$",
+        "create trigger \"trg_widgets_changes\" after update of \"name\", \"price\" or delete on \"widgets\" for each row execute function \"trg_widgets_changes_fn\"()"
+      ],
+      "drop": [
+        "drop trigger if exists \"trg_widgets_changes\" on \"widgets\"",
+        "drop function if exists \"trg_widgets_changes_fn\"()"
+      ]
+    }
+  }
+}

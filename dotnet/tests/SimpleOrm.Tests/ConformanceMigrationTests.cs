@@ -113,6 +113,26 @@ public sealed class ConformanceMigrationTests
                     }
                 }
 
+                if (expect.TryGetProperty("triggers", out var triggerExpects))
+                {
+                    // The live trigger, read back through the dialect and parsed to its declaration (ADR-0042);
+                    // null expects it gone.
+                    foreach (var trigger in triggerExpects.EnumerateObject())
+                    {
+                        var live = ReadTrigger(path, trigger.Name);
+                        if (trigger.Value.ValueKind == JsonValueKind.Null)
+                        {
+                            Assert.Null(live);
+                            continue;
+                        }
+
+                        Assert.NotNull(live);
+                        var expectedTrigger = SchemaSnapshot.ParseTrigger(trigger.Value, trigger.Name);
+                        Assert.Equal(expectedTrigger.Relation, live.Relation);
+                        Assert.True(expectedTrigger.Definition.SameAs(live.Definition), $"trigger {trigger.Name} differs from the expected declaration");
+                    }
+                }
+
                 if (expect.TryGetProperty("ddl", out var ddlExpects))
                 {
                     foreach (var view in ddlExpects.EnumerateObject())
@@ -160,7 +180,7 @@ public sealed class ConformanceMigrationTests
                     .Select(s => new SqlVersion.Step(
                         s.GetProperty("object").GetString()!,
                         s.GetProperty("description").GetString()!,
-                        s.GetProperty("up").EnumerateArray().Select(x => x.GetString()!).ToArray(),
+                        s.TryGetProperty("up", out var up) ? up.EnumerateArray().Select(x => x.GetString()!).ToArray() : [],
                         s.TryGetProperty("down", out var down)
                             ? down.EnumerateArray().Select(x => x.GetString()!).ToArray()
                             : null,
@@ -169,7 +189,11 @@ public sealed class ConformanceMigrationTests
                                 .Select(r => (r.GetProperty("from").GetString()!, r.GetProperty("to").GetString()!))
                                 .ToArray()
                             : null,
-                        s.TryGetProperty("expectDefinition", out var guard) ? guard.GetString() : null))
+                        s.TryGetProperty("expectDefinition", out var guard) ? guard.GetString() : null,
+                        s.TryGetProperty("trigger", out var trigger)
+                            ? SchemaSnapshot.ParseTrigger(trigger, s.GetProperty("object").GetString()!) : null,
+                        s.TryGetProperty("expectTrigger", out var expectTrigger)
+                            ? SchemaSnapshot.ParseTrigger(expectTrigger, s.GetProperty("object").GetString()!) : null))
                     .ToArray())
             {
                 Draft = v.TryGetProperty("draft", out var draft) && draft.GetBoolean(),   // Level 3 M5
@@ -205,6 +229,13 @@ public sealed class ConformanceMigrationTests
         }
 
         return [.. columns];
+    }
+
+    private static TriggerSnapshot? ReadTrigger(string databasePath, string trigger)
+    {
+        using var connection = new SqliteConnection($"Data Source={databasePath}");
+        connection.Open();
+        return SqliteTriggerDdl.Read(connection, trigger);
     }
 
     private static string? ReadViewDdl(string databasePath, string view)

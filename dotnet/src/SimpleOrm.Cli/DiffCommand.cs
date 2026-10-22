@@ -75,7 +75,7 @@ public sealed class DiffOptions
 /// </summary>
 public static class DiffCommand
 {
-    private static readonly string[] KindFolders = ["Table", "View", "MaterializedView"];
+    private static readonly string[] KindFolders = ["Table", "View", "MaterializedView", "Trigger"];
 
     public static async Task<int> ExecuteAsync(DiffOptions options, TextWriter output, TextWriter error)
     {
@@ -117,10 +117,12 @@ public static class DiffCommand
         // version produce — the snapshot history below it. An object those
         // migrations touched but no snapshot records has no recorded past to
         // diff against: it would come out as brand new, so it refuses instead.
-        var migratedBelow = EntitiesMigratedBelow(options, version);
+        var (migratedBelow, triggersMigratedBelow) = MigratedBelow(options, version);
         var loader = new EntityMapLoader();
         var changed = new List<(Type Type, EntityMap Map, MigrationGenerator.TableDiff Diff)>();
         var viewChanges = new List<(Type Type, string Folder, string ObjectName, string Ddl, string? PreviousDdl)>();
+        var triggerChanges = new List<(Type EntityType, Type TriggerType, TriggerDefinition? Current, TriggerDefinition? Previous)>();
+        var declaredTriggerClasses = new HashSet<string>(StringComparer.Ordinal);
         var problems = new List<string>();
         var removals = new List<string>();
         var unrecorded = new List<string>();
@@ -181,6 +183,58 @@ public static class DiffCommand
                     viewChanges.Add((type, folder, map.RelationName!, current, previous));
                 }
             }
+
+            // Triggers diff by declaration (ADR-0042): neutral on both sides, no rendering.
+            foreach (var trigger in map.Triggers)
+            {
+                declaredTriggerClasses.Add(trigger.TriggerType.Name);
+                var current = new TriggerSnapshot(map.RelationName!, map.Kind == RelationKind.View, trigger.Definition);
+                var previous = LatestTriggerSnapshotBelow(Path.Combine(options.OutDir, "Trigger", trigger.TriggerType.Name), version);
+                if (previous is null && triggersMigratedBelow.Contains(trigger.TriggerType))
+                {
+                    unrecorded.Add(trigger.Name);
+                    continue;
+                }
+
+                var diff = MigrationGenerator.DiffTrigger(current, previous);
+                if (diff.HasChanges)
+                {
+                    triggerChanges.Add((type, trigger.TriggerType, trigger.Definition, previous?.Definition));
+                }
+            }
+        }
+
+        // A trigger with a snapshot history that no entity declares any more is a removal (gated).
+        var triggerRoot = Path.Combine(options.OutDir, "Trigger");
+        if (Directory.Exists(triggerRoot))
+        {
+            foreach (var folder in Directory.GetDirectories(triggerRoot).OrderBy(d => d, StringComparer.Ordinal))
+            {
+                var className = Path.GetFileName(folder);
+                if (declaredTriggerClasses.Contains(className))
+                {
+                    continue;
+                }
+
+                var previous = LatestTriggerSnapshotBelow(folder, version);
+                if (previous is null)
+                {
+                    continue;
+                }
+
+                removals.Add($"trigger {previous.Definition.Name}");
+                var triggerType = options.Assembly.GetTypes().FirstOrDefault(t => t.Name == className && EntityMapLoader.IsTriggerType(t));
+                var entityType = options.EntityTypes.FirstOrDefault(t => loader.Load(t).RelationName == previous.Relation);
+                if (triggerType is null || entityType is null)
+                {
+                    return Fail(
+                        $"trigger {previous.Definition.Name} ({className}) is no longer declared, and the drop step cannot be emitted: "
+                        + (triggerType is null ? $"class {className} no longer exists" : $"no entity maps '{previous.Relation}'")
+                        + " — keep the trigger class and its entity until the removal is applied, or write the step by hand");
+                }
+
+                triggerChanges.Add((entityType, triggerType, null, previous.Definition));
+            }
         }
 
         if (unrecorded.Count > 0)
@@ -210,7 +264,7 @@ public static class DiffCommand
         var description = options.Name ?? "Auto";
         var planned = new List<(string Path, string Content)>();
         var stepRefs = new List<string>();
-        if (changed.Count > 0 || viewChanges.Count > 0)
+        if (changed.Count > 0 || viewChanges.Count > 0 || triggerChanges.Count > 0)
         {
             // New tables first, FK-referenced before referencing; then modified tables by name.
             var newSet = changed.Where(c => c.Diff.IsNew).Select(c => c.Type).ToHashSet();
@@ -232,6 +286,16 @@ public static class DiffCommand
                     MigrationGenerator.EmitViewStep(
                         options.RootNamespace, type, folder, objectName, version, description, ddl, previousDdl)));
                 stepRefs.Add($"{folder}.{type.Name}.{prefix}_{description}");
+            }
+
+            // Trigger steps compose after tables and views: the relation must exist (ADR-0042).
+            foreach (var (entityType, triggerType, current, previous) in triggerChanges)
+            {
+                planned.Add((
+                    Path.Combine(options.OutDir, "Trigger", triggerType.Name, $"{prefix}_{description}.cs"),
+                    MigrationGenerator.EmitTriggerStep(
+                        options.RootNamespace, entityType, triggerType, version, description, current, previous)));
+                stepRefs.Add($"Trigger.{triggerType.Name}.{prefix}_{description}");
             }
 
             // Amending keeps an existing draft's marker: unreviewed code never becomes applicable by regeneration.
@@ -362,43 +426,74 @@ public static class DiffCommand
         return null;
     }
 
+    /// <summary>The latest trigger snapshot of a folder strictly below the version, or null.</summary>
+    private static TriggerSnapshot? LatestTriggerSnapshotBelow(string snapshotDir, long version)
+        => Directory.Exists(snapshotDir)
+            ? Directory.GetFiles(snapshotDir, "V*.schema.json")
+                .Select(f => SchemaSnapshot.ParseTrigger(File.ReadAllText(f)))
+                .Where(s => s.AsOfVersion < version)
+                .OrderByDescending(s => s.AsOfVersion)
+                .Select(s => s.Snapshot)
+                .FirstOrDefault()
+            : null;
+
     /// <summary>
     /// The entity types that migration steps below <paramref name="version"/>
     /// touch (<c>TableMigration&lt;T&gt;</c>/<c>ViewMigration&lt;T&gt;</c> in the
-    /// namespace): objects with a migration history, which therefore need a
-    /// recorded schema to diff against.
+    /// namespace) and the trigger classes (<c>TriggerMigration&lt;T, TTrigger&gt;</c>):
+    /// objects with a migration history, which therefore need a recorded schema to
+    /// diff against.
     /// </summary>
-    private static HashSet<Type> EntitiesMigratedBelow(DiffOptions options, long version)
+    private static (HashSet<Type> Entities, HashSet<Type> Triggers) MigratedBelow(DiffOptions options, long version)
     {
-        var migrated = new HashSet<Type>();
+        var entities = new HashSet<Type>();
+        var triggers = new HashSet<Type>();
         foreach (var type in options.Assembly.GetTypes()
             .Where(t => !t.IsAbstract && typeof(MigrationStep).IsAssignableFrom(t)
                 && t.GetConstructor(Type.EmptyTypes) is not null
                 && InNamespace(t, options.RootNamespace)))
         {
-            var entity = EntityOf(type);
-            if (entity is not null && ((MigrationStep)Activator.CreateInstance(type)!).Version < version)
+            var (entity, trigger) = ObjectOf(type);
+            if (entity is null || ((MigrationStep)Activator.CreateInstance(type)!).Version >= version)
             {
-                migrated.Add(entity);
+                continue;
+            }
+
+            if (trigger is not null)
+            {
+                triggers.Add(trigger);
+            }
+            else
+            {
+                entities.Add(entity);
             }
         }
 
-        return migrated;
+        return (entities, triggers);
     }
 
-    private static Type? EntityOf(Type step)
+    private static (Type? Entity, Type? Trigger) ObjectOf(Type step)
     {
         for (var type = step.BaseType; type is not null; type = type.BaseType)
         {
-            if (type.IsGenericType
-                && (type.GetGenericTypeDefinition() == typeof(TableMigration<>)
-                    || type.GetGenericTypeDefinition() == typeof(ViewMigration<>)))
+            if (!type.IsGenericType)
             {
-                return type.GetGenericArguments()[0];
+                continue;
+            }
+
+            var definition = type.GetGenericTypeDefinition();
+            if (definition == typeof(TableMigration<>) || definition == typeof(ViewMigration<>))
+            {
+                return (type.GetGenericArguments()[0], null);
+            }
+
+            if (definition == typeof(TriggerMigration<,>))
+            {
+                return (type.GetGenericArguments()[0], type.GetGenericArguments()[1]);
             }
         }
 
-        return null;
+        return (null, null);
     }
 
     private static bool InNamespace(Type type, string rootNamespace)

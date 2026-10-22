@@ -46,6 +46,7 @@ these codes.
 | `MAP-026` | invalid hook declaration (hooks.md): `[CreatedAt]`/`[UpdatedAt]` on a non-temporal property, `[SoftDelete]` on a non-`bool` or nullable property, a hook on a key, version, or generated column or without `[Column]`, a property carrying more than one hook, a role declared on more than one property of an entity, a hook on a navigation, an ignored or unmapped property, an owned navigation or an owned type's member, or any hook on a non-table source (a view, statement, or procedure) | ADR-0034 §7c M3 | L3 milestone 3 |
 | `MAP-027` | invalid `[RenamedFrom]` declaration (migrations.md "Draft migrations"): on a property without `[Column]`, an ignored property, a navigation, an owned navigation or an owned type's member, on a non-table source, naming no previous column, or two properties of one entity declaring the same previous column | ADR-0034 §7c M5 | L3 milestone 5 |
 | `MAP-028` | a base class used as an entity (metadata-model.md): an abstract class read, written, queried, exported, registered, or targeted by a navigation; a mapped type whose base class carries a relation source of its own; in an assembly scan, a concrete sourceless class that another scanned type extends — a base class shares members only, identity comes from the concrete class alone; unreachable where the language has no subclassing (Go, Rust) | ADR-0041 | ADR-0041 add.1 (C#, PHP; Go unreachable) |
+| `MAP-029` | invalid trigger declaration (metadata-model.md "Triggers"): a `[Trigger(typeof(X))]` link on a non-table, non-view source; a link to a class that carries no trigger declaration, carries more than one, or is itself an entity or an owned type; a declaration with a blank name, no event, or a blank body; `Before`/`After` on a view (only `InsteadOf`); `UpdateOf` without the `Update` event or naming an unmapped property; a body token that is unknown, malformed, lacks its column list, names an unmapped column, or is impossible for the events (`{old}` on insert-only, `{new}` on delete-only); and, in an assembly scan, a trigger class linked by two entities or two triggers declaring the same name | ADR-0042 | Level 4 (triggers) |
 | `MAP-030` | no conversion or handler between the CLR type and the database value (either direction) | §7.9 | milestone 4 |
 | `MAP-031` | value conversion failed (format, overflow, unknown enum name) | §7.9 | milestone 4 |
 
@@ -86,6 +87,7 @@ these codes.
 | `DDL-002` | materialized-view creation on a dialect without materialized views | ADR-0008 add.3 | milestone 3 |
 | `DDL-003` | a destructive change requires its explicit flag (`--allow-remove` on diff, `--allow-delete` on force sync) | ADR-0017 | generator |
 | `DDL-004` | a change the generator/sync cannot express safely (type/nullability change, non-nullable addition) — write the migration by hand | ADR-0017 | generator |
+| `DDL-005` | trigger DDL on a dialect that has no form for the declaration: `Before` on SQL Server, `InsteadOf` on a table outside SQL Server (SQLite and PostgreSQL allow it on views only) | ADR-0042 | Level 4 (triggers) |
 
 ## TX — transactions and session
 
@@ -116,7 +118,7 @@ these codes.
 | `MIG-004` | an object step is not composed into any root version | ADR-0013 |
 | `MIG-010` | applied migration checksum changed (checksum = SHA-256 of the rendered Up SQL) | §7.23 |
 | `MIG-011` | an applied version is unknown to the code | ADR-0013 |
-| `MIG-012` | a view's live definition does not match the step's expected previous definition (changed outside migrations); `--force` recreates it | ADR-0017 add.1 |
+| `MIG-012` | a view's or a trigger's live definition does not match the step's expected previous definition (changed outside migrations, or absent); `--force` recreates it | ADR-0017 add.1, ADR-0042 |
 | `MIG-013` | `migrate`/`baseline` reached a version marked `[Draft]` (emitted by `diff --draft`): review it and remove the marker; the whole plan refuses before anything executes | ADR-0034 §7c M5 (L3 milestone 5) |
 | `MIG-020` | `migrate down` past a step whose rollback cannot be derived from the snapshots (none embedded/found, or a type/nullability change) and no `Down()` override | ADR-0018 |
 | `MIG-021` | a migration statement failed to execute; the message names the statement | ADR-0018 |

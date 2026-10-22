@@ -28,6 +28,7 @@ internal static class AttributeMapLoader
         ReadProperties(entityType, kind, specs, relationships, errors);
 
         var indexSpecs = ReadIndexes(entityType, kind, errors);
+        var triggerSpecs = ReadTriggers(entityType, kind, errors);
         if (statementSql is not null)
         {
             // For views the declared list is empty, so any placeholder in the
@@ -37,7 +38,7 @@ internal static class AttributeMapLoader
 
         var map = MapAssembler.Assemble(
             entityType, kind, relationName, schema, statementSql, statementParameters,
-            specs, indexSpecs, relationships, convention, errors);
+            specs, indexSpecs, relationships, convention, errors, triggerSpecs);
 
         if (map is null)
         {
@@ -45,6 +46,235 @@ internal static class AttributeMapLoader
         }
 
         return map;
+    }
+
+    // --- triggers (ADR-0042) ---------------------------------------------------------
+
+    /// <summary>A class carrying the declaration form of <c>[Trigger]</c>: a declaration object, never an entity — scans skip it.</summary>
+    internal static bool IsTriggerType(Type type)
+        => type.GetCustomAttributes<TriggerAttribute>(inherit: false).Any(a => a.Name is not null);
+
+    /// <summary>
+    /// The links an entity carries — <c>[Trigger(typeof(X))]</c>, read without
+    /// inheritance — each resolved to its class's declaration. Placement rules
+    /// (<c>MAP-029</c>): tables take every timing, views only <c>InsteadOf</c>, no
+    /// other source takes a trigger; column resolution happens at assembly.
+    /// </summary>
+    private static IReadOnlyList<TriggerSpec> ReadTriggers(Type entityType, RelationKind kind, List<MappingError> errors)
+    {
+        var links = entityType.GetCustomAttributes<TriggerAttribute>(inherit: false).ToArray();
+        if (links.Length == 0)
+        {
+            return [];
+        }
+
+        var specs = new List<TriggerSpec>();
+        foreach (var link in links)
+        {
+            var target = $"{entityType.Name} [Trigger]";
+            if (link.Trigger is null)
+            {
+                errors.Add(new MappingError(
+                    "MAP-029", target,
+                    $"an entity links a trigger class — [Trigger(typeof(X))]; the declaration form belongs on the trigger class itself (found '{link.Name}')"));
+                continue;
+            }
+
+            if (kind is not (RelationKind.Table or RelationKind.View))
+            {
+                errors.Add(new MappingError(
+                    "MAP-029", target, $"a trigger is only valid on a table (any timing) or a view (INSTEAD OF), not a {kind}"));
+                continue;
+            }
+
+            var spec = ReadTriggerDeclaration(link.Trigger, $"{entityType.Name} [Trigger(typeof({link.Trigger.Name}))]", errors);
+            if (spec is null)
+            {
+                continue;
+            }
+
+            if (kind == RelationKind.View && spec.Timing != TriggerTiming.InsteadOf)
+            {
+                errors.Add(new MappingError(
+                    "MAP-029", target, $"'{spec.Name}' is {spec.Timing} on a view; a view takes only INSTEAD OF triggers"));
+                continue;
+            }
+
+            if (specs.Any(s => s.TriggerType == spec.TriggerType))
+            {
+                errors.Add(new MappingError("MAP-029", target, $"'{link.Trigger.Name}' is linked twice"));
+                continue;
+            }
+
+            specs.Add(spec);
+        }
+
+        return specs;
+    }
+
+    /// <summary>
+    /// Reads a trigger class's declaration — exactly one <c>[Trigger(name, timing,
+    /// events, sql)]</c> on a class that is neither an entity nor an owned type —
+    /// with the shape checks that need no entity: a name, at least one event, a
+    /// body, <c>UpdateOf</c> only with the update event, well-formed tokens that
+    /// are possible for the events (<c>{old}</c> needs update or delete,
+    /// <c>{new}</c> insert or update). Column resolution waits for the entity.
+    /// </summary>
+    internal static TriggerSpec? ReadTriggerDeclaration(Type triggerType, string target, List<MappingError> errors)
+    {
+        var declarations = triggerType.GetCustomAttributes<TriggerAttribute>(inherit: false).ToArray();
+        if (declarations.Any(d => d.Trigger is not null))
+        {
+            errors.Add(new MappingError(
+                "MAP-029", target, $"'{triggerType.Name}' links a trigger of its own; a trigger class declares, it never links"));
+            return null;
+        }
+
+        if (declarations.Length != 1)
+        {
+            errors.Add(new MappingError(
+                "MAP-029", target,
+                declarations.Length == 0
+                    ? $"'{triggerType.Name}' carries no [Trigger(name, timing, events, sql)] declaration"
+                    : $"'{triggerType.Name}' carries {declarations.Length} declarations; a trigger class declares exactly one trigger"));
+            return null;
+        }
+
+        if (IsOwnedType(triggerType) || HasMappingAttributes(triggerType))
+        {
+            errors.Add(new MappingError(
+                "MAP-029", target, $"'{triggerType.Name}' is an entity or an owned type; a trigger class is a declaration object with no columns"));
+            return null;
+        }
+
+        var declaration = declarations[0];
+        var valid = true;
+        if (string.IsNullOrWhiteSpace(declaration.Name))
+        {
+            errors.Add(new MappingError("MAP-029", target, $"'{triggerType.Name}' declares a blank trigger name"));
+            valid = false;
+        }
+
+        if (declaration.Events == TriggerEvent.None || (declaration.Events & ~(TriggerEvent.Insert | TriggerEvent.Update | TriggerEvent.Delete)) != 0)
+        {
+            errors.Add(new MappingError("MAP-029", target, $"'{triggerType.Name}' must declare at least one of Insert, Update, Delete"));
+            valid = false;
+        }
+
+        if (!Enum.IsDefined(typeof(TriggerTiming), declaration.Timing))
+        {
+            errors.Add(new MappingError("MAP-029", target, $"'{triggerType.Name}' declares an unknown timing"));
+            valid = false;
+        }
+
+        if (string.IsNullOrWhiteSpace(declaration.Sql))
+        {
+            errors.Add(new MappingError("MAP-029", target, $"'{triggerType.Name}' declares a blank body"));
+            valid = false;
+        }
+
+        var updateOf = declaration.UpdateOf ?? [];
+        if (updateOf.Length > 0 && !declaration.Events.HasFlag(TriggerEvent.Update))
+        {
+            errors.Add(new MappingError("MAP-029", target, $"'{triggerType.Name}' declares UpdateOf without the Update event"));
+            valid = false;
+        }
+
+        if (updateOf.Any(string.IsNullOrWhiteSpace))
+        {
+            errors.Add(new MappingError("MAP-029", target, $"'{triggerType.Name}' declares a blank UpdateOf entry"));
+            valid = false;
+        }
+
+        if (!valid)
+        {
+            return null;
+        }
+
+        var before = errors.Count;
+        var segments = TriggerTokens.Parse(declaration.Sql!, target, errors);
+        if (errors.Count > before)
+        {
+            return null;
+        }
+
+        var hasInsertOrUpdate = declaration.Events.HasFlag(TriggerEvent.Insert) || declaration.Events.HasFlag(TriggerEvent.Update);
+        var hasUpdateOrDelete = declaration.Events.HasFlag(TriggerEvent.Update) || declaration.Events.HasFlag(TriggerEvent.Delete);
+        foreach (var segment in segments.Where(s => s.Kind is "new" or "old"))
+        {
+            if (segment.Kind == "new" && !hasInsertOrUpdate)
+            {
+                errors.Add(new MappingError("MAP-029", target, "{new: …} has no rows on a delete-only trigger"));
+                valid = false;
+            }
+
+            if (segment.Kind == "old" && !hasUpdateOrDelete)
+            {
+                errors.Add(new MappingError("MAP-029", target, "{old: …} has no rows on an insert-only trigger"));
+                valid = false;
+            }
+        }
+
+        return valid
+            ? new TriggerSpec(triggerType, declaration.Name!.Trim(), declaration.Timing, declaration.Events, declaration.Sql!, updateOf)
+            : null;
+    }
+
+    /// <summary>
+    /// The scan rule for triggers (<c>MAP-029</c>): across the scanned entities, a
+    /// trigger class linked by two entities (a trigger belongs to one table) or
+    /// two classes declaring the same trigger name (names are database-wide on
+    /// SQLite and SQL Server). A lone load cannot see either; startup validation
+    /// and the CLI check the set as a whole, like <c>MAP-028</c>.
+    /// </summary>
+    internal static IReadOnlyList<MappingError> TriggerConflicts(IEnumerable<Type> types)
+    {
+        var errors = new List<MappingError>();
+        var linkedBy = new Dictionary<Type, List<string>>();
+        var namedBy = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var type in types.Where(t => t is { IsClass: true, IsAbstract: false } && !IsOwnedType(t)))
+        {
+            foreach (var link in type.GetCustomAttributes<TriggerAttribute>(inherit: false).Where(a => a.Trigger is not null))
+            {
+                if (!linkedBy.TryGetValue(link.Trigger!, out var owners))
+                {
+                    linkedBy[link.Trigger!] = owners = [];
+                }
+
+                owners.Add(type.Name);
+
+                var name = link.Trigger!.GetCustomAttributes<TriggerAttribute>(inherit: false)
+                    .Select(a => a.Name).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n));
+                if (name is not null)
+                {
+                    if (!namedBy.TryGetValue(name, out var classes))
+                    {
+                        namedBy[name] = classes = [];
+                    }
+
+                    if (!classes.Contains(link.Trigger!.Name))
+                    {
+                        classes.Add(link.Trigger!.Name);
+                    }
+                }
+            }
+        }
+
+        foreach (var pair in linkedBy.Where(p => p.Value.Count > 1).OrderBy(p => p.Key.Name, StringComparer.Ordinal))
+        {
+            errors.Add(new MappingError(
+                "MAP-029", pair.Key.Name,
+                $"is linked by '{string.Join("', '", pair.Value.OrderBy(n => n, StringComparer.Ordinal))}': a trigger belongs to one table — declare one class per table"));
+        }
+
+        foreach (var pair in namedBy.Where(p => p.Value.Count > 1).OrderBy(p => p.Key, StringComparer.Ordinal))
+        {
+            errors.Add(new MappingError(
+                "MAP-029", pair.Key,
+                $"is declared by '{string.Join("', '", pair.Value.OrderBy(n => n, StringComparer.Ordinal))}': trigger names are unique across the model"));
+        }
+
+        return errors;
     }
 
     private static (RelationKind Kind, string? Name, string? Schema, string? Sql, IReadOnlyList<StatementParameter> Parameters)
@@ -618,6 +848,7 @@ internal static class AttributeMapLoader
                 StatementAttribute => "[Statement]",
                 ProcedureAttribute => "[Procedure]",
                 IndexAttribute => "[Index]",
+                TriggerAttribute { Trigger: not null } => "[Trigger]",
                 _ => null,
             })
             .Where(name => name is not null)
@@ -654,7 +885,7 @@ internal static class AttributeMapLoader
     /// </summary>
     internal static IReadOnlyList<MappingError> BaseClassesUsedAsEntities(IEnumerable<Type> types)
     {
-        var scanned = types.Where(t => t.IsClass && HasMappingAttributes(t) && !IsOwnedType(t)).ToArray();
+        var scanned = types.Where(t => t.IsClass && HasMappingAttributes(t) && !IsOwnedType(t) && !IsTriggerType(t)).ToArray();
         var entities = new HashSet<Type>(scanned.Where(t => !t.IsAbstract));
         var extendedBy = new Dictionary<Type, List<string>>();
         foreach (var type in scanned)
@@ -697,7 +928,7 @@ internal static class AttributeMapLoader
             throw new MappingException(all.First(t => t.Name == errors[0].Target), errors);
         }
 
-        return all.Where(t => t is { IsClass: true, IsAbstract: false } && HasMappingAttributes(t) && !IsOwnedType(t)).ToArray();
+        return all.Where(t => t is { IsClass: true, IsAbstract: false } && HasMappingAttributes(t) && !IsOwnedType(t) && !IsTriggerType(t)).ToArray();
     }
 
     /// <summary>

@@ -31,16 +31,20 @@ Per entity:
   and one-to-many (the target's FK columns), many-to-many (the link and its FK
   columns to each side). Declarations only — loading is explicit or eager
   (`loading.md`), never implicit.
+- **Triggers** (tables, and views for INSTEAD OF; Level 4, ADR-0042): name,
+  timing, events, an optional update-of column list, and one neutral body.
+  Declarations only — migrations create them (`migrations.md` "Triggers"); the
+  session never reads or fires them.
 
 ## Capability rules per source
 
-| | writes | key | generated/version | index |
-|---|---|---|---|---|
-| table | yes | required | allowed | allowed |
-| view | no | allowed | no | no |
-| materialized view | no | allowed | no | **allowed** |
-| statement | no | no | no | no |
-| procedure | no | no | no | no |
+| | writes | key | generated/version | index | trigger |
+|---|---|---|---|---|---|
+| table | yes | required | allowed | allowed | allowed (any timing) |
+| view | no | allowed | no | no | INSTEAD OF only |
+| materialized view | no | allowed | no | **allowed** | no |
+| statement | no | no | no | no | no |
+| procedure | no | no | no | no | no |
 
 Violations are loader errors with the `MAP-`/`PRM-` codes in [errors.md](errors.md).
 Every violation for a type is collected before failing — never first-error-only.
@@ -168,6 +172,133 @@ Rules:
 Reading and writing rules are in `mapping-rules.md`; the fixture is
 `UserProfile.Address` (`address_street`, `address_city`, `address_postal_code`).
 
+## Triggers (Level 4, ADR-0042)
+
+A trigger is **its own declaration class**, the way a materialized view is a
+class carrying its SQL: the class declares the trigger name, the timing, the
+events, and **one** body; the entity **links** the class. Nothing on the entity
+and nothing in the body names a dialect — a hundredth database type adds one
+dialect that knows how to render a trigger, and no declaration changes.
+
+```csharp
+[Trigger("trg_roles_audit", TriggerTiming.After, TriggerEvent.Update, """
+    insert into role_changes (role_id, role_name, changed_at)
+    select n.id, n.role_name, {now}
+    from {new: id, role_name} n;
+    """)]
+public sealed class RoleAuditTrigger { }
+
+[Table("roles")]
+[Trigger(typeof(RoleAuditTrigger))]
+public sealed class Role { … }
+```
+
+- **The declaration** (on the trigger class, exactly one): a name (unique across
+  the model — database-wide on SQLite and SQL Server), a timing — `before`,
+  `after`, `instead_of` — one or more events — `insert`, `update`, `delete` —
+  an optional `updateOf` list naming **properties** of the entity (resolved to
+  columns; only with the update event), and the body. The class is a
+  declaration object, never an entity: no columns, no key; scans skip it; a
+  load of it is `MAP-029`.
+- **The link** (on the entity, repeatable): a table carries many triggers; a
+  trigger belongs to one table. A table takes every timing, a view only
+  `instead_of`, no other source takes a trigger. The entity's map carries the
+  resolved triggers in link order.
+- **The body** is set-based SQL over the changed rows, each statement ended by
+  `;`, real SQL first-class — with three **tokens**, the only non-SQL in it,
+  standing for exactly what differs per database:
+
+  | Token | Meaning | SQLite, PostgreSQL | SQL Server |
+  |---|---|---|---|
+  | `{new: a, b}` | the inserted or updated rows as a relation | `(select new.a as a, new.b as b)` | `inserted` |
+  | `{old: a, b}` | the deleted or pre-update rows | the same over `old.` | `deleted` |
+  | `{now}` | UTC now in the §7.9 storage form | `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` / `now()` | `todatetimeoffset(sysutcdatetime(), 0)` |
+
+  The column list is required (the rendering then depends on the body alone,
+  never on the table's current shape), the names are **column** names of the
+  entity's relation (matched exactly), and a row token must have rows on
+  **every** declared event, since one body serves them all: `{new}` refuses a
+  declaration that includes delete, `{old}` one that includes insert.
+  Braces inside a single-quoted SQL literal are text, not tokens; any spelling
+  of a token (`{ NEW : id ,name }`) is accepted and canonicalized to
+  `{new: id, name}` wherever the body is normalized (exports, snapshots,
+  diffs); a `--` line comment is refused (whitespace is collapsed in
+  snapshots and would fold the rest of the body into it — use `/* … */`). Everything around
+  the body — `set nocount on`, `begin/end`, the PostgreSQL function and its
+  `return`, the granularity (`for each row` where it exists; SQL Server is
+  statement-level) — is the dialect's rendering (`dialects.md` "Triggers"),
+  configured once, never written by the author. A form a dialect lacks is
+  refused when rendered (`DDL-005`, `errors.md`), not at declaration.
+- **`MAP-029`** is every misplaced or malformed declaration: a link on a
+  statement, procedure, or materialized view; a link to a class without a
+  declaration, with two, or that is itself an entity or an owned type; a blank
+  name, no event, or a blank body; `before`/`after` on a view; `updateOf`
+  without the update event or naming an unmapped property; an unknown or
+  malformed token, a row token without columns or naming an unmapped column, or
+  one impossible for the events; a class linked twice by one entity. Collected
+  with the entity's other errors, never first-error-only.
+- **The scan rule** (SchemaGuard, every CLI command that enumerates entities,
+  like `MAP-028`): a trigger class linked by two entities, or two classes
+  declaring one name — one `MAP-029` per conflict; a lone load cannot see them.
+- The manual builder links a trigger class under the same rules.
+
+**Clarifications** (the PHP and Go port gap lists; ADR-0042):
+
+- **Telling the two attribute shapes apart** is the language's business: C#
+  by constructor, PHP by the arguments given (a single class argument is a
+  link; an incomplete declaration is `MAP-029`, never read as a link), Go by
+  a descriptor method on the trigger type and a typed link in the entity's
+  descriptor. A declaration with no timing where the language allows one
+  (a Go zero value) is `MAP-029`, never a default.
+- **A class carrying a link counts as mapped** (it routes to the annotation
+  loader, so the link is never silently ignored); a pure declaration class
+  does not, so scans skip it; a class that is both an entity and a
+  declaration is `MAP-029`. Where class-level annotations are not inherited,
+  a link on a base class is simply invisible; where they are (C#), the link
+  is read without inheritance like `[Index]` and a base carrying one is
+  `MAP-028`.
+- **`updateOf`** names properties (dotted paths for owned members), resolved
+  to columns, compared in declared order and exactly; the scan rule compares
+  trigger names case-insensitively and enforces model-wide uniqueness on
+  every dialect, PostgreSQL's per-table names included.
+- **A trigger's name is its object.** Renaming a declaration is a removal
+  plus a creation, never a change; a declaration moved to another relation
+  (or between a table and a view) is `DDL-004` for the generator — the
+  generated guard and drop would target the new relation while the trigger
+  lives on the old one — and is written by hand (drop on the old relation,
+  create on the new).
+- **What the dialect renders from metadata** is the author's body trimmed,
+  verbatim; only exports, snapshots, and diffs normalize it. The `--` rule
+  above keeps the two equivalent. A body may not contain `$$` (PostgreSQL's
+  function quoting); the SQLite `{now}` carries three fractional digits
+  (`%f`), which the reader accepts like any marked ISO text.
+- **`before`/`after` on a view** is refused by the loader only; a dialect
+  asked for it through the data-driven step form renders it and the database
+  refuses. `DDL-005` stays the two forms of the renderings table.
+
+**Clarifications** (the uniformity review; ADR-0042):
+
+- **What a token is.** A token is `{…}` with no brace inside, outside a
+  single-quoted literal — nothing else is masked (a brace in a `/* … */`
+  comment or a quoted identifier is read as a token). A lone `{` or `}` that
+  opens or closes no token is text. The kind is case-insensitive (`{NOW}`,
+  `{ New : a }`); a row token's columns are trimmed, none may be empty, and a
+  repeated column is not an error. A body the dialect is asked to render
+  through the data-driven form is parsed by the same rules, and a malformed
+  token or a `--` comment there is `MAP-029` at rendering.
+- **The scan rule's name set** is every declaration class the scan sees — the
+  classes entities link and any declaration class in the scanned list itself,
+  linked or not (a class kept for its removal step still names the database
+  object). The error for a name conflict names the trigger name; for a class
+  linked twice, the class.
+- **The SQLite read-back** (the shadow, the conformance deep expect) merges the
+  per-event triggers only when they form one declaration — the names the
+  rendering gives them, one relation, one timing, one normalized body, no
+  event twice; the update-of list comes from the update trigger whatever the
+  name order. It folds only the exact expansions — one row variable and every
+  alias its column — and leaves any other `(select new.… as …)` as the
+  author's SQL. Anything else is a hand-written trigger: skipped with a note.
+
 ## Entity identity
 
 An entity's identity is its ordered key values, extracted from an instance.
@@ -199,6 +330,10 @@ byte-equality):
   ],
   "indexes": [
     { "name": "ix_t_a", "columns": [{ "column": "a", "direction": "asc" }], "unique": true }
+  ],
+  "triggers": [
+    { "name": "trg_t_audit", "timing": "after", "events": ["update"], "updateOf": ["a"],
+      "sql": "insert into t_log (t_id) select n.id from {new: id} n;" }
   ],
   "relationships": [
     { "kind": "many_to_one", "foreignKeyColumns": ["user_id"], "references": "User" },
@@ -277,6 +412,17 @@ A column may carry one hook, exported only when declared: `"audit":
 with its clock), and `"softDelete": true` (a delete sets it). Declaration
 errors are `MAP-026`. The fixture declares both audit roles on every
 `BaseModel` table and the soft-delete flag on `roles.is_deleted` (V0011).
+
+### Declared triggers (Level 4, "Triggers" above)
+
+`"triggers"` is written after `"indexes"` and only when declared: per trigger
+`name`, `timing` (`before` | `after` | `instead_of`), `events` (a list in the
+fixed order `insert`, `update`, `delete`), `updateOf` (column names; only when
+declared), and `sql` — the body whitespace-normalized with its tokens
+**unexpanded**. The trigger class's name never appears: the export stays
+column-centric, so every implementation produces the same file. The fixture
+`Role` links `RoleAuditTrigger` (`entities/role.json`); `role_changes` is the
+table it writes (`entities/role_change.json`).
 
 ### Declared renames (Level 3 M5, migrations.md "Draft migrations")
 

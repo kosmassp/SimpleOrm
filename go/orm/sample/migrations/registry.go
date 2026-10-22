@@ -7,8 +7,8 @@ import (
 	"github.com/kosmassp/SimpleOrm/go/orm/sample"
 )
 
-// App is the sample application's registry (ADR-0027): the ten fixture
-// entities (dotnet/samples/SimpleOrm.Sample/Models, one to one), a few
+// App is the sample application's registry (ADR-0027): the eleven fixture
+// entities (and the one trigger class) (dotnet/samples/SimpleOrm.Sample/Models, one to one), a few
 // registered queries/commands (sample/queries.go), this package's migration
 // set, and its embedded snapshot tree — what SchemaGuard, the CLI, and their
 // tests exercise in this port. It may import sample (the entity types) and
@@ -32,7 +32,9 @@ func App() (orm.Registry, error) {
 			orm.TypeOf[sample.MonthlySalesTotal](),
 			orm.TypeOf[sample.DailySales](),
 			orm.TypeOf[sample.UserActivityReport](),
+			orm.TypeOf[sample.RoleChange](),
 		},
+		Triggers: []reflect.Type{orm.TypeOf[sample.RoleAuditTrigger]()},
 		Entries: []orm.Entry{
 			sample.UsersByEmail,
 			sample.UsersByIDs,

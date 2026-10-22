@@ -30,6 +30,7 @@ final class MapAssembler
      * @param list<IndexSpec> $indexSpecs
      * @param list<RelationshipSpec> $relationshipSpecs
      * @param list<MappingError> $errors
+     * @param list<string> $triggerLinks the trigger classes the entity links (Level 4, ADR-0042), as written
      */
     public static function assemble(
         string $entityType,
@@ -43,6 +44,7 @@ final class MapAssembler
         array $relationshipSpecs,
         NamingConvention $convention,
         array &$errors,
+        array $triggerLinks = [],
     ): ?EntityMap {
         $shortName = self::shortName($entityType);
         $properties = [];
@@ -108,6 +110,7 @@ final class MapAssembler
         $keyStrategy = self::resolveKeyStrategy($shortName, $kind, $properties, $errors);
         $indexes = self::resolveIndexes($shortName, $relationName, $indexSpecs, $byProperty, $errors);
         $relationships = self::resolveRelationships($shortName, $relationshipSpecs, $byProperty, $errors);
+        $triggers = TriggerRules::resolve($shortName, $kind, $triggerLinks, $byProperty, $errors);
 
         if ($errors !== []) {
             return null;
@@ -124,6 +127,7 @@ final class MapAssembler
             $keyStrategy,
             $indexes,
             $relationships,
+            $triggers,
         );
     }
 

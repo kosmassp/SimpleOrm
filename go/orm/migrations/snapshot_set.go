@@ -9,10 +9,12 @@ import (
 )
 
 // SnapshotEntry is one object's snapshot at one version: exactly one of Table
-// (a table snapshot) or DDL (a view/materialized-view/procedure snapshot) is set.
+// (a table snapshot), DDL (a view/materialized-view/procedure snapshot), or Trigger (a trigger's neutral
+// declaration, ADR-0042) is set.
 type SnapshotEntry struct {
-	Table *TableSchema
-	DDL   string
+	Table   *TableSchema
+	DDL     string
+	Trigger *TriggerDeclaration
 }
 
 // SnapshotSet is every committed schema snapshot of a migrations tree,
@@ -87,6 +89,7 @@ func (s *SnapshotSet) add(data []byte) error {
 	var probe struct {
 		Object      string  `json:"object"`
 		AsOfVersion int64   `json:"asOfVersion"`
+		Kind        string  `json:"kind"`
 		DDL         *string `json:"ddl"`
 	}
 	if err := json.Unmarshal(data, &probe); err != nil {
@@ -95,6 +98,14 @@ func (s *SnapshotSet) add(data []byte) error {
 	key := strings.ToLower(probe.Object)
 	if s.byObject[key] == nil {
 		s.byObject[key] = map[int64]SnapshotEntry{}
+	}
+	if probe.Kind == "trigger" {
+		declaration, asOfVersion, err := ParseTriggerSnapshot(data)
+		if err != nil {
+			return err
+		}
+		s.byObject[key][asOfVersion] = SnapshotEntry{Trigger: declaration}
+		return nil
 	}
 	if probe.DDL != nil {
 		_, _, ddl, asOfVersion, err := ParseDDL(data)

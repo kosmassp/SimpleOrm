@@ -47,9 +47,16 @@ final class SnapshotCasesTest extends TestCase
         $generatedAt = self::parseGeneratedAt($spec['generatedAt']);
 
         $kind = $spec['kind'] ?? 'table';
-        $produced = $kind !== 'table'
-            ? SchemaSnapshot::exportDdl($map->relationName, $kind, $dialect->createViewSql($map), $asOfVersion, $generatedAt)
-            : SchemaSnapshot::export(SchemaSnapshot::fromMap($map, $dialect), $asOfVersion, $generatedAt);
+        $produced = match ($kind) {
+            'table' => SchemaSnapshot::export(SchemaSnapshot::fromMap($map, $dialect), $asOfVersion, $generatedAt),
+            // ADR-0042: the linked trigger the case names, as its neutral declaration.
+            'trigger' => SchemaSnapshot::exportTrigger(
+                SchemaSnapshot::fromTrigger($map, $map->trigger((string) $spec['trigger']) ?? self::fail("{$entityName} links no trigger '{$spec['trigger']}'")),
+                $asOfVersion,
+                $generatedAt,
+            ),
+            default => SchemaSnapshot::exportDdl($map->relationName, $kind, $dialect->createViewSql($map), $asOfVersion, $generatedAt),
+        };
 
         self::assertSame(
             $spec['expect'],

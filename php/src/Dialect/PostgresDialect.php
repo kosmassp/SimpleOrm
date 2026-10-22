@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SimpleOrm\Dialect;
 
 use PDO;
+use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Metadata\EntityIndex;
 use SimpleOrm\Metadata\EntityMap;
@@ -12,6 +13,11 @@ use SimpleOrm\Metadata\IndexColumn;
 use SimpleOrm\Metadata\KeyStrategy;
 use SimpleOrm\Metadata\PropertyMap;
 use SimpleOrm\Metadata\RelationKind;
+use SimpleOrm\Metadata\TriggerBody;
+use SimpleOrm\Metadata\TriggerDefinition;
+use SimpleOrm\Metadata\TriggerEvent;
+use SimpleOrm\Metadata\TriggerTiming;
+use SimpleOrm\Metadata\TriggerTokenKind;
 use SimpleOrm\Query\AnsiSelectRenderer;
 use SimpleOrm\Query\SelectAst;
 
@@ -401,5 +407,93 @@ final class PostgresDialect implements Dialect
     public function dropIndexSql(string $table, string $index): string
     {
         return 'drop index ' . $this->quoteIdentifier($index);
+    }
+
+    /**
+     * ADR-0042: a PL/pgSQL function `"<name>_fn"()` wrapping the body, then the row-level `create trigger` calling it.
+     * An `after` function ends `return null;`; a `before`/`instead of` one returns the row (`old` on delete, else
+     * `new`) so the write proceeds. `instead of` exists on views only (`DDL-005` on a table). Events join with `or`,
+     * the update carrying `of "a", "b"` natively; `{new: …}`/`{old: …}` expand to a one-row derived table over
+     * `new."col"`/`old."col"`, `{now}` to `now()`.
+     */
+    public function createTriggerSql(string $relation, bool $onView, TriggerDefinition $trigger): array
+    {
+        if ($trigger->timing === TriggerTiming::InsteadOf && !$onView) {
+            throw new SimpleOrmException(
+                'DDL-005',
+                $trigger->name,
+                "PostgreSQL has INSTEAD OF triggers on views only, not on the table '{$relation}'; declare an after or before trigger",
+            );
+        }
+
+        $body = TriggerBody::expand(
+            $trigger->sql,
+            $trigger->name,
+            fn (TriggerTokenKind $kind, array $columns): string => '(select ' . implode(', ', array_map(
+                fn (string $column): string => $kind->value . '.' . $this->quoteIdentifier($column) . ' as ' . $this->quoteIdentifier($column),
+                $columns,
+            )) . ')',
+            'now()',
+        );
+
+        $ending = $trigger->timing === TriggerTiming::After
+            ? '    return null;'
+            : "    if tg_op = 'DELETE' then return old; end if;\n    return new;";
+        $function = $this->quoteIdentifier($trigger->name . '_fn');
+
+        $events = array_map(
+            fn (TriggerEvent $event): string => $event->value . (
+                $event === TriggerEvent::Update && $trigger->updateOf !== []
+                    ? ' of ' . implode(', ', array_map($this->quoteIdentifier(...), $trigger->updateOf))
+                    : ''
+            ),
+            $trigger->events,
+        );
+
+        return [
+            "create or replace function {$function}() returns trigger language plpgsql as \$\$\nbegin\n{$body}\n{$ending}\nend\n\$\$",
+            'create trigger ' . $this->quoteIdentifier($trigger->name) . ' ' . $trigger->timing->keyword() . ' '
+                . implode(' or ', $events) . ' on ' . $this->quoteIdentifier($relation)
+                . " for each row execute function {$function}()",
+        ];
+    }
+
+    public function dropTriggerSql(string $relation, string $name): array
+    {
+        return [
+            'drop trigger if exists ' . $this->quoteIdentifier($name) . ' on ' . $this->quoteIdentifier($relation),
+            'drop function if exists ' . $this->quoteIdentifier($name . '_fn') . '()',
+        ];
+    }
+
+    /**
+     * PostgreSQL has no stored create statement, so both rows are **reconstructed** from the catalog in this dialect's
+     * own spelling — the function from `pg_proc.prosrc`, the trigger from `pg_trigger.tgtype`/`tgattr` — such that each,
+     * whitespace-collapsed, equals the matching {@see self::createTriggerSql()} statement.
+     */
+    public function triggerDefinitionSql(): string
+    {
+        return <<<'SQL'
+            select 'create or replace function "' || p.proname || '"() returns trigger language plpgsql as $$' || p.prosrc || '$$' as definition
+            from pg_trigger t
+            join pg_proc p on p.oid = t.tgfoid
+            where t.tgname = @relation and not t.tgisinternal
+            union all
+            select 'create trigger "' || t.tgname || '" '
+                || case when (t.tgtype & 2) <> 0 then 'before' when (t.tgtype & 64) <> 0 then 'instead of' else 'after' end
+                || ' '
+                || array_to_string(array_remove(array[
+                       case when (t.tgtype & 4) <> 0 then 'insert' end,
+                       case when (t.tgtype & 16) <> 0 then 'update' || coalesce((
+                           select ' of ' || string_agg('"' || a.attname || '"', ', ' order by k.ord)
+                           from unnest(t.tgattr::smallint[]) with ordinality as k(attnum, ord)
+                           join pg_attribute a on a.attrelid = t.tgrelid and a.attnum = k.attnum), '') end,
+                       case when (t.tgtype & 8) <> 0 then 'delete' end], null), ' or ')
+                || ' on "' || c.relname || '" for each row execute function "' || p.proname || '"()' as definition
+            from pg_trigger t
+            join pg_class c on c.oid = t.tgrelid
+            join pg_proc p on p.oid = t.tgfoid
+            where t.tgname = @relation and not t.tgisinternal
+            SQL;
     }
 }

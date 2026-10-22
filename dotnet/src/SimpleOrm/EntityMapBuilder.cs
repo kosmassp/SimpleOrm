@@ -13,8 +13,17 @@ public sealed class EntityMapBuilder<T>
     where T : class
 {
     private readonly List<MappedPropertySpec> _specs = [];
+    private readonly List<Type> _triggers = [];
     private string? _tableName;
     private string? _schema;
+
+    /// <summary>Links a trigger class (ADR-0042) — the same declaration an entity's <c>[Trigger(typeof(T))]</c> would link, under the same <c>MAP-029</c> rules.</summary>
+    public EntityMapBuilder<T> Trigger<TTrigger>()
+        where TTrigger : class
+    {
+        _triggers.Add(typeof(TTrigger));
+        return this;
+    }
 
     /// <summary>Sets the table name; when never called, the naming convention derives it from the type name.</summary>
     public EntityMapBuilder<T> ToTable(string name, string? schema = null)
@@ -44,6 +53,16 @@ public sealed class EntityMapBuilder<T>
     {
         var errors = new List<MappingError>();
         AttributeMapLoader.CheckBaseClasses(typeof(T), errors);   // ADR-0041: a base carrying a relation source is MAP-028 under every loader
+        var triggerSpecs = new List<TriggerSpec>();
+        foreach (var triggerType in _triggers)
+        {
+            var spec = AttributeMapLoader.ReadTriggerDeclaration(triggerType, $"{typeof(T).Name} [Trigger(typeof({triggerType.Name}))]", errors);
+            if (spec is not null)
+            {
+                triggerSpecs.Add(spec);
+            }
+        }
+
         var map = MapAssembler.Assemble(
             typeof(T),
             RelationKind.Table,
@@ -55,7 +74,8 @@ public sealed class EntityMapBuilder<T>
             indexSpecs: [],
             relationshipSpecs: [],
             convention,
-            errors);
+            errors,
+            triggerSpecs);
 
         if (map is null)
         {

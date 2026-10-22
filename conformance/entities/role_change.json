@@ -1,0 +1,37 @@
+{
+  "entity": "RoleChange",
+  "source": {
+    "kind": "table",
+    "name": "role_changes"
+  },
+  "key": {
+    "strategy": "database_generated",
+    "columns": [
+      "id"
+    ]
+  },
+  "columns": [
+    {
+      "column": "id",
+      "type": "int64",
+      "nullable": false,
+      "key": true,
+      "generated": true
+    },
+    {
+      "column": "role_id",
+      "type": "int64",
+      "nullable": false
+    },
+    {
+      "column": "role_name",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "column": "changed_at",
+      "type": "datetime",
+      "nullable": false
+    }
+  ]
+}

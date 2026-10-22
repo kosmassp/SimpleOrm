@@ -7,16 +7,20 @@ namespace SimpleOrm\Migrations\Diff;
 use ReflectionClass;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\EntityMapLoader;
+use SimpleOrm\Metadata\EntityTrigger;
 use SimpleOrm\Metadata\RelationKind;
 use SimpleOrm\Migrations\MigrationGenerator;
 use SimpleOrm\Migrations\MigrationSet;
 use SimpleOrm\Migrations\MigrationStep;
 use SimpleOrm\Migrations\MigrationVersion;
+use SimpleOrm\Migrations\ParsedTriggerSnapshot;
 use SimpleOrm\Migrations\SchemaSnapshot;
 use SimpleOrm\Migrations\SnapshotSet;
 use SimpleOrm\Migrations\TableDiff;
 use SimpleOrm\Migrations\TableMigration;
 use SimpleOrm\Migrations\TableSchema;
+use SimpleOrm\Migrations\TriggerMigration;
+use SimpleOrm\Migrations\TriggerSchema;
 use SimpleOrm\Migrations\VersionBuilder;
 use SimpleOrm\Migrations\ViewMigration;
 
@@ -42,7 +46,7 @@ use SimpleOrm\Migrations\ViewMigration;
 final class DiffCommand
 {
     /** @var list<string> */
-    private const array KIND_FOLDERS = ['Table', 'View', 'MaterializedView'];
+    private const array KIND_FOLDERS = ['Table', 'View', 'MaterializedView', 'Trigger'];
 
     private function __construct()
     {
@@ -103,9 +107,15 @@ final class DiffCommand
         $types = $options->entityTypes;
         usort($types, static fn (string $a, string $b): int => strcmp(self::shortName($a), self::shortName($b)));
 
+        /** @var array<class-string, array{map: EntityMap, trigger: EntityTrigger}> $declaredTriggers trigger class => its linking entity's map and link (ADR-0042) */
+        $declaredTriggers = [];
+
         foreach ($types as $type) {
             $map = $loader->load($type);
             $shortName = self::shortName($type);
+            foreach ($map->triggers as $trigger) {
+                $declaredTriggers[$trigger->triggerClass] = ['map' => $map, 'trigger' => $trigger];
+            }
 
             if ($map->kind === RelationKind::Table) {
                 $snapshotDir = $options->outDir . '/Table/' . $shortName;
@@ -159,6 +169,39 @@ final class DiffCommand
             }
         }
 
+        // Triggers diff by declaration (ADR-0042), after the tables and views: new, changed, and — gated like a column — removed.
+        /** @var list<array{entity: class-string, triggerClass: class-string, current: ?TriggerSchema, previous: ?TriggerSchema}> $triggerChanges */
+        $triggerChanges = [];
+        $migratedTriggersBelow = self::triggersMigratedBelow($allSteps, $version);
+        foreach ($declaredTriggers as $triggerClass => $declared) {
+            $current = SchemaSnapshot::fromTrigger($declared['map'], $declared['trigger']);
+            $previous = self::latestTriggerSnapshotBelow($options->outDir . '/Trigger/' . self::shortName($triggerClass), $version)?->schema;
+            if ($previous === null && in_array($triggerClass, $migratedTriggersBelow, true)) {
+                $unrecorded[] = $current->name();
+
+                continue;
+            }
+
+            $diff = MigrationGenerator::diffTrigger($current, $previous);
+            if ($diff->isChanged && $previous !== null && ($previous->relation !== $current->relation || $previous->onView !== $current->onView)) {
+                // The generated guard and drop would target the new relation while the trigger lives on the old one.
+                $problems[] = "trigger {$current->name()}: moved from {$previous->relation} to {$current->relation} — write the migration by hand "
+                    . '(drop on the old relation, create on the new)';
+
+                continue;
+            }
+
+            if ($diff->hasChanges()) {
+                $triggerChanges[] = ['entity' => $declared['map']->entityType, 'triggerClass' => $triggerClass, 'current' => $current, 'previous' => $previous];
+            }
+        }
+
+        $removedTriggers = self::removedTriggers($options->outDir, $allSteps, $version, $declaredTriggers, $problems);
+        foreach ($removedTriggers as $removed) {
+            $removals[] = 'trigger ' . $removed['previous']->name();
+            $triggerChanges[] = $removed;
+        }
+
         if ($unrecorded !== []) {
             $below = sprintf('V%04d', $version - 1);
 
@@ -186,7 +229,7 @@ final class DiffCommand
         /** @var list<array{path: string, content: string}> $planned */
         $planned = [];
         $stepRefs = [];
-        if ($changed !== [] || $viewChanges !== []) {
+        if ($changed !== [] || $viewChanges !== [] || $triggerChanges !== []) {
             // New tables first, FK-referenced before referencing; then modified tables by name.
             $newOnes = array_values(array_filter($changed, static fn (array $c): bool => $c['diff']->isNew));
             $newTypes = array_map(static fn (array $c): string => $c['type'], $newOnes);
@@ -228,6 +271,25 @@ final class DiffCommand
                     ),
                 ];
                 $stepRefs[] = "{$options->rootNamespace}\\{$entry['folder']}\\{$shortName}\\{$className}";
+            }
+
+            // Trigger steps compose last: their relation must exist (spec/migrations.md "Structure").
+            foreach ($triggerChanges as $entry) {
+                $shortName = self::shortName($entry['triggerClass']);
+                $className = "{$prefix}_{$description}";
+                $planned[] = [
+                    'path' => "{$options->outDir}/Trigger/{$shortName}/{$className}.php",
+                    'content' => MigrationGenerator::emitTriggerStep(
+                        $options->rootNamespace,
+                        $entry['entity'],
+                        $entry['triggerClass'],
+                        $version,
+                        $description,
+                        $entry['current'],
+                        $entry['previous'],
+                    ),
+                ];
+                $stepRefs[] = "{$options->rootNamespace}\\Trigger\\{$shortName}\\{$className}";
             }
 
             $planned[] = [
@@ -427,6 +489,116 @@ final class DiffCommand
         }
 
         return array_keys($migrated);
+    }
+
+    /**
+     * The trigger classes that migration steps below `$version` touch: triggers with a migration history, which therefore
+     * need a recorded declaration to diff against (ADR-0042).
+     *
+     * @param list<array{step: MigrationStep, version: int}> $allSteps
+     * @return list<class-string>
+     */
+    private static function triggersMigratedBelow(array $allSteps, int $version): array
+    {
+        /** @var array<class-string, true> $migrated */
+        $migrated = [];
+        foreach ($allSteps as $entry) {
+            if ($entry['version'] < $version && $entry['step'] instanceof TriggerMigration) {
+                $migrated[ltrim($entry['step']->triggerClass(), '\\')] = true;
+            }
+        }
+
+        return array_keys($migrated);
+    }
+
+    /**
+     * The trigger snapshot history no entity declares any more — a removal (ADR-0042), emitted as a bare `dropTrigger()`
+     * and gated by `--allow-remove` like a column's. The step needs the trigger class and its entity still loadable (it
+     * names both), so a removal is refused until both are still present and `keep them until the removal has applied`.
+     * A history whose newest compiled step is *later* than its newest snapshot has already moved on (a removal leaves no
+     * snapshot of its own), so it is not removed twice.
+     *
+     * @param list<array{step: MigrationStep, version: int}> $allSteps
+     * @param array<class-string, array{map: EntityMap, trigger: EntityTrigger}> $declared the triggers entities still link
+     * @param list<string> $problems appended to, by reference
+     * @return list<array{entity: class-string, triggerClass: class-string, current: ?TriggerSchema, previous: ?TriggerSchema}>
+     */
+    private static function removedTriggers(string $outDir, array $allSteps, int $version, array $declared, array &$problems): array
+    {
+        $root = $outDir . '/Trigger';
+        if (!is_dir($root)) {
+            return [];
+        }
+
+        $declaredShortNames = array_map(self::shortName(...), array_keys($declared));
+        $removed = [];
+        $directories = SnapshotSet::subdirectories($root);
+        sort($directories, SORT_STRING);
+        foreach ($directories as $directory) {
+            $shortName = basename($directory);
+            if (in_array($shortName, $declaredShortNames, true)) {
+                continue;
+            }
+
+            $previous = self::latestTriggerSnapshotBelow($directory, $version);
+            if ($previous === null) {
+                continue;
+            }
+
+            $newestStep = null;
+            foreach ($allSteps as $entry) {
+                $step = $entry['step'];
+                if ($entry['version'] < $version && $step instanceof TriggerMigration
+                    && self::shortName($step->triggerClass()) === $shortName
+                    && ($newestStep === null || $entry['version'] > $newestStep['version'])) {
+                    $newestStep = $entry;
+                }
+            }
+
+            if ($newestStep !== null && $newestStep['version'] > $previous->asOfVersion) {
+                continue;   // the history already moved past the snapshot: the removal was emitted (it leaves no snapshot)
+            }
+
+            if ($newestStep === null) {
+                // PHP has no assembly to find the class by its folder name: a step must name it.
+                $problems[] = "trigger {$previous->schema->name()} ({$shortName}) is no longer declared, and the drop step cannot be emitted: "
+                    . 'no migration step names its class — write the step by hand';
+
+                continue;
+            }
+
+            /** @var TriggerMigration $step */
+            $step = $newestStep['step'];
+            $name = $previous->schema->name();
+            if (!class_exists($step->triggerClass()) || !class_exists($step->entityClass())) {
+                $problems[] = "trigger {$name}: its removal needs the trigger class {$step->triggerClass()} and its entity {$step->entityClass()} "
+                    . 'still present until the removal has applied';
+
+                continue;
+            }
+
+            $removed[] = ['entity' => $step->entityClass(), 'triggerClass' => $step->triggerClass(), 'current' => null, 'previous' => $previous->schema];
+        }
+
+        return $removed;
+    }
+
+    /** The latest trigger snapshot strictly below `$version`, or null when none is recorded (ADR-0042). */
+    private static function latestTriggerSnapshotBelow(string $dir, int $version): ?ParsedTriggerSnapshot
+    {
+        if (!is_dir($dir)) {
+            return null;
+        }
+
+        $best = null;
+        foreach (glob("{$dir}/V*.schema.json") ?: [] as $file) {
+            $parsed = SchemaSnapshot::parseTrigger((string) file_get_contents($file));
+            if ($parsed->asOfVersion < $version && ($best === null || $parsed->asOfVersion > $best->asOfVersion)) {
+                $best = $parsed;
+            }
+        }
+
+        return $best;
     }
 
     /** The latest table snapshot strictly below `$version`, or null when none is recorded (a new table, or unrecorded history). */

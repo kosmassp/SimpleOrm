@@ -42,6 +42,26 @@ final class SqlVersionRawStep extends MigrationStep
             );
         }
 
+        // ADR-0042: the trigger guard, then the declaration rendered through the dialect (drop, then create), ahead of `up`.
+        if ($this->step->expectTrigger !== null) {
+            $statements[] = MigrationStatement::expectTrigger(
+                'expect trigger ' . $this->step->objectName,
+                $this->step->objectName,
+                $this->step->expectTrigger->schema($this->step->objectName)->createStatements($dialect),
+            );
+        }
+
+        if ($this->step->trigger !== null) {
+            $declared = $this->step->trigger->schema($this->step->objectName);
+            foreach ($dialect->dropTriggerSql($declared->relation, $declared->name()) as $sql) {
+                $statements[] = new MigrationStatement($sql, 'drop trigger ' . $this->step->objectName);
+            }
+
+            foreach ($declared->createStatements($dialect) as $sql) {
+                $statements[] = new MigrationStatement($sql, 'create trigger ' . $this->step->objectName);
+            }
+        }
+
         foreach ($this->step->up as $sql) {
             $statements[] = new MigrationStatement($sql, 'sql ' . $this->step->objectName);
         }

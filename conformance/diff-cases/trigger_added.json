@@ -1,0 +1,10 @@
+{
+  "name": "trigger_added",
+  "comment": "ADR-0042: a declared trigger with no snapshot is new. Triggers diff by declaration — neutral on both sides, nothing rendered.",
+  "kind": "trigger",
+  "current": { "object": "trg_widgets_audit", "relation": "widgets", "relationKind": "table", "asOfVersion": 0,
+    "timing": "after", "events": ["update"],
+    "sql": "insert into widget_log (widget_id) select n.id from {new: id} n;" },
+  "snapshot": null,
+  "expect": { "isNew": true }
+}

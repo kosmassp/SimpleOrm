@@ -1,0 +1,45 @@
+{
+  "name": "instead_of_on_view",
+  "comment": "INSTEAD OF on a view exists on every dialect: the body redirects the write. PostgreSQL's function returns the row (new) for an insert.",
+  "relation": "widget_summaries",
+  "relationKind": "view",
+  "trigger": {
+    "name": "trg_widget_summaries_insert",
+    "timing": "instead_of",
+    "events": [
+      "insert"
+    ],
+    "sql": "insert into widgets (name) select n.name from {new: name} n;"
+  },
+  "expect": {
+    "sqlite": {
+      "create": [
+        "create trigger trg_widget_summaries_insert instead of insert on widget_summaries for each row\nbegin\ninsert into widgets (name) select n.name from (select new.name as name) n;\nend"
+      ],
+      "drop": [
+        "drop trigger if exists trg_widget_summaries_insert",
+        "drop trigger if exists trg_widget_summaries_insert_insert",
+        "drop trigger if exists trg_widget_summaries_insert_update",
+        "drop trigger if exists trg_widget_summaries_insert_delete"
+      ]
+    },
+    "sqlserver": {
+      "create": [
+        "create trigger [trg_widget_summaries_insert] on [widget_summaries] instead of insert as\nbegin\n    set nocount on;\ninsert into widgets (name) select n.name from inserted n;\nend"
+      ],
+      "drop": [
+        "if object_id(N'trg_widget_summaries_insert', N'TR') is not null drop trigger [trg_widget_summaries_insert]"
+      ]
+    },
+    "postgres": {
+      "create": [
+        "create or replace function \"trg_widget_summaries_insert_fn\"() returns trigger language plpgsql as $$\nbegin\ninsert into widgets (name) select n.name from (select new.\"name\" as \"name\") n;\n    if tg_op = 'DELETE' then return old; end if;\n    return new;\nend\n$$",
+        "create trigger \"trg_widget_summaries_insert\" instead of insert on \"widget_summaries\" for each row execute function \"trg_widget_summaries_insert_fn\"()"
+      ],
+      "drop": [
+        "drop trigger if exists \"trg_widget_summaries_insert\" on \"widget_summaries\"",
+        "drop function if exists \"trg_widget_summaries_insert_fn\"()"
+      ]
+    }
+  }
+}

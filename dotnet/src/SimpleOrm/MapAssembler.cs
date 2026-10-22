@@ -107,7 +107,8 @@ internal static class MapAssembler
         IReadOnlyList<IndexSpec> indexSpecs,
         IReadOnlyList<RelationshipSpec> relationshipSpecs,
         INamingConvention convention,
-        List<MappingError> errors)
+        List<MappingError> errors,
+        IReadOnlyList<TriggerSpec>? triggerSpecs = null)
     {
         var properties = new List<PropertyMap>(specs.Count);
         var byProperty = new Dictionary<string, PropertyMap>();
@@ -166,6 +167,7 @@ internal static class MapAssembler
         var keyStrategy = ResolveKeyStrategy(entityType, kind, properties, errors);
         var indexes = ResolveIndexes(entityType, relationName, indexSpecs, byProperty, convention, errors);
         var relationships = ResolveRelationships(entityType, relationshipSpecs, byProperty, errors);
+        var triggers = ResolveTriggers(entityType, triggerSpecs ?? [], byProperty, seenColumns, errors);
 
         if (errors.Count > 0)
         {
@@ -182,7 +184,58 @@ internal static class MapAssembler
             properties,
             keyStrategy,
             indexes,
-            relationships);
+            relationships,
+            triggers);
+    }
+
+    /// <summary>
+    /// The entity-side checks of a linked trigger (ADR-0042, <c>MAP-029</c>):
+    /// <c>UpdateOf</c> names mapped properties (resolved to columns), and every
+    /// <c>{new: …}</c>/<c>{old: …}</c> column is a column of this relation.
+    /// </summary>
+    private static IReadOnlyList<EntityTrigger> ResolveTriggers(
+        Type entityType,
+        IReadOnlyList<TriggerSpec> triggerSpecs,
+        Dictionary<string, PropertyMap> byProperty,
+        Dictionary<string, string> seenColumns,
+        List<MappingError> errors)
+    {
+        var triggers = new List<EntityTrigger>(triggerSpecs.Count);
+        foreach (var spec in triggerSpecs)
+        {
+            var target = $"{entityType.Name} [Trigger(typeof({spec.TriggerType.Name}))]";
+            var valid = true;
+            var updateOf = new List<string>(spec.UpdateOfProperties.Count);
+            foreach (var propertyName in spec.UpdateOfProperties)
+            {
+                if (!byProperty.TryGetValue(propertyName, out var property))
+                {
+                    errors.Add(new MappingError("MAP-029", target, $"UpdateOf names '{propertyName}', which is not a mapped property"));
+                    valid = false;
+                    continue;
+                }
+
+                updateOf.Add(property.ColumnName);
+            }
+
+            var segments = TriggerTokens.Parse(spec.Sql, target, errors);   // shape already checked at declaration; this cannot add errors
+            foreach (var column in segments.Where(s => s.Kind is "new" or "old").SelectMany(s => s.Columns))
+            {
+                if (!seenColumns.ContainsKey(column))
+                {
+                    errors.Add(new MappingError("MAP-029", target, $"the body names column '{column}', which '{entityType.Name}' does not map"));
+                    valid = false;
+                }
+            }
+
+            if (valid)
+            {
+                triggers.Add(new EntityTrigger(
+                    spec.TriggerType, new TriggerDefinition(spec.Name, spec.Timing, spec.Events, spec.Sql, updateOf)));
+            }
+        }
+
+        return triggers;
     }
 
     private static void ValidateVersion(Type entityType, List<PropertyMap> properties, List<MappingError> errors)

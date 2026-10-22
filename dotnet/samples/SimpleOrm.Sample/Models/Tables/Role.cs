@@ -1,8 +1,9 @@
 namespace SimpleOrm.Sample.Models;
 
-/// <summary>Table <c>roles</c> (STRICT). Key: <c>id</c>, database-generated.</summary>
+/// <summary>Table <c>roles</c> (STRICT). Key: <c>id</c>, database-generated. Carries the audit trigger (ADR-0042): the link names the class, the class carries the SQL.</summary>
 [Table("roles")]
 [Index(nameof(Name), Unique = true)]
+[Trigger(typeof(RoleAuditTrigger))]
 public sealed class Role : BaseModel
 {
     [Key]

@@ -1,0 +1,40 @@
+{
+  "name": "before_insert",
+  "comment": "BEFORE exists on SQLite and PostgreSQL; SQL Server has no BEFORE trigger and refuses with DDL-005. PostgreSQL's function returns the row (new) so the write proceeds.",
+  "relation": "widgets",
+  "relationKind": "table",
+  "trigger": {
+    "name": "trg_widgets_before",
+    "timing": "before",
+    "events": [
+      "insert"
+    ],
+    "sql": "insert into widget_log (widget_id) select n.id from {new: id} n;"
+  },
+  "expect": {
+    "sqlite": {
+      "create": [
+        "create trigger trg_widgets_before before insert on widgets for each row\nbegin\ninsert into widget_log (widget_id) select n.id from (select new.id as id) n;\nend"
+      ],
+      "drop": [
+        "drop trigger if exists trg_widgets_before",
+        "drop trigger if exists trg_widgets_before_insert",
+        "drop trigger if exists trg_widgets_before_update",
+        "drop trigger if exists trg_widgets_before_delete"
+      ]
+    },
+    "sqlserver": {
+      "error": "DDL-005"
+    },
+    "postgres": {
+      "create": [
+        "create or replace function \"trg_widgets_before_fn\"() returns trigger language plpgsql as $$\nbegin\ninsert into widget_log (widget_id) select n.id from (select new.\"id\" as \"id\") n;\n    if tg_op = 'DELETE' then return old; end if;\n    return new;\nend\n$$",
+        "create trigger \"trg_widgets_before\" before insert on \"widgets\" for each row execute function \"trg_widgets_before_fn\"()"
+      ],
+      "drop": [
+        "drop trigger if exists \"trg_widgets_before\" on \"widgets\"",
+        "drop function if exists \"trg_widgets_before_fn\"()"
+      ]
+    }
+  }
+}

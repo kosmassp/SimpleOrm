@@ -35,6 +35,20 @@ public sealed class ConformanceDiffTests
         using var document = JsonDocument.Parse(File.ReadAllText(
             Path.Combine(ConformanceMigrationTests.ConformanceDirectory(), "diff-cases", fileName)));
         var spec = document.RootElement;
+        if (spec.TryGetProperty("kind", out var kind) && kind.GetString() == "trigger")
+        {
+            // Triggers diff by declaration (ADR-0042): both sides neutral, no rendering.
+            var currentTrigger = spec.GetProperty("current").ValueKind == JsonValueKind.Null
+                ? null : SchemaSnapshot.ParseTrigger(spec.GetProperty("current"));
+            var snapshotTrigger = spec.GetProperty("snapshot").ValueKind == JsonValueKind.Null
+                ? null : SchemaSnapshot.ParseTrigger(spec.GetProperty("snapshot"));
+            var triggerDiff = MigrationGenerator.DiffTrigger(currentTrigger, snapshotTrigger);
+            var triggerExpect = spec.GetProperty("expect");
+            Assert.Equal(Flag(triggerExpect, "isNew"), triggerDiff.IsNew);
+            Assert.Equal(Flag(triggerExpect, "isChanged"), triggerDiff.IsChanged);
+            Assert.Equal(Flag(triggerExpect, "isRemoved"), triggerDiff.IsRemoved);
+            return;
+        }
 
         var current = SchemaSnapshot.Parse(spec.GetProperty("current").GetRawText()).Schema;
         var snapshot = spec.TryGetProperty("snapshot", out var previous) && previous.ValueKind != JsonValueKind.Null

@@ -5,12 +5,18 @@ declare(strict_types=1);
 namespace SimpleOrm\Dialect;
 
 use PDO;
+use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Metadata\EntityIndex;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\IndexColumn;
 use SimpleOrm\Metadata\KeyStrategy;
 use SimpleOrm\Metadata\PropertyMap;
+use SimpleOrm\Metadata\TriggerBody;
+use SimpleOrm\Metadata\TriggerDefinition;
+use SimpleOrm\Metadata\TriggerEvent;
+use SimpleOrm\Metadata\TriggerTiming;
+use SimpleOrm\Metadata\TriggerTokenKind;
 use SimpleOrm\Query\AnsiSelectRenderer;
 use SimpleOrm\Query\SelectAst;
 
@@ -342,5 +348,64 @@ final class SqliteDialect implements Dialect
     public function dropIndexSql(string $table, string $index): string
     {
         return 'drop index ' . $index;
+    }
+
+    /**
+     * ADR-0042: SQLite triggers are single-event and row-level, so a declaration renders **one `create trigger` per
+     * event** — the declared name for one event, `<name>_<event>` for several, the update-of narrowing only on the
+     * update one. `instead of` exists on views only (`DDL-005` on a table). Tokens expand to a one-row derived table
+     * over `new.`/`old.` and the `strftime` UTC form.
+     */
+    public function createTriggerSql(string $relation, bool $onView, TriggerDefinition $trigger): array
+    {
+        if ($trigger->timing === TriggerTiming::InsteadOf && !$onView) {
+            throw new SimpleOrmException(
+                'DDL-005',
+                $trigger->name,
+                "SQLite has INSTEAD OF triggers on views only, not on the table '{$relation}'; declare an after or before trigger",
+            );
+        }
+
+        $body = TriggerBody::expand(
+            $trigger->sql,
+            $trigger->name,
+            static function (TriggerTokenKind $kind, array $columns): string {
+                $row = $kind->value;
+
+                return '(select ' . implode(', ', array_map(
+                    static fn (string $column): string => "{$row}.{$column} as {$column}",
+                    $columns,
+                )) . ')';
+            },
+            "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+        );
+
+        $single = count($trigger->events) === 1;
+        $statements = [];
+        foreach ($trigger->events as $event) {
+            $name = $single ? $trigger->name : $trigger->name . '_' . $event->value;
+            $of = $event === TriggerEvent::Update && $trigger->updateOf !== []
+                ? ' of ' . implode(', ', array_map($this->quoteIdentifier(...), $trigger->updateOf))
+                : '';
+            $statements[] = 'create trigger ' . $this->quoteIdentifier($name) . ' ' . $trigger->timing->keyword() . ' ' . $event->value . $of
+                . ' on ' . $this->quoteIdentifier($relation) . " for each row\nbegin\n{$body}\nend";
+        }
+
+        return $statements;
+    }
+
+    /** Every name the create can have given the declared one: the plain name and each per-event name. */
+    public function dropTriggerSql(string $relation, string $name): array
+    {
+        return array_map(
+            fn (string $candidate): string => 'drop trigger if exists ' . $this->quoteIdentifier($candidate),
+            [$name, $name . '_insert', $name . '_update', $name . '_delete'],
+        );
+    }
+
+    public function triggerDefinitionSql(): string
+    {
+        return "select sql as definition from sqlite_master where type = 'trigger'\n"
+            . "and name in (@relation, @relation || '_insert', @relation || '_update', @relation || '_delete') order by name";
     }
 }

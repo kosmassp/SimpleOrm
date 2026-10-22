@@ -50,6 +50,24 @@ public sealed class TableSchema(string name, IReadOnlyList<TableSchema.Column> c
 }
 
 /// <summary>
+/// A trigger's recorded shape (ADR-0042): the relation it is on (and whether
+/// that is a view — INSTEAD OF on a table exists only on SQL Server) plus the
+/// neutral declaration. Dialect-neutral, unlike a table snapshot: the body is
+/// the author's tokens, not any dialect's expansion, so one snapshot tree
+/// serves every dialect. Both producers build it — the metadata exporter from
+/// the linked declaration, the shadow replayer by parsing the stored SQLite
+/// trigger back (the one dialect it replays).
+/// </summary>
+public sealed class TriggerSnapshot(string relation, bool onView, TriggerDefinition definition)
+{
+    public string Relation { get; } = relation;
+
+    public bool OnView { get; } = onView;
+
+    public TriggerDefinition Definition { get; } = definition;
+}
+
+/// <summary>
 /// The per-table schema snapshot (ADR-0013 add.3, format v2 per ADR-0017): a
 /// generated artifact (<c>Migrations/Table/&lt;Object&gt;/V000N.schema.json</c>)
 /// recording the table's shape as of a version, stamped with generation time.
@@ -163,6 +181,101 @@ public static class SchemaSnapshot
         }
 
         return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    /// <summary>
+    /// The trigger snapshot (<c>Migrations/Trigger/&lt;Class&gt;/V000N.schema.json</c>,
+    /// ADR-0042): object (the trigger name), kind <c>trigger</c>, the relation and
+    /// its kind, version, time, then the declaration — timing, events in the fixed
+    /// order, <c>updateOf</c> when declared, the body whitespace-collapsed.
+    /// </summary>
+    public static string ExportTrigger(TriggerSnapshot snapshot, long asOfVersion, DateTimeOffset generatedAt)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("object", snapshot.Definition.Name);
+            writer.WriteString("kind", "trigger");
+            writer.WriteString("relation", snapshot.Relation);
+            writer.WriteString("relationKind", snapshot.OnView ? "view" : "table");
+            writer.WriteNumber("asOfVersion", asOfVersion);
+            writer.WriteString("generatedAt", generatedAt.UtcDateTime.ToString("o", CultureInfo.InvariantCulture));
+            writer.WriteString("timing", EntityMapJson.TimingToken(snapshot.Definition.Timing));
+            writer.WritePropertyName("events");
+            writer.WriteStartArray();
+            foreach (var e in snapshot.Definition.EventList())
+            {
+                writer.WriteStringValue(EntityMapJson.EventToken(e));
+            }
+
+            writer.WriteEndArray();
+            if (snapshot.Definition.UpdateOf.Count > 0)
+            {
+                writer.WritePropertyName("updateOf");
+                writer.WriteStartArray();
+                foreach (var column in snapshot.Definition.UpdateOf)
+                {
+                    writer.WriteStringValue(column);
+                }
+
+                writer.WriteEndArray();
+            }
+
+            writer.WriteString("sql", snapshot.Definition.NormalizedSql);
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    public static (TriggerSnapshot Snapshot, long AsOfVersion) ParseTrigger(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        return (ParseTrigger(root), root.GetProperty("asOfVersion").GetInt64());
+    }
+
+    /// <summary>The declaration part of a trigger document — shared by the snapshot file and the data-driven step (<c>"trigger"</c>, <c>"expectTrigger"</c>).</summary>
+    public static TriggerSnapshot ParseTrigger(JsonElement element, string? nameOverride = null)
+    {
+        var name = nameOverride
+            ?? (element.TryGetProperty("object", out var objectName) ? objectName.GetString()! : element.GetProperty("name").GetString()!);
+        var events = TriggerEvent.None;
+        foreach (var e in element.GetProperty("events").EnumerateArray())
+        {
+            events |= EntityMapJson.ParseEvent(e.GetString()!);
+        }
+
+        var updateOf = element.TryGetProperty("updateOf", out var columns)
+            ? columns.EnumerateArray().Select(c => c.GetString()!).ToArray()
+            : [];
+        var onView = element.TryGetProperty("relationKind", out var relationKind) && relationKind.GetString() == "view";
+        return new TriggerSnapshot(
+            element.GetProperty("relation").GetString()!,
+            onView,
+            new TriggerDefinition(
+                name,
+                EntityMapJson.ParseTiming(element.GetProperty("timing").GetString()!),
+                events,
+                element.GetProperty("sql").GetString()!,
+                updateOf));
+    }
+
+    /// <summary>
+    /// Canonical trigger DDL for the <c>MIG-012</c> comparison: whitespace
+    /// collapsed, the leading <c>create [or replace] trigger|function</c> keywords
+    /// lowercased (SQLite recases them when storing). The body is compared as
+    /// written — the dialect's own expansion on both sides.
+    /// </summary>
+    public static string NormalizeTriggerDdl(string sql)
+    {
+        var collapsed = string.Join(" ", sql.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        var match = System.Text.RegularExpressions.Regex.Match(
+            collapsed, @"^create(\s+or\s+replace)?\s+(trigger|function)\s", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return match.Success
+            ? match.Value.ToLowerInvariant() + collapsed.Substring(match.Length)
+            : collapsed;
     }
 
     public static (string Object, string Kind, string Ddl, long AsOfVersion) ParseDdl(string json)

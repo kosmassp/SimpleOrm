@@ -367,6 +367,50 @@ never guessed. Index comparison — in both `diff` and the sync — is structura
 (unique flag + ordered columns and directions), never by name: an index the DBA
 already added under another name counts as implemented and is left alone.
 
+### Triggers in the mapping (ADR-0042)
+
+A trigger is its own class carrying **one** body, the way a materialized view
+carries its SQL; the entity links it. Nothing names a dialect:
+
+```csharp
+[Trigger("trg_roles_audit", TriggerTiming.After, TriggerEvent.Update, """
+    insert into role_changes (role_id, role_name, changed_at)
+    select n.id, n.role_name, {now}
+    from {new: id, role_name} n;
+    """)]
+public sealed class RoleAuditTrigger { }
+
+[Table("roles")]
+[Trigger(typeof(RoleAuditTrigger))]
+public sealed class Role : BaseModel { … }
+```
+
+The body is set-based SQL over the changed rows. Three tokens stand for what
+differs per database: `{new: cols}` and `{old: cols}` are the changed rows as a
+relation (`inserted`/`deleted` on SQL Server, a one-row derived table over
+`new.`/`old.` on SQLite and PostgreSQL), `{now}` is UTC now in the storage form.
+`set nocount on`, `begin/end`, PostgreSQL's function and `return`, and the
+granularity are the dialect's rendering. Timing `Before`/`After`/`InsteadOf`,
+events combinable, `UpdateOf = [nameof(Role.Name)]` to narrow an update; a form
+a dialect lacks (BEFORE on SQL Server, INSTEAD OF on a table elsewhere) refuses
+with `DDL-005` when rendered. Migrations own the trigger as an object kind:
+
+```csharp
+// Migrations/Trigger/RoleAuditTrigger/V0013_CreateRoleAudit.cs
+public sealed class V0013_CreateRoleAudit : TriggerMigration<Role, RoleAuditTrigger>
+{
+    public override void Action(TriggerActions actions) => actions.CreateTrigger();   // from the declaration
+}
+```
+
+`simpleorm diff` emits trigger steps from the literal declaration
+(`Recreate(timing, events, sql)`, a change guarded by `ExpectDefinition` of the
+previous one — `MIG-012` when the live trigger was changed by hand, `--force`
+recreates), `snapshot`/`shadow` record `Trigger/<Class>/V000N.schema.json` by
+declaration, and `migrate down` derives the rollback. For dev and test,
+`db.CreateTriggersAsync<Role>(ct)` creates the declared triggers from metadata —
+separately from `CreateTableAsync`, never implicitly.
+
 ### Validation (SchemaGuard)
 
 Once at startup, and in a test calling the same code:

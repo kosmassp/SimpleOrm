@@ -12,10 +12,13 @@ use SimpleOrm\Metadata\Attributes\ManyToMany;
 use SimpleOrm\Metadata\Attributes\RenamedFrom;
 use SimpleOrm\Metadata\Attributes\SoftDelete;
 use SimpleOrm\Metadata\Attributes\Table;
+use SimpleOrm\Metadata\Attributes\Trigger;
+use SimpleOrm\Sample\Models\Triggers\RoleAuditTrigger;
 
-/** Table `roles` (STRICT). Key: `id`, database-generated. */
+/** Table `roles` (STRICT). Key: `id`, database-generated. Links the audit trigger (ADR-0042, migration V0013). */
 #[Table('roles')]
 #[Index(['name'], unique: true)]
+#[Trigger(RoleAuditTrigger::class)]
 final class Role extends BaseModel
 {
     #[Key]

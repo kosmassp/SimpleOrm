@@ -15,8 +15,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kosmassp/SimpleOrm/go/orm"
 	"github.com/kosmassp/SimpleOrm/go/orm/cli"
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/testsupport"
+	"github.com/kosmassp/SimpleOrm/go/orm/sample"
 	samplemigrations "github.com/kosmassp/SimpleOrm/go/orm/sample/migrations"
 )
 
@@ -41,8 +43,8 @@ func TestRun_FullWorkflowAgainstTheSampleRegistry(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("migrate: code=%d stderr=%s", code, errOut)
 	}
-	if !strings.Contains(out, "applied 12 version(s)") {
-		t.Fatalf("expected 12 applied versions, got: %s", out)
+	if !strings.Contains(out, "applied 13 version(s)") {
+		t.Fatalf("expected 13 applied versions, got: %s", out)
 	}
 
 	// status: every step Applied.
@@ -87,6 +89,7 @@ func TestRun_FullWorkflowAgainstTheSampleRegistry(t *testing.T) {
 	diffDir := testsupport.TempDir(t)
 	copySchemaFiles(t, filepath.Join(committedSampleMigrations, "Table"), filepath.Join(diffDir, "Table"))
 	copySchemaFiles(t, filepath.Join(committedSampleMigrations, "View"), filepath.Join(diffDir, "View"))
+	copySchemaFiles(t, filepath.Join(committedSampleMigrations, "Trigger"), filepath.Join(diffDir, "Trigger"))
 	out, errOut, code = runCLI(t, "diff", "--out", diffDir)
 	if code != 0 {
 		t.Fatalf("diff: code=%d stderr=%s", code, errOut)
@@ -100,8 +103,8 @@ func TestRun_FullWorkflowAgainstTheSampleRegistry(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("migrate down: code=%d stderr=%s", code, errOut)
 	}
-	if !strings.Contains(out, "reverted 12 version(s)") {
-		t.Fatalf("expected 12 reverted versions, got: %s", out)
+	if !strings.Contains(out, "reverted 13 version(s)") {
+		t.Fatalf("expected 13 reverted versions, got: %s", out)
 	}
 
 	out, errOut, code = runCLI(t, "status", "--db", dbPath)
@@ -195,8 +198,8 @@ func assertExportedMetadataMatchesConformance(t *testing.T, dir string) {
 			t.Fatalf("%s: exported metadata differs from the conformance file", entry.Name())
 		}
 	}
-	if count != 10 {
-		t.Fatalf("expected 10 conformance entity files, found %d", count)
+	if count != 11 {
+		t.Fatalf("expected 11 conformance entity files, found %d", count)
 	}
 }
 
@@ -326,4 +329,38 @@ func readFileString(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(data)
+}
+
+// roleTwin links the sample's trigger class a second time: the conflict the scan rule exists for (ADR-0042).
+type roleTwin struct {
+	ID       int64  `orm:"column,key,generated"`
+	RoleName string `orm:"column"`
+}
+
+func (roleTwin) Entity() orm.EntityDef {
+	return orm.EntityDef{Triggers: []orm.TriggerLink{orm.Trigger[sample.RoleAuditTrigger]()}}
+}
+
+func TestRun_EveryCommandThatEnumeratesEntitiesRefusesATriggerLinkedTwiceWithMAP029(t *testing.T) {
+	registry, err := samplemigrations.App()
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.Entities = append(registry.Entities, orm.TypeOf[roleTwin]())
+
+	dir := testsupport.TempDir(t)
+	for _, args := range [][]string{
+		{"export-metadata"},
+		{"snapshot", "--db", testsupport.TempDatabase(t), "--out", dir},
+		{"diff", "--out", dir},
+		{"shadow", "--out", dir},
+	} {
+		var out, errOut bytes.Buffer
+		if code := cli.Run(context.Background(), registry, args, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "MAP-029") {
+			t.Errorf("%v: expected exit 1 and MAP-029, got code %d, stderr %q", args, code, errOut.String())
+		}
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Errorf("a refused command writes nothing, found %v", entries)
+	}
 }

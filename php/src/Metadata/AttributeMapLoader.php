@@ -92,6 +92,7 @@ final class AttributeMapLoader
             $relationships,
             $convention,
             $errors,
+            TriggerRules::linksOf($class),   // MAP-029 (ADR-0042): the assembler resolves them with the rest
         );
 
         if ($map === null) {
@@ -923,6 +924,12 @@ final class AttributeMapLoader
             if ($class->getAttributes($attribute) !== []) {
                 return true;
             }
+        }
+
+        // A trigger link marks an entity (ADR-0042) — the attribute loader reads it; the convention loader would ignore it.
+        // A trigger *declaration* does not: a trigger class is no entity and scans skip it.
+        if (TriggerRules::linksOf($class) !== []) {
+            return true;
         }
 
         $propertyAttributes = [

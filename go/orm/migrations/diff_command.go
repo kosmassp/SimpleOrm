@@ -31,6 +31,15 @@ type diffChangedView struct {
 	PreviousDDL *string
 }
 
+// diffChangedTrigger is one trigger's declaration change (Level 4, ADR-0042): new, changed, or removed (Current
+// nil). EntityType is the entity whose relation the step names.
+type diffChangedTrigger struct {
+	EntityType  reflect.Type
+	TriggerType reflect.Type
+	Current     *TriggerDeclaration
+	Previous    *TriggerDeclaration
+}
+
 // diffPlannedFile is one file ExecuteDiff would write, computed before anything is touched.
 type diffPlannedFile struct {
 	Path    string
@@ -47,6 +56,10 @@ type DiffOptions struct {
 	Set *Set
 	// EntityTypes are the entities to diff — every mapped type, for the CLI.
 	EntityTypes []reflect.Type
+	// TriggerTypes are the registry's trigger classes (Level 4, ADR-0042): the classes whose removal a generated
+	// step may need — one no entity links any more but whose snapshot history still stands. Linked classes are
+	// found through their entities.
+	TriggerTypes []reflect.Type
 	// OutDir is the migrations directory: snapshots are read from it, sources are written into it.
 	OutDir string
 	// Package is the migrations package's import path; the emitted root imports
@@ -78,7 +91,7 @@ type DiffOptions struct {
 	IsApplied func(ctx context.Context, version int64) (bool, error)
 }
 
-var diffKindFolders = []string{"Table", "View", "MaterializedView"}
+var diffKindFolders = []string{"Table", "View", "MaterializedView", "Trigger"}
 
 // ExecuteDiff is `simpleorm diff`: the model is the final truth, the
 // committed snapshots are the recorded past, the difference is the next
@@ -136,19 +149,55 @@ func ExecuteDiff(ctx context.Context, options DiffOptions, stdout, stderr io.Wri
 	// 4-5. The diff, against the schema the migrations below the target
 	// version produce -- the snapshot history below it.
 	migratedBelow := entitiesMigratedBelow(options.Set, version)
+	triggersBelow := triggerStepsBelow(options.Set, version)
 	loader := metadata.NewLoader(nil)
 
 	var changed []diffChangedTable
 	var viewChanges []diffChangedView
+	var triggerChanges []diffChangedTrigger
 	var problems, removals, unrecorded []string
 
 	types := append([]reflect.Type(nil), options.EntityTypes...)
 	sort.Slice(types, func(i, j int) bool { return types[i].Name() < types[j].Name() })
 
+	entityMaps := map[string]reflect.Type{}
+	linkedTriggers := map[reflect.Type]bool{}
+
 	for _, t := range types {
+		if core.IsTriggerType(t) {
+			continue // a trigger class is no entity: scans skip it (ADR-0042)
+		}
 		m, err := loader.Load(t)
 		if err != nil {
 			return fail(err.Error())
+		}
+
+		// Triggers diff by declaration (ADR-0042): neutral on both sides, nothing rendered.
+		if m.RelationName != "" {
+			entityMaps[m.RelationName] = t
+		}
+		for _, trigger := range m.Triggers {
+			linkedTriggers[trigger.Type] = true
+			snapshotDir := filepath.Join(options.OutDir, "Trigger", trigger.Type.Name())
+			previous := latestTriggerSnapshotBelow(snapshotDir, version)
+			if _, migrated := triggersBelow.newest[trigger.Type.Name()]; previous == nil && migrated {
+				unrecorded = append(unrecorded, trigger.Definition.Name)
+				continue
+			}
+			current := DeclarationFromEntity(m, trigger)
+			diff := DiffTrigger(current, previous)
+			if diff.IsChanged && (previous.Relation != current.Relation || previous.RelationKind != current.RelationKind) {
+				// The generated guard and drop would target the new relation while the trigger lives on the old one.
+				problems = append(problems, fmt.Sprintf(
+					"trigger %s: moved from %s to %s — write the migration by hand (drop on the old relation, create on the new)",
+					current.Name, previous.Relation, current.Relation))
+				continue
+			}
+			if diff.HasChanges() {
+				triggerChanges = append(triggerChanges, diffChangedTrigger{
+					EntityType: t, TriggerType: trigger.Type, Current: current, Previous: previous,
+				})
+			}
 		}
 
 		switch {
@@ -195,6 +244,18 @@ func ExecuteDiff(ctx context.Context, options DiffOptions, stdout, stderr io.Wri
 		}
 	}
 
+	// A snapshot history no entity declares any more is a removal, gated like a column's (DDL-003). The step needs
+	// the trigger class and its entity still in the program (spec/migrations.md): the class is found through
+	// the registry's trigger list, the entity through the snapshot's relation.
+	removedTriggers, refusal := triggerRemovals(options, version, linkedTriggers, entityMaps, triggersBelow)
+	if refusal != "" {
+		return fail(refusal)
+	}
+	for _, removed := range removedTriggers {
+		removals = append(removals, "trigger "+removed.Previous.Name)
+		triggerChanges = append(triggerChanges, removed)
+	}
+
 	if len(unrecorded) > 0 {
 		return fail(fmt.Sprintf(
 			"no recorded schema below %s for %s — earlier versions migrate them but no snapshot describes them, "+
@@ -223,7 +284,7 @@ func ExecuteDiff(ctx context.Context, options DiffOptions, stdout, stderr io.Wri
 	var planned []diffPlannedFile
 	var stepRefs []RootStepRef
 
-	if len(changed) > 0 || len(viewChanges) > 0 {
+	if len(changed) > 0 || len(viewChanges) > 0 || len(triggerChanges) > 0 {
 		newSet := map[reflect.Type]bool{}
 		var newOnes, modified []diffChangedTable
 		for _, c := range changed {
@@ -269,6 +330,25 @@ func ExecuteDiff(ctx context.Context, options DiffOptions, stdout, stderr io.Wri
 			})
 			stepRefs = append(stepRefs, RootStepRef{
 				ImportPath: options.Package + "/" + entry.Folder + "/" + typeName,
+				Package:    strings.ToLower(typeName),
+				TypeName:   className,
+			})
+		}
+
+		// Trigger steps compose last: their relation must exist (spec/migrations.md "Structure").
+		for _, entry := range triggerChanges {
+			typeName := entry.TriggerType.Name()
+			className := prefix + "_" + description
+			content, err := EmitTriggerStep(entry.EntityType, entry.TriggerType, version, description, entry.Current, entry.Previous)
+			if err != nil {
+				return fail(err.Error())
+			}
+			planned = append(planned, diffPlannedFile{
+				Path:    filepath.Join(options.OutDir, "Trigger", typeName, className+".go"),
+				Content: content,
+			})
+			stepRefs = append(stepRefs, RootStepRef{
+				ImportPath: options.Package + "/Trigger/" + typeName,
 				Package:    strings.ToLower(typeName),
 				TypeName:   className,
 			})
@@ -548,4 +628,100 @@ func topologicalByForeignKey(newTables []diffChangedTable, newSet map[reflect.Ty
 		visit(node)
 	}
 	return ordered
+}
+
+// triggerStepsBelow are the trigger steps below version (Level 4, ADR-0042), per trigger class name: the newest
+// step's version (a trigger with migration history needs a recorded declaration to diff against, and a step
+// newer than the newest snapshot is a removal already emitted) and the class itself (a removal step names it).
+type triggerSteps struct {
+	newest  map[string]int64
+	classes map[string]reflect.Type
+}
+
+func triggerStepsBelow(set *Set, version int64) triggerSteps {
+	steps := triggerSteps{newest: map[string]int64{}, classes: map[string]reflect.Type{}}
+	if set == nil {
+		return steps
+	}
+	numbers := set.VersionNumbers()
+	for i, v := range set.Versions() {
+		if numbers[i] >= version {
+			continue
+		}
+		builder := &VersionBuilder{}
+		v.Compose(builder)
+		for _, step := range builder.Steps() {
+			desc := step.describe()
+			if desc.kind != stepKindTrigger || desc.triggerType == nil {
+				continue
+			}
+			name := desc.triggerType.Name()
+			steps.classes[name] = desc.triggerType
+			if numbers[i] > steps.newest[name] {
+				steps.newest[name] = numbers[i]
+			}
+		}
+	}
+	return steps
+}
+
+// triggerRemovals is the removal side of the trigger diff (Level 4, ADR-0042, spec/migrations.md "The generator
+// toolchain"): every Trigger/<Class>/ snapshot history, in folder order, whose class no entity links any more is
+// a removal step (Current nil, Previous the last declaration) — unless the class's newest step is later than its
+// newest snapshot: a removal leaves no snapshot of its own, so that step is the removal already emitted, never
+// emitted twice. The step embeds the trigger class (found among the registry's trigger classes and the steps'
+// own) and the entity of the snapshot's relation; when either is gone the generator cannot write the step and
+// refuses — keep both until the removal has applied, or write the step by hand.
+func triggerRemovals(
+	options DiffOptions, version int64, linked map[reflect.Type]bool, entitiesByRelation map[string]reflect.Type,
+	steps triggerSteps,
+) (removed []diffChangedTrigger, refusal string) {
+	root := filepath.Join(options.OutDir, "Trigger")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, ""
+	}
+
+	linkedNames := map[string]bool{}
+	for t := range linked {
+		linkedNames[t.Name()] = true
+	}
+	classes := map[string]reflect.Type{}
+	for name, t := range steps.classes {
+		classes[name] = t
+	}
+	for _, t := range options.TriggerTypes {
+		if t = metadata.EntityType(t); t != nil && core.IsTriggerType(t) {
+			classes[t.Name()] = t
+		}
+	}
+
+	for _, entry := range entries { // os.ReadDir sorts by name
+		className := entry.Name()
+		if !entry.IsDir() || linkedNames[className] {
+			continue
+		}
+		previous, atVersion, ok := latestTriggerSnapshot(filepath.Join(root, className), func(v int64) bool { return v < version })
+		if !ok {
+			continue
+		}
+		if newest, migrated := steps.newest[className]; migrated && newest > atVersion {
+			continue // the removal already emitted
+		}
+
+		triggerType, hasClass := classes[className]
+		entityType, hasEntity := entitiesByRelation[previous.Relation]
+		if !hasClass || !hasEntity {
+			reason := fmt.Sprintf("class %s no longer exists", className)
+			if hasClass {
+				reason = fmt.Sprintf("no entity maps '%s'", previous.Relation)
+			}
+			return nil, fmt.Sprintf(
+				"trigger %s (%s) is no longer declared, and the drop step cannot be emitted: %s — keep the trigger "+
+					"class and its entity until the removal is applied, or write the step by hand",
+				previous.Name, className, reason)
+		}
+		removed = append(removed, diffChangedTrigger{EntityType: entityType, TriggerType: triggerType, Previous: previous})
+	}
+	return removed, ""
 }

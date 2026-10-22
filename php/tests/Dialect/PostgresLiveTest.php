@@ -38,7 +38,10 @@ use SimpleOrm\Tests\Dialect\Fixtures\Postgres\NamesArgs;
 use SimpleOrm\Tests\Dialect\Fixtures\Postgres\OrderRow;
 use SimpleOrm\Tests\Dialect\Fixtures\Postgres\PostgresRegistry;
 use SimpleOrm\Tests\Dialect\Fixtures\Postgres\StampsArgs;
+use SimpleOrm\Tests\Dialect\Fixtures\Triggers\ProbeLog;
+use SimpleOrm\Tests\Dialect\Fixtures\Triggers\TriggerProbe;
 use SimpleOrm\Tests\Sample\Models\Role;
+use SimpleOrm\Tests\Sample\Models\RoleChange;
 use SimpleOrm\Tests\Sample\Models\Transaction;
 use SimpleOrm\Tests\Sample\Models\TransactionDetail;
 use SimpleOrm\Tests\Sample\Models\TransactionStatus;
@@ -49,6 +52,7 @@ use SimpleOrm\Tests\Support\LiveServer;
 use SimpleOrm\Tests\Support\PostgresDatabase;
 use SimpleOrm\Tests\Support\BytesRoundTrip;
 use SimpleOrm\Tests\Support\SampleDatabase;
+use SimpleOrm\Tests\Support\TriggerDefinitions;
 use SimpleOrm\Validation\SchemaGuard;
 use SimpleOrm\Types\Decimal;
 
@@ -168,6 +172,81 @@ final class PostgresLiveTest extends TestCase
     public function bytes_round_trip_through_crud_criteria_and_registry_queries(): void
     {
         BytesRoundTrip::run($this->open());
+    }
+
+    // --- triggers (Level 4, ADR-0042) --------------------------------------------------------------
+
+    #[Test]
+    public function the_declared_trigger_is_created_from_metadata_fires_once_per_updated_row_and_reads_back_as_its_rendering(): void
+    {
+        $db = $this->open();
+        $db->createTable(RoleChange::class);
+        $db->createTriggers(Role::class);
+
+        SampleDatabase::insertRole($db, 'first');
+        SampleDatabase::insertRole($db, 'second');
+        self::assertSame(0, self::rows($db, 'role_changes'), 'an insert fires nothing: the trigger is on update');
+
+        $db->connection()->exec('update roles set is_deleted = false');   // one statement, two rows
+        self::assertSame(2, self::rows($db, 'role_changes'));
+        $names = $db->connection()->query('select role_name from role_changes order by role_name')->fetchAll(PDO::FETCH_COLUMN);
+        self::assertSame(['first', 'second'], $names);
+        self::assertSame(0, $db->queryAll(RoleChange::class)[0]->changedAt->getOffset(), '{now} is a timestamptz: it reads back marked');
+
+        // Replace semantics: created again, it is still one trigger firing once per row.
+        $db->createTriggers(Role::class);
+        $db->connection()->exec('update roles set is_deleted = false');
+        self::assertSame(4, self::rows($db, 'role_changes'));
+
+        $dialect = $db->options()->dialect;
+        self::assertSame(
+            TriggerDefinitions::rendered($dialect, $db->maps()->load(Role::class)),
+            TriggerDefinitions::live($db->connection(), $dialect, 'trg_roles_audit'),
+            'the catalog reconstruction equals the rendering after normalization',
+        );
+    }
+
+    #[Test]
+    public function a_multi_event_narrowed_before_declaration_fires_on_insert_and_on_an_update_of_its_column_only(): void
+    {
+        $db = $this->open();
+        $db->createTable(ProbeLog::class);
+        $db->createTable(TriggerProbe::class);
+        $db->createTriggers(TriggerProbe::class);
+
+        $probe = new TriggerProbe();
+        $probe->name = 'one';
+        $db->insert($probe);
+        self::assertSame(1, self::rows($db, 'probe_logs'), 'the insert fires the before trigger');
+
+        $db->connection()->exec("update trigger_probes set note = 'n'");   // not the narrowed column
+        self::assertSame(1, self::rows($db, 'probe_logs'));
+
+        $db->connection()->exec("update trigger_probes set name = 'two'");
+        self::assertSame(2, self::rows($db, 'probe_logs'));
+        self::assertSame('two', $db->get(TriggerProbe::class, $probe->id)->name, 'the before trigger returned the row: the write went through');
+
+        $dialect = $db->options()->dialect;
+        self::assertSame(
+            TriggerDefinitions::rendered($dialect, $db->maps()->load(TriggerProbe::class)),
+            TriggerDefinitions::live($db->connection(), $dialect, 'trg_probe_before'),
+        );
+    }
+
+    #[Test]
+    public function instead_of_on_a_table_is_ddl005_before_anything_is_created(): void
+    {
+        $db = $this->open();
+        $dialect = $db->options()->dialect;
+        $trigger = new \SimpleOrm\Metadata\TriggerDefinition('trg_io', \SimpleOrm\Metadata\TriggerTiming::InsteadOf, [\SimpleOrm\Metadata\TriggerEvent::Delete], 'select 1;');
+
+        self::assertSame('DDL-005', self::codeOf(static fn () => $dialect->createTriggerSql('roles', false, $trigger)));
+        self::assertCount(2, $dialect->createTriggerSql('some_view', true, $trigger), 'on a view it renders: the function and the trigger');
+    }
+
+    private static function rows(Db $db, string $table): int
+    {
+        return (int) $db->connection()->query('select count(*) from ' . $db->options()->dialect->quoteIdentifier($table))->fetchColumn();
     }
 
     #[Test]

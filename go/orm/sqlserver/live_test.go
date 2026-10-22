@@ -124,6 +124,7 @@ func createSampleSchema(t *testing.T, db *orm.Db) {
 		orm.CreateTable[sample.Transaction],
 		orm.CreateTable[sample.TransactionDetail],
 		orm.CreateTable[sample.UserProfile],
+		orm.CreateTable[sample.RoleChange],
 	} {
 		if err := create(ctx, db); err != nil {
 			t.Fatalf("create sample table: %v", err)

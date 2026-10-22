@@ -41,6 +41,19 @@ type migStepSpec struct {
 	Down             []string        `json:"down"`
 	Renames          []migRenameSpec `json:"renames"`
 	ExpectDefinition *string         `json:"expectDefinition"`
+	Trigger          *migTriggerSpec `json:"trigger"`
+	ExpectTrigger    *migTriggerSpec `json:"expectTrigger"`
+}
+
+// migTriggerSpec is a trigger declaration as data (ADR-0042): the step's object names the trigger, so the
+// declaration carries the relation, its kind, the timing, the events, the update-of columns, and the body.
+type migTriggerSpec struct {
+	Relation     string   `json:"relation"`
+	RelationKind string   `json:"relationKind"`
+	Timing       string   `json:"timing"`
+	Events       []string `json:"events"`
+	UpdateOf     []string `json:"updateOf"`
+	SQL          string   `json:"sql"`
 }
 
 type migRenameSpec struct {
@@ -139,6 +152,9 @@ func TestMigrationsCases_BehaveAsSpecified(t *testing.T) {
 				if raw, ok := step.Expect["ddl"]; ok {
 					assertDDL(t, ctx, pool, raw)
 				}
+				if raw, ok := step.Expect["triggers"]; ok {
+					assertTriggers(t, ctx, pool, dialect, raw)
+				}
 			}
 		})
 	}
@@ -160,6 +176,7 @@ func buildVersions(specs []migVersionSpec) []migrations.Version {
 			steps[j] = migrations.SQLVersionStep{
 				ObjectName: s.Object, Description: s.Description, Up: s.Up, Down: s.Down,
 				Renames: renames, ExpectDefinition: expectDefinition,
+				Trigger: triggerDeclaration(s.Trigger), ExpectTrigger: triggerDeclaration(s.ExpectTrigger),
 			}
 		}
 		version := migrations.NewSQLVersion(v.Version, steps...)
@@ -327,4 +344,49 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// triggerDeclaration turns a case's trigger data into the declaration a data-driven step renders.
+func triggerDeclaration(spec *migTriggerSpec) *migrations.TriggerDeclaration {
+	if spec == nil {
+		return nil
+	}
+	timing, _ := core.ParseTriggerTiming(spec.Timing)
+	events, _ := core.ParseTriggerEvents(spec.Events)
+	return &migrations.TriggerDeclaration{
+		Relation: spec.Relation, RelationKind: spec.RelationKind, Timing: timing, Events: events,
+		UpdateOf: spec.UpdateOf, SQL: spec.SQL,
+	}
+}
+
+// assertTriggers is the deep expect `triggers` (ADR-0042): each named trigger is read back through the
+// dialect's TriggerDefinitionSQL and parsed to its declaration, which must be the expected one — or absent
+// (null). It exercises the parse the shadow replayer uses, per-event merge included.
+func assertTriggers(t *testing.T, ctx context.Context, pool *sql.DB, dialect *sqlite.Dialect, raw json.RawMessage) {
+	t.Helper()
+	var expected map[string]*migTriggerSpec
+	if err := json.Unmarshal(raw, &expected); err != nil {
+		t.Fatalf("parse expected triggers: %v", err)
+	}
+	for name, want := range expected {
+		rows, err := migrations.ReadTriggerDefinitions(ctx, pool, dialect, name)
+		if err != nil {
+			t.Fatalf("read trigger %s: %v", name, err)
+		}
+		got, note := sqlite.ParseTriggerRows(name, rows)
+		if want == nil {
+			if len(rows) != 0 {
+				t.Fatalf("trigger %s should be absent, found %v", name, rows)
+			}
+			continue
+		}
+		if got == nil {
+			t.Fatalf("trigger %s: no declaration read back (rows %v, note %q)", name, rows, note)
+		}
+		if got.Relation != want.Relation || got.Timing.Token() != want.Timing ||
+			!equalStrings(got.Events.Tokens(), want.Events) || !equalStrings(got.UpdateOf, want.UpdateOf) ||
+			got.SQL != core.NormalizeTriggerBody(want.SQL) {
+			t.Fatalf("trigger %s read back as %+v, want %+v", name, got, want)
+		}
+	}
 }

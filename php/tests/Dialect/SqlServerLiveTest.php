@@ -30,7 +30,11 @@ use SimpleOrm\Tests\Dialect\Fixtures\SqlServer\GuidDoc;
 use SimpleOrm\Tests\Dialect\Fixtures\SqlServer\LegacyStamp;
 use SimpleOrm\Tests\Dialect\Fixtures\SqlServer\ReservedOrder;
 use SimpleOrm\Tests\Dialect\Fixtures\SqlServer\SqlServerRegistry;
+use SimpleOrm\Tests\Dialect\Fixtures\Triggers\ProbeLog;
+use SimpleOrm\Tests\Dialect\Fixtures\Triggers\TriggerProbe;
+use SimpleOrm\Tests\Dialect\Fixtures\Triggers\TriggerProbeAfter;
 use SimpleOrm\Tests\Sample\Models\Role;
+use SimpleOrm\Tests\Sample\Models\RoleChange;
 use SimpleOrm\Tests\Sample\Models\Transaction;
 use SimpleOrm\Tests\Sample\Models\TransactionDetail;
 use SimpleOrm\Tests\Sample\Models\User;
@@ -40,6 +44,7 @@ use SimpleOrm\Tests\Support\ConformanceClock;
 use SimpleOrm\Tests\Support\BytesRoundTrip;
 use SimpleOrm\Tests\Support\SampleDatabase;
 use SimpleOrm\Tests\Support\SqlServerDatabase;
+use SimpleOrm\Tests\Support\TriggerDefinitions;
 use SimpleOrm\Types\Decimal;
 use SimpleOrm\Validation\SchemaGuard;
 
@@ -154,6 +159,74 @@ final class SqlServerLiveTest extends TestCase
     public function bytes_round_trip_through_crud_criteria_and_registry_queries(): void
     {
         BytesRoundTrip::run($this->openSample());
+    }
+
+    // --- triggers (Level 4, ADR-0042) --------------------------------------------------------------
+
+    #[Test]
+    public function the_declared_trigger_is_created_from_metadata_fires_once_per_updated_row_and_reads_back_as_its_rendering(): void
+    {
+        $db = $this->openSample();
+        $db->createTable(RoleChange::class);
+        $db->createTriggers(Role::class);
+
+        SampleDatabase::insertRole($db, 'first');
+        SampleDatabase::insertRole($db, 'second');
+        self::assertSame(0, self::rowCount($db, RoleChange::class), 'an insert fires nothing: the trigger is on update');
+
+        $db->connection()->exec('update roles set is_deleted = 0');   // one statement, two rows: the trigger body is set-based over `inserted`
+        self::assertSame(2, self::rowCount($db, RoleChange::class));
+
+        // Replace semantics: created again, it is still one trigger firing once per row.
+        $db->createTriggers(Role::class);
+        $db->connection()->exec('update roles set is_deleted = 0');
+        self::assertSame(4, self::rowCount($db, RoleChange::class));
+
+        $dialect = $db->options()->dialect;
+        self::assertSame(
+            TriggerDefinitions::rendered($dialect, $db->maps()->load(Role::class)),
+            TriggerDefinitions::live($db->connection(), $dialect, 'trg_roles_audit'),
+            'sys.sql_modules keeps the text as submitted: equal to the rendering after normalization',
+        );
+    }
+
+    #[Test]
+    public function a_multi_event_narrowed_after_declaration_fires_on_insert_and_on_an_update_of_its_column_only(): void
+    {
+        $db = $this->openBare();
+        $db->createTable(ProbeLog::class);
+        $db->createTable(TriggerProbeAfter::class);
+        $db->createTriggers(TriggerProbeAfter::class);
+
+        $probe = new TriggerProbeAfter();
+        $probe->name = 'one';
+        $db->insert($probe);
+        self::assertSame(1, self::rowCount($db, ProbeLog::class), 'the insert fires the trigger');
+
+        $db->connection()->exec("update trigger_probe_afters set note = N'n'");   // not the narrowed column: the prologue returns
+        self::assertSame(1, self::rowCount($db, ProbeLog::class));
+
+        $db->connection()->exec("update trigger_probe_afters set name = N'two'");
+        self::assertSame(2, self::rowCount($db, ProbeLog::class));
+
+        $dialect = $db->options()->dialect;
+        self::assertSame(
+            TriggerDefinitions::rendered($dialect, $db->maps()->load(TriggerProbeAfter::class)),
+            TriggerDefinitions::live($db->connection(), $dialect, 'trg_probe_after'),
+        );
+    }
+
+    #[Test]
+    public function a_before_trigger_is_ddl005_before_anything_is_created(): void
+    {
+        $db = $this->openBare();
+
+        try {
+            $db->createTriggers(TriggerProbe::class);
+            self::fail('expected DDL-005: SQL Server has no BEFORE triggers');
+        } catch (SimpleOrmException $e) {
+            self::assertSame('DDL-005', $e->errorCode);
+        }
     }
 
     #[Test]

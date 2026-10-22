@@ -1,0 +1,30 @@
+{
+  "object": "role_changes",
+  "asOfVersion": 13,
+  "generatedAt": "2026-10-22T12:00:00.0000000Z",
+  "columns": [
+    {
+      "column": "changed_at",
+      "type": "TEXT",
+      "nullable": false
+    },
+    {
+      "column": "id",
+      "type": "INTEGER",
+      "nullable": false,
+      "key": true,
+      "generated": true
+    },
+    {
+      "column": "role_id",
+      "type": "INTEGER",
+      "nullable": false
+    },
+    {
+      "column": "role_name",
+      "type": "TEXT",
+      "nullable": false
+    }
+  ],
+  "indexes": []
+}

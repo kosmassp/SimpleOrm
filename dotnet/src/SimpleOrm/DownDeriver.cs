@@ -29,9 +29,38 @@ internal static class DownDeriver
         }
 
         var before = snapshots.LatestBefore(objectName, version);
+        if (at.Trigger is not null)
+        {
+            return DeriveTrigger(objectName, at.Trigger, before?.Trigger, dialect);
+        }
+
         return at.Ddl is not null
             ? DeriveView(objectName, at.Ddl, before?.Ddl)
             : DeriveTable(objectName, version, at.Table!, before?.Table, upRenames, notices, dialect);
+    }
+
+    /// <summary>
+    /// A trigger's rollback (ADR-0042): the guard in reverse (the live definition
+    /// must still be this version's), the drop, and — when an earlier snapshot
+    /// exists — the previous declaration rendered through the dialect.
+    /// </summary>
+    private static IReadOnlyList<MigrationStatement> DeriveTrigger(
+        string objectName, TriggerSnapshot at, TriggerSnapshot? before, IDialect dialect)
+    {
+        var statements = new List<MigrationStatement>
+        {
+            MigrationStatement.TriggerGuard(
+                objectName, dialect.CreateTriggerSql(at.Relation, at.OnView, at.Definition), "derived expect " + objectName),
+        };
+        statements.AddRange(dialect.DropTriggerSql(at.Relation, objectName)
+            .Select(s => new MigrationStatement(s, "derived drop " + objectName)));
+        if (before is not null)
+        {
+            statements.AddRange(dialect.CreateTriggerSql(before.Relation, before.OnView, before.Definition)
+                .Select(s => new MigrationStatement(s, "derived restore " + objectName)));
+        }
+
+        return statements;
     }
 
     private static IReadOnlyList<MigrationStatement> DeriveView(string objectName, string ddlAt, string? ddlBefore)

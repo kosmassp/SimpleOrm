@@ -359,9 +359,15 @@ final class MigrationRunner
 
     // --- statement execution ---------------------------------------------------------
 
-    /** Executes one rendered statement — or, for a guard, checks the view's live definition instead. */
+    /** Executes one rendered statement — or, for a guard, checks the view's or trigger's live definition instead. */
     private function applyStatement(int $version, MigrationStatement $statement, bool $allowViewDrift, ?callable $notify): void
     {
+        if ($statement->guardTrigger !== null) {
+            $this->checkTriggerGuard($version, $statement, $allowViewDrift, $notify);
+
+            return;
+        }
+
         if ($statement->guardView === null) {
             $this->execute($statement->sql);
 
@@ -396,6 +402,63 @@ final class MigrationRunner
         if ($notify !== null) {
             $notify($drift . '; recreating (--force)');
         }
+    }
+
+    /**
+     * The trigger guard (`MIG-012`, ADR-0042): the live definitions — the dialect's `triggerDefinitionSql()` rows, one per
+     * statement it created — normalized, must be the same set as the dialect's rendering of the expected declaration.
+     * Absent or different refuses (the run is one transaction, so nothing applies and the outside hotfix is kept);
+     * `--force` reports the drift and lets the recreate proceed.
+     */
+    private function checkTriggerGuard(int $version, MigrationStatement $statement, bool $allowDrift, ?callable $notify): void
+    {
+        $trigger = (string) $statement->guardTrigger;
+        $live = $this->readTriggerDefinitions($trigger);
+        $expected = $statement->guardExpected;
+        sort($expected, SORT_STRING);
+        if ($live === $expected) {
+            return;
+        }
+
+        $absent = $live === [];
+        if (!$allowDrift) {
+            throw new SimpleOrmException(
+                'MIG-012',
+                sprintf('V%04d %s', $version, $trigger),
+                ($absent
+                    ? 'the trigger is absent but a previous declaration was expected'
+                    : 'the live trigger was changed outside migrations')
+                    . '; review the drift, then rerun with --force to recreate it from the code',
+            );
+        }
+
+        if ($notify !== null) {
+            $notify(sprintf(
+                $absent
+                    ? 'V%04d %s: the trigger is absent; expected the previous declaration; recreating (--force)'
+                    : 'V%04d %s: the live trigger does not match the expected declaration — it was changed outside migrations; recreating (--force)',
+                $version,
+                $trigger,
+            ));
+        }
+    }
+
+    /**
+     * The live trigger statements of a name, normalized and sorted (the guard compares sets).
+     *
+     * @return list<string>
+     */
+    private function readTriggerDefinitions(string $trigger): array
+    {
+        $statement = $this->connection->prepare(SqlPlaceholders::toPdo($this->dialect->triggerDefinitionSql()));
+        PdoBinder::bindAndExecute($statement, ['relation' => $trigger]);
+        $rows = array_map(
+            static fn (mixed $definition): string => SchemaSnapshot::normalizeTriggerDdl((string) $definition),
+            $statement->fetchAll(PDO::FETCH_COLUMN),
+        );
+        sort($rows, SORT_STRING);
+
+        return $rows;
     }
 
     private function readViewDefinition(string $view): ?string

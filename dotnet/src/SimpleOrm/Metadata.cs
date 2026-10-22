@@ -76,6 +76,89 @@ public sealed class EntityIndex
     public bool Unique { get; }
 }
 
+/// <summary>
+/// A trigger as data (ADR-0042): the name, timing, events, the columns an
+/// <c>UPDATE OF</c> narrows to (column names; empty when none), and the one
+/// neutral body with its tokens. What a declaration resolves to, what a
+/// snapshot records, and what a dialect renders — the migration steps and the
+/// derived rollback carry this shape literally, so no step ever holds a
+/// dialect's text.
+/// </summary>
+public sealed class TriggerDefinition
+{
+    public TriggerDefinition(string name, TriggerTiming timing, TriggerEvent events, string sql, IReadOnlyList<string>? updateOf = null)
+    {
+        Name = name;
+        Timing = timing;
+        Events = events;
+        Sql = sql;
+        UpdateOf = updateOf ?? [];
+    }
+
+    public string Name { get; }
+
+    public TriggerTiming Timing { get; }
+
+    public TriggerEvent Events { get; }
+
+    /// <summary>The body verbatim (tokens unexpanded).</summary>
+    public string Sql { get; }
+
+    /// <summary>Column names of an <c>UPDATE OF</c> narrowing; empty when the update event is unnarrowed.</summary>
+    public IReadOnlyList<string> UpdateOf { get; }
+
+    /// <summary>The events in the fixed order insert, update, delete — the order every rendering and export uses.</summary>
+    public IEnumerable<TriggerEvent> EventList()
+    {
+        foreach (var e in new[] { TriggerEvent.Insert, TriggerEvent.Update, TriggerEvent.Delete })
+        {
+            if (Events.HasFlag(e))
+            {
+                yield return e;
+            }
+        }
+    }
+
+    /// <summary>The body with whitespace collapsed and every token in its canonical spelling — how exports and snapshots compare it (layout is not schema).</summary>
+    public string NormalizedSql
+    {
+        get
+        {
+            var errors = new List<MappingError>();
+            var segments = TriggerTokens.Parse(Sql, Name, errors);
+            var canonical = errors.Count > 0
+                ? Sql   // a malformed body never reaches here through the loader; the data-driven forms compare it as written
+                : string.Concat(segments.Select(s => s.Literal ?? TriggerTokens.Canonical(s)));
+            return string.Join(" ", canonical.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        }
+    }
+
+    /// <summary>Whether two definitions declare the same trigger (name, timing, events, update-of columns, normalized body).</summary>
+    public bool SameAs(TriggerDefinition other)
+        => string.Equals(Name, other.Name, StringComparison.Ordinal)
+            && Timing == other.Timing
+            && Events == other.Events
+            && UpdateOf.SequenceEqual(other.UpdateOf, StringComparer.Ordinal)
+            && NormalizedSql == other.NormalizedSql;
+}
+
+/// <summary>A trigger declared on an entity (ADR-0042): the declaration, resolved against the entity, and the class that declares it.</summary>
+public sealed class EntityTrigger
+{
+    public EntityTrigger(Type triggerType, TriggerDefinition definition)
+    {
+        TriggerType = triggerType;
+        Definition = definition;
+    }
+
+    /// <summary>The declaration class — the migration object (<c>Migrations/Trigger/&lt;Class&gt;/</c>).</summary>
+    public Type TriggerType { get; }
+
+    public TriggerDefinition Definition { get; }
+
+    public string Name => Definition.Name;
+}
+
 /// <summary>Navigation cardinality (ADR-0005/0019). Polymorphic and "through" relations are ruled out permanently (ADR-0019 add.1).</summary>
 public enum RelationshipKind
 {
@@ -302,8 +385,10 @@ public sealed class EntityMap
         IReadOnlyList<PropertyMap> properties,
         KeyStrategy keyStrategy,
         IReadOnlyList<EntityIndex> indexes,
-        IReadOnlyList<RelationshipMap> relationships)
+        IReadOnlyList<RelationshipMap> relationships,
+        IReadOnlyList<EntityTrigger>? triggers = null)
     {
+        Triggers = triggers ?? [];
         EntityType = entityType;
         Kind = kind;
         RelationName = relationName;
@@ -357,6 +442,9 @@ public sealed class EntityMap
     public IReadOnlyList<EntityIndex> Indexes { get; }
 
     public IReadOnlyList<RelationshipMap> Relationships { get; }
+
+    /// <summary>The triggers this relation carries (ADR-0042), in link declaration order; declaration-only — migrations create them.</summary>
+    public IReadOnlyList<EntityTrigger> Triggers { get; }
 
     /// <summary>Entity identity (§7.4): the key values of an instance, in key order.</summary>
     public object?[] GetKeyValues(object entity)

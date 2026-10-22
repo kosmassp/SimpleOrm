@@ -29,6 +29,10 @@ func Export(m *core.EntityMap, maps *Loader) (string, error) {
 		root = root.Set("indexes", buildIndexes(m))
 	}
 
+	if len(m.Triggers) > 0 {
+		root = root.Set("triggers", buildTriggers(m))
+	}
+
 	if len(m.Relationships) > 0 {
 		relationships, err := buildRelationships(m, maps)
 		if err != nil {
@@ -134,6 +138,34 @@ func buildIndexes(m *core.EntityMap) []any {
 		if index.Unique {
 			obj = obj.Set("unique", true)
 		}
+		result[i] = obj
+	}
+	return result
+}
+
+// buildTriggers is the `triggers` block (spec/metadata-model.md "Declared triggers"): name, timing, events in the
+// fixed order, updateOf only when declared, and the normalized body with its tokens unexpanded. The trigger
+// class never appears — the export stays column-centric.
+func buildTriggers(m *core.EntityMap) []any {
+	result := make([]any, len(m.Triggers))
+	for i, trigger := range m.Triggers {
+		definition := trigger.Definition
+		obj := core.JSONObject{}
+		obj = obj.Set("name", definition.Name)
+		obj = obj.Set("timing", definition.Timing.Token())
+		events := make([]any, 0, 3)
+		for _, token := range definition.Events.Tokens() {
+			events = append(events, token)
+		}
+		obj = obj.Set("events", events)
+		if len(definition.UpdateOf) > 0 {
+			updateOf := make([]any, len(definition.UpdateOf))
+			for j, column := range definition.UpdateOf {
+				updateOf[j] = column
+			}
+			obj = obj.Set("updateOf", updateOf)
+		}
+		obj = obj.Set("sql", core.NormalizeTriggerBody(definition.SQL))
 		result[i] = obj
 	}
 	return result

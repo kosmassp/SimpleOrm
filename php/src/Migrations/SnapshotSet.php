@@ -76,15 +76,17 @@ final class SnapshotSet
 
     private function add(string $json): void
     {
-        /** @var array{object: string, asOfVersion: int|string} $data */
+        /** @var array{object: string, asOfVersion: int|string, kind?: string} $data */
         $data = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
         $objectName = strtolower($data['object']);
         $version = (int) $data['asOfVersion'];
         $isDdl = array_key_exists('ddl', $data);
 
-        $entry = $isDdl
-            ? new SnapshotSetEntry(null, self::ddlFrom($json))
-            : new SnapshotSetEntry(SchemaSnapshot::parse($json)->schema, null);
+        $entry = match (true) {
+            ($data['kind'] ?? null) === 'trigger' => new SnapshotSetEntry(null, null, SchemaSnapshot::parseTrigger($json)->schema),
+            $isDdl => new SnapshotSetEntry(null, self::ddlFrom($json)),
+            default => new SnapshotSetEntry(SchemaSnapshot::parse($json)->schema, null),
+        };
 
         $this->byObject[$objectName][$version] = $entry;
     }

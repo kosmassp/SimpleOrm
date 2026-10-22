@@ -14,11 +14,13 @@ Migrations/
   V0002.cs
   Table/<Object>/V000N_<Desc>.cs    per-object steps
   View/<Object>/V000N_<Desc>.cs
+  Trigger/<Class>/V000N_<Desc>.cs   a trigger's object is its declaration class (ADR-0042)
 ```
 
 - A **root version** (`V<version>`, `MIG-001`) composes its object steps in explicit,
-  reviewable order (tables in FK order, views after). Duplicate root versions or an
-  object composed twice in one version: `MIG-002`.
+  reviewable order (tables in FK order, views after, triggers last — their
+  relation must exist). Duplicate root versions or an object composed twice in
+  one version: `MIG-002`.
 - An **object step** (`V<version>_<Description>`, `MIG-001`) must carry the version
   of the root composing it (`MIG-003`); a step no root composes is an error
   (`MIG-004`) — nothing is silently skipped.
@@ -39,8 +41,20 @@ version's atomicity.
 
 Column specs in hand-written actions are **literal** (name, type, nullability,
 default) so an applied migration's rendered SQL never changes when the model
-evolves. Metadata-rendered DDL (`CreateTable()`/`CreateView()`) is legal for an
-object's initial creation, frozen thereafter by the checksum.
+evolves. Metadata-rendered DDL (`CreateTable()`/`CreateView()`/`CreateTrigger()`)
+is legal for an object's initial creation, frozen thereafter by the checksum.
+
+Trigger steps (ADR-0042) name the entity and the trigger class
+(`TriggerMigration<Role, RoleAuditTrigger>`); their `schema_version` object is
+the trigger name. Actions run in declaration order and every one renders
+through the dialect from a **declaration** — the entity's (`CreateTrigger()`,
+the initial create) or the step's own literal, frozen one (`Recreate(timing,
+events, sql, updateOf…)`, `ExpectDefinition(…)`, the forms `diff` emits) —
+plus `DropTrigger()`. There is no raw-SQL trigger action: trigger DDL is
+dialect-specific, and a step holding one dialect's text would tie the tree to
+it; the declaration is neutral, so one tree serves every dialect and a
+database's checksums stay those of its own dialect's rendering. Every create
+is drop-if-present then create (replace semantics).
 
 The typed actions **render through the dialect** (ADR-0024): ALTER TABLE grammar
 diverges — SQLite says `add column` and `rename column`, SQL Server says `add`
@@ -83,6 +97,11 @@ that version and the latest one before it, then derives the reverse:
 - views → expected-definition guard on the current DDL (`MIG-012` — a rollback
   must not silently destroy an outside hotfix either), drop, previous definition
   restored;
+- triggers → the guard on this version's rendering (`MIG-012`, at the creating
+  version too, as for views), the drop, and the previous declaration rendered
+  through the dialect (creation → guard and drop only); a removal step has no
+  snapshot at its version and derives nothing (`MIG-020`, override `Down()`),
+  exactly like a dropped table;
 - a same-column type/nullability change is not derivable → `MIG-020`.
 
 `Down()` remains the manual override and always wins; `PreDown`/`PostDown` hooks
@@ -134,7 +153,26 @@ The DDL-shaped form for the other kinds:
 
 The DDL is normalized — whitespace collapsed and the create-view prefix
 canonicalized (databases rewrite that prefix when storing it) — and stays
-executable. Column `type` in the table form is the dialect **storage type** (what
+executable.
+
+A trigger snapshots by **declaration** (ADR-0042), `Migrations/Trigger/<Class>/V000N.schema.json`:
+
+```json
+{ "object": "trg_roles_audit", "kind": "trigger", "relation": "roles", "relationKind": "table",
+  "asOfVersion": 13, "generatedAt": "…Z",
+  "timing": "after", "events": ["update"],
+  "sql": "insert into role_changes (role_id, role_name, changed_at) select n.id, n.role_name, {now} from {new: id, role_name} n;" }
+```
+
+— the relation and its kind (`table` | `view`), the timing, the events in the
+fixed order, `updateOf` (column names) only when declared, and the body
+whitespace-collapsed with its tokens **unexpanded**. Unlike a table snapshot
+it is dialect-neutral: one tree serves every dialect. From metadata it is the
+linked declaration; from history (`shadow`) it is the stored SQLite trigger
+parsed back — header fields from the dialect's fixed grammar, the dialect's
+expansions folded back into the tokens — and the two must agree byte for byte
+apart from `generatedAt`; a hand-written trigger the grammar does not match
+is skipped with a note. Column `type` in the table form is the dialect **storage type** (what
 CREATE TABLE emits and what introspection reports), columns and indexes are
 **name-sorted** — so every snapshot is producible two ways, and the two must be
 byte-identical apart from `generatedAt`:
@@ -163,7 +201,17 @@ come from them.
   Renames are **declared** (`--rename table.old=new`), never inferred. Removals gate on `--allow-remove`
   (`DDL-003`); type/nullability changes and non-nullable additions are `DDL-004` —
   hand-written, using the literal `AddColumn(name, type, nullable, defaultSql)`
-  path.
+  path. Triggers diff **by declaration** (ADR-0042): neutral on both sides,
+  nothing rendered — a different timing, event set, update-of list, relation,
+  or whitespace-normalized body is a change (a layout-only edit declares
+  nothing); no snapshot is new; a snapshot history no entity declares any more
+  is a removal, gated like a column's. A generated trigger step carries the
+  literal declaration (`Recreate`), a change opens with `ExpectDefinition` of
+  the previous one, a removal is a bare `DropTrigger()` — and needs the trigger
+  class and its entity still in the assembly (keep them until the removal has
+  applied). A removal leaves no snapshot of its own, so it is recognised as
+  already emitted when the trigger's newest step is later than its newest
+  snapshot — never emitted twice. Trigger steps compose after view steps.
 - **`shadow`** — rebuilds the snapshot files from history (above). The range form
   `--from V000N [--to V000M]` **trusts** version N: the baseline is reconstructed
   from the committed snapshots at ≤ N (no verification below N), versions ≤ N are
@@ -175,7 +223,7 @@ come from them.
   live one matching no model signature is a gated deletion, and one that matches
   under a different name is left alone, name and all.
 
-## The view apply guard (`MIG-012`, ADR-0017 add.1)
+## The view and trigger apply guard (`MIG-012`, ADR-0017 add.1, ADR-0042)
 
 Views get adjusted outside the code in urgencies. A view step may declare
 `ExpectDefinition(ddl)` — generated change steps always do, carrying the previous
@@ -187,6 +235,28 @@ applied — the outside hotfix is preserved for review. Forcing
 the view from the code and reports the drift. Derived view rollbacks carry the
 mirrored guard. Guards evaluate at execution time (chained pending view changes
 stay valid); declared ones count into the step checksum.
+
+Triggers reuse the code and the semantics (ADR-0042). A trigger step's
+`ExpectDefinition(timing, events, sql, updateOf…)` is a **declaration**; at
+execution time the dialect renders it to its create statements, and the live
+rows of `TriggerDefinitionSql` (the stored or reconstructed create statements
+— one per statement the dialect created: SQLite's per-event triggers,
+PostgreSQL's function and trigger), both sides normalized (whitespace
+collapsed, the leading `create [or replace] trigger|function` keywords
+lowercased), must be the same set. Absent or different refuses; `--force`
+recreates with notice. The checksum counts the rendered expectation, so it is
+the dialect's, like every other rendering (the reference joins the
+normalized expected statements with `
+;
+`; checksums are never compared
+across implementations). `migrate --force` never syncs triggers to the model
+(views are not synced either): for both kinds the flag is only this override.
+`CreateTrigger()` in a step whose entity does not link the trigger class is
+`DDL-001` (schema creation that does not apply); a trigger step on a
+statement, procedure, or materialized view is `DDL-001` too. The `--from`
+shadow baseline restores triggers after tables and views from their latest
+snapshot at or below N — a trigger removed before N is restored wrongly, as a
+dropped table would be: the trusted baseline trusts snapshots, not history.
 
 ## Conformance cases
 
@@ -219,13 +289,24 @@ behavior in this document is expressible as data:
   runs without touching migration history;
 - `"force": true` on `migrate`/`down` — the view-drift override;
 - deep expects: `"columns": { "<table>": [name-sorted column names] }` and
-  `"ddl": { "<view>": "<normalized definition>" }`.
+  `"ddl": { "<view>": "<normalized definition>" }`;
+- step `"trigger": { "relation", "relationKind", "timing", "events", "updateOf"?, "sql" }`
+  — a trigger declaration as data, rendered through the dialect (drop, then
+  create) ahead of `up` (which may be absent); step `"expectTrigger"` of the same
+  shape — the `MIG-012` trigger guard; a `"snapshots"` entry with
+  `"kind": "trigger"`; and the deep expect `"triggers": { "<name>": { "relation",
+  "timing", "events", "updateOf"?, "sql" } | null }` — the live trigger read back
+  through the dialect and parsed to its declaration, or absent (ADR-0042).
 
 Two sibling suites cover the generator itself: `conformance/diff-cases/` feeds
 two shapes (snapshot form) plus declared renames through the diff and checks the
-resulting change exactly — no database; `conformance/snapshot-cases/` pins a
-fixture entity, version, and generation time and expects the exact exported
-snapshot document. See `conformance/README.md` for both schemas.
+resulting change exactly — no database (a case with `"kind": "trigger"` feeds
+two trigger declarations, either null, and expects `isNew` | `isChanged` |
+`isRemoved` or nothing); `conformance/snapshot-cases/` pins a fixture entity,
+version, and generation time and expects the exact exported snapshot document
+(`"kind": "trigger"` names the linked trigger). `conformance/trigger-sql/` pins
+what every dialect renders for a declaration (`dialects.md` "Triggers"). See
+`conformance/README.md` for the schemas.
 
 ## Draft migrations (Level 3 M5, ADR-0034 §7c)
 

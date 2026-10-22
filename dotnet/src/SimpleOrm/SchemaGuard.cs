@@ -65,11 +65,14 @@ public static class SchemaGuard
             // base class (MAP-028), not an entity — reported once, not validated as a table.
             var baseClasses = EntityMapLoader.BaseClassesUsedAsEntities(types);
             errors.AddRange(baseClasses.Select(e => new ValidationError(e.Code, e.Target, e.Message)));
+
+            // ADR-0042: a trigger class linked by two entities, or one name declared twice — reported once per conflict.
+            errors.AddRange(EntityMapLoader.TriggerConflicts(types).Select(e => new ValidationError(e.Code, e.Target, e.Message)));
             var baseClassNames = new HashSet<string>(baseClasses.Select(e => e.Target), StringComparer.Ordinal);
 
             foreach (var entity in types.Where(t =>
                 t is { IsClass: true, IsAbstract: false } && EntityMapLoader.HasMappingAttributes(t)
-                && !EntityMapLoader.IsOwnedType(t) && !baseClassNames.Contains(t.Name)))
+                && !EntityMapLoader.IsOwnedType(t) && !EntityMapLoader.IsTriggerType(t) && !baseClassNames.Contains(t.Name)))
             {
                 await ValidateEntityAsync(db, shield, cache, entity, errors, ct).ConfigureAwait(false);
             }

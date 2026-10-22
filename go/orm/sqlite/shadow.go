@@ -41,6 +41,9 @@ import (
 type ShadowOptions struct {
 	Set      *migrations.Set
 	Entities []reflect.Type
+	// Triggers are the registry's trigger classes (ADR-0042): with the classes the entities link, they name the
+	// Trigger/<Class>/ folder a touched trigger's snapshot is written to.
+	Triggers []reflect.Type
 	OutDir   string
 	From     int64
 	To       int64
@@ -68,6 +71,10 @@ func Shadow(ctx context.Context, options ShadowOptions) (*ShadowResult, error) {
 	}
 
 	entityByRelation, err := mapEntitiesByRelation(options.Entities)
+	if err != nil {
+		return nil, err
+	}
+	triggerByName, err := mapTriggersByName(options.Entities, options.Triggers)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +115,7 @@ func Shadow(ctx context.Context, options ShadowOptions) (*ShadowResult, error) {
 	}
 
 	if options.From > 0 {
-		if err := restoreBaseline(ctx, conn, options.OutDir, options.From, result); err != nil {
+		if err := restoreBaseline(ctx, conn, dialect, options.OutDir, options.From, result); err != nil {
 			return nil, err
 		}
 		baselineRunner := migrations.NewRunner(pool, dialect, maps, replaySet, nil)
@@ -145,6 +152,16 @@ func Shadow(ctx context.Context, options ShadowOptions) (*ShadowResult, error) {
 		}
 
 		for _, relation := range touched {
+			if trigger, isTrigger := triggerByName[strings.ToLower(relation)]; isTrigger {
+				file, err := writeTriggerSnapshot(ctx, conn, dialect, options.OutDir, trigger, relation, number, generatedAt, result)
+				if err != nil {
+					return nil, err
+				}
+				if file != "" {
+					result.WrittenFiles = append(result.WrittenFiles, file)
+				}
+				continue
+			}
 			entity, ok := entityByRelation[strings.ToLower(relation)]
 			if !ok {
 				result.Notes = append(result.Notes,
@@ -227,7 +244,9 @@ func touchedObjects(entries []migrations.MigrationEntry, version int64) []string
 // restoreBaseline creates every table/view whose latest snapshot at or below
 // fromVersion exists under migrationsDir, straight from that snapshot's DDL —
 // trusted, never verified against the actual migration history below it.
-func restoreBaseline(ctx context.Context, conn *sql.Conn, migrationsDir string, fromVersion int64, result *ShadowResult) error {
+func restoreBaseline(
+	ctx context.Context, conn *sql.Conn, dialect core.Dialect, migrationsDir string, fromVersion int64, result *ShadowResult,
+) error {
 	tableRoot := filepath.Join(migrationsDir, "Table")
 	if info, statErr := os.Stat(tableRoot); statErr == nil && info.IsDir() {
 		objectDirs, err := os.ReadDir(tableRoot)
@@ -284,7 +303,9 @@ func restoreBaseline(ctx context.Context, conn *sql.Conn, migrationsDir string, 
 				fmt.Sprintf("baseline: %s restored from V%04d snapshot (trusted)", object, atVersion))
 		}
 	}
-	return nil
+
+	// Triggers restore last: their relation must exist (spec/migrations.md "Structure").
+	return restoreTriggerBaseline(ctx, conn, dialect, migrationsDir, fromVersion, result)
 }
 
 // Latest-snapshot-at-or-below lookups delegate to
@@ -372,7 +393,7 @@ type mappedEntity struct {
 	kindToken  string
 }
 
-// mapEntitiesByRelation loads every entity in entities and indexes the
+// mapEntitiesByRelation loads every entity in entities (trigger classes are no entities and are skipped) and indexes the
 // table/view/materialized-view ones by relation name (case-insensitive):
 // Shadow resolves a touched relation back to its entity this way, since Go
 // has no assembly to scan the other direction (CODING-STANDARD §10).
@@ -380,6 +401,9 @@ func mapEntitiesByRelation(entities []reflect.Type) (map[string]mappedEntity, er
 	loader := metadata.NewLoader(nil)
 	byRelation := map[string]mappedEntity{}
 	for _, t := range entities {
+		if core.IsTriggerType(t) {
+			continue
+		}
 		m, err := loader.Load(t)
 		if err != nil {
 			return nil, err

@@ -33,6 +33,41 @@ public interface IDialect
     /// <summary>Renders <c>CREATE (MATERIALIZED) VIEW</c> from the map's defining SQL (ADR-0008 addendum 3).</summary>
     string CreateViewSql(EntityMap map);
 
+    // --- triggers (ADR-0042) ---------------------------------------------------------
+
+    /// <summary>
+    /// The create statements of a trigger, from its neutral declaration: the
+    /// dialect's header (timing, events, UPDATE OF, granularity), its wrapper
+    /// (<c>begin/end</c>, <c>set nocount on</c>, a PostgreSQL function and its
+    /// <c>return</c>), and the body with the <c>{new}</c>/<c>{old}</c>/<c>{now}</c>
+    /// tokens expanded. No drop: <see cref="DropTriggerSql"/> precedes it when the
+    /// caller wants replace semantics. These statements are also what
+    /// <see cref="TriggerDefinitionSql"/> reports back for the trigger, normalized —
+    /// the symmetric contract the <c>MIG-012</c> guard relies on. A declaration the
+    /// dialect has no form for throws <c>DDL-005</c>; <paramref name="onView"/>
+    /// says whether the relation is a view (INSTEAD OF on a table exists only on
+    /// SQL Server).
+    /// </summary>
+    IReadOnlyList<string> CreateTriggerSql(string relation, bool onView, TriggerDefinition trigger);
+
+    /// <summary>
+    /// Drops the trigger named by a declaration, idempotently, with whatever the
+    /// dialect created beside it (PostgreSQL's function; SQLite's per-event
+    /// triggers of a multi-event declaration).
+    /// </summary>
+    IReadOnlyList<string> DropTriggerSql(string relation, string triggerName);
+
+    /// <summary>
+    /// Introspection query for a trigger's stored definition: parameter
+    /// <c>@relation</c> is the declared trigger name, one result column
+    /// <c>definition</c>, one row per statement the dialect created for it (a
+    /// multi-event SQLite declaration yields one row per event; PostgreSQL the
+    /// function and the trigger); no rows when absent. Each row, normalized,
+    /// equals the matching <see cref="CreateTriggerSql"/> statement. Backs the
+    /// <c>MIG-012</c> guard on trigger steps and the shadow replayer.
+    /// </summary>
+    string TriggerDefinitionSql { get; }
+
     /// <summary>Renders the limit/offset clause from pre-bound parameter names (§7.25); either may be null.</summary>
     string LimitOffsetClause(string? limitParameter, string? offsetParameter);
 

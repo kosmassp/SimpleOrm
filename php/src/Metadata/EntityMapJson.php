@@ -42,11 +42,42 @@ final class EntityMapJson
             $document['indexes'] = self::indexes($map);
         }
 
+        if ($map->triggers !== []) {
+            $document['triggers'] = self::triggers($map);
+        }
+
         if ($map->relationships !== []) {
             $document['relationships'] = self::relationships($map, $maps);
         }
 
         return CanonicalWriter::write($document);
+    }
+
+    /**
+     * Declared triggers only, after the indexes (spec/metadata-model.md "Declared triggers", ADR-0042): the body
+     * whitespace-normalized with its tokens unexpanded; the trigger class's name never appears.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function triggers(EntityMap $map): array
+    {
+        $triggers = [];
+        foreach ($map->triggers as $trigger) {
+            $definition = $trigger->definition;
+            $entry = [
+                'name' => $definition->name,
+                'timing' => $definition->timing->value,
+                'events' => array_map(static fn (TriggerEvent $event): string => $event->value, $definition->events),
+            ];
+            if ($definition->updateOf !== []) {
+                $entry['updateOf'] = $definition->updateOf;
+            }
+
+            $entry['sql'] = $definition->normalizedSql();
+            $triggers[] = $entry;
+        }
+
+        return $triggers;
     }
 
     /** @return array<string, mixed> */

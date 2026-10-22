@@ -41,6 +41,9 @@ func PlanSync(
 	plan := &SyncPlan{}
 
 	for _, t := range tableEntities {
+		if core.IsTriggerType(t) {
+			continue // a trigger class is no entity: scans skip it (ADR-0042)
+		}
 		m, err := maps.Load(t)
 		if err != nil {
 			return nil, err

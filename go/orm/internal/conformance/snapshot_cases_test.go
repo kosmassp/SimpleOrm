@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/metadata"
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/testsupport"
 	"github.com/kosmassp/SimpleOrm/go/orm/migrations"
@@ -19,6 +20,7 @@ type snapshotCase struct {
 	Name        string          `json:"name"`
 	Entity      string          `json:"entity"`
 	Kind        string          `json:"kind"`
+	Trigger     string          `json:"trigger"`
 	AsOfVersion int64           `json:"asOfVersion"`
 	GeneratedAt string          `json:"generatedAt"`
 	Expect      json.RawMessage `json:"expect"`
@@ -49,7 +51,20 @@ func TestSnapshotCases_MatchExpectedOutput(t *testing.T) {
 			}
 
 			var produced string
-			if c.Kind != "" && c.Kind != "table" {
+			if c.Kind == "trigger" {
+				// A trigger snapshots by declaration (ADR-0042): the linked trigger the case names, neutral and
+				// dialect-free.
+				var linked *core.EntityTrigger
+				for _, trigger := range m.Triggers {
+					if trigger.Definition.Name == c.Trigger {
+						linked = trigger
+					}
+				}
+				if linked == nil {
+					t.Fatalf("%s links no trigger named %q", c.Entity, c.Trigger)
+				}
+				produced = migrations.ExportTrigger(migrations.DeclarationFromEntity(m, linked), c.AsOfVersion, generatedAt)
+			} else if c.Kind != "" && c.Kind != "table" {
 				produced = migrations.ExportDDL(m.RelationName, c.Kind, dialect.CreateViewSQL(m), c.AsOfVersion, generatedAt)
 			} else {
 				produced = migrations.Export(m, dialect, c.AsOfVersion, generatedAt)

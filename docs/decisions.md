@@ -3593,3 +3593,153 @@ ruling.
 **Status.** Accepted. Item 3 is closed by ruling and built in C#, PHP, and Go;
 its live SQL Server verification is pending the engine. Nothing else is
 pending; the Level 4 items remain (§3, §11).
+
+## ADR-0042 — Level 4 begins: triggers in the mapping, in three implementations (2026-10-22)
+
+**Context.** The owner ordered Level 4 on 2026-10-22: triggers in the mapping
+first (the §3 row ADR-0040 add.1 recorded), migration tooling beyond SQLite
+second. The row's original motivation — metadata that keys the SQL Server
+write strategy — is moot: ADR-0040 add.3 made the dialect report the
+affected-row count itself, so this feature is schema ownership only: declare,
+migrate, snapshot, guard, diff, shadow. The write strategy is untouched.
+
+**The design discussion (owner rulings, 2026-10-22).** The first proposal
+put per-dialect bodies on the entity
+(`[Trigger("name", AfterUpdate, Sqlite = …, SqlServer = …, Postgres = …)]`).
+The owner rejected it in two steps. First: "don't put SQL inside the
+trigger; the trigger should link to a class; the class is like a
+materialized view where it can link to SQL" — the trigger became its own
+declaration class, linked from the entity by type, the way `[ManyToMany]`
+links a link entity. Second: "mentioning each dialect in a trigger would be
+crazy — what if we have hundreds of database types"; `set nocount on` is
+"something configured" — so the class carries **one** body and the dialect
+renders everything around it. The body is set-based SQL with three tokens
+standing for exactly what differs per database: `{new: cols}` and
+`{old: cols}` (the changed rows as a relation — `inserted`/`deleted` on
+SQL Server, a one-row derived table over `new.`/`old.` on SQLite and
+PostgreSQL; the column list is required so the rendering never depends on
+the table's current shape) and `{now}` (UTC now in the storage form). The
+wrapper — `set nocount on`, `begin/end`, PostgreSQL's function and its
+`return`, the granularity — is the dialect's rendering, configured once.
+The owner then ruled "not AFTER only — we must have all declaration types;
+the contents may differ per DB, every DB has its own preferences": the full
+vocabulary (`Before`/`After`/`InsteadOf`, combinable events, `UpdateOf`,
+`InsteadOf` on views) is declared neutrally and each dialect renders what it
+has, refusing a form it lacks with `DDL-005` (BEFORE on SQL Server; INSTEAD
+OF on a table outside SQL Server; SQLite renders a multi-event declaration
+as one trigger per event, `<name>_<event>`; SQL Server emulates `UpdateOf`
+with an `if not (update(…)) return;` prologue). Facts confirmed for the
+owner: a table carries many triggers; a trigger belongs to one table on all
+three engines (PostgreSQL's shareable function stays an unexposed rendering
+detail). Accepted as proposed: the folder `Migrations/Trigger/<Class>/` with
+the trigger name as the `schema_version` object; `MIG-012` reused with its
+text widened; the SQL Server drop-then-create pair (no `create or alter`,
+2016 RTM); a separate `CreateTriggersAsync<T>`, never part of
+`CreateTableAsync`; no SchemaGuard rule (a missing trigger is pending work,
+`MIG-030`); the fixture `RoleAuditTrigger` after update on `roles` writing
+the new `role_changes` table (migration V0013 in three trees); trigger
+removal gated by `--allow-remove`, no force sync of triggers (views are not
+synced either); PostgreSQL's function `<trigger>_fn`, `for each row`. One
+refinement over the accepted ruling: the snapshot holds the **neutral**
+declaration, not a rendered body — dialect-neutral, so one tree serves every
+dialect; the shadow parses the stored SQLite trigger back (header fields from
+the dialect's fixed grammar, the expansions folded back into the tokens) and
+the equality with the metadata-side snapshot still holds byte for byte.
+
+**Decision.** `[Trigger(name, timing, events, sql)]` on a trigger class (a
+declaration object, never an entity), `[Trigger(typeof(X))]` on the entity
+(repeatable; tables any timing, views `InsteadOf` only); `EntityMap.Triggers`;
+the export block `"triggers"` (name, timing, events in fixed order, `updateOf`
+column names when declared, the body whitespace-normalized with its tokens
+unexpanded — no class names). `MAP-029` for every misplaced or malformed
+declaration, including the scan rule (a class linked by two entities, a name
+declared twice) run by SchemaGuard and every CLI command that enumerates
+entities. The seam gains `CreateTriggerSql(relation, onView, trigger)`,
+`DropTriggerSql(relation, name)`, and `TriggerDefinitionSql` — all three
+dialects need them, so §7.25 permits them; PostgreSQL's definition query
+**reconstructs** the function and the trigger from the catalog in the
+dialect's own spelling, so each row equals the matching create statement once
+whitespace is collapsed — the symmetric contract the guard relies on, checked
+live. Migrations: `TriggerMigration<TEntity, TTrigger>`, `TriggerActions`
+(`CreateTrigger()` from metadata for the initial create; literal
+`Recreate`/`ExpectDefinition`/`DropTrigger`; no raw-SQL action — a step never
+holds a dialect's text), replace semantics on every create, the `MIG-012`
+guard on the dialect's rendering of the expected declaration against the live
+definition rows, declaration-shaped snapshots, the derived rollback (guard,
+drop, previous declaration re-rendered), `diff` by declaration (a layout-only
+edit declares nothing; a removal is a bare drop needing the class still
+present), `snapshot`/`shadow` on `Trigger/<Class>/`, the data-driven step form
+(`trigger`/`expectTrigger`) and the deep expect `triggers`. `Db.CreateTriggersAsync<T>`.
+Not provided: a per-dialect body override (deferred until a real case; the
+three dialects and the fixture need none), BEFORE-row value assignment,
+`WHEN` clauses, declared granularity or firing order, trigger-aware write
+strategies.
+
+**Conformance.** `entities/role.json` (+ `role_change.json`),
+`snapshot-cases/role_audit_trigger_v13`, `diff-cases/trigger_added`,
+`trigger_body_changed`, `trigger_layout_only_declares_nothing`,
+`trigger_removed`, `migrations-cases/trigger_guard` and
+`trigger_derived_down` (the multi-event round trip included), and the new
+`conformance/trigger-sql/` (5 cases: the fixture, `before_insert`,
+`multi_event_update_of`, `instead_of_on_view`, `instead_of_on_table` — every
+create and drop statement per dialect, the `DDL-005` refusals included).
+Spec: metadata-model.md "Triggers" + "Declared triggers", migrations.md
+(structure, actions, snapshots, generator, the widened guard section, the
+case additions), dialects.md (seam rows, "Triggers" renderings table,
+introspection shapes and queries, deferred, testing contract), errors.md.
+
+**The ports, by the ADR-0031 method** (one Sonnet agent each, the spec and
+the conformance files as their only source, forbidden to open another
+implementation; then an Opus uniformity review). PHP: `#[Trigger(name,
+timing, events[], sql, updateOf[])]` on the class, `#[Trigger(X::class)]` on
+the entity (one attribute, the shape told by its arguments), events as an
+array of enum cases, `TriggerMigration` with `entityClass()`/`triggerClass()`,
+`Db::createTriggers()`, `SqliteTriggerParser` — 911 tests, PostgreSQL live.
+Go: a trigger type whose `Trigger()` method returns `orm.TriggerDef`, linked
+by `Triggers: []orm.TriggerLink{orm.Trigger[T]()}` in the entity descriptor,
+events as a flag set like `CascadeOperations`, `TriggerMigration[TEntity,
+TTrigger]`, `orm.CreateTriggers[T]`, `Registry.Triggers` for the scan rule
+(no assembly to scan), `CreateTriggerSQL` returning an error for `DDL-005` —
+every package green, PostgreSQL live. Their 20 + 17 gap questions became the
+Clarifications of metadata-model.md and migrations.md and **five reference
+fixes**: SQL Server's `UpdateOf` prologue skipped the delete event of a
+multi-event trigger (`update()` is false in a delete — both ports followed
+the pinned string and flagged it); a row token must have rows on **every**
+declared event, not one; `diff` re-emitted a trigger removal on every run (a
+removal leaves no snapshot — a step newer than the newest snapshot is the
+removal already emitted, PHP's heuristic adopted); a declaration moved to
+another relation is `DDL-004` (the generated guard and drop would target the
+new relation); token spelling canonicalizes, braces inside a single-quoted
+literal are text, a `--` line comment is `MAP-029` (both ports canonicalized
+and masked literals; Go found the comment hazard: whitespace collapse folds
+the body into it). Ruled the reference's way: a removal step's rollback is
+`MIG-020` like a dropped table's (PHP had derived drop + recreate);
+`CreateTrigger()` without a link is `DDL-001` (both ports said `MAP-029`).
+The review brought both ports to the rulings and found more: in Go the
+unrecorded-trigger refusal never fired (`migratedBelow` held no trigger
+types) and an applied removal was re-emitted on every `diff --allow-remove`
+(the newest-step rule now, as the reference); in PHP the generator emitted
+the normalized body instead of the author's, body columns matched
+case-insensitively, and the guard's expected statements were unsorted. In
+the reference it found the SQLite read-back losing `updateOf` on a
+multi-event declaration (`<name>_delete` sorts before `<name>_update`; the
+update trigger's narrowing is now taken, and the per-event rows are checked
+to form one declaration), the shadow skipping a hand-written trigger without
+the note the spec promises, the scan rule's name set missing unlinked
+declaration classes, and `CreateTriggersAsync` executing before every
+statement had rendered. No conformance pin changed in the review. Known PHP
+limitation, recorded without a §10 row: a trigger removal whose class no
+migration step ever named cannot be emitted (no assembly to find the class
+from the folder name) — PHP reports a problem where C# emits the drop; it
+needs a snapshot with no step at all, which is rare.
+
+**Verification.** PostgreSQL 16.4 live on this machine (Laragon's, started with `pg_ctl`),
+SQLite as always, no SQL Server: C# 475 passed / 13 skipped (the SQL Server
+leg, the new trigger test included), PHP 915 tests (21 skipped, the SQL
+Server leg), Go every package ok, `gofmt` and `go vet` clean. The SQL Server
+trigger renderings are pinned by `conformance/trigger-sql/` and the three
+live trigger tests are written; they run when the owner's server is back
+(the commands of ADR-0040 add.3), together with the add.3 verification.
+
+**Status.** Accepted. Level 4 item 1 is built in C#, PHP, and Go. Next:
+migration tooling beyond SQLite (item 2).

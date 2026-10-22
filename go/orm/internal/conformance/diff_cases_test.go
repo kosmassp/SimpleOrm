@@ -15,11 +15,14 @@ import (
 // no database, pure data (mirrors ConformanceDiffTests.cs).
 type diffCase struct {
 	Name     string            `json:"name"`
+	Kind     string            `json:"kind"`
 	Current  json.RawMessage   `json:"current"`
 	Snapshot json.RawMessage   `json:"snapshot"`
 	Renames  map[string]string `json:"renames"`
 	Expect   struct {
 		IsNew          bool       `json:"isNew"`
+		IsChanged      bool       `json:"isChanged"`
+		IsRemoved      bool       `json:"isRemoved"`
 		Added          []string   `json:"added"`
 		Removed        []string   `json:"removed"`
 		Renamed        [][]string `json:"renamed"`
@@ -36,6 +39,11 @@ func TestDiffCases_BehaveAsSpecified(t *testing.T) {
 			var c diffCase
 			if err := json.Unmarshal(data, &c); err != nil {
 				t.Fatalf("parse case: %v", err)
+			}
+
+			if c.Kind == "trigger" {
+				assertTriggerDiff(t, c)
+				return
 			}
 
 			current, _, err := migrations.ParseTable(c.Current)
@@ -161,4 +169,27 @@ func containsSubstring(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// assertTriggerDiff is the "kind": "trigger" form (ADR-0042): both sides are trigger declarations in snapshot
+// form, either null, and the expectation is isNew, isChanged, isRemoved, or nothing — by declaration, nothing
+// rendered.
+func assertTriggerDiff(t *testing.T, c diffCase) {
+	t.Helper()
+	parse := func(raw json.RawMessage, side string) *migrations.TriggerDeclaration {
+		if len(raw) == 0 || string(raw) == "null" {
+			return nil
+		}
+		declaration, _, err := migrations.ParseTriggerSnapshot(raw)
+		if err != nil {
+			t.Fatalf("parse %s: %v", side, err)
+		}
+		return declaration
+	}
+
+	diff := migrations.DiffTrigger(parse(c.Current, "current"), parse(c.Snapshot, "snapshot"))
+	if diff.IsNew != c.Expect.IsNew || diff.IsChanged != c.Expect.IsChanged || diff.IsRemoved != c.Expect.IsRemoved {
+		t.Errorf("trigger diff: want new=%v changed=%v removed=%v, got new=%v changed=%v removed=%v",
+			c.Expect.IsNew, c.Expect.IsChanged, c.Expect.IsRemoved, diff.IsNew, diff.IsChanged, diff.IsRemoved)
+	}
 }

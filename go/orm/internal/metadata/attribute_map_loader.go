@@ -46,7 +46,7 @@ func loadFromDeclarations(l *Loader, t reflect.Type) (*core.EntityMap, error) {
 		checkStatementPlaceholders(t, sql, declaredParams, errs)
 	}
 
-	return assemble(t, kind, relationName, schema, sql, declaredParams, specs, indexSpecs, relationships, convention, errs)
+	return assemble(t, kind, relationName, schema, sql, declaredParams, specs, indexSpecs, relationships, def.Triggers, convention, errs)
 }
 
 // refuseEmbeddedEntities is the one Go-reachable analog of MAP-028 (ADR-0041;

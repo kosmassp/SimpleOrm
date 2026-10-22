@@ -40,6 +40,9 @@ shadow, diff, and force-sync tooling is SQLite-only in every implementation (see
 | `BeginMigrationRunLock(connection)` | one transaction held for the whole run, made exclusive the dialect's way | the runner |
 | `VersionTableSql` | idempotent DDL for `schema_version` — same columns everywhere | the runner |
 | `RenameTableSql`, `RenameColumnSql`, `AddColumnSql`, `DropColumnSql`, `DropTableSql`, `DropIndexSql` | the typed migration actions and the derived rollback | the runner, the down deriver, force sync |
+| `CreateTriggerSql(relation, onView, trigger)` | the create statements of a trigger from its neutral declaration (ADR-0042): header, wrapper, token expansions; no drop; `DDL-005` for a form the dialect lacks | trigger steps, the derived rollback, `CreateTriggers`, the `MIG-012` guard (as the expectation) |
+| `DropTriggerSql(relation, name)` | drops a trigger idempotently with whatever the dialect created beside it | trigger steps, the derived rollback, `CreateTriggers` |
+| `TriggerDefinitionSql` | introspection: `@relation` = the trigger name, one column `definition`, one row per statement the dialect created — each, normalized, equal to the matching `CreateTriggerSql` statement | the `MIG-012` guard on trigger steps, the shadow replayer |
 
 A port adds members only where the reference has them. Describing a statement
 without executing it (SchemaGuard, §7.19) is **not** a seam member: the reference
@@ -115,6 +118,34 @@ trigger-safe.
 Only the generated writes are affected. A registry command (`Execute`) returns
 the driver's count on every dialect — hand-written SQL is the author's, and the
 author of a trigger-bearing command adds its own `SET NOCOUNT ON`.
+
+### Triggers (spec/migrations.md "Triggers", ADR-0042)
+
+A trigger reaches the dialect as a neutral declaration — name, timing, events,
+update-of columns, one body with the tokens `{new: cols}`, `{old: cols}`,
+`{now}` — and the dialect renders **everything else**: the header, the
+granularity, the wrapper, the token expansions. The create statements:
+
+| | SQLite | SQL Server | PostgreSQL |
+|---|---|---|---|
+| statements | one `create trigger` **per event** — single-event: the declared name; several: `<name>_<event>` (SQLite triggers are single-event) | one `create trigger`, the events listed `insert, update, delete` | `create or replace function "<name>_fn"() returns trigger language plpgsql as $$ … $$`, then `create trigger "<name>" … execute function "<name>_fn"()` |
+| header | `create trigger <n> <before\|after\|instead of> <event>[ of a, b] on <t> for each row` | `create trigger [n] on [t] <after\|instead of> <events> as` | `create trigger "n" <before\|after\|instead of> <events joined " or ", "update" carrying " of "a", "b"> on "t" for each row execute function "n_fn"()` |
+| wrapper | `\nbegin\n<body>\nend` | `\nbegin\n    set nocount on;\n[    if not (update([a]) or update([b])) return;\n]<body>\nend` | the function body `\nbegin\n<body>\n    return null;\nend\n` for `after`; for `before`/`instead of`: `    if tg_op = 'DELETE' then return old; end if;\n    return new;` |
+| `{new: a, b}` | `(select new.a as a, new.b as b)` | `inserted` | `(select new."a" as "a", new."b" as "b")` |
+| `{old: a, b}` | the same over `old.` | `deleted` | the same over `old` |
+| `{now}` | `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` | `todatetimeoffset(sysutcdatetime(), 0)` | `now()` |
+| `before` | native | **`DDL-005`** | native |
+| `instead of` on a table | **`DDL-005`** (views only) | native | **`DDL-005`** (views only) |
+| `instead of` on a view | native | native | native |
+| update-of | `update of a, b` | the prologue `if not (update([a]) or update([b])) return;` — `if exists (select 1 from inserted) and not (…) return;` when the declaration also fires on delete, where `update()` is always false | `update of "a", "b"` on the update event (`after update of "a", "b" or delete`) |
+| drop | `drop trigger if exists <n>`, `<n>_insert`, `<n>_update`, `<n>_delete` (every possible per-event name) | `if object_id(N'n', N'TR') is not null drop trigger [n]` | `drop trigger if exists "n" on "t"`, `drop function if exists "n_fn"()` |
+
+The body is trimmed and inserted verbatim between the wrapper's lines; identifiers
+inside it are the author's. `set nocount on` and the `return` are rendering,
+never the author's. SQL Server's `create trigger` must open its batch, so the drop
+is a separate statement and `create or alter` is not used (SQL Server 2016 SP1).
+`conformance/trigger-sql/` pins every form above on every dialect, the `DDL-005`
+refusals included.
 
 ### Metadata-rendered DDL
 
@@ -418,6 +449,53 @@ where c.oid = to_regclass(@relation) and c.relkind in ('v', 'm')
 (The PostgreSQL column query reports `pk` as a presence flag, not an ordinal;
 SchemaGuard only asks whether the column is part of the key.)
 
+- **Trigger definition** (ADR-0042): `@relation` is the declared trigger name;
+  one column `definition`, one row per statement the dialect created for it;
+  no rows when absent. SQLite returns the stored text of the declared name and
+  its per-event forms (`name in (@relation, @relation || '_insert', …)`,
+  ordered by name) — SQLite keeps the text as submitted, the leading keywords
+  recased; SQL Server `sys.sql_modules.definition` joined to `sys.triggers`
+  (the text as submitted); PostgreSQL **reconstructs** both statements from the
+  catalog in the dialect's own spelling — the function from `pg_proc.prosrc`
+  (the body verbatim) and the trigger from `pg_trigger.tgtype` (bit 2 before,
+  bit 64 instead of, else after; bits 4/16/8 insert/update/delete) and
+  `tgattr` (the update-of columns through `pg_attribute`), internal triggers
+  excluded — so that each row, whitespace-collapsed, equals the matching
+  `CreateTriggerSql` statement. That equality is the symmetric contract every
+  live leg checks.
+
+```sql
+-- SQLite, trigger definition
+select sql as definition from sqlite_master where type = 'trigger'
+and name in (@relation, @relation || '_insert', @relation || '_update', @relation || '_delete') order by name
+
+-- SQL Server, trigger definition
+select m.definition as [definition] from sys.sql_modules m join sys.triggers t on t.object_id = m.object_id
+where t.object_id = object_id(@relation)
+
+-- PostgreSQL, trigger definition
+select 'create or replace function "' || p.proname || '"() returns trigger language plpgsql as $$' || p.prosrc || '$$' as definition
+from pg_trigger t
+join pg_proc p on p.oid = t.tgfoid
+where t.tgname = @relation and not t.tgisinternal
+union all
+select 'create trigger "' || t.tgname || '" '
+    || case when (t.tgtype & 2) <> 0 then 'before' when (t.tgtype & 64) <> 0 then 'instead of' else 'after' end
+    || ' '
+    || array_to_string(array_remove(array[
+           case when (t.tgtype & 4) <> 0 then 'insert' end,
+           case when (t.tgtype & 16) <> 0 then 'update' || coalesce((
+               select ' of ' || string_agg('"' || a.attname || '"', ', ' order by k.ord)
+               from unnest(t.tgattr::smallint[]) with ordinality as k(attnum, ord)
+               join pg_attribute a on a.attrelid = t.tgrelid and a.attnum = k.attnum), '') end,
+           case when (t.tgtype & 8) <> 0 then 'delete' end], null), ' or ')
+    || ' on "' || c.relname || '" for each row execute function "' || p.proname || '"()' as definition
+from pg_trigger t
+join pg_class c on c.oid = t.tgrelid
+join pg_proc p on p.oid = t.tgfoid
+where t.tgname = @relation and not t.tgisinternal
+```
+
 ## Connection strings and the CLI
 
 A dialect takes its driver's **native** connection string; the SQLite dialect also
@@ -434,7 +512,12 @@ Named here so that no implementation attempts it ahead of the reference:
 - **Snapshot, shadow, diff, and force-sync tooling** against SQL Server or
   PostgreSQL: untested in the reference, not ported. Rollbacks there need `Down()`
   overrides until snapshot tooling learns the dialect — `MIG-020` says so when a
-  derived rollback is asked for.
+  derived rollback is asked for. Trigger snapshots are dialect-neutral, but the
+  shadow's parse of a stored trigger back to its declaration exists for SQLite
+  only (the dialect it replays).
+- **A per-dialect body override** for a trigger (a body that must say what the
+  tokens cannot, such as aborting a write): not provided — the three dialects
+  and the fixture need none; a real case decides its form.
 - The `MIG-012` view-guard normalization against `sys.sql_modules` /
   `pg_get_viewdef` output: untested beyond SQLite.
 - Procedure execution (`SupportsProcedures` is declared, dormant); `REFRESH
@@ -481,7 +564,11 @@ Each live leg covers at least (ADR-0024/0025): generated-key write-back and a
 temporal round-trip reading back marked; criteria paging with and without
 orderings; reserved-word identifiers end to end (table `order`, column `desc`);
 version-column concurrency on update and delete (SQL Server additionally under
-an `AFTER` trigger without `SET NOCOUNT ON`, Clarification 23); transaction scopes; explicit,
+an `AFTER` trigger without `SET NOCOUNT ON`, Clarification 23); the declared
+fixture trigger created from metadata, firing once per updated row, and read
+back through `TriggerDefinitionSql` as exactly its rendering, plus a
+multi-event, narrowed, `before` declaration where the dialect has the form
+(ADR-0042); transaction scopes; explicit,
 batch, and link loading; a subselect include over a paged root; the composite-key
 subselect (through the EXISTS rewrite on SQL Server, native row-value IN on
 PostgreSQL); migrations up, re-run, and down under the run lock (with `Down()`

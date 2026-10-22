@@ -43,10 +43,18 @@ public sealed class ConformanceSnapshotTests
         var asOfVersion = spec.GetProperty("asOfVersion").GetInt64();
         var generatedAt = DateTimeOffset.Parse(spec.GetProperty("generatedAt").GetString()!);
 
-        var produced = spec.TryGetProperty("kind", out var kind) && kind.GetString() != "table"
-            ? SchemaSnapshot.ExportDdl(
-                map.RelationName!, kind.GetString()!, dialect.CreateViewSql(map), asOfVersion, generatedAt)
-            : SchemaSnapshot.Export(map, dialect, asOfVersion, generatedAt);
+        var kindToken = spec.TryGetProperty("kind", out var kind) ? kind.GetString() : "table";
+        var produced = kindToken switch
+        {
+            "table" => SchemaSnapshot.Export(map, dialect, asOfVersion, generatedAt),
+            // A trigger snapshots by declaration (ADR-0042): the case names the trigger the entity links.
+            "trigger" => SchemaSnapshot.ExportTrigger(
+                new TriggerSnapshot(
+                    map.RelationName!, map.Kind == RelationKind.View,
+                    map.Triggers.Single(t => t.Name == spec.GetProperty("trigger").GetString()).Definition),
+                asOfVersion, generatedAt),
+            _ => SchemaSnapshot.ExportDdl(map.RelationName!, kindToken!, dialect.CreateViewSql(map), asOfVersion, generatedAt),
+        };
 
         using var producedDocument = JsonDocument.Parse(produced);
         Assert.True(

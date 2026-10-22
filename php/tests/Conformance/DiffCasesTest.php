@@ -9,6 +9,7 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use SimpleOrm\Migrations\MigrationGenerator;
 use SimpleOrm\Migrations\SchemaSnapshot;
+use SimpleOrm\Migrations\TriggerSchema;
 use SimpleOrm\Tests\Support\ConformancePaths;
 
 /**
@@ -38,6 +39,12 @@ final class DiffCasesTest extends TestCase
     {
         $path = ConformancePaths::dir('diff-cases') . DIRECTORY_SEPARATOR . $fileName;
         $spec = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+
+        if (($spec['kind'] ?? 'table') === 'trigger') {
+            self::triggerCaseDiffsAsSpecified($spec);
+
+            return;
+        }
 
         $current = SchemaSnapshot::parse(json_encode($spec['current'], JSON_THROW_ON_ERROR))->schema;
         $snapshot = array_key_exists('snapshot', $spec) && $spec['snapshot'] !== null
@@ -87,6 +94,26 @@ final class DiffCasesTest extends TestCase
         foreach ($expectedUnsupported as $fragment) {
             self::assertNotEmpty(array_filter($diff->unsupported, static fn (string $message) => str_contains($message, $fragment)));
         }
+    }
+
+    /**
+     * A `"kind": "trigger"` case (ADR-0042): both sides are trigger declarations in snapshot form (either `null`), diffed by
+     * declaration — `expect` is `isNew` | `isChanged` | `isRemoved`, or empty for no change.
+     *
+     * @param array<string, mixed> $spec
+     */
+    private static function triggerCaseDiffsAsSpecified(array $spec): void
+    {
+        $side = static fn (?array $document): ?TriggerSchema => $document === null
+            ? null
+            : SchemaSnapshot::parseTrigger(json_encode($document, JSON_THROW_ON_ERROR))->schema;
+
+        $diff = MigrationGenerator::diffTrigger($side($spec['current'] ?? null), $side($spec['snapshot'] ?? null));
+        $expect = $spec['expect'];
+
+        self::assertSame($expect['isNew'] ?? false, $diff->isNew);
+        self::assertSame($expect['isChanged'] ?? false, $diff->isChanged);
+        self::assertSame($expect['isRemoved'] ?? false, $diff->isRemoved);
     }
 
     /** @param list<string> $names @return list<string> */

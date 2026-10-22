@@ -418,6 +418,9 @@ internal sealed class RecordingDialect(IDialect inner) : IDialect
     public string ColumnsInfoSql => inner.ColumnsInfoSql;
     public bool IsDeclaredTypeCompatible(string declaredType, Type clrType, bool enumAsInt) => inner.IsDeclaredTypeCompatible(declaredType, clrType, enumAsInt);
     public string ViewDefinitionSql => inner.ViewDefinitionSql;
+    public IReadOnlyList<string> CreateTriggerSql(string relation, bool onView, TriggerDefinition trigger) => inner.CreateTriggerSql(relation, onView, trigger);
+    public IReadOnlyList<string> DropTriggerSql(string relation, string triggerName) => inner.DropTriggerSql(relation, triggerName);
+    public string TriggerDefinitionSql => inner.TriggerDefinitionSql;
     public string IndexesInfoSql => inner.IndexesInfoSql;
     public string StorageType(PropertyMap property) => inner.StorageType(property);
     public bool SupportsMaterializedViews => inner.SupportsMaterializedViews;

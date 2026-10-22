@@ -16,10 +16,16 @@ type (
 	TableMigration[T any] = migrations.TableMigration[T]
 	// ViewMigration is embedded by a view (or materialized view) step to declare its entity type.
 	ViewMigration[T any] = migrations.ViewMigration[T]
+	// TriggerMigration is embedded by a trigger step to declare its entity and its trigger class (Level 4, ADR-0042).
+	TriggerMigration[TEntity, TTrigger any] = migrations.TriggerMigration[TEntity, TTrigger]
 	// TableActions are a table step's actions: rename -> add -> remove -> raw SQL, in that fixed order.
 	TableActions = migrations.TableActions
 	// ViewActions are a view step's actions, executed in declaration order.
 	ViewActions = migrations.ViewActions
+	// TriggerActions are a trigger step's actions: CreateTrigger, Recreate, ExpectDefinition, DropTrigger, in declaration order (ADR-0042).
+	TriggerActions = migrations.TriggerActions
+	// TriggerDeclaration is a trigger's neutral declaration as migrations hold it: the content of a trigger snapshot and of a data-driven trigger step.
+	TriggerDeclaration = migrations.TriggerDeclaration
 	// MigrationAction is one action with its optional per-action Pre/Post data hooks.
 	MigrationAction = migrations.MigrationAction
 	// MigrationSQL collects a step's PreDown/PostDown data-hook statements.

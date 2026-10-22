@@ -313,6 +313,9 @@ type EntityMap struct {
 	KeyStrategy         KeyStrategy
 	Indexes             []*EntityIndex
 	Relationships       []*RelationshipMap
+	// Triggers are the linked triggers in link order (Level 4, ADR-0042): declarations only — migrations create
+	// them (spec/migrations.md "Triggers"); the session never reads or fires them.
+	Triggers []*EntityTrigger
 	// KeyProperties are the key properties in declaration order (composite keys are ordered).
 	KeyProperties   []*PropertyMap
 	VersionProperty *PropertyMap

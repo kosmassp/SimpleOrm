@@ -33,6 +33,7 @@ var sampleEntities = map[string]reflect.Type{
 	"MonthlySalesTotal":    reflect.TypeFor[sample.MonthlySalesTotal](),
 	"UserActivityReport":   reflect.TypeFor[sample.UserActivityReport](),
 	"UserTransactionTotal": reflect.TypeFor[sample.UserTransactionTotal](),
+	"RoleChange":           reflect.TypeFor[sample.RoleChange](),
 }
 
 // astDialects is every dialect the ast/ runner renders through, by the name

@@ -196,6 +196,98 @@ public sealed class PostgresDialect : IDialect
     public string DropIndexSql(string table, string index)
         => "drop index " + QuoteIdentifier(index);   // index names are schema-scoped, not table-scoped
 
+    // --- triggers (ADR-0042) ---------------------------------------------------------
+
+    /// <summary>
+    /// A PostgreSQL trigger executes a function: the dialect renders one per
+    /// trigger, named <c>&lt;trigger&gt;_fn</c>, created with it and dropped with
+    /// it, never in the metadata. Row-level (<c>for each row</c>), so the body's
+    /// rows are one-row derived tables over <c>new</c>/<c>old</c>; the function
+    /// returns <c>null</c> after an AFTER trigger and the row otherwise (<c>old</c>
+    /// on delete, <c>new</c> else), which the dialect appends — never the author.
+    /// INSTEAD OF exists only on views (<c>DDL-005</c> on a table).
+    /// </summary>
+    public IReadOnlyList<string> CreateTriggerSql(string relation, bool onView, TriggerDefinition trigger)
+    {
+        if (trigger.Timing == TriggerTiming.InsteadOf && !onView)
+        {
+            throw new SimpleOrmException("DDL-005", trigger.Name, "PostgreSQL has INSTEAD OF triggers on views only; declare Before or After on a table");
+        }
+
+        var body = TriggerTokens.Render(trigger.Sql, segment => segment.Kind switch
+        {
+            "new" => TriggerTokens.RowSelect("new", segment.Columns, QuoteIdentifier),
+            "old" => TriggerTokens.RowSelect("old", segment.Columns, QuoteIdentifier),
+            _ => "now()",
+        });
+        var returns = trigger.Timing == TriggerTiming.After
+            ? "    return null;"
+            : "    if tg_op = 'DELETE' then return old; end if;\n    return new;";
+        var function = FunctionName(trigger.Name);
+        return
+        [
+            "create or replace function " + QuoteIdentifier(function) + "() returns trigger language plpgsql as $$\nbegin\n"
+                + body.Trim() + "\n" + returns + "\nend\n$$",
+            "create trigger " + QuoteIdentifier(trigger.Name) + " " + Timing(trigger.Timing) + " "
+                + string.Join(" or ", trigger.EventList().Select(e => EventWord(e)
+                    + (e == TriggerEvent.Update && trigger.UpdateOf.Count > 0 ? " of " + string.Join(", ", trigger.UpdateOf.Select(QuoteIdentifier)) : string.Empty)))
+                + " on " + QuoteIdentifier(relation) + " for each row execute function " + QuoteIdentifier(function) + "()",
+        ];
+    }
+
+    public IReadOnlyList<string> DropTriggerSql(string relation, string triggerName)
+        =>
+        [
+            "drop trigger if exists " + QuoteIdentifier(triggerName) + " on " + QuoteIdentifier(relation),
+            "drop function if exists " + QuoteIdentifier(FunctionName(triggerName)) + "()",
+        ];
+
+    /// <summary>
+    /// The function reconstructed from <c>pg_proc.prosrc</c> (the body verbatim)
+    /// and the trigger from <c>pg_trigger</c> (<c>tgtype</c> bits, <c>tgattr</c>
+    /// columns), in the dialect's own spelling — so each row equals the matching
+    /// <see cref="CreateTriggerSql"/> statement once whitespace is collapsed.
+    /// </summary>
+    public string TriggerDefinitionSql
+        => """
+           select 'create or replace function "' || p.proname || '"() returns trigger language plpgsql as $$' || p.prosrc || '$$' as definition
+           from pg_trigger t
+           join pg_proc p on p.oid = t.tgfoid
+           where t.tgname = @relation and not t.tgisinternal
+           union all
+           select 'create trigger "' || t.tgname || '" '
+               || case when (t.tgtype & 2) <> 0 then 'before' when (t.tgtype & 64) <> 0 then 'instead of' else 'after' end
+               || ' '
+               || array_to_string(array_remove(array[
+                      case when (t.tgtype & 4) <> 0 then 'insert' end,
+                      case when (t.tgtype & 16) <> 0 then 'update' || coalesce((
+                          select ' of ' || string_agg('"' || a.attname || '"', ', ' order by k.ord)
+                          from unnest(t.tgattr::smallint[]) with ordinality as k(attnum, ord)
+                          join pg_attribute a on a.attrelid = t.tgrelid and a.attnum = k.attnum), '') end,
+                      case when (t.tgtype & 8) <> 0 then 'delete' end], null), ' or ')
+               || ' on "' || c.relname || '" for each row execute function "' || p.proname || '"()' as definition
+           from pg_trigger t
+           join pg_class c on c.oid = t.tgrelid
+           join pg_proc p on p.oid = t.tgfoid
+           where t.tgname = @relation and not t.tgisinternal
+           """;
+
+    private static string FunctionName(string triggerName) => triggerName + "_fn";
+
+    private static string Timing(TriggerTiming timing) => timing switch
+    {
+        TriggerTiming.Before => "before",
+        TriggerTiming.After => "after",
+        _ => "instead of",
+    };
+
+    private static string EventWord(TriggerEvent e) => e switch
+    {
+        TriggerEvent.Insert => "insert",
+        TriggerEvent.Update => "update",
+        _ => "delete",
+    };
+
     public string CreateViewSql(EntityMap map)
         => map.Kind == RelationKind.MaterializedView
             ? "create materialized view if not exists " + QuoteIdentifier(map.RelationName!) + " as\n" + map.DefiningSql

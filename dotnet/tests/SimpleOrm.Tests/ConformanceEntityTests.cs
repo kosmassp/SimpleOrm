@@ -18,6 +18,7 @@ public sealed class ConformanceEntityTests
         typeof(Transaction),
         typeof(TransactionDetail),
         typeof(UserProfile),
+        typeof(RoleChange),
         typeof(UserTransactionTotal),
         typeof(MonthlySalesTotal),
         typeof(DailySales),

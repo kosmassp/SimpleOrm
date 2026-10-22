@@ -49,6 +49,7 @@ final class EntityMapLoader
     {
         // MAP-028 (ADR-0041): the one place every path that loads a map passes through.
         BaseClassRules::assertConcrete($entityType);
+        TriggerRules::assertNotTriggerClass($entityType);   // MAP-029 (ADR-0042): a trigger class is a declaration object
 
         if (isset($this->options->explicitMaps[$entityType])) {
             return $this->options->explicitMaps[$entityType];

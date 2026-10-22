@@ -90,9 +90,18 @@ func validateAll(ctx context.Context, db *Db, registry Registry) error {
 	}
 
 	for _, entityType := range registry.Entities {
+		if core.IsTriggerType(entityType) {
+			continue // a trigger class is a declaration object, no entity: scans skip it (ADR-0042)
+		}
 		if err := validateEntity(ctx, db, tableColumns, entityType, &errs); err != nil {
 			return err
 		}
+	}
+
+	// The scan rule (ADR-0042): a trigger class linked by two entities, or two classes declaring one name — a lone
+	// load cannot see either, so the registry-wide report carries them.
+	for _, conflict := range db.maps.ScanTriggers(registry.Entities, registry.Triggers) {
+		errs = append(errs, &core.ValidationError{Code: conflict.Code, Source: conflict.Target, Message: conflict.Message})
 	}
 
 	if len(errs) > 0 {

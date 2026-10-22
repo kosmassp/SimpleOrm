@@ -202,6 +202,62 @@ public sealed class SqlServerDialect : IDialect
     public string CreateViewSql(EntityMap map)
         => "create or alter view " + QuoteIdentifier(map.RelationName!) + " as\n" + map.DefiningSql;
 
+    // --- triggers (ADR-0042) ---------------------------------------------------------
+
+    /// <summary>
+    /// SQL Server triggers are statement-level: the body's rows are the
+    /// <c>inserted</c>/<c>deleted</c> pseudo-tables. No BEFORE (<c>DDL-005</c>);
+    /// INSTEAD OF on tables and views. <c>set nocount on</c> opens every body —
+    /// the ruling that this is configured, never written by the author. An
+    /// <c>UpdateOf</c> narrowing has no header form; it renders as an
+    /// <c>if not (update(…)) return;</c> prologue. One statement: <c>CREATE
+    /// TRIGGER</c> must open its batch, so the drop is a separate statement
+    /// (<see cref="DropTriggerSql"/>) and <c>create or alter</c> is avoided (2016 SP1).
+    /// </summary>
+    public IReadOnlyList<string> CreateTriggerSql(string relation, bool onView, TriggerDefinition trigger)
+    {
+        if (trigger.Timing == TriggerTiming.Before)
+        {
+            throw new SimpleOrmException("DDL-005", trigger.Name, "SQL Server has no BEFORE triggers; declare After or InsteadOf");
+        }
+
+        var body = TriggerTokens.Render(trigger.Sql, segment => segment.Kind switch
+        {
+            "new" => "inserted",
+            "old" => "deleted",
+            _ => "todatetimeoffset(sysutcdatetime(), 0)",
+        });
+        // update(col) is false in a delete, so a declaration that also fires on delete
+        // applies the narrowing only when rows were inserted or updated.
+        var prologue = trigger.UpdateOf.Count > 0
+            ? "    if " + (trigger.Events.HasFlag(TriggerEvent.Delete) ? "exists (select 1 from inserted) and " : string.Empty)
+                + "not (" + string.Join(" or ", trigger.UpdateOf.Select(c => "update(" + QuoteIdentifier(c) + ")")) + ") return;\n"
+            : string.Empty;
+        return
+        [
+            "create trigger " + QuoteIdentifier(trigger.Name) + " on " + QuoteIdentifier(relation)
+                + " " + (trigger.Timing == TriggerTiming.After ? "after" : "instead of") + " "
+                + string.Join(", ", trigger.EventList().Select(EventWord))
+                + " as\nbegin\n    set nocount on;\n" + prologue + body.Trim() + "\nend",
+        ];
+    }
+
+    public IReadOnlyList<string> DropTriggerSql(string relation, string triggerName)
+        => ["if object_id(N'" + Escape(triggerName) + "', N'TR') is not null drop trigger " + QuoteIdentifier(triggerName)];
+
+    /// <summary>The stored text, exactly as submitted (<c>sys.sql_modules</c>).</summary>
+    public string TriggerDefinitionSql
+        => "select m.definition as [definition] from sys.sql_modules m "
+            + "join sys.triggers t on t.object_id = m.object_id "
+            + "where t.object_id = object_id(@relation)";
+
+    private static string EventWord(TriggerEvent e) => e switch
+    {
+        TriggerEvent.Insert => "insert",
+        TriggerEvent.Update => "update",
+        _ => "delete",
+    };
+
     public string CreateTableSql(EntityMap map)
     {
         var builder = new StringBuilder("if object_id(N'").Append(Escape(map.RelationName!))

@@ -65,6 +65,7 @@ func OpenSampleAt(t testing.TB, path string, options orm.Options) *orm.Db {
 		orm.CreateTable[sample.UserProfile],
 		orm.CreateTable[sample.Transaction],
 		orm.CreateTable[sample.TransactionDetail],
+		orm.CreateTable[sample.RoleChange],
 	} {
 		if err := create(ctx, db); err != nil {
 			t.Fatalf("create sample table: %v", err)

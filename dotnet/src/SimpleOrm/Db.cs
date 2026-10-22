@@ -399,6 +399,36 @@ public sealed partial class Db : IAsyncDisposable
     }
 
     /// <summary>
+    /// Creates the entity's declared triggers from its metadata (ADR-0042): each
+    /// dropped if present, then created — replace semantics, so the call is
+    /// idempotent. A dev/test utility beside <see cref="CreateTableAsync{TEntity}"/>,
+    /// and deliberately separate from it: building a schema from metadata never
+    /// creates triggers unless asked. Versioned migrations remain the
+    /// schema-evolution path. A source that carries no triggers (<c>DDL-001</c>) or
+    /// a declaration the dialect has no form for (<c>DDL-005</c>) throws.
+    /// </summary>
+    public async Task CreateTriggersAsync<TEntity>(CancellationToken ct)
+        where TEntity : class
+    {
+        var map = Maps.Load<TEntity>();
+        if (map.Kind is not (RelationKind.Table or RelationKind.View))
+        {
+            throw new SimpleOrmException(
+                "DDL-001", typeof(TEntity).Name, $"is {map.Kind}-backed; triggers belong to tables and views");
+        }
+
+        // Rendered before anything runs: a form the dialect lacks (DDL-005) refuses with nothing half-created.
+        var statements = map.Triggers
+            .SelectMany(trigger => Options.Dialect.DropTriggerSql(map.RelationName!, trigger.Name)
+                .Concat(Options.Dialect.CreateTriggerSql(map.RelationName!, map.Kind == RelationKind.View, trigger.Definition)))
+            .ToArray();
+        foreach (var sql in statements)
+        {
+            await ExecuteRawAsync(sql, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
     /// Generated select-all (ADR-0011 addendum): explicit column list from the
     /// metadata, ordered by the key when one exists — no per-table query needed.
     /// Works for tables, views, and materialized views; statements use the typed

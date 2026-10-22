@@ -105,6 +105,13 @@ type Dialect interface {
 	// rows = view absent (backs MIG-012 and view snapshots).
 	ViewDefinitionSQL() string
 
+	// TriggerDefinitionSQL: the stored trigger statements of a declared trigger (Level 4, ADR-0042) — parameter
+	// @relation is the trigger's declared name; one column `definition`, one row per statement the dialect
+	// created for it (SQLite's per-event triggers, PostgreSQL's function and trigger), none when absent. Each
+	// row, normalized, equals the matching CreateTriggerSQL statement — the MIG-012 trigger guard's and the
+	// shadow replayer's source.
+	TriggerDefinitionSQL() string
+
 	// IndexesInfoSQL: a table's explicitly created indexes — parameter
 	// @relation; columns index_name, unique, seqno, column, desc, ordered by
 	// index then position.
@@ -142,6 +149,16 @@ type Dialect interface {
 	DropColumnSQL(table, column string) string
 
 	DropTableSQL(table string) string
+
+	// CreateTriggerSQL renders the create statements of a trigger from its neutral declaration (ADR-0042,
+	// spec/dialects.md "Triggers"): the header, the granularity, the wrapper, the token expansions — never a
+	// drop. relation is the table or view the trigger is on (onView says which). DDL-005 for a form the dialect
+	// lacks (before on SQL Server; instead-of on a table outside SQL Server).
+	CreateTriggerSQL(relation string, onView bool, trigger TriggerDefinition) ([]string, error)
+
+	// DropTriggerSQL drops a trigger idempotently, with whatever the dialect created beside it (SQLite's
+	// per-event names, PostgreSQL's function).
+	DropTriggerSQL(relation, name string) []string
 
 	// DropIndexSQL drops an index; dialects that scope index names to the table (SQL Server) need both.
 	DropIndexSQL(table, index string) string

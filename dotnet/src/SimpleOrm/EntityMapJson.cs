@@ -98,6 +98,7 @@ public static class EntityMapJson
 
             WriteColumns(writer, map);
             WriteIndexes(writer, map);
+            WriteTriggers(writer, map);
 
             if (map.Relationships.Count > 0)
             {
@@ -242,6 +243,89 @@ public static class EntityMapJson
 
         writer.WriteEndArray();
     }
+
+    /// <summary>
+    /// The declared triggers (ADR-0042), written only when declared: name, timing,
+    /// events (fixed order insert, update, delete), <c>updateOf</c> column names
+    /// when declared, and the neutral body whitespace-normalized. Column-centric
+    /// and language-neutral like everything else — the trigger class's name never
+    /// appears.
+    /// </summary>
+    internal static void WriteTriggers(Utf8JsonWriter writer, EntityMap map)
+    {
+        if (map.Triggers.Count == 0)
+        {
+            return;
+        }
+
+        writer.WritePropertyName("triggers");
+        writer.WriteStartArray();
+        foreach (var trigger in map.Triggers)
+        {
+            WriteTriggerDefinition(writer, trigger.Definition);
+        }
+
+        writer.WriteEndArray();
+    }
+
+    /// <summary>One trigger definition object — the export's and the snapshot's shared shape.</summary>
+    internal static void WriteTriggerDefinition(Utf8JsonWriter writer, TriggerDefinition definition, bool withName = true)
+    {
+        writer.WriteStartObject();
+        if (withName)
+        {
+            writer.WriteString("name", definition.Name);
+        }
+
+        writer.WriteString("timing", TimingToken(definition.Timing));
+        writer.WritePropertyName("events");
+        writer.WriteStartArray();
+        foreach (var e in definition.EventList())
+        {
+            writer.WriteStringValue(EventToken(e));
+        }
+
+        writer.WriteEndArray();
+        if (definition.UpdateOf.Count > 0)
+        {
+            WriteNames(writer, "updateOf", definition.UpdateOf);
+        }
+
+        writer.WriteString("sql", definition.NormalizedSql);
+        writer.WriteEndObject();
+    }
+
+    internal static string TimingToken(TriggerTiming timing) => timing switch
+    {
+        TriggerTiming.Before => "before",
+        TriggerTiming.After => "after",
+        TriggerTiming.InsteadOf => "instead_of",
+        _ => throw new ArgumentOutOfRangeException(nameof(timing)),
+    };
+
+    internal static string EventToken(TriggerEvent e) => e switch
+    {
+        TriggerEvent.Insert => "insert",
+        TriggerEvent.Update => "update",
+        TriggerEvent.Delete => "delete",
+        _ => throw new ArgumentOutOfRangeException(nameof(e)),
+    };
+
+    internal static TriggerTiming ParseTiming(string token) => token switch
+    {
+        "before" => TriggerTiming.Before,
+        "after" => TriggerTiming.After,
+        "instead_of" => TriggerTiming.InsteadOf,
+        _ => throw new ArgumentOutOfRangeException(nameof(token), $"unknown trigger timing '{token}'"),
+    };
+
+    internal static TriggerEvent ParseEvent(string token) => token switch
+    {
+        "insert" => TriggerEvent.Insert,
+        "update" => TriggerEvent.Update,
+        "delete" => TriggerEvent.Delete,
+        _ => throw new ArgumentOutOfRangeException(nameof(token), $"unknown trigger event '{token}'"),
+    };
 
     private static string KindToken(RelationKind kind) => kind switch
     {

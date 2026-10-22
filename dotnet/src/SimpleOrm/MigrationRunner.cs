@@ -474,11 +474,17 @@ public sealed class MigrationRunner
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
-    /// <summary>Executes one rendered statement — or, for a guard, checks the view's live definition instead.</summary>
+    /// <summary>Executes one rendered statement — or, for a guard, checks the view's or trigger's live definition instead.</summary>
     private async Task ApplyStatementAsync(
         DbTransaction transaction, long version, MigrationStatement statement,
         bool allowViewDrift, Action<string>? notify, CancellationToken ct)
     {
+        if (statement.GuardTrigger is not null)
+        {
+            await CheckTriggerGuardAsync(transaction, version, statement, allowViewDrift, notify, ct).ConfigureAwait(false);
+            return;
+        }
+
         if (statement.GuardView is null)
         {
             await ExecuteAsync(transaction, statement.Sql, ct).ConfigureAwait(false);
@@ -506,6 +512,70 @@ public sealed class MigrationRunner
         }
 
         notify?.Invoke(drift + "; recreating (--force)");
+    }
+
+    /// <summary>
+    /// The trigger guard (ADR-0042, <c>MIG-012</c> reused): the live definition
+    /// rows, normalized, must equal the dialect's rendering of the expected
+    /// declaration. Absent or different — hand-changed — refuses; the force flag
+    /// recreates with notice, exactly as for views.
+    /// </summary>
+    private async Task CheckTriggerGuardAsync(
+        DbTransaction transaction, long version, MigrationStatement statement,
+        bool allowDrift, Action<string>? notify, CancellationToken ct)
+    {
+        var live = (await ReadTriggerDefinitionsAsync(transaction, statement.GuardTrigger!, ct).ConfigureAwait(false))
+            .Select(SchemaSnapshot.NormalizeTriggerDdl)
+            .OrderBy(d => d, StringComparer.Ordinal)
+            .ToArray();
+        if (live.SequenceEqual(statement.ExpectedDefinitions, StringComparer.Ordinal))
+        {
+            return;
+        }
+
+        var drift = live.Length == 0
+            ? $"V{version:0000} {statement.GuardTrigger}: the trigger is absent; expected the previous definition"
+            : $"V{version:0000} {statement.GuardTrigger}: the live definition does not match the expected one — it was changed outside migrations";
+        if (!allowDrift)
+        {
+            throw new SimpleOrmException(
+                "MIG-012", $"V{version:0000} {statement.GuardTrigger}",
+                (live.Length == 0
+                    ? "the trigger is absent but a previous definition was expected"
+                    : "the live definition was changed outside migrations")
+                + "; review the drift, then rerun with --force to recreate it from the code");
+        }
+
+        notify?.Invoke(drift + "; recreating (--force)");
+    }
+
+    private async Task<List<string>> ReadTriggerDefinitionsAsync(DbTransaction transaction, string trigger, CancellationToken ct)
+    {
+        using var command = _db.Connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = _db.Options.Dialect.TriggerDefinitionSql;
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "@relation";
+        parameter.Value = trigger;
+        command.Parameters.Add(parameter);
+        var definitions = new List<string>();
+        var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        try
+        {
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                if (!reader.IsDBNull(0))
+                {
+                    definitions.Add(reader.GetString(0));
+                }
+            }
+        }
+        finally
+        {
+            reader.Dispose();
+        }
+
+        return definitions;
     }
 
     private async Task<string?> ReadViewDefinitionAsync(DbTransaction transaction, string view, CancellationToken ct)

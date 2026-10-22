@@ -25,6 +25,7 @@ internal static class ConformanceDatabase
         ["UserProfile"] = typeof(UserProfile),
         ["Transaction"] = typeof(Transaction),
         ["TransactionDetail"] = typeof(TransactionDetail),
+        ["RoleChange"] = typeof(RoleChange),
         ["UserTransactionTotal"] = typeof(UserTransactionTotal),
         ["BaseModel"] = typeof(BaseModel),   // the fixture's base class: named only to be refused (MAP-028, ADR-0041)
     };
@@ -40,6 +41,7 @@ internal static class ConformanceDatabase
             await db.CreateTableAsync<UserProfile>(CancellationToken.None);
             await db.CreateTableAsync<Transaction>(CancellationToken.None);
             await db.CreateTableAsync<TransactionDetail>(CancellationToken.None);
+            await db.CreateTableAsync<RoleChange>(CancellationToken.None);
             await db.CreateViewAsync<UserTransactionTotal>(CancellationToken.None);
         }
 

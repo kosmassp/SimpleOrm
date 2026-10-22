@@ -1,0 +1,20 @@
+{
+  "name": "role_audit_trigger_v13",
+  "comment": "The trigger snapshot (ADR-0042): a trigger records its neutral declaration — relation, timing, events in the fixed order, updateOf when declared, the body whitespace-collapsed with its tokens unexpanded — so one snapshot serves every dialect. Every implementation must export this exact document from the trigger its native Role entity links.",
+  "entity": "Role",
+  "kind": "trigger",
+  "trigger": "trg_roles_audit",
+  "asOfVersion": 13,
+  "generatedAt": "2026-10-22T12:00:00.0000000Z",
+  "expect": {
+    "object": "trg_roles_audit",
+    "kind": "trigger",
+    "relation": "roles",
+    "relationKind": "table",
+    "asOfVersion": 13,
+    "generatedAt": "2026-10-22T12:00:00.0000000Z",
+    "timing": "after",
+    "events": ["update"],
+    "sql": "insert into role_changes (role_id, role_name, changed_at) select n.id, n.role_name, {now} from {new: id, role_name} n;"
+  }
+}

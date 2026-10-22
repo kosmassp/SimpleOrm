@@ -68,8 +68,11 @@ orm.Open(ctx, "postgres://user:pass@localhost:5432/app", orm.Options{Dialect: po
   if you know such a column's kind, register an `ITypeHandler<DateTime>` that
   declares it.
 - Generated DDL uses `nvarchar(max)` for strings (`nvarchar(450)` for indexed
-  columns and keys) and `decimal(38, 9)`; declare real precision and lengths in
-  migrations. Composite `nvarchar(450)` keys can exceed the 900-byte index limit.
+  columns and keys) and `decimal(38,9)`; declare real precision and lengths on
+  the model with the storage facets, `[Column(Length = 50)]` and
+  `[Column(Precision = 18, Scale = 2)]` (ADR-0043), which snapshots, `diff`,
+  and force sync read. Composite `nvarchar(450)` keys can exceed the 900-byte
+  index limit.
 - **The affected-row rule.** Generated UPDATE and DELETE renderings become
   `set nocount on; <statement>; select @@rowcount; set nocount off` and the
   session judges that scalar, so a trigger's rows can never let a stale write
@@ -182,8 +185,8 @@ SQL Server refuses to convert an untyped (character) NULL into `varbinary`.
 | Row-value `IN` | yes | EXISTS rewrite | yes |
 | `Before` triggers | yes | no (`DDL-005`) | yes |
 | `InsteadOf` on a table | no (`DDL-005`) | yes | no (`DDL-005`) |
-| `snapshot`/`shadow`/`diff`/force sync | yes | not at the time of writing (ADR-0043 in progress) | not at the time of writing (ADR-0043 in progress) |
-| Derived `migrate down` | yes | needs `Down()` (`MIG-020`) | needs `Down()` (`MIG-020`) |
+| `snapshot`/`shadow`/`diff`/force sync | yes | yes (ADR-0043; `shadow --db` is the admin connection; pinned, live run pending an engine) | yes (ADR-0043, live) |
+| Derived `migrate down` | yes | yes (ADR-0043) | yes (ADR-0043) |
 | `REFRESH MATERIALIZED VIEW`, `jsonb`, array columns, batching | no | no | not yet |
 
 ## Pitfalls
@@ -200,7 +203,8 @@ SQL Server refuses to convert an untyped (character) NULL into `varbinary`.
   declare it as the column's type.
 - `TX-002` in Go after a migration ran while a session stayed open: roll back
   and rerun the transaction, or open a new session.
-- `MIG-020` on `migrate down` against SQL Server or PostgreSQL: write `Down()`
-  overrides until the tooling learns those dialects.
+- `MIG-014` on `migrate down`, `diff`, or `shadow --from`: a snapshot stamped
+  for another dialect was offered — a tree and its snapshots belong to one
+  dialect; rerun `snapshot`/`shadow` with the right `--dialect`.
 - Registry SQL is dialect-specific by nature (`IN (@Ids)` versus `= any(@Ids)`);
   criteria queries and generated CRUD are not.

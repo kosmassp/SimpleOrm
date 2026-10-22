@@ -298,7 +298,7 @@ the migrations namespace (one per database in multi-database apps);
 | `export-metadata` | `[--out dir]` | each entity's `EntityMap` JSON |
 | `snapshot` | `--out <dir>` | write `V000N.schema.json` per object from the model |
 | `diff` | `--out <dir> --namespace <ns> [--name <Description>] [--rename table.old=new]... [--allow-remove] [--draft] [--amend [--force] [--db <value>]]` | generate the next version |
-| `shadow` | `--out <dir> [--from V000N] [--to V000M]` | rebuild snapshots by replay; `--from` trusts N and regenerates only (N, M] |
+| `shadow` | `--out <dir> [--from V000N] [--to V000M] [--dialect <name> --db <admin>]` | rebuild snapshots by replay; `--from` trusts N and regenerates only (N, M]; on sqlserver/postgres `--db` is the admin connection |
 
 ```bash
 dotnet run --project dotnet/src/SimpleOrm.Cli -- migrate --assembly App.dll --db app.db --namespace App.Migrations
@@ -316,17 +316,38 @@ the application's `main` embeds, `cli.Run(ctx, registry, os.Args[1:], os.Stdout,
 and `simpleorm migrate --db app.db` takes no assembly because the registry is
 the application.
 
-## What is SQLite-only today
+## The tooling on SQL Server and PostgreSQL (ADR-0043)
 
-At the time of writing (ADR-0043 in progress), `snapshot`, `shadow`, `diff`,
-and the `migrate --force` sync are SQLite-only in every implementation:
-`shadow` replays into a throwaway SQLite database and refuses other dialects by
-name, and the introspection the others need is being extended now. On SQL
-Server and PostgreSQL the runner, the run lock, checksums, the `MIG-012` guard,
-and `migrate down` with `Down()` overrides all work; a derived rollback there
-reports `MIG-020` until the tooling lands. Trigger snapshots are
-dialect-neutral everywhere, but parsing a stored trigger back exists for SQLite
-only.
+`snapshot`, `shadow`, `diff` (and `--amend`), the derived rollbacks, and the
+`migrate --force` sync work on SQL Server and PostgreSQL as on SQLite, with
+`--dialect`. Three things to know:
+
+- **A tree and its snapshots belong to one dialect.** Table steps hold literal
+  column specs in one dialect's text, so a tree runs on one engine, and its
+  snapshots are that engine's: every non-SQLite `V000N.schema.json` carries
+  `"dialect": "sqlserver"` or `"postgres"` (an unstamped file is SQLite's,
+  so existing trees never changed), and a snapshot of another dialect refuses
+  with `MIG-014`.
+- **`shadow` needs an admin connection there.** On SQL Server and PostgreSQL
+  `--db` is the admin connection string: the command creates
+  `simpleorm_shadow_<hex>` on it, replays into it, and drops it afterwards.
+  Tables are introspected; views and triggers are recorded from the replayed
+  step itself (PostgreSQL reformats a view's text, SQL Server's `inserted`
+  loses a token's column list), and where the catalog is lossless the shadow
+  reads it too and notes a disagreement.
+- **Declare real sizes on the model, not in migrations only.** The dialect's
+  defaults (`nvarchar(max)`, `decimal(38,9)`) would make a real tree's
+  `decimal(18,2)` a `DDL-004` on every `diff`; the storage facets
+  `[Column(Length = 50)]` and `[Column(Precision = 18, Scale = 2)]` (PHP
+  `#[Column(length: 50)]`, Go `orm:"column,length=50"`) render as each
+  dialect spells them and SQLite ignores them. `MAP-032` for a misplaced one.
+
+The `MIG-012` view guard compares normalized text where the engine stores a
+definition as submitted (SQLite, SQL Server) and round-trips the expected body
+through a probe view on PostgreSQL. One cost: SQL Server's drop-column
+rendering now drops a leftover default constraint first, so a SQL Server
+database that applied a `RemoveColumn` step before ADR-0043 reports `MIG-010`
+on it.
 
 ## Pitfalls
 

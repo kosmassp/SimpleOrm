@@ -355,6 +355,63 @@ throwaway database the shadow host provisions); every implementation's live
 leg runs a shadow round trip — a short tree replayed, its snapshots equal to
 the metadata-side export apart from `generatedAt`.
 
+**Clarifications** (the PHP and Go ports asked; ADR-0043):
+
+- **Which snapshots `MIG-014` checks: the ones consulted.** For the derived
+  rollback, the snapshot at each reverting step's version and the latest
+  before it, for every step without a `Down()` override, checked for the
+  whole range before anything executes; for `diff` and `--amend`, each
+  baseline the diff uses; for `shadow --from`, each snapshot the baseline
+  restores. A foreign document the tool does not consult is never seen (the
+  reference once refused on any file in a folder it enumerated; the consulted
+  rule is the one). The stamp compares case-insensitively; the message names
+  the object, the stamp, and the dialect in use — its wording is free.
+- **The normalizer's limits.** It strips `"`, `[`/`]`, and backticks from the
+  name (a schema-qualified name keeps its dot) and matches the name as one
+  non-blank token: a quoted name containing spaces, or a view with a column
+  list before `as`, stays unnormalized and compares as text.
+- **The probe, exactly.** The live definition is read first — absent is
+  drift without a probe. Any failure inside the probe (the create, the read,
+  the drop) is drift: `rollback to savepoint`, then `release savepoint` so
+  the name is free for the next probe in the run. An expectation that is not
+  a view create (a procedure's DDL) compares as text. The probe may be a
+  plain view even for a materialized expectation (`pg_get_viewdef` renders
+  both alike).
+- **Shadow views: "the step's last create".** The step's rendered Up
+  statements are scanned in order (hooks included, guards skipped) for a
+  create or a drop of the object; the last one wins. Verbatim catalog, no
+  create in the step, no view in the catalog: the history ends silently.
+- **Shadow triggers.** A trigger step that neither creates nor drops (a
+  guard-only step) leaves the trigger as it was, exactly like a raw-SQL step:
+  the read-back where the host has one, else skipped with a note. Read-back
+  present and trigger absent: the history ends silently; hand-written text:
+  a note. A disagreement is judged on relation, relation kind, timing,
+  events, update-of columns, and the normalized body; the relation's kind
+  may come from the catalog or from the mapped entity. Note wording is free.
+- **The shadow host, edges.** SQLite ignores the admin connection string;
+  SQL Server and PostgreSQL refuse without one before provisioning anything
+  (a CLI error, no code). The throwaway connection string is the admin
+  string with its database name replaced — however the driver spells it
+  (`Database`/`Initial Catalog`, PDO's `dbname`/`Database`, a URL's path).
+  When the drop fails, the replay's result stands and the failure is a note;
+  when both fail, the replay's error surfaces. The SQL Server single-user
+  step is best effort.
+- **Generated view steps stay literal, neutral text:** `drop [materialized
+  ]view if exists <name>` unquoted and the normalized create, executable on
+  every dialect for conventional names; a reserved-word view name is
+  hand-written. The `DropView()` action keeps its frozen `drop view <name>`
+  for a plain view (checksums hash it) and says `drop materialized view` for
+  a materialized one; `RecreateView()` drops through `DropViewSql`.
+- **The diff core stays pure.** The shape-vs-shape diff yields the added
+  indexes as shapes; the emitter renders them through the dialect at emit
+  time, and `diff-cases` `addedIndexes` compare by index name.
+- **The live shadow tree is not fixed**, only its content: a literal create
+  with a unique index in the dialect's SQL, a view step, a trigger step, and
+  a literal add-column — the shadow's snapshots equal the metadata-side export
+  apart from `generatedAt`, with no note of disagreement.
+- **Introspection reads by ordinal or by name**, as Clarification 1 of
+  dialects.md allows; the fifth column is `generated` either way.
+
 ## Conformance cases
 
 `conformance/migrations-cases/*.json`: a migration set as data plus commands and

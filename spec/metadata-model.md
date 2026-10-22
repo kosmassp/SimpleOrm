@@ -461,6 +461,25 @@ declared size fits an engine's limits is the author's business. Without the
 facets a real tree's `decimal(18,2)` would read as a type change against the
 model's `decimal(38,9)` on every `diff` — the reason they exist.
 
+**Clarifications** (the PHP and Go ports asked; ADR-0043):
+
+- **"Non-positive"**: a `Length` or `Precision` below 1 refuses; a negative
+  `Scale` refuses; an explicit `Scale` of 0 is legal (a left-out scale is 0);
+  a `Scale` declared without a `Precision` refuses, even 0, wherever the
+  language can tell a declared 0 from an absent one (a C# attribute cannot:
+  a bare `Scale = 0` is indistinguishable from nothing and passes).
+- **A facet on an owned type's `[Column]` member is legal**: it sizes a column
+  of the owner's table, and the dotted property carries it.
+- **`Length` is legal on the `string` and `bytes` tokens only**: `enum_text`,
+  `guid`, JSON, and handler-typed columns refuse, however they are stored.
+- **Where a facet can sit at all is the language's.** In C# it rides on
+  `[Column]` and cannot be misplaced; a port whose declaration form allows it
+  beside an ignore marker, on a navigation or owned navigation, or without the
+  column marker refuses those with `MAP-032`; a malformed value in an untyped
+  declaration (Go's tag) is `MAP-023`.
+- **A `Precision` with the scale omitted renders `(p,0)`** — what the
+  introspection spellings report.
+
 ## Clarifications (the PHP and Go ports asked; ADR-0041 add.1)
 
 - **"Abstract" includes interfaces** and any other type that can never be

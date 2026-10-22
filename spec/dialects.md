@@ -935,3 +935,13 @@ ports found (ADR-0040 add.1).
     delete, and the by-key delete of the gone row (an `AFTER` trigger fires
     once per statement, rows or not) — so the log holds 12 rows; the stale
     instance's version stays what it was.
+27. **Overload-less ports name the snapshot forms** (ADR-0043): where a
+    language has no overloading, `CreateTableSql(schema)`,
+    `CreateIndexSql(table, index)`, and `CreateViewSql(view, body,
+    materialized)` are `createTableSqlFromSchema` / `createIndexSqlFromSchema`
+    / `createViewSqlFromBody` (PHP) and `CreateTableFromSchemaSQL` /
+    `CreateIndexFromSchemaSQL` / `CreateViewFromBodySQL` (Go); the map forms
+    keep their names. The shadow host's shape is the port's (PHP a
+    `ShadowHost` interface with `canReadTriggers()`/`readTrigger()`, Go a
+    `ShadowHost` plus an optional `TriggerReadBack`), recorded in its §10.
+    The five introspection columns may be read by ordinal or by name.

@@ -9,6 +9,13 @@ namespace SimpleOrm;
 /// </summary>
 public interface IDialect
 {
+    /// <summary>
+    /// The dialect's name as the CLI spells it (<c>sqlite</c>, <c>sqlserver</c>,
+    /// <c>postgres</c>; ADR-0043). Stamped into non-SQLite snapshots and the
+    /// generated root; a snapshot stamped for another dialect is <c>MIG-014</c>.
+    /// </summary>
+    string Name { get; }
+
     /// <summary>Creates an unopened connection for the given connection string.</summary>
     DbConnection CreateConnection(string connectionString);
 
@@ -32,6 +39,31 @@ public interface IDialect
 
     /// <summary>Renders <c>CREATE (MATERIALIZED) VIEW</c> from the map's defining SQL (ADR-0008 addendum 3).</summary>
     string CreateViewSql(EntityMap map);
+
+    // --- snapshot-driven DDL (ADR-0043): the derived rollback, the shadow's trusted
+    // baseline, and the MIG-012 probe render from recorded shapes, not from metadata,
+    // so every dialect renders them itself — the tooling paths carry no SQLite text.
+
+    /// <summary>Renders the create statement of a view from its neutral snapshot (name and body; ADR-0043) — the same text <see cref="CreateViewSql(EntityMap)"/> renders for a map of that shape.</summary>
+    string CreateViewSql(string view, string body, bool materialized);
+
+    /// <summary>Drops a view (or a materialized view, where the dialect has them) if it exists.</summary>
+    string DropViewSql(string view, bool materialized);
+
+    /// <summary>Renders a whole table from a snapshot (the shadow's trusted <c>--from</c> baseline, ADR-0017): storage types as recorded, the key per its flags.</summary>
+    string CreateTableSql(TableSchema schema);
+
+    /// <summary>Renders one index from a snapshot (the derived rollback restoring it, the generator emitting it).</summary>
+    string CreateIndexSql(string table, TableSchema.Index index);
+
+    /// <summary>
+    /// Whether <see cref="ViewDefinitionSql"/> returns the view's definition as
+    /// submitted (SQLite, SQL Server), so the <c>MIG-012</c> guard compares
+    /// normalized text; false where the engine reformats it (PostgreSQL's
+    /// <c>pg_get_viewdef</c>), so the guard round-trips the expected body through
+    /// a probe view and compares the engine's two renderings (ADR-0043).
+    /// </summary>
+    bool ViewDefinitionIsVerbatim { get; }
 
     // --- triggers (ADR-0042) ---------------------------------------------------------
 
@@ -119,8 +151,10 @@ public interface IDialect
 
     /// <summary>
     /// Introspection query for a relation's columns (§7.25): parameter <c>@relation</c>,
-    /// result columns <c>name, type, notnull, pk</c> (empty result = relation missing).
-    /// Used by SchemaGuard and the future diff generator.
+    /// result columns <c>name, type, notnull, pk, generated</c> (empty result =
+    /// relation missing); <c>type</c> is the storage type as the dialect spells it,
+    /// <c>generated</c> whether the database generates the value (identity; SQLite's
+    /// rowid alias) — ADR-0043. Used by SchemaGuard, force sync, and the shadow.
     /// </summary>
     string ColumnsInfoSql { get; }
 
@@ -143,8 +177,16 @@ public interface IDialect
     /// </summary>
     string IndexesInfoSql { get; }
 
-    /// <summary>The storage (declared) type a mapped property renders to — what CREATE TABLE emits (§7.25).</summary>
-    string StorageType(PropertyMap property);
+    /// <summary>
+    /// The storage (declared) type a mapped property renders to — what CREATE TABLE
+    /// emits, what introspection reports back, and what snapshots, diff, and force
+    /// sync compare (§7.25, ADR-0043). Spelled exactly as the dialect's
+    /// <see cref="ColumnsInfoSql"/> reports it. Needs the map because a key column
+    /// or a column of a declared index may take an indexable length (SQL Server),
+    /// and the property's storage facets (<see cref="PropertyMap.Length"/>,
+    /// <see cref="PropertyMap.Precision"/>) override the dialect's defaults.
+    /// </summary>
+    string StorageType(EntityMap map, PropertyMap property);
 
     /// <summary>Whether the database has materialized views (SQLite: no; creating one throws <c>DDL-002</c>).</summary>
     bool SupportsMaterializedViews { get; }

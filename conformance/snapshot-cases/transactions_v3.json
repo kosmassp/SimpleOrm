@@ -1,0 +1,74 @@
+{
+  "name": "transactions_v3",
+  "comment": "Storage facets (ADR-0043): Transaction.Amount declares Precision 18, Scale 2 — decimal(18,2) on SQL Server, numeric(18,2) on PostgreSQL, TEXT on SQLite (no facets there). The text enum status is nvarchar(100) / text; the indexed bigint columns take no length; the descending index direction is recorded.",
+  "entity": "Transaction",
+  "asOfVersion": 3,
+  "generatedAt": "2026-08-29T12:00:00.0000000Z",
+  "expect": {
+    "sqlite": {
+      "object": "transactions",
+      "asOfVersion": 3,
+      "generatedAt": "2026-08-29T12:00:00.0000000Z",
+      "columns": [
+        { "column": "amount", "type": "TEXT", "nullable": false },
+        { "column": "created_at", "type": "TEXT", "nullable": false },
+        { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+        { "column": "note", "type": "TEXT", "nullable": true },
+        { "column": "status", "type": "TEXT", "nullable": false },
+        { "column": "updated_at", "type": "TEXT", "nullable": true },
+        { "column": "user_id", "type": "INTEGER", "nullable": false },
+        { "column": "version", "type": "INTEGER", "nullable": false }
+      ],
+      "indexes": [
+        { "name": "ix_transactions_status_created",
+          "columns": [ { "column": "status", "direction": "asc" }, { "column": "created_at", "direction": "desc" } ] },
+        { "name": "ix_transactions_user_id",
+          "columns": [ { "column": "user_id", "direction": "asc" } ] }
+      ]
+    },
+    "sqlserver": {
+      "object": "transactions",
+      "dialect": "sqlserver",
+      "asOfVersion": 3,
+      "generatedAt": "2026-08-29T12:00:00.0000000Z",
+      "columns": [
+        { "column": "amount", "type": "decimal(18,2)", "nullable": false },
+        { "column": "created_at", "type": "datetimeoffset", "nullable": false },
+        { "column": "id", "type": "bigint", "nullable": false, "key": true, "generated": true },
+        { "column": "note", "type": "nvarchar(max)", "nullable": true },
+        { "column": "status", "type": "nvarchar(100)", "nullable": false },
+        { "column": "updated_at", "type": "datetimeoffset", "nullable": true },
+        { "column": "user_id", "type": "bigint", "nullable": false },
+        { "column": "version", "type": "bigint", "nullable": false }
+      ],
+      "indexes": [
+        { "name": "ix_transactions_status_created",
+          "columns": [ { "column": "status", "direction": "asc" }, { "column": "created_at", "direction": "desc" } ] },
+        { "name": "ix_transactions_user_id",
+          "columns": [ { "column": "user_id", "direction": "asc" } ] }
+      ]
+    },
+    "postgres": {
+      "object": "transactions",
+      "dialect": "postgres",
+      "asOfVersion": 3,
+      "generatedAt": "2026-08-29T12:00:00.0000000Z",
+      "columns": [
+        { "column": "amount", "type": "numeric(18,2)", "nullable": false },
+        { "column": "created_at", "type": "timestamp with time zone", "nullable": false },
+        { "column": "id", "type": "bigint", "nullable": false, "key": true, "generated": true },
+        { "column": "note", "type": "text", "nullable": true },
+        { "column": "status", "type": "text", "nullable": false },
+        { "column": "updated_at", "type": "timestamp with time zone", "nullable": true },
+        { "column": "user_id", "type": "bigint", "nullable": false },
+        { "column": "version", "type": "bigint", "nullable": false }
+      ],
+      "indexes": [
+        { "name": "ix_transactions_status_created",
+          "columns": [ { "column": "status", "direction": "asc" }, { "column": "created_at", "direction": "desc" } ] },
+        { "name": "ix_transactions_user_id",
+          "columns": [ { "column": "user_id", "direction": "asc" } ] }
+      ]
+    }
+  }
+}

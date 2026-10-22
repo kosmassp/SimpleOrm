@@ -25,6 +25,9 @@ const (
 // shape the diff compares, and what a data-driven step feeds the dialect — one declaration serves every
 // dialect, because nothing in it names one.
 type TriggerDeclaration struct {
+	// Dialect is the stamp of the snapshot document the declaration was read from or is written as (format v3,
+	// ADR-0043): "" is sqlite's. The declaration itself is neutral; the stamp only says whose tree it is in.
+	Dialect      string
 	Name         string
 	Relation     string
 	RelationKind string
@@ -66,12 +69,14 @@ func (d *TriggerDeclaration) SameAs(other *TriggerDeclaration) bool {
 	return d.Definition().SameAs(other.Definition())
 }
 
-// ExportTrigger renders the trigger snapshot document (spec/migrations.md "Snapshots"): object, kind,
+// ExportTrigger renders the trigger snapshot document (spec/migrations.md "Snapshots"): object, the dialect stamp
+// when d.Dialect names a dialect other than sqlite (format v3, ADR-0043), kind,
 // relation, relationKind, asOfVersion, generatedAt, timing, events in the fixed order, updateOf only when
 // declared, and the body normalized — byte-identical from metadata and from the shadow's parse of history.
 func ExportTrigger(d *TriggerDeclaration, asOfVersion int64, generatedAt time.Time) string {
 	doc := core.JSONObject{}
 	doc = doc.Set("object", d.Name)
+	doc = withDialectStamp(doc, d.Dialect)
 	doc = doc.Set("kind", "trigger")
 	doc = doc.Set("relation", d.Relation)
 	doc = doc.Set("relationKind", d.RelationKind)
@@ -97,6 +102,7 @@ func ExportTrigger(d *TriggerDeclaration, asOfVersion int64, generatedAt time.Ti
 // triggerSnapshotJSON is the on-disk shape of a trigger snapshot.
 type triggerSnapshotJSON struct {
 	Object       string   `json:"object"`
+	Dialect      string   `json:"dialect"`
 	Kind         string   `json:"kind"`
 	Relation     string   `json:"relation"`
 	RelationKind string   `json:"relationKind"`
@@ -126,7 +132,7 @@ func ParseTriggerSnapshot(data []byte) (*TriggerDeclaration, int64, error) {
 		kind = RelationKindTable
 	}
 	return &TriggerDeclaration{
-		Name: doc.Object, Relation: doc.Relation, RelationKind: kind,
+		Dialect: doc.Dialect, Name: doc.Object, Relation: doc.Relation, RelationKind: kind,
 		Timing: timing, Events: events, UpdateOf: doc.UpdateOf, SQL: doc.SQL,
 	}, doc.AsOfVersion, nil
 }

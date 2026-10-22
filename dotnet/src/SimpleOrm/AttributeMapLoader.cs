@@ -591,6 +591,9 @@ internal static class AttributeMapLoader
             {
                 ExplicitColumn = column.Name,
                 RenamedFrom = renamedFrom?.PreviousColumn.Trim(),
+                Length = column.Length == 0 ? null : column.Length,
+                Precision = column.Precision == 0 ? null : column.Precision,
+                Scale = column.Scale == 0 && column.Precision == 0 ? null : column.Scale,
                 IsKey = key is not null,
                 IsGenerated = generated is not null,
                 IsVersion = version is not null,
@@ -728,6 +731,9 @@ internal static class AttributeMapLoader
                 ExplicitColumn = column.Name,
                 EnumAsInt = enumAsInt is not null,
                 Owner = spec,
+                Length = column.Length == 0 ? null : column.Length,
+                Precision = column.Precision == 0 ? null : column.Precision,
+                Scale = column.Scale == 0 && column.Precision == 0 ? null : column.Scale,
             });
             mapped++;
         }

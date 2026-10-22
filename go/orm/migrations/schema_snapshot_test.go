@@ -147,7 +147,7 @@ func TestParseTable_RoundTripsExportSchema(t *testing.T) {
 func TestExportDDL_AndParseDDL_RoundTrip(t *testing.T) {
 	generatedAt := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	exported := migrations.ExportDDL(
-		"user_transaction_totals", "view", "create view   user_transaction_totals   as select 1", 6, generatedAt)
+		"user_transaction_totals", "sqlite", "view", "create view   user_transaction_totals   as select 1", 6, generatedAt)
 	want := `{
   "object": "user_transaction_totals",
   "kind": "view",
@@ -180,6 +180,21 @@ func TestNormalizeDDL_Vectors(t *testing.T) {
 		{
 			"canonicalizes materialized view prefix",
 			"CREATE   MATERIALIZED VIEW mv AS\nselect 1",
+			"create materialized view mv as select 1",
+		},
+		{
+			"strips or alter and the bracketed name (SQL Server)",
+			"CREATE OR ALTER VIEW [dbo].[Widgets] AS select 1",
+			"create view dbo.Widgets as select 1",
+		},
+		{
+			"strips or replace and the double-quoted name (PostgreSQL)",
+			"create or replace view \"widgets\" as select 1",
+			"create view widgets as select 1",
+		},
+		{
+			"strips if not exists and backticks, keeps materialized",
+			"create materialized view if not exists `mv` as select 1",
 			"create materialized view mv as select 1",
 		},
 		{"non-view DDL only collapses whitespace", "alter  table t add column c TEXT", "alter table t add column c TEXT"},

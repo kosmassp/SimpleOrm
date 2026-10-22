@@ -94,6 +94,68 @@ internal static class MapAssembler
             errors.Add(new MappingError(
                 "MAP-027", entityType.Name, $"[RenamedFrom(\"{duplicate.Key}\")] is declared on more than one property"));
         }
+
+        ValidateFacets(entityType, kind, specs, errors);
+    }
+
+    /// <summary>
+    /// The storage facets' shape (ADR-0043, metadata-model.md "Storage facets" —
+    /// MAP-032), one rule for every loader: <c>Length</c> on string or bytes
+    /// columns only, <c>Precision</c>/<c>Scale</c> on decimals only, positive
+    /// values, a scale never without a precision nor above it, and nothing on a
+    /// non-table source — a view or statement has no column DDL to size.
+    /// </summary>
+    private static void ValidateFacets(Type entityType, RelationKind kind, IReadOnlyList<MappedPropertySpec> specs, List<MappingError> errors)
+    {
+        foreach (var spec in specs)
+        {
+            if (spec.Length is null && spec.Precision is null && spec.Scale is null)
+            {
+                continue;
+            }
+
+            var target = spec.Owner is null
+                ? $"{entityType.Name}.{spec.Property.Name}"
+                : $"{entityType.Name}.{spec.Owner.Property.Name}.{spec.Property.Name}";
+            if (kind != RelationKind.Table)
+            {
+                errors.Add(new MappingError("MAP-032", target, $"a storage facet is only valid on a table-backed entity, not a {kind}"));
+                continue;
+            }
+
+            var type = Nullable.GetUnderlyingType(spec.Property.PropertyType) ?? spec.Property.PropertyType;
+            if (spec.Length is { } length)
+            {
+                if (type != typeof(string) && type != typeof(byte[]))
+                {
+                    errors.Add(new MappingError("MAP-032", target, "Length applies to string and bytes columns only"));
+                }
+                else if (length <= 0)
+                {
+                    errors.Add(new MappingError("MAP-032", target, "Length must be positive"));
+                }
+            }
+
+            if (spec.Precision is { } precision)
+            {
+                if (type != typeof(decimal))
+                {
+                    errors.Add(new MappingError("MAP-032", target, "Precision/Scale apply to decimal columns only"));
+                }
+                else if (precision <= 0)
+                {
+                    errors.Add(new MappingError("MAP-032", target, "Precision must be positive"));
+                }
+                else if (spec.Scale is { } scale && (scale < 0 || scale > precision))
+                {
+                    errors.Add(new MappingError("MAP-032", target, "Scale must lie between 0 and Precision"));
+                }
+            }
+            else if (spec.Scale is not null)
+            {
+                errors.Add(new MappingError("MAP-032", target, "Scale needs a Precision"));
+            }
+        }
     }
 
     public static EntityMap? Assemble(
@@ -157,7 +219,10 @@ internal static class MapAssembler
                 owner,
                 spec.Audit,
                 spec.IsSoftDelete,
-                spec.RenamedFrom);
+                spec.RenamedFrom,
+                spec.Length,
+                spec.Precision,
+                spec.Precision is null ? null : spec.Scale ?? 0);
             owner?.AddMember(map);
             properties.Add(map);
             byProperty[propertyName] = map;

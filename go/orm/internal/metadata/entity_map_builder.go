@@ -165,6 +165,24 @@ func (c *PropertyConfiguration) RenamedFrom(oldColumn string) *PropertyConfigura
 	return c
 }
 
+// Length declares the storage length of a string or bytes column (Level 4, ADR-0043); MAP-032 at Build otherwise.
+func (c *PropertyConfiguration) Length(length int) *PropertyConfiguration {
+	c.spec.Length = &length
+	return c
+}
+
+// Precision declares the storage precision of a decimal column (Level 4, ADR-0043); MAP-032 at Build otherwise.
+func (c *PropertyConfiguration) Precision(precision int) *PropertyConfiguration {
+	c.spec.Precision = &precision
+	return c
+}
+
+// Scale declares the storage scale of a decimal column, which needs a Precision (Level 4, ADR-0043).
+func (c *PropertyConfiguration) Scale(scale int) *PropertyConfiguration {
+	c.spec.Scale = &scale
+	return c
+}
+
 // SoftDelete declares the soft-delete flag (spec/hooks.md): a delete sets this non-nullable bool column instead of removing the row.
 func (c *PropertyConfiguration) SoftDelete() *PropertyConfiguration {
 	c.spec.SoftDelete = true

@@ -266,7 +266,13 @@ public sealed class UnitOfWorkTests(SqliteFixture fixture)
         public IReadOnlyList<string> DropTriggerSql(string relation, string triggerName) => inner.DropTriggerSql(relation, triggerName);
         public string TriggerDefinitionSql => inner.TriggerDefinitionSql;
         public string IndexesInfoSql => inner.IndexesInfoSql;
-        public string StorageType(PropertyMap property) => inner.StorageType(property);
+        public string StorageType(EntityMap map, PropertyMap property) => inner.StorageType(map, property);
+        public string Name => inner.Name;
+        public string CreateViewSql(string view, string body, bool materialized) => inner.CreateViewSql(view, body, materialized);
+        public string DropViewSql(string view, bool materialized) => inner.DropViewSql(view, materialized);
+        public string CreateTableSql(TableSchema schema) => inner.CreateTableSql(schema);
+        public string CreateIndexSql(string table, TableSchema.Index index) => inner.CreateIndexSql(table, index);
+        public bool ViewDefinitionIsVerbatim => inner.ViewDefinitionIsVerbatim;
         public bool SupportsMaterializedViews => inner.SupportsMaterializedViews;
         public bool SupportsProcedures => inner.SupportsProcedures;
         public bool SupportsTransactionalDdl => inner.SupportsTransactionalDdl;

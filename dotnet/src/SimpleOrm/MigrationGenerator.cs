@@ -61,14 +61,15 @@ public static class MigrationGenerator
 
         public List<(string From, string To)> Renamed { get; } = [];
 
-        public List<string> AddedIndexSql { get; } = [];
+        /// <summary>The indexes to create, as shapes — the emitter renders them through the dialect (ADR-0043).</summary>
+        public List<TableSchema.Index> AddedIndexes { get; } = [];
 
         public List<string> RemovedIndexNames { get; } = [];
 
         public List<string> Unsupported { get; } = [];
 
         public bool HasChanges => IsNew || Added.Count > 0 || Removed.Count > 0 || Renamed.Count > 0
-            || AddedIndexSql.Count > 0 || RemovedIndexNames.Count > 0;
+            || AddedIndexes.Count > 0 || RemovedIndexNames.Count > 0;
     }
 
     /// <summary>
@@ -189,7 +190,7 @@ public static class MigrationGenerator
         var modelSignatures = new HashSet<string>(currentSchema.Indexes.Select(IndexSignature), StringComparer.Ordinal);
         foreach (var index in currentSchema.Indexes.Where(i => !oldSignatures.Contains(IndexSignature(i))))
         {
-            diff.AddedIndexSql.Add(SnapshotDdl.CreateIndexSql(currentSchema.Name, index));
+            diff.AddedIndexes.Add(index);
         }
 
         foreach (var index in snapshot.Indexes.Where(i => !modelSignatures.Contains(IndexSignature(i))))
@@ -358,9 +359,9 @@ public static class MigrationGenerator
                 builder.Append("        actions.RemoveColumn(\"").Append(column.Name).AppendLine("\");");
             }
 
-            foreach (var indexSql in diff.AddedIndexSql)
+            foreach (var index in diff.AddedIndexes)
             {
-                AppendSqlAction(builder, indexSql);
+                AppendSqlAction(builder, dialect.CreateIndexSql(map.RelationName!, index));
             }
 
             foreach (var name in diff.RemovedIndexNames)

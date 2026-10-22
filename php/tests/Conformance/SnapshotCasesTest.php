@@ -8,18 +8,20 @@ use DateTimeImmutable;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
-use SimpleOrm\Dialect\SqliteDialect;
+use SimpleOrm\Dialect\Dialect;
+use SimpleOrm\Dialect\Dialects;
+use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Migrations\SchemaSnapshot;
 use SimpleOrm\Tests\Support\ConformancePaths;
 
 /**
- * The snapshot-case runner (§9, ADR-0017), mirroring
- * `dotnet/tests/SimpleOrm.Tests/ConformanceSnapshotTests.cs`: each
- * `conformance/snapshot-cases/*.json` names a fixture entity, a version, and a
- * pinned generation time, and expects the exact snapshot document — every
- * implementation must export it identically from its own native entity
- * definition. Tables export by columns; views by normalized DDL.
+ * The snapshot-case runner (§9, ADR-0017, per dialect since ADR-0043), mirroring the reference's: each
+ * `conformance/snapshot-cases/*.json` names a fixture entity, a version, and a pinned generation time, and expects the
+ * exact snapshot document **per dialect** (`expect` keyed by dialect name) — every implementation must export it
+ * identically from its own native entity definition through every dialect it ships. Tables export by columns in the
+ * dialect's storage types, views by normalized dialect-neutral DDL, triggers by their neutral declaration; every
+ * non-SQLite document carries the dialect stamp. A shipped dialect missing from `expect` fails the suite.
  */
 final class SnapshotCasesTest extends TestCase
 {
@@ -40,29 +42,38 @@ final class SnapshotCasesTest extends TestCase
         $spec = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
 
         $entityName = $spec['entity'];
-        $entityClass = self::findFixtureClass($entityName);
-        $map = (new EntityMapLoader())->load($entityClass);
-        $dialect = new SqliteDialect();
+        $map = (new EntityMapLoader())->load(self::findFixtureClass($entityName));
         $asOfVersion = (int) $spec['asOfVersion'];
         $generatedAt = self::parseGeneratedAt($spec['generatedAt']);
 
+        foreach (Dialects::names() as $name) {
+            self::assertArrayHasKey($name, $spec['expect'], "{$fileName}: a shipped dialect ({$name}) is missing from expect");
+
+            $produced = self::export($spec, $map, Dialects::create($name), $asOfVersion, $generatedAt);
+            self::assertSame(
+                $spec['expect'][$name],
+                json_decode($produced, true, flags: JSON_THROW_ON_ERROR),
+                "{$name}: produced snapshot differs from the expected document:\n{$produced}",
+            );
+        }
+    }
+
+    /** @param array<string, mixed> $spec */
+    private static function export(array $spec, EntityMap $map, Dialect $dialect, int $asOfVersion, DateTimeImmutable $generatedAt): string
+    {
         $kind = $spec['kind'] ?? 'table';
-        $produced = match ($kind) {
-            'table' => SchemaSnapshot::export(SchemaSnapshot::fromMap($map, $dialect), $asOfVersion, $generatedAt),
+
+        return match ($kind) {
+            'table' => SchemaSnapshot::export(SchemaSnapshot::fromMap($map, $dialect), $asOfVersion, $generatedAt, $dialect->name()),
             // ADR-0042: the linked trigger the case names, as its neutral declaration.
             'trigger' => SchemaSnapshot::exportTrigger(
-                SchemaSnapshot::fromTrigger($map, $map->trigger((string) $spec['trigger']) ?? self::fail("{$entityName} links no trigger '{$spec['trigger']}'")),
+                SchemaSnapshot::fromTrigger($map, $map->trigger((string) $spec['trigger']) ?? self::fail("{$map->entityName()} links no trigger '{$spec['trigger']}'")),
                 $asOfVersion,
                 $generatedAt,
+                $dialect->name(),
             ),
-            default => SchemaSnapshot::exportDdl($map->relationName, $kind, $dialect->createViewSql($map), $asOfVersion, $generatedAt),
+            default => SchemaSnapshot::exportDdl($map->relationName, $kind, $dialect->createViewSql($map), $asOfVersion, $generatedAt, $dialect->name()),
         };
-
-        self::assertSame(
-            $spec['expect'],
-            json_decode($produced, true, flags: JSON_THROW_ON_ERROR),
-            "produced snapshot differs from the expected document:\n{$produced}",
-        );
     }
 
     /** @return class-string */

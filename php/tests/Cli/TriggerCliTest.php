@@ -10,9 +10,10 @@ use PHPUnit\Framework\TestCase;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use SimpleOrm\Cli\Application;
-use SimpleOrm\Dialect\SqliteShadow;
+use SimpleOrm\Dialect\SqliteDialect;
 use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Migrations\MigrationSet;
+use SimpleOrm\Migrations\SchemaShadow;
 use SimpleOrm\Tests\Support\TempDatabase;
 
 /**
@@ -76,7 +77,7 @@ final class TriggerCliTest extends TestCase
         $out = $this->workDir . '/range';
         $this->copyCommittedSnapshotsAtOrBelow($out, 12);
 
-        $result = SqliteShadow::rebuildSnapshots(
+        $result = SchemaShadow::for(new SqliteDialect())->rebuildSnapshots(
             MigrationSet::fromDirectory($this->workDir . '/Migrations', self::NAMESPACE . '\\Migrations'),
             new EntityMapLoader(),
             $out,

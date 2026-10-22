@@ -134,10 +134,11 @@ public static class DiffCommand
                 var snapshotDir = Path.Combine(options.OutDir, "Table", type.Name);
                 var baseline = Directory.Exists(snapshotDir)
                     ? Directory.GetFiles(snapshotDir, "V*.schema.json")
-                        .Select(f => SchemaSnapshot.Parse(File.ReadAllText(f)))
-                        .Where(s => s.AsOfVersion < version)
-                        .OrderByDescending(s => s.AsOfVersion)
-                        .Select(s => s.Schema)
+                        .Select(f => (File: f, Json: File.ReadAllText(f)))
+                        .Select(f => (f.File, f.Json, Parsed: SchemaSnapshot.Parse(f.Json)))
+                        .Where(s => s.Parsed.AsOfVersion < version)
+                        .OrderByDescending(s => s.Parsed.AsOfVersion)
+                        .Select(s => RequireStamp(s.File, s.Json, options.Dialect, s.Parsed.Schema))
                         .FirstOrDefault()
                     : null;
                 if (baseline is null && migratedBelow.Contains(type))
@@ -166,10 +167,11 @@ public static class DiffCommand
                 var snapshotDir = Path.Combine(options.OutDir, folder, type.Name);
                 var previous = Directory.Exists(snapshotDir)
                     ? Directory.GetFiles(snapshotDir, "V*.schema.json")
-                        .Select(f => SchemaSnapshot.ParseDdl(File.ReadAllText(f)))
-                        .Where(s => s.AsOfVersion < version)
-                        .OrderByDescending(s => s.AsOfVersion)
-                        .Select(s => (string?)s.Ddl)
+                        .Select(f => (File: f, Json: File.ReadAllText(f)))
+                        .Select(f => (f.File, f.Json, Parsed: SchemaSnapshot.ParseDdl(f.Json)))
+                        .Where(s => s.Parsed.AsOfVersion < version)
+                        .OrderByDescending(s => s.Parsed.AsOfVersion)
+                        .Select(s => (string?)RequireStamp(s.File, s.Json, options.Dialect, s.Parsed.Ddl))
                         .FirstOrDefault()
                     : null;
                 if (previous is null && migratedBelow.Contains(type))
@@ -189,7 +191,7 @@ public static class DiffCommand
             {
                 declaredTriggerClasses.Add(trigger.TriggerType.Name);
                 var current = new TriggerSnapshot(map.RelationName!, map.Kind == RelationKind.View, trigger.Definition);
-                var previous = LatestTriggerSnapshotBelow(Path.Combine(options.OutDir, "Trigger", trigger.TriggerType.Name), version);
+                var previous = LatestTriggerSnapshotBelow(Path.Combine(options.OutDir, "Trigger", trigger.TriggerType.Name), version, options.Dialect);
                 if (previous is null && triggersMigratedBelow.ContainsKey(trigger.TriggerType))
                 {
                     unrecorded.Add(trigger.Name);
@@ -224,7 +226,7 @@ public static class DiffCommand
                     continue;
                 }
 
-                var latestTrigger = LatestTriggerSnapshotVersionBelow(folder, version);
+                var latestTrigger = LatestTriggerSnapshotVersionBelow(folder, version, options.Dialect);
                 if (latestTrigger is null)
                 {
                     continue;
@@ -445,11 +447,18 @@ public static class DiffCommand
         return null;
     }
 
-    /// <summary>The latest trigger snapshot of a folder strictly below the version, or null.</summary>
-    private static TriggerSnapshot? LatestTriggerSnapshotBelow(string snapshotDir, long version)
-        => LatestTriggerSnapshotVersionBelow(snapshotDir, version)?.Snapshot;
+    /// <summary>The consulted snapshot's stamp must be the dialect's (<c>MIG-014</c>, ADR-0043) — checked on the baseline the diff uses, not on every file in the folder.</summary>
+    private static T RequireStamp<T>(string file, string json, IDialect dialect, T value)
+    {
+        SchemaSnapshot.RequireDialect(SchemaSnapshot.DialectOf(json), dialect, file);
+        return value;
+    }
 
-    private static (TriggerSnapshot Snapshot, long AsOfVersion)? LatestTriggerSnapshotVersionBelow(string snapshotDir, long version)
+    /// <summary>The latest trigger snapshot of a folder strictly below the version, or null.</summary>
+    private static TriggerSnapshot? LatestTriggerSnapshotBelow(string snapshotDir, long version, IDialect dialect)
+        => LatestTriggerSnapshotVersionBelow(snapshotDir, version, dialect)?.Snapshot;
+
+    private static (TriggerSnapshot Snapshot, long AsOfVersion)? LatestTriggerSnapshotVersionBelow(string snapshotDir, long version, IDialect dialect)
     {
         if (!Directory.Exists(snapshotDir))
         {
@@ -457,11 +466,18 @@ public static class DiffCommand
         }
 
         var latest = Directory.GetFiles(snapshotDir, "V*.schema.json")
-            .Select(f => SchemaSnapshot.ParseTrigger(File.ReadAllText(f)))
-            .Where(s => s.AsOfVersion < version)
-            .OrderByDescending(s => s.AsOfVersion)
+            .Select(f => (File: f, Json: File.ReadAllText(f)))
+            .Select(f => (f.File, f.Json, Parsed: SchemaSnapshot.ParseTrigger(f.Json)))
+            .Where(s => s.Parsed.AsOfVersion < version)
+            .OrderByDescending(s => s.Parsed.AsOfVersion)
             .FirstOrDefault();
-        return latest.Snapshot is null ? null : latest;
+        if (latest.Parsed.Snapshot is null)
+        {
+            return null;
+        }
+
+        SchemaSnapshot.RequireDialect(SchemaSnapshot.DialectOf(latest.Json), dialect, latest.File);   // MIG-014 on the consulted baseline
+        return latest.Parsed;
     }
 
     /// <summary>

@@ -23,6 +23,11 @@ type TriggerActions struct {
 	dialect   core.Dialect
 	actions   []*MigrationAction
 	err       error
+	// declared is the declaration the actions leave behind (ADR-0043): the last create or recreate in
+	// declaration order, cleared by a later DropTrigger. The shadow replayer snapshots it, because an engine's
+	// catalog may not hand a trigger back as declared (SQL Server's `inserted` has lost a token's column list).
+	declared *TriggerDeclaration
+	dropped  bool
 }
 
 func newTriggerActions(m *core.EntityMap, linked *core.EntityTrigger, name string, dialect core.Dialect) *TriggerActions {
@@ -66,6 +71,7 @@ func (a *TriggerActions) ExpectDefinition(timing core.TriggerTiming, events core
 
 // DropTrigger drops the trigger and whatever the dialect created beside it.
 func (a *TriggerActions) DropTrigger() *MigrationAction {
+	a.declared, a.dropped = nil, true
 	return a.track(newAction("drop trigger "+a.name, a.dialect.DropTriggerSQL(a.relation, a.name)))
 }
 
@@ -75,6 +81,7 @@ func (a *TriggerActions) recreate(origin string, definition core.TriggerDefiniti
 		a.fail(err)
 		return a.track(newAction(origin, nil))
 	}
+	a.declared, a.dropped = a.declarationOf(definition), false
 	statements := append(a.dialect.DropTriggerSQL(a.relation, a.name), creates...)
 	return a.track(newAction(origin, statements))
 }
@@ -128,4 +135,16 @@ func triggerGuard(
 	return &MigrationStatement{
 		SQL: strings.Join(expected, "\n;\n"), Origin: origin, GuardTrigger: definition.Name, Expected: expected,
 	}, nil
+}
+
+// declarationOf is a literal or linked definition as the neutral declaration the shadow replayer snapshots.
+func (a *TriggerActions) declarationOf(definition core.TriggerDefinition) *TriggerDeclaration {
+	kind := RelationKindTable
+	if a.onView {
+		kind = RelationKindView
+	}
+	return &TriggerDeclaration{
+		Name: definition.Name, Relation: a.relation, RelationKind: kind,
+		Timing: definition.Timing, Events: definition.Events, UpdateOf: definition.UpdateOf, SQL: definition.SQL,
+	}
 }

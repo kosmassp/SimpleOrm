@@ -26,11 +26,12 @@ Layout mirrors the C# assemblies (the public surface) and areas (the internals):
 orm/                    package orm — the session (Open, Query, Insert, Get, From …), the
                         registry (Inline, Embedded, Registry), SchemaGuard (Validate), and
                         aliases of every contract: the one import application code needs
-orm/sqlite              the SQLite dialect (Dialect, New) and the shadow replayer (Shadow)
-orm/sqlserver           the SQL Server dialect over go-mssqldb (Dialect, New; sp_describe_first_result_set describer)
-orm/postgres            the PostgreSQL dialect over pgx (Dialect, New; the @name → $n connector, Prepare-based describer)
+orm/sqlite              the SQLite dialect (Dialect, New) and its shadow host (ShadowHost; Shadow wraps the replay)
+orm/sqlserver           the SQL Server dialect over go-mssqldb (Dialect, New; sp_describe_first_result_set describer; ShadowHost)
+orm/postgres            the PostgreSQL dialect over pgx (Dialect, New; the @name → $n connector, Prepare-based describer; ShadowHost with the trigger read-back)
 orm/migrations          versions, steps, actions, runner, snapshots, derived downs, generator,
-                        diff/amend, force sync (application code reaches it through orm's aliases)
+                        diff/amend, force sync, and the shadow replay (Shadow, ShadowHost) — on every dialect
+                        (application code reaches it through orm's aliases)
 orm/cli                 the simpleorm command as a library: cli.Run(ctx, registry, args, out, err)
 orm/internal/core       the spec-level contracts: errors, EntityMap, tokens, Decimal/GUID/Enum,
                         naming, TypeHandler, the Dialect seam, the AST, the canonical JSON writer
@@ -263,8 +264,12 @@ simpleorm shadow --out ./migrations --from V0006 --to V0009
 There is no `--assembly`: the registry *is* the application. `--package` (the
 migrations package's import path, for the code `diff` emits) defaults to the
 package of the registered versions; `--dialect sqlite|sqlserver|postgres`
-(default `sqlite`) picks the dialect for every database command — `--db` is then
-that driver's native connection string — and `shadow` accepts SQLite only.
+(default `sqlite`) picks the dialect for every command — `--db` is then that driver's
+native connection string (a bare path also works for SQLite). `snapshot`, `shadow`, `diff`
+(and `--amend`), `migrate down`, and `migrate --force` work on all three (ADR-0043,
+"Migration tooling beyond SQLite" below); `shadow` on SQL Server and PostgreSQL takes the
+**admin** connection as `--db` (the throwaway `simpleorm_shadow_<hex>` database is created
+and dropped there).
 
 ### Dialects
 
@@ -282,9 +287,8 @@ The two non-SQLite dialects are **runtime-first**: the session, generated CRUD,
 criteria queries, loading in every fetch mode, tracking, the unit of work, hooks,
 SchemaGuard (each dialect describes statements through its driver), and the
 migration runner with the dialect's run lock (`sp_getapplock` /
-`pg_advisory_xact_lock`) all work. The snapshot, shadow, diff, and force-sync
-tooling stays SQLite-only, so a rollback there needs a `Down()` override
-(`MIG-020` says so). On PostgreSQL a slice argument binds as one typed array
+`pg_advisory_xact_lock`) all work; since ADR-0043 so does the migration tooling
+(snapshot, shadow, diff, derived rollbacks, force sync — see below). On PostgreSQL a slice argument binds as one typed array
 parameter (`where id = any(@Ids)`), and a legacy `timestamp without time zone` /
 `datetime2` column refuses `VAL-020` at read time unless a `TypeHandler` declares it.
 
@@ -294,6 +298,53 @@ against a real server and skip as a group where none answers; set
 the right to create databases (defaults: `postgres://postgres:postgres@localhost:5432/postgres`;
 `sqlserver://localhost:1433?database=master&encrypt=disable` with integrated
 authentication). Each test creates and drops its own `simpleorm_test_<hex>` database.
+
+### Migration tooling beyond SQLite (Level 4, ADR-0043)
+
+`snapshot`, `shadow`, `diff` (and `--amend`), the derived rollbacks, and `migrate --force` work on SQL Server and
+PostgreSQL as on SQLite. What a tree author needs to know:
+
+- **A tree belongs to one dialect.** Its table steps hold literal column specs in that dialect's text (the sample's
+  `STRICT` creates are SQLite's), its checksums are that dialect's renderings, and every non-SQLite snapshot
+  carries a `"dialect": "<name>"` stamp right after `"object"` (snapshot format v3; an unstamped file is SQLite's, so a
+  SQLite tree is untouched). A snapshot stamped for another dialect is `MIG-014` — in the derived rollback (the
+  whole range, before anything executes), the `diff` baseline (`--amend` included), and the `shadow --from`
+  baseline.
+- **Storage facets.** The tag says a size the dialect's default type does not carry:
+  `orm:"column,length=50"` (string or bytes), `orm:"column,precision=18,scale=2"` (decimal; a scale left out is 0).
+  SQL Server renders `nvarchar(50)` / `decimal(18,2)`, PostgreSQL `character varying(50)` / `numeric(18,2)`,
+  SQLite ignores them. Without them a real tree's `decimal(18,2)` would read as a type change against the
+  model's `decimal(38,9)` on every `diff`. `MAP-032` for a misplaced facet (length off a string/bytes column,
+  precision/scale off a decimal, a scale without a precision or above it, a non-positive value, any facet on a
+  view/statement/procedure, a facet beside `ignore`, a navigation, or no `column`); a malformed number stays
+  `MAP-023`. The builder has `Length(n)`, `Precision(p)`, `Scale(s)` under the same rule.
+- **`StorageType(map, property)`** is spelled exactly as introspection reports it, so snapshot-versus-shadow, diff,
+  and force sync are string equalities: SQL Server's `decimal(38,9)` (no space) and `nvarchar(450)` for a key
+  column *or a column of a declared index*, PostgreSQL's `format_type` forms.
+- **Views and triggers are dialect-neutral.** A view snapshot is `create [materialized] view <name> as <body>`
+  with `or alter`/`or replace`/`if not exists` and the name's quoting stripped; the rollback renders it again
+  through `CreateViewFromBodySQL`/`DropViewSQL`. A trigger snapshot is its neutral declaration, as before.
+- **The derived rollback's order**: renames, the type/nullability refusal (`MIG-020`), the indexes the version
+  added dropped *first* (SQLite and SQL Server refuse to drop a column an index covers), restored columns added,
+  added columns dropped, the previous indexes recreated. SQL Server's `DropColumnSQL` is one batch that drops a
+  leftover default constraint first.
+- **The `MIG-012` view guard has a mode per dialect**: text comparison where the engine stores the view as
+  submitted (SQLite, SQL Server — `ViewDefinitionIsVerbatim`), and on PostgreSQL (which reformats the parse tree)
+  a probe: under a savepoint the expected body is created as `simpleorm_expect_<hex>`, both definitions are read
+  through `ViewDefinitionSQL`, the probe is dropped and the savepoint released; a body that no longer parses is
+  drift, not a failed run.
+- **`shadow` runs everywhere.** The throwaway database comes from the dialect's `ShadowHost` (SQLite a temp file;
+  SQL Server and PostgreSQL a `simpleorm_shadow_<hex>` database created and dropped on the `--db` admin
+  connection, failure included). Tables are introspected through `ColumnsInfoSQL` (five columns now, `generated`
+  last) and `IndexesInfoSQL`; a view is the step's last create statement (a later drop ends the history; a step
+  with no create falls back to the catalog only where it is verbatim, else it is skipped with a note); a trigger is
+  the declaration the step's actions leave behind. Where the catalog is lossless (SQLite, PostgreSQL triggers;
+  SQLite and SQL Server views) it is read too and a disagreement is *noted*, never a different file.
+  `sqlite.Shadow` is the SQLite spelling; `migrations.Shadow` takes the dialect and host.
+
+Live: `orm/internal/conformance` replays `conformance/migrations-cases/{postgres,sqlserver}/` and a short tree
+(table + unique index, view, add-column, trigger) through `shadow` on each dialect, comparing the history-side snapshots to
+the metadata-side export; they skip where no server answers.
 
 ### Draft migrations (Level 3 M5, ADR-0034)
 
@@ -358,7 +409,7 @@ func (V0013_CreateRoleAuditTrigger) Action(actions *orm.TriggerActions) { action
 ```
 
 A trigger snapshot is its neutral declaration (`kind: "trigger"`), so one tree serves every dialect; `diff`
-compares declarations, `shadow` parses the stored SQLite trigger back to one, a rollback is derived (guard,
+compares declarations, `shadow` takes it from the step (and, on SQLite and PostgreSQL, parses the stored trigger back as a check), a rollback is derived (guard,
 drop, the previous declaration re-rendered), and a trigger changed outside the code refuses with `MIG-012`
 (`--force` recreates it with a notice). `orm.CreateTriggers[T](ctx, db)` is the dev/test utility beside
 `CreateTable` (replace semantics). A `--` line comment in a body is `MAP-029` (layout

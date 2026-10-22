@@ -53,7 +53,7 @@ func assemble(
 	convention core.NamingConvention,
 	errs *errorCollector,
 ) (*core.EntityMap, error) {
-	properties, byProperty := buildProperties(entityType, specs, convention, errs)
+	properties, byProperty := buildProperties(entityType, kind, specs, convention, errs)
 	validateVersion(entityType, properties, errs)
 	validateHooks(kind, properties, errs)
 	validateRenamedFrom(kind, properties, errs)
@@ -79,7 +79,7 @@ func assemble(
 // over core.ColumnTypeOf), and detects two properties mapping to the same
 // column (MAP-018).
 func buildProperties(
-	entityType reflect.Type, specs []*MappedPropertySpec, convention core.NamingConvention, errs *errorCollector,
+	entityType reflect.Type, kind core.RelationKind, specs []*MappedPropertySpec, convention core.NamingConvention, errs *errorCollector,
 ) ([]*core.PropertyMap, map[string]*core.PropertyMap) {
 	properties := make([]*core.PropertyMap, 0, len(specs))
 	byProperty := map[string]*core.PropertyMap{}
@@ -149,6 +149,8 @@ func buildProperties(
 			}
 		}
 
+		length, precision, scale := validateFacets(target(entityType, propertyName), kind, columnType, spec, errs)
+
 		property := &core.PropertyMap{
 			Field:                spec.Field,
 			Index:                spec.Index,
@@ -164,6 +166,9 @@ func buildProperties(
 			Audit:                audit,
 			IsSoftDelete:         spec.SoftDelete,
 			RenamedFrom:          renamedFrom,
+			Length:               length,
+			Precision:            precision,
+			Scale:                scale,
 			ForeignKeyReferences: spec.ForeignKeyReferences,
 			Owner:                owner,
 		}
@@ -478,4 +483,63 @@ func plural(count int) string {
 		return "y"
 	}
 	return "ies"
+}
+
+// validateFacets is MAP-032 (spec/metadata-model.md "Storage facets"): Length belongs on a string or bytes
+// column, Precision and Scale on a decimal; a Scale needs a Precision and stays within it; every value is
+// positive (a Scale may be 0 — what leaving it out means); and only a table has column DDL for a facet to
+// size, so any facet on a view, statement, or procedure is refused. It returns the resolved facets, zero for
+// an undeclared one (and for every facet of a refused declaration).
+func validateFacets(targetName string, kind core.RelationKind, columnType core.ColumnType, spec *MappedPropertySpec, errs *errorCollector) (length, precision, scale int) {
+	if spec.Length == nil && spec.Precision == nil && spec.Scale == nil {
+		return 0, 0, 0
+	}
+	if kind != core.RelationTable {
+		errs.add("MAP-032", targetName, "a storage facet is only valid on a table-backed entity, not a %s: it has no column DDL to size", kind)
+		return 0, 0, 0
+	}
+
+	valid := true
+	if spec.Length != nil {
+		switch {
+		case columnType != core.TypeString && columnType != core.TypeBytes:
+			errs.add("MAP-032", targetName, "length applies to a string or bytes column, found %s", columnType)
+			valid = false
+		case *spec.Length <= 0:
+			errs.add("MAP-032", targetName, "length must be positive, found %d", *spec.Length)
+			valid = false
+		}
+	}
+	if spec.Precision != nil || spec.Scale != nil {
+		switch {
+		case columnType != core.TypeDecimal:
+			errs.add("MAP-032", targetName, "precision and scale apply to a decimal column, found %s", columnType)
+			valid = false
+		case spec.Precision == nil:
+			errs.add("MAP-032", targetName, "scale needs a precision: declare precision=<p> beside scale=<s>")
+			valid = false
+		case *spec.Precision <= 0:
+			errs.add("MAP-032", targetName, "precision must be positive, found %d", *spec.Precision)
+			valid = false
+		case spec.Scale != nil && *spec.Scale < 0:
+			errs.add("MAP-032", targetName, "scale cannot be negative, found %d", *spec.Scale)
+			valid = false
+		case spec.Scale != nil && *spec.Scale > *spec.Precision:
+			errs.add("MAP-032", targetName, "scale %d exceeds precision %d", *spec.Scale, *spec.Precision)
+			valid = false
+		}
+	}
+	if !valid {
+		return 0, 0, 0
+	}
+	if spec.Length != nil {
+		length = *spec.Length
+	}
+	if spec.Precision != nil {
+		precision = *spec.Precision
+		if spec.Scale != nil {
+			scale = *spec.Scale
+		}
+	}
+	return length, precision, scale
 }

@@ -148,7 +148,14 @@ public sealed class SqlServerDialectTests
         Assert.Equal(
             "alter table [users] add [flag] bit not null default 0",
             Dialect.AddColumnSql("users", "flag", "bit", nullable: false, defaultSql: "0"));
-        Assert.Equal("alter table [users] drop column [note]", Dialect.DropColumnSql("users", "note"));
+        // ADR-0043: a default constraint a NOT NULL addition left behind blocks the drop (error 5074), so the batch drops it first.
+        Assert.Equal(
+            "declare @df sysname = (select dc.name from sys.default_constraints dc "
+            + "join sys.columns c on c.object_id = dc.parent_object_id and c.column_id = dc.parent_column_id "
+            + "where dc.parent_object_id = object_id(N'users') and c.name = N'note'); "
+            + "if @df is not null exec(N'alter table [users] drop constraint ' + quotename(@df)); "
+            + "alter table [users] drop column [note]",
+            Dialect.DropColumnSql("users", "note"));
         Assert.Equal("drop table [users]", Dialect.DropTableSql("users"));
         Assert.Equal("drop index [ix_users_email] on [users]", Dialect.DropIndexSql("users", "ix_users_email"));
     }
@@ -157,10 +164,10 @@ public sealed class SqlServerDialectTests
     public void Storage_types_follow_the_sql_server_conventions()
     {
         var transactions = Maps.Load<Transaction>();
-        Assert.Equal("decimal(38, 9)", Dialect.StorageType(transactions.Properties.Single(p => p.PropertyName == "Amount")));
-        Assert.Equal("nvarchar(100)", Dialect.StorageType(transactions.Properties.Single(p => p.PropertyName == "Status")));
-        Assert.Equal("datetimeoffset", Dialect.StorageType(transactions.Properties.Single(p => p.PropertyName == "CreatedAtUtc")));
-        Assert.Equal("bigint", Dialect.StorageType(transactions.Properties.Single(p => p.PropertyName == "Id")));
+        Assert.Equal("decimal(18,2)", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "Amount")));   // the fixture facet (ADR-0043)
+        Assert.Equal("nvarchar(100)", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "Status")));
+        Assert.Equal("datetimeoffset", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "CreatedAtUtc")));
+        Assert.Equal("bigint", Dialect.StorageType(transactions, transactions.Properties.Single(p => p.PropertyName == "Id")));
     }
 
     [Theory]

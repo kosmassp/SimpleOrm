@@ -33,6 +33,17 @@ func DeriveDown(
 	}
 	before := snapshots.LatestBefore(objectName, version)
 
+	// A tree and its snapshots belong to one dialect (ADR-0043): a snapshot stamped for another one refuses
+	// before any statement is derived, let alone executed.
+	if err := CheckSnapshotDialect(at.Dialect, dialect, fmt.Sprintf("V%04d %s", version, objectName)); err != nil {
+		return nil, err
+	}
+	if before != nil {
+		if err := CheckSnapshotDialect(before.Dialect, dialect, fmt.Sprintf("%s (snapshot before V%04d)", objectName, version)); err != nil {
+			return nil, err
+		}
+	}
+
 	if at.Trigger != nil {
 		var beforeTrigger *TriggerDeclaration
 		if before != nil {
@@ -46,7 +57,7 @@ func DeriveDown(
 		if before != nil {
 			beforeDDL = &before.DDL
 		}
-		return deriveViewDown(objectName, at.DDL, beforeDDL), nil
+		return deriveViewDown(objectName, at.DDL, beforeDDL, dialect), nil
 	}
 
 	var beforeTable *TableSchema
@@ -58,13 +69,19 @@ func DeriveDown(
 
 // deriveViewDown mirrors the reference's guarded drop + restore: the apply
 // guard in reverse (MIG-012) protects an outside hotfix from a rollback too.
-func deriveViewDown(objectName, ddlAt string, ddlBefore *string) []MigrationStatement {
+func deriveViewDown(objectName, ddlAt string, ddlBefore *string, dialect core.Dialect) []MigrationStatement {
+	// The snapshots are neutral (name and body); the drop and the restore render through the dialect (ADR-0043).
+	_, _, materialized, _ := ViewParts(ddlAt)
 	statements := []MigrationStatement{
-		{SQL: ddlAt, Origin: "derived expect " + objectName, GuardView: objectName},
-		{SQL: "drop view if exists " + objectName, Origin: "derived drop " + objectName},
+		{SQL: NormalizeDDL(ddlAt), Origin: "derived expect " + objectName, GuardView: objectName},
+		{SQL: dialect.DropViewSQL(objectName, materialized), Origin: "derived drop " + objectName},
 	}
 	if ddlBefore != nil {
-		statements = append(statements, MigrationStatement{SQL: *ddlBefore, Origin: "derived restore " + objectName})
+		restore := *ddlBefore
+		if _, body, previousMaterialized, ok := ViewParts(restore); ok {
+			restore = dialect.CreateViewFromBodySQL(objectName, body, previousMaterialized)
+		}
+		statements = append(statements, MigrationStatement{SQL: restore, Origin: "derived restore " + objectName})
 	}
 	return statements
 }
@@ -101,6 +118,12 @@ type namedColumn struct {
 	column      TableColumn
 }
 
+// deriveTableDown derives a table step's rollback from the snapshot at the step's version and the one before
+// it. The order is part of the contract (ADR-0043): the typed renames invert first, then the type/nullability
+// refusal (MIG-020), then the indexes this version added are dropped — before any column moves, because SQLite
+// and SQL Server refuse to drop a column an index still covers — then dropped columns are restored, added
+// columns dropped, and the previous version's indexes recreated (over columns that exist again by then). Every
+// statement renders through the dialect.
 func deriveTableDown(
 	objectName string, version int64, at *TableSchema, before *TableSchema,
 	upRenames []ColumnRename, notices *[]string, dialect core.Dialect,
@@ -141,6 +164,70 @@ func deriveTableDown(
 		previous[strings.ToLower(c.Name)] = namedColumn{displayName: c.Name, column: c}
 	}
 
+	// A same-column type/nullability change is not derivable. Iterate at.Columns
+	// (translated) rather than the map for a deterministic first-mismatch report.
+	for _, c := range at.Columns {
+		key := strings.ToLower(c.Name)
+		if renamed, ok := nameAtToBefore[key]; ok {
+			key = strings.ToLower(renamed)
+		}
+		now, then := current[key], previous[key]
+		if _, existed := previous[key]; !existed {
+			continue
+		}
+		if !strings.EqualFold(now.column.StorageType, then.column.StorageType) || now.column.Nullable != then.column.Nullable {
+			return nil, core.NewError("MIG-020", fmt.Sprintf("V%04d %s", version, objectName),
+				fmt.Sprintf("column %s changed type/nullability at this version; that rollback cannot be derived — override Down()", now.displayName))
+		}
+	}
+
+	// Indexes match structurally (ADR-0017 add.2) here too. The reverse renames have already run, so an index of
+	// the later snapshot is compared under the names the earlier one used.
+	applyRenames := func(signature string) string {
+		if len(nameAtToBefore) == 0 {
+			return signature
+		}
+		parts := strings.SplitN(signature, "|", 2)
+		if len(parts) != 2 {
+			return signature
+		}
+		columns := strings.Split(parts[1], ",")
+		for i, part := range columns {
+			descending := strings.HasSuffix(part, " desc")
+			column := part
+			if descending {
+				column = strings.TrimSuffix(part, " desc")
+			}
+			if renamed, ok := nameAtToBefore[column]; ok {
+				column = strings.ToLower(renamed)
+			}
+			if descending {
+				columns[i] = column + " desc"
+			} else {
+				columns[i] = column
+			}
+		}
+		return parts[0] + "|" + strings.Join(columns, ",")
+	}
+
+	// The indexes this version added drop first (ADR-0043): one covering a column the rollback is about to drop
+	// would otherwise block the drop.
+	for _, index := range at.Indexes {
+		signature := applyRenames(IndexSignature(index))
+		matched := false
+		for _, beforeIndex := range before.Indexes {
+			if IndexSignature(beforeIndex) == signature {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			statements = append(statements, MigrationStatement{
+				SQL: dialect.DropIndexSQL(objectName, index.Name), Origin: "derived drop index",
+			})
+		}
+	}
+
 	// Dropped columns restore nullable — the database refuses a bare NOT NULL
 	// addition; the constraint (and the data) are not derivable.
 	for _, c := range before.Columns {
@@ -174,66 +261,7 @@ func deriveTableDown(
 		})
 	}
 
-	// A same-column type/nullability change is not derivable. Iterate at.Columns
-	// (translated) rather than the map for a deterministic first-mismatch report.
-	for _, c := range at.Columns {
-		key := strings.ToLower(c.Name)
-		if renamed, ok := nameAtToBefore[key]; ok {
-			key = strings.ToLower(renamed)
-		}
-		now, then := current[key], previous[key]
-		if _, existed := previous[key]; !existed {
-			continue
-		}
-		if !strings.EqualFold(now.column.StorageType, then.column.StorageType) || now.column.Nullable != then.column.Nullable {
-			return nil, core.NewError("MIG-020", fmt.Sprintf("V%04d %s", version, objectName),
-				fmt.Sprintf("column %s changed type/nullability at this version; that rollback cannot be derived — override Down()", now.displayName))
-		}
-	}
-
-	// Indexes match structurally (ADR-0017 add.2) here too.
-	applyRenames := func(signature string) string {
-		if len(nameAtToBefore) == 0 {
-			return signature
-		}
-		parts := strings.SplitN(signature, "|", 2)
-		if len(parts) != 2 {
-			return signature
-		}
-		columns := strings.Split(parts[1], ",")
-		for i, part := range columns {
-			descending := strings.HasSuffix(part, " desc")
-			column := part
-			if descending {
-				column = strings.TrimSuffix(part, " desc")
-			}
-			if renamed, ok := nameAtToBefore[column]; ok {
-				column = strings.ToLower(renamed)
-			}
-			if descending {
-				columns[i] = column + " desc"
-			} else {
-				columns[i] = column
-			}
-		}
-		return parts[0] + "|" + strings.Join(columns, ",")
-	}
-
-	for _, index := range at.Indexes {
-		signature := applyRenames(IndexSignature(index))
-		matched := false
-		for _, beforeIndex := range before.Indexes {
-			if IndexSignature(beforeIndex) == signature {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			statements = append(statements, MigrationStatement{
-				SQL: dialect.DropIndexSQL(objectName, index.Name), Origin: "derived drop index",
-			})
-		}
-	}
+	// The previous version's indexes come back last, over columns that exist again.
 	for _, index := range before.Indexes {
 		signature := IndexSignature(index)
 		matched := false
@@ -245,7 +273,7 @@ func deriveTableDown(
 		}
 		if !matched {
 			statements = append(statements, MigrationStatement{
-				SQL: CreateIndexSQL(objectName, index), Origin: "derived add index",
+				SQL: dialect.CreateIndexFromSchemaSQL(objectName, index), Origin: "derived add index",
 			})
 		}
 	}

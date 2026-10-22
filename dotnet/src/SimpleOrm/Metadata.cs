@@ -247,9 +247,15 @@ public sealed class PropertyMap
         OwnedMap? owner = null,
         AuditRole audit = AuditRole.None,
         bool isSoftDelete = false,
-        string? renamedFrom = null)
+        string? renamedFrom = null,
+        int? length = null,
+        int? precision = null,
+        int? scale = null)
     {
         RenamedFrom = renamedFrom;
+        Length = length;
+        Precision = precision;
+        Scale = scale;
         Property = property;
         ColumnName = columnName;
         IsNullable = isNullable;
@@ -271,6 +277,15 @@ public sealed class PropertyMap
 
     /// <summary>The column this one was previously stored under (Level 3 M5, <c>[RenamedFrom]</c>): a declared rename the diff generator reads; null when none.</summary>
     public string? RenamedFrom { get; }
+
+    /// <summary>The declared length of a string or bytes column (ADR-0043 storage facets, metadata-model.md); null = the dialect's default.</summary>
+    public int? Length { get; }
+
+    /// <summary>The declared precision of a decimal column; null = the dialect's default.</summary>
+    public int? Precision { get; }
+
+    /// <summary>The declared scale of a decimal column; set only with <see cref="Precision"/> (0 when the declaration omits it).</summary>
+    public int? Scale { get; }
 
     /// <summary>The member itself — on the entity, or on the owned type when <see cref="Owner"/> is set.</summary>
     public PropertyInfo Property { get; }

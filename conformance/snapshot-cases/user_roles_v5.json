@@ -1,23 +1,59 @@
 {
   "name": "user_roles_v5",
-  "comment": "Composite natural key: both key columns carry key without generated.",
+  "comment": "Composite natural key: both key columns carry key without generated. Per dialect (ADR-0043): the stamp on every dialect but sqlite; an unindexed nullable string is nvarchar(max) / text.",
   "entity": "UserRole",
   "asOfVersion": 5,
   "generatedAt": "2026-08-29T12:00:00.0000000Z",
   "expect": {
-    "object": "user_roles",
-    "asOfVersion": 5,
-    "generatedAt": "2026-08-29T12:00:00.0000000Z",
-    "columns": [
-      { "column": "created_at", "type": "TEXT", "nullable": false },
-      { "column": "granted_by", "type": "TEXT", "nullable": true },
-      { "column": "role_id", "type": "INTEGER", "nullable": false, "key": true },
-      { "column": "updated_at", "type": "TEXT", "nullable": true },
-      { "column": "user_id", "type": "INTEGER", "nullable": false, "key": true }
-    ],
-    "indexes": [
-      { "name": "ix_user_roles_role_id",
-        "columns": [ { "column": "role_id", "direction": "asc" } ] }
-    ]
+    "sqlite": {
+      "object": "user_roles",
+      "asOfVersion": 5,
+      "generatedAt": "2026-08-29T12:00:00.0000000Z",
+      "columns": [
+        { "column": "created_at", "type": "TEXT", "nullable": false },
+        { "column": "granted_by", "type": "TEXT", "nullable": true },
+        { "column": "role_id", "type": "INTEGER", "nullable": false, "key": true },
+        { "column": "updated_at", "type": "TEXT", "nullable": true },
+        { "column": "user_id", "type": "INTEGER", "nullable": false, "key": true }
+      ],
+      "indexes": [
+        { "name": "ix_user_roles_role_id",
+          "columns": [ { "column": "role_id", "direction": "asc" } ] }
+      ]
+    },
+    "sqlserver": {
+      "object": "user_roles",
+      "dialect": "sqlserver",
+      "asOfVersion": 5,
+      "generatedAt": "2026-08-29T12:00:00.0000000Z",
+      "columns": [
+        { "column": "created_at", "type": "datetimeoffset", "nullable": false },
+        { "column": "granted_by", "type": "nvarchar(max)", "nullable": true },
+        { "column": "role_id", "type": "bigint", "nullable": false, "key": true },
+        { "column": "updated_at", "type": "datetimeoffset", "nullable": true },
+        { "column": "user_id", "type": "bigint", "nullable": false, "key": true }
+      ],
+      "indexes": [
+        { "name": "ix_user_roles_role_id",
+          "columns": [ { "column": "role_id", "direction": "asc" } ] }
+      ]
+    },
+    "postgres": {
+      "object": "user_roles",
+      "dialect": "postgres",
+      "asOfVersion": 5,
+      "generatedAt": "2026-08-29T12:00:00.0000000Z",
+      "columns": [
+        { "column": "created_at", "type": "timestamp with time zone", "nullable": false },
+        { "column": "granted_by", "type": "text", "nullable": true },
+        { "column": "role_id", "type": "bigint", "nullable": false, "key": true },
+        { "column": "updated_at", "type": "timestamp with time zone", "nullable": true },
+        { "column": "user_id", "type": "bigint", "nullable": false, "key": true }
+      ],
+      "indexes": [
+        { "name": "ix_user_roles_role_id",
+          "columns": [ { "column": "role_id", "direction": "asc" } ] }
+      ]
+    }
   }
 }

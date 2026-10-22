@@ -67,7 +67,7 @@ func PlanSync(
 			if !ok {
 				if property.IsNullable {
 					plan.Additive = append(plan.Additive, dialect.AddColumnSQL(
-						m.RelationName, property.ColumnName, dialect.StorageType(property), true, ""))
+						m.RelationName, property.ColumnName, dialect.StorageType(m, property), true, ""))
 				} else {
 					plan.Unsupported = append(plan.Unsupported, fmt.Sprintf(
 						"%s.%s: adding a non-nullable column needs a default/backfill — write a migration",
@@ -76,7 +76,7 @@ func PlanSync(
 				continue
 			}
 
-			expected := dialect.StorageType(property)
+			expected := dialect.StorageType(m, property)
 			if !strings.EqualFold(column.DeclaredType, expected) || column.EffectivelyNotNull() == property.IsNullable {
 				liveSuffix, modelSuffix := "", ""
 				if column.EffectivelyNotNull() {
@@ -156,6 +156,9 @@ type LiveColumn struct {
 	DeclaredType string
 	NotNull      bool
 	PrimaryKey   bool
+	// Generated is whether the database generates the value (ADR-0043: the fifth column of ColumnsInfoSQL —
+	// SQL Server is_identity, PostgreSQL attidentity, SQLite the rowid alias).
+	Generated bool
 }
 
 // EffectivelyNotNull reports whether the column refuses NULL in practice:
@@ -165,7 +168,7 @@ func (c LiveColumn) EffectivelyNotNull() bool { return c.NotNull || c.PrimaryKey
 
 // ReadLiveColumns reads relation's columns from the database, keyed by
 // lower-cased name (empty when the relation does not exist).
-func ReadLiveColumns(ctx context.Context, conn *sql.Conn, dialect core.Dialect, relation string) (map[string]LiveColumn, error) {
+func ReadLiveColumns(ctx context.Context, conn queryer, dialect core.Dialect, relation string) (map[string]LiveColumn, error) {
 	columns := map[string]LiveColumn{}
 	rows, err := conn.QueryContext(ctx, dialect.ColumnsInfoSQL(), sql.Named("relation", relation))
 	if err != nil {
@@ -175,11 +178,13 @@ func ReadLiveColumns(ctx context.Context, conn *sql.Conn, dialect core.Dialect, 
 
 	for rows.Next() {
 		var name, declaredType string
-		var notNull, pk int64
-		if err := rows.Scan(&name, &declaredType, &notNull, &pk); err != nil {
+		var notNull, pk, generated int64
+		if err := rows.Scan(&name, &declaredType, &notNull, &pk, &generated); err != nil {
 			return nil, err
 		}
-		columns[strings.ToLower(name)] = LiveColumn{Name: name, DeclaredType: declaredType, NotNull: notNull != 0, PrimaryKey: pk != 0}
+		columns[strings.ToLower(name)] = LiveColumn{
+			Name: name, DeclaredType: declaredType, NotNull: notNull != 0, PrimaryKey: pk != 0, Generated: generated != 0,
+		}
 	}
 	return columns, rows.Err()
 }
@@ -188,7 +193,7 @@ func ReadLiveColumns(ctx context.Context, conn *sql.Conn, dialect core.Dialect, 
 // complete (columns in order, direction, uniqueness) — the same one reader
 // force-sync's structural comparison (ADR-0017 add.2) and the shadow
 // replayer's snapshot both need.
-func ReadLiveIndexes(ctx context.Context, conn *sql.Conn, dialect core.Dialect, relation string) ([]TableIndex, error) {
+func ReadLiveIndexes(ctx context.Context, conn queryer, dialect core.Dialect, relation string) ([]TableIndex, error) {
 	type accumulator struct {
 		unique  bool
 		columns []IndexPart

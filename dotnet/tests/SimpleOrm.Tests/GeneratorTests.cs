@@ -90,7 +90,7 @@ public sealed class GeneratorTests
     public void Index_additions_and_removals_are_diffed_structurally()
     {
         var noIndex = MigrationGenerator.Diff(Map, Dialect, Snapshot([Id(), NameCol(), NoteCol()], indexes: []), NoRenames);
-        Assert.Contains("ix_gen_widgets_name", Assert.Single(noIndex.AddedIndexSql));
+        Assert.Equal("ix_gen_widgets_name", Assert.Single(noIndex.AddedIndexes).Name);
 
         var staleIndex = MigrationGenerator.Diff(
             Map, Dialect,
@@ -115,7 +115,7 @@ public sealed class GeneratorTests
             Map, Dialect,
             Snapshot([Id(), NameCol(), NoteCol()], [new TableSchema.Index("idx_dba_hotfix", [new TableSchema.Index.Part("name")], unique: true)]),
             NoRenames);
-        Assert.Single(uniqueMismatch.AddedIndexSql);
+        Assert.Single(uniqueMismatch.AddedIndexes);
         Assert.Equal("idx_dba_hotfix", Assert.Single(uniqueMismatch.RemovedIndexNames));
     }
 

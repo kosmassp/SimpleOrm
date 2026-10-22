@@ -60,7 +60,8 @@ final class SqlServerDatabase
         );
     }
 
-    private static function adminDsn(): ?string
+    /** The admin DSN (with the right to create databases), or null where no server answers. */
+    public static function adminDsn(): ?string
     {
         return LiveServer::adminDsn(self::ENVIRONMENT_VARIABLE, self::DEFAULT_ADMIN_DSN);
     }

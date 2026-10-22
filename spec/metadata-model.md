@@ -23,7 +23,9 @@ Per entity:
 - **Version column** (optional, at most one; integer; tables only): optimistic
   concurrency.
 - **Columns**: one entry per mapped property — column name, neutral type token,
-  nullability, key/generated flags.
+  nullability, key/generated flags, and the optional storage facets (`Length`
+  for strings and bytes, `Precision`/`Scale` for decimals; ADR-0043) each
+  dialect renders its own way.
 - **Indexes** (tables and materialized views only): name, ordered columns with
   per-column direction, unique flag. Consumed by generated DDL, snapshots, and
   the diff generator (ADR-0011/0017); matched structurally, never by name.
@@ -326,7 +328,8 @@ byte-equality):
   "key": { "strategy": "database_generated", "columns": ["id"] },
   "version": "version",
   "columns": [
-    { "column": "id", "type": "int64", "nullable": false, "key": true, "generated": true }
+    { "column": "id", "type": "int64", "nullable": false, "key": true, "generated": true },
+    { "column": "amount", "type": "decimal", "nullable": false, "precision": 18, "scale": 2 }
   ],
   "indexes": [
     { "name": "ix_t_a", "columns": [{ "column": "a", "direction": "asc" }], "unique": true }
@@ -430,6 +433,52 @@ A column may declare the column it was previously stored under, exported
 only when declared: `"renamedFrom": "name"`. The diff generator reads it as
 a declared rename; the mapper and the session ignore it. `MAP-027` when
 declared without `[Column]` or without a name.
+
+### Storage facets (Level 4, ADR-0043; dialects.md "Storage types")
+
+A column may declare a **size** the dialect's default storage type does not
+carry — dialect-neutral facets the dialect renders its own way, so the model
+can say `decimal(18,2)` without naming a database:
+
+- `Length` on a string or bytes column (`[Column(Length = 50)]`; PHP
+  `#[Column(length: 50)]`; Go `orm:"column,length=50"`): SQL Server
+  `nvarchar(50)` / `varbinary(50)`, PostgreSQL `character varying(50)`
+  (`bytea` has no length), SQLite ignores it. A declared length wins over SQL
+  Server's indexable default (450) for a key or indexed column.
+- `Precision` and `Scale` on a decimal column (`[Column(Precision = 18, Scale = 2)]`;
+  a `Scale` left out is 0): SQL Server `decimal(18,2)`, PostgreSQL
+  `numeric(18,2)`, SQLite ignores them.
+
+Exported only when declared, after `renamedFrom`: `"length": 50`, or
+`"precision": 18, "scale": 2` (the scale always beside its precision). The
+fixture declares `Transaction.Amount` at 18, 2 (`entities/transaction.json`,
+`snapshot-cases/transactions_v3`). The mapper and the session ignore the
+facets; `StorageType`, snapshots, the diff generator, and force sync read
+them. `MAP-032` for a misplaced one: `Length` off a string or bytes column,
+`Precision`/`Scale` off a decimal, a `Scale` without a `Precision` or above
+it, a non-positive value, or any facet on a non-table source. Whether a
+declared size fits an engine's limits is the author's business. Without the
+facets a real tree's `decimal(18,2)` would read as a type change against the
+model's `decimal(38,9)` on every `diff` — the reason they exist.
+
+**Clarifications** (the PHP and Go ports asked; ADR-0043):
+
+- **"Non-positive"**: a `Length` or `Precision` below 1 refuses; a negative
+  `Scale` refuses; an explicit `Scale` of 0 is legal (a left-out scale is 0);
+  a `Scale` declared without a `Precision` refuses, even 0, wherever the
+  language can tell a declared 0 from an absent one (a C# attribute cannot:
+  a bare `Scale = 0` is indistinguishable from nothing and passes).
+- **A facet on an owned type's `[Column]` member is legal**: it sizes a column
+  of the owner's table, and the dotted property carries it.
+- **`Length` is legal on the `string` and `bytes` tokens only**: `enum_text`,
+  `guid`, JSON, and handler-typed columns refuse, however they are stored.
+- **Where a facet can sit at all is the language's.** In C# it rides on
+  `[Column]` and cannot be misplaced; a port whose declaration form allows it
+  beside an ignore marker, on a navigation or owned navigation, or without the
+  column marker refuses those with `MAP-032`; a malformed value in an untyped
+  declaration (Go's tag) is `MAP-023`.
+- **A `Precision` with the scale omitted renders `(p,0)`** — what the
+  introspection spellings report.
 
 ## Clarifications (the PHP and Go ports asked; ADR-0041 add.1)
 

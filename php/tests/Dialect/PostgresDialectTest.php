@@ -22,6 +22,7 @@ use SimpleOrm\Tests\Sample\Models\Transaction;
 use SimpleOrm\Tests\Sample\Models\TransactionStatus;
 use SimpleOrm\Tests\Sample\Models\User;
 use SimpleOrm\Tests\Sample\Models\UserRole;
+use SimpleOrm\Tests\Support\StorageMaps;
 
 /**
  * Pins every rendered string and flag of {@see PostgresDialect} against
@@ -308,7 +309,7 @@ final class PostgresDialectTest extends TestCase
     {
         $property = new PropertyMap(new ReflectionProperty(User::class, 'name'), 'c', $type, 'string', nullable: false);
 
-        self::assertSame($expected, $this->dialect->storageType($property));
+        self::assertSame($expected, $this->dialect->storageType(StorageMaps::of($property), $property));
     }
 
     /** @return iterable<string, array{string, ColumnType, bool}> */

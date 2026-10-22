@@ -74,10 +74,10 @@ public sealed class ConformanceDiffTests
         Assert.Equal(Names(expect, "removedIndexes"), diff.RemovedIndexNames.OrderBy(n => n));
 
         var expectedAddedIndexes = Names(expect, "addedIndexes").ToArray();
-        Assert.Equal(expectedAddedIndexes.Length, diff.AddedIndexSql.Count);
+        Assert.Equal(expectedAddedIndexes.Length, diff.AddedIndexes.Count);
         foreach (var name in expectedAddedIndexes)
         {
-            Assert.Contains(diff.AddedIndexSql, sql => sql.Contains(name));
+            Assert.Contains(diff.AddedIndexes, index => index.Name == name);
         }
 
         var expectedUnsupported = Names(expect, "unsupported").ToArray();

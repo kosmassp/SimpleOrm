@@ -21,6 +21,9 @@ type Dialect struct{}
 // New is the dialect; it carries no state.
 func New() *Dialect { return &Dialect{} }
 
+// Name is the CLI name of the dialect (ADR-0043): sqlite snapshots carry no stamp.
+func (*Dialect) Name() string { return "sqlite" }
+
 var (
 	_ core.Dialect            = (*Dialect)(nil)
 	_ core.StatementDescriber = (*Dialect)(nil)
@@ -88,8 +91,14 @@ func (*Dialect) SupportsProcedures() bool { return false }
 
 func (*Dialect) SupportsTransactionalDDL() bool { return true }
 
+// ColumnsInfoSQL carries `generated` as its fifth column (ADR-0043): a lone INTEGER primary key is the rowid
+// alias, which SQLite generates. The result is read by ordinal.
 func (*Dialect) ColumnsInfoSQL() string {
-	return `select name, type, "notnull", pk from pragma_table_info(@relation)`
+	return "select name, type, \"notnull\", pk,\n" +
+		"       case when pk = 1 and upper(type) = 'INTEGER'\n" +
+		"                 and (select count(*) from pragma_table_info(@relation) where pk > 0) = 1\n" +
+		"            then 1 else 0 end as generated\n" +
+		"from pragma_table_info(@relation)"
 }
 
 func (*Dialect) ViewDefinitionSQL() string {
@@ -201,7 +210,7 @@ func (d *Dialect) CreateTableSQL(m *core.EntityMap) string {
 			b.WriteString("INTEGER PRIMARY KEY")
 			continue
 		}
-		b.WriteString(d.StorageType(property))
+		b.WriteString(d.StorageType(m, property))
 		if !property.IsNullable {
 			b.WriteString(" NOT NULL")
 		}
@@ -318,7 +327,7 @@ func columnNames(properties []*core.PropertyMap) []string {
 
 // StorageType is the token → SQLite storage type per the §7.9 conventions
 // (dates, decimals, GUIDs, JSON, and handler types as TEXT).
-func (*Dialect) StorageType(property *core.PropertyMap) string {
+func (*Dialect) StorageType(_ *core.EntityMap, property *core.PropertyMap) string {
 	switch property.ColumnType {
 	case core.TypeEnumInt, core.TypeInt16, core.TypeInt32, core.TypeInt64, core.TypeBool:
 		return "INTEGER"
@@ -363,3 +372,81 @@ func (*Dialect) DescribeStatement(ctx context.Context, conn *sql.Conn, statement
 	}
 	return described, nil
 }
+
+// --- DDL from a snapshot shape (ADR-0043) -------------------------------------------------
+
+// CreateTableFromSchemaSQL renders a table snapshot straight to DDL (ADR-0018): the derived rollback's
+// restore and the shadow's trusted `--from` baseline both build whole tables from it (ADR-0017). A lone
+// generated key is the rowid alias, any other key the trailing constraint, and the table is STRICT.
+func (*Dialect) CreateTableFromSchemaSQL(schema *core.TableSchema) string {
+	var b strings.Builder
+	b.WriteString("create table if not exists ")
+	b.WriteString(schema.Name)
+	b.WriteString(" (")
+	first := true
+	for _, column := range schema.Columns {
+		if first {
+			b.WriteString("\n    ")
+		} else {
+			b.WriteString(",\n    ")
+		}
+		first = false
+		b.WriteString(column.Name)
+		b.WriteByte(' ')
+		if column.Key && column.Generated {
+			b.WriteString("INTEGER PRIMARY KEY") // the rowid alias spelling
+			continue
+		}
+		b.WriteString(column.StorageType)
+		if !column.Nullable {
+			b.WriteString(" NOT NULL")
+		}
+	}
+
+	var plainKeys []string
+	hasGeneratedKey := false
+	for _, column := range schema.Columns {
+		if column.Key && column.Generated {
+			hasGeneratedKey = true
+		}
+		if column.Key && !column.Generated {
+			plainKeys = append(plainKeys, column.Name)
+		}
+	}
+	if len(plainKeys) > 0 && !hasGeneratedKey {
+		b.WriteString(",\n    primary key (")
+		b.WriteString(strings.Join(plainKeys, ", "))
+		b.WriteByte(')')
+	}
+
+	b.WriteString("\n) STRICT")
+	return b.String()
+}
+
+// CreateIndexFromSchemaSQL renders one snapshot index's create statement.
+func (*Dialect) CreateIndexFromSchemaSQL(table string, index core.TableIndex) string {
+	unique := ""
+	if index.Unique {
+		unique = "unique "
+	}
+	columns := make([]string, len(index.Columns))
+	for i, part := range index.Columns {
+		columns[i] = part.ColumnName
+		if part.Descending {
+			columns[i] += " desc"
+		}
+	}
+	return "create " + unique + "index if not exists " + index.Name + " on " + table +
+		" (" + strings.Join(columns, ", ") + ")"
+}
+
+// CreateViewFromBodySQL is `create view if not exists <v> as` over the body (materialized views do not exist on SQLite).
+func (*Dialect) CreateViewFromBodySQL(view, body string, _ bool) string {
+	return "create view if not exists " + view + " as\n" + body
+}
+
+// DropViewSQL is `drop view if exists <v>`.
+func (*Dialect) DropViewSQL(view string, _ bool) string { return "drop view if exists " + view }
+
+// ViewDefinitionIsVerbatim is true: sqlite_master keeps the create text as submitted (recasing the prefix).
+func (*Dialect) ViewDefinitionIsVerbatim() bool { return true }

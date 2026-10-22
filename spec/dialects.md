@@ -12,19 +12,24 @@ below under its own casing rule) and must reproduce the SQL of this document whe
 *shape* and *semantics*, and the reference text is given so that implementations
 stay uniform rather than inventive.
 
-The two non-SQLite dialects are **runtime-first** (ADR-0024/0025): session, CRUD,
-criteria rendering, loading in every fetch mode, tracking, unit of work, hooks,
-SchemaGuard, and the migration runner with the dialect's run lock. The snapshot,
-shadow, diff, and force-sync tooling is SQLite-only in every implementation (see
-"Deferred" below).
+The two non-SQLite dialects began **runtime-first** (ADR-0024/0025): session,
+CRUD, criteria rendering, loading in every fetch mode, tracking, unit of work,
+hooks, SchemaGuard, and the migration runner with the dialect's run lock. Since
+ADR-0043 the migration tooling — snapshot, shadow, diff, derived rollbacks, and
+force sync — works on them as on SQLite ("Migration tooling" below;
+spec/migrations.md "Dialects").
 
 ## The seam, member by member
 
 | Member | Purpose | Consulted by |
 |---|---|---|
+| `Name` | the dialect's name as the CLI spells it (`sqlite`, `sqlserver`, `postgres`; ADR-0043) — stamped into non-SQLite snapshots, compared on read (`MIG-014`) | snapshots, the diff, the shadow |
 | `CreateConnection(connectionString)` | an unopened connection for the dialect's native connection string | the session, the runner, the CLI |
 | `QuoteIdentifier(name)` | every relation and column name the library emits passes through it | renderer, generated CRUD, `Get`, DDL |
 | `CreateTableSql(map)`, `CreateIndexSql(map)`, `CreateViewSql(map)` | metadata-rendered DDL, idempotent (`IF NOT EXISTS` or the dialect's guard) | `CreateTable`/`CreateView`, an object's initial migration |
+| `CreateTableSql(schema)`, `CreateIndexSql(table, index)` | the same DDL from a **snapshot** shape (ADR-0043): storage types as recorded, one generated key inline as identity, any other key as the trailing constraint | the shadow's trusted baseline, the derived rollback (indexes), the generator |
+| `CreateViewSql(view, body, materialized)`, `DropViewSql(view, materialized)` | a view from its neutral snapshot (name and body — the text `CreateViewSql(map)` renders for that shape), and its idempotent drop | the derived rollback, the shadow baseline, the `MIG-012` probe |
+| `ViewDefinitionIsVerbatim` | true → `ViewDefinitionSql` returns the text as submitted and the `MIG-012` view guard compares normalized text; false → the engine reformats it (PostgreSQL) and the guard round-trips the expected body through a probe view (migrations.md "The view and trigger apply guard") | the runner |
 | `InsertSql`, `UpdateSql`, `UpdateOnlySql`, `DeleteSql` | the generated CRUD of spec/crud.md | the session, the unit of work |
 | `ReportsAffectedRowsBySelect` | true → the generated UPDATE and DELETE renderings end in a one-row, one-column select of the statement's own affected-row count, and the session judges that scalar instead of the driver's count (ADR-0040 add.3, Clarification 23) | the session's generated writes — never a registry command |
 | `LimitOffsetClause(limit, offset)` | the paging clause from pre-bound placeholders | the renderer |
@@ -34,9 +39,9 @@ shadow, diff, and force-sync tooling is SQLite-only in every implementation (see
 | `SupportsArrayParameters` | true → a collection-typed argument binds as **one** array parameter with the SQL untouched (spec/session.md) | the parameter binder |
 | `BindsTemporalsNatively` | true → temporals bind as native UTC values, not ISO-8601 strings | the type converter |
 | `SupportsMaterializedViews`, `SupportsProcedures`, `SupportsTransactionalDdl` | capability flags; a `[MaterializedView]` on a dialect without them is `DDL-002` | `CreateView`, SchemaGuard, snapshots |
-| `ColumnsInfoSql`, `IndexesInfoSql`, `ViewDefinitionSql` | introspection queries, parameter `@relation`, fixed result shapes (below) | SchemaGuard, force sync, the `MIG-012` guard |
+| `ColumnsInfoSql`, `IndexesInfoSql`, `ViewDefinitionSql` | introspection queries, parameter `@relation`, fixed result shapes (below; the columns shape carries `generated` since ADR-0043) | SchemaGuard, force sync, the shadow, the `MIG-012` guard |
 | `IsDeclaredTypeCompatible(declaredType, type)` | the `VAL-011` table | SchemaGuard |
-| `StorageType(property)` | the declared type `CREATE TABLE` emits (snapshots, diff, sync) | DDL, snapshots |
+| `StorageType(map, property)` | the declared type `CREATE TABLE` emits, spelled exactly as `ColumnsInfoSql` reports it back (ADR-0043): the map tells whether the column is a key or belongs to a declared index (SQL Server's indexable length), the property's storage facets override the defaults | DDL, snapshots, diff, sync |
 | `BeginMigrationRunLock(connection)` | one transaction held for the whole run, made exclusive the dialect's way | the runner |
 | `VersionTableSql` | idempotent DDL for `schema_version` — same columns everywhere | the runner |
 | `RenameTableSql`, `RenameColumnSql`, `AddColumnSql`, `DropColumnSql`, `DropTableSql`, `DropIndexSql` | the typed migration actions and the derived rollback | the runner, the down deriver, force sync |
@@ -64,6 +69,8 @@ shield transaction) — its §10 says which.
 | `SupportsProcedures` | false | true (dormant — no execution machinery before Level 4) | true (dormant) |
 | `SupportsTransactionalDdl` | true | true | true |
 | `ReportsAffectedRowsBySelect` | false | **true** | false |
+| `ViewDefinitionIsVerbatim` | true | true | **false** (`pg_get_viewdef` reformats) |
+| `Name` | `sqlite` | `sqlserver` | `postgres` |
 
 ## Rendering
 
@@ -187,9 +194,19 @@ double any single quote.
 | rename table | `alter table F rename to T` | `exec sp_rename N'F', N'T'` | `alter table "F" rename to "T"` |
 | rename column | `alter table T rename column F to N` | `exec sp_rename N'T.F', N'N', 'COLUMN'` | `alter table "T" rename column "F" to "N"` |
 | add column | `alter table T add column C <type>[ not null][ default <d>]` | `alter table [T] add [C] <type>[ not null][ default <d>]` | `alter table "T" add column "C" <type>[ not null][ default <d>]` |
-| drop column | `alter table T drop column C` | `alter table [T] drop column [C]` | `alter table "T" drop column "C"` |
+| drop column | `alter table T drop column C` | one batch (ADR-0043): `declare @df sysname = (select dc.name from sys.default_constraints dc join sys.columns c on c.object_id = dc.parent_object_id and c.column_id = dc.parent_column_id where dc.parent_object_id = object_id(N'T') and c.name = N'C'); if @df is not null exec(N'alter table [T] drop constraint ' + quotename(@df)); alter table [T] drop column [C]` — a `not null … default` addition leaves a system-named default constraint behind, and `drop column` refuses while it exists (error 5074) | `alter table "T" drop column "C"` |
 | drop table | `drop table T` | `drop table [T]` | `drop table "T"` |
 | drop index | `drop index I` | `drop index [I] on [T]` (index names are table-scoped) | `drop index "I"` (schema-scoped) |
+
+The snapshot-driven renderings (ADR-0043; the SQLite forms are `SnapshotDdl`'s
+reference text):
+
+| From a snapshot | SQLite | SQL Server | PostgreSQL |
+|---|---|---|---|
+| table | `create table if not exists T (\n    c <type>[ NOT NULL]…\n) STRICT`, a lone generated key as `INTEGER PRIMARY KEY`, other keys as the trailing `primary key (…)` | `if object_id(N'T', N'U') is null\ncreate table [T] (\n    [c] <type> identity(1,1) primary key \| <type>[ not null]…[,\n    primary key ([a], [b])]\n)` | `create table if not exists "T" (\n    "c" <type> generated by default as identity primary key \| <type>[ not null]…[,\n    primary key ("a", "b")]\n)` |
+| index | `create [unique ]index if not exists I on T (c[ desc], …)` | `if not exists (select 1 from sys.indexes where name = N'I' and object_id = object_id(N'T'))\ncreate [unique ]index [I] on [T] ([c][ desc], …)` | `create [unique ]index if not exists "I" on "T" ("c"[ desc], …)` |
+| view | `create view if not exists V as\n<body>` | `create or alter view [V] as\n<body>` | `create or replace view "V" as\n<body>`; materialized: `create materialized view if not exists "V" as\n<body>` |
+| drop view | `drop view if exists V` | `drop view if exists [V]` (2016+) | `drop view if exists "V"`; materialized: `drop materialized view if exists "V"` |
 
 ### The version table
 
@@ -239,8 +256,9 @@ run has not started.
 
 ## Storage types
 
-What `CREATE TABLE` emits per neutral type token (spec/metadata-model.md), and what
-snapshots and the diff generator compare on the dialects that have them.
+What `CREATE TABLE` emits per neutral type token (spec/metadata-model.md), what
+introspection reports back, and what snapshots, the diff generator, and force
+sync compare — one spelling, the introspection's (ADR-0043).
 
 | Token | SQLite | SQL Server | PostgreSQL |
 |---|---|---|---|
@@ -248,20 +266,26 @@ snapshots and the diff generator compare on the dialects that have them.
 | `int32` | `INTEGER` | `int` | `integer` |
 | `int64` | `INTEGER` | `bigint` | `bigint` |
 | `bool` | `INTEGER` | `bit` | `boolean` |
-| `decimal` | `TEXT` | `decimal(38, 9)` — declare the real precision in migrations | `numeric` (unconstrained) |
+| `decimal` | `TEXT` | `decimal(38,9)`; a `Precision`/`Scale` facet renders `decimal(p,s)` | `numeric` (unconstrained); a facet renders `numeric(p,s)` |
 | `double` | `REAL` | `float` | `double precision` |
 | `float` | `REAL` | `real` | `real` |
-| `string`, JSON, handler types | `TEXT` | `nvarchar(max)`; a key column `nvarchar(450)` (the indexable length), and `CREATE TABLE` also gives the length to a column of a declared index — `nvarchar(max)` cannot be an index key (error 1919) | `text` |
+| `string`, JSON, handler types | `TEXT` | `nvarchar(max)`; a key column **or a column of a declared index** `nvarchar(450)` (the indexable length — `nvarchar(max)` cannot be an index key, error 1919); a `Length` facet renders `nvarchar(n)` and wins over both | `text`; a `Length` facet renders `character varying(n)` |
 | `guid` | `TEXT` | `uniqueidentifier` | `uuid` |
-| `bytes` | `BLOB` | `varbinary(max)`; a key column or a column of a declared index `varbinary(450)` (as for strings) | `bytea` |
+| `bytes` | `BLOB` | `varbinary(max)`; a key column or a column of a declared index `varbinary(450)` (as for strings); a `Length` facet `varbinary(n)` | `bytea` (no length; a facet is ignored) |
 | `datetime`, `datetimeoffset` | `TEXT` | `datetimeoffset` | `timestamp with time zone` |
 | `date` | `TEXT` | `date` | `date` |
 | `time` | `TEXT` | `time` | `time without time zone` |
 | `enum_text` | `TEXT` | `nvarchar(100)` | `text` |
 | `enum_int` | `INTEGER` | `int` | `integer` |
 
-PostgreSQL types are spelled the way `format_type` reports them, so introspected
-and rendered types compare cleanly.
+PostgreSQL types are spelled the way `format_type` reports them, SQL Server's
+the way the columns query reconstructs them (`decimal(38,9)`, no space), so
+introspected and rendered types compare cleanly. The **storage facets**
+(ADR-0043, metadata-model.md "Storage facets") are dialect-neutral size
+declarations the dialect renders its own way — `Length` for strings and bytes,
+`Precision`/`Scale` for decimals; SQLite's storage classes have none and ignore
+them. Whether a declared length fits an engine's index limits is the author's
+responsibility, as for composite `nvarchar(450)` keys.
 
 ## Declared-type compatibility (`VAL-011`)
 
@@ -362,10 +386,12 @@ below** — every non-SQLite dialect aliases them (`as name`, `as "notnull"`, `a
 …), so a consumer may read by name or by ordinal; SQLite's queries are the frozen
 reference text and are read by ordinal.
 
-- **Columns**: `name, type, notnull, pk` in column order, `pk` the key ordinal
-  (0 = not part of the key); `type` is the declared type spelled as the storage
-  type table above (SQL Server reconstructs `(precision,scale)` and `(length|max)`;
-  PostgreSQL uses `format_type`).
+- **Columns**: `name, type, notnull, pk, generated` in column order, `pk` the key
+  ordinal (0 = not part of the key), `generated` whether the database generates
+  the value (ADR-0043: SQL Server `is_identity`, PostgreSQL `attidentity`,
+  SQLite the rowid alias — a lone `INTEGER` primary key); `type` is the declared
+  type spelled as the storage type table above (SQL Server reconstructs
+  `(precision,scale)` and `(length|max)`; PostgreSQL uses `format_type`).
 - **Indexes** (explicitly created ones — never the primary key or a unique
   constraint's index): `index_name, unique, seqno, column, desc`, ordered by index
   name then position. Force sync matches indexes structurally (ADR-0017 add.2).
@@ -389,7 +415,8 @@ select c.name as [name],
            else t.name
        end as [type],
        cast(case when c.is_nullable = 1 then 0 else 1 end as bigint) as [notnull],
-       cast(isnull(pk.key_ordinal, 0) as bigint) as [pk]
+       cast(isnull(pk.key_ordinal, 0) as bigint) as [pk],
+       cast(c.is_identity as bigint) as [generated]
 from sys.columns c
 join sys.types t on t.user_type_id = c.user_type_id
 left join (
@@ -421,7 +448,8 @@ select a.attname as name,
        (case when exists (
            select 1 from pg_index i
            where i.indrelid = a.attrelid and i.indisprimary and a.attnum = any(i.indkey)
-       ) then 1 else 0 end)::bigint as pk
+       ) then 1 else 0 end)::bigint as pk,
+       (case when a.attidentity in ('a', 'd') then 1 else 0 end)::bigint as generated
 from pg_attribute a
 where a.attrelid = to_regclass(@relation) and a.attnum > 0 and not a.attisdropped
 order by a.attnum
@@ -447,7 +475,16 @@ where c.oid = to_regclass(@relation) and c.relkind in ('v', 'm')
 ```
 
 (The PostgreSQL column query reports `pk` as a presence flag, not an ordinal;
-SchemaGuard only asks whether the column is part of the key.)
+SchemaGuard only asks whether the column is part of the key.) The SQLite
+reference query is now
+
+```sql
+select name, type, "notnull", pk,
+       case when pk = 1 and upper(type) = 'INTEGER'
+                 and (select count(*) from pragma_table_info(@relation) where pk > 0) = 1
+            then 1 else 0 end as generated
+from pragma_table_info(@relation)
+```
 
 - **Trigger definition** (ADR-0042): `@relation` is the declared trigger name;
   one column `definition`, one row per statement the dialect created for it;
@@ -502,24 +539,56 @@ A dialect takes its driver's **native** connection string; the SQLite dialect al
 accepts a bare file path and the reference's `Data Source=<path>` form. The CLI
 selects the dialect by name — `--dialect sqlite|sqlserver|postgres`, default
 `sqlite` — for every database command; an unknown name refuses before anything
-opens. `shadow` refuses every dialect but SQLite by name (it replays into a
-throwaway SQLite database).
+opens. For `shadow` on SQL Server or PostgreSQL, `--db` is the **admin**
+connection (CREATE DATABASE rights): the throwaway `simpleorm_shadow_<hex>` is
+created and dropped there; on SQLite it is ignored (ADR-0043).
+
+## Migration tooling (ADR-0043)
+
+The rules live in spec/migrations.md "Dialects"; this is the seam side.
+
+- **The shadow host** is a tooling contract beside the seam, never consulted
+  at runtime (C# `IShadowHost`; a port shapes it its own way and says so in
+  its §10): *provision* a throwaway database from the admin connection and
+  return the connection string that opens it; *drop* it afterwards, failure
+  included; and an optional *trigger read-back* — the inverse of
+  `CreateTriggerSql` over the catalog's text, present where the catalog is
+  lossless. SQLite: a temp file; read-back from `sqlite_master`. SQL Server:
+  `create database [simpleorm_shadow_<hex>]`, dropped after `alter database
+  … set single_user with rollback immediate`; **no read-back** (`inserted`
+  has lost the token's column list). PostgreSQL: `create database
+  "simpleorm_shadow_<hex>"`, `drop database … with (force)` after the pools
+  are cleared; read-back from the reconstructed `TriggerDefinitionSql` rows —
+  the header's `before|after|instead of`, `insert`/`update[ of "a", "b"]`/
+  `delete` joined by ` or `, the relation; the function body between `begin`
+  and the rendered `return` tail, `(select new."a" as "a", …)` folded to
+  `{new: a, …}`, `now()` to `{now}`.
+- **The view guard's mode** is `ViewDefinitionIsVerbatim`. The probe (false):
+  `savepoint simpleorm_probe`; `CreateViewSql("simpleorm_expect_<hex>",
+  <expected body>, false)`; `ViewDefinitionSql` on the probe and on the live
+  view, compared trimmed; `DropViewSql(probe)`; `release savepoint` — or
+  `rollback to savepoint` when the probe fails to create, which counts as
+  drift. Standard savepoint grammar: the probe path runs only on dialects
+  that have it; a dialect with another grammar and a reformatting catalog
+  would need a member (§7.25).
+- **The stamp.** `Name` is what `snapshot`/`shadow` write as `"dialect"` for
+  every dialect but `sqlite` and what every reader compares (`MIG-014`).
 
 ## Deferred — the same list in every implementation
 
 Named here so that no implementation attempts it ahead of the reference:
 
-- **Snapshot, shadow, diff, and force-sync tooling** against SQL Server or
-  PostgreSQL: untested in the reference, not ported. Rollbacks there need `Down()`
-  overrides until snapshot tooling learns the dialect — `MIG-020` says so when a
-  derived rollback is asked for. Trigger snapshots are dialect-neutral, but the
-  shadow's parse of a stored trigger back to its declaration exists for SQLite
-  only (the dialect it replays).
+- **A SQL Server trigger read-back** for the shadow's self-check: the stored
+  text renders `{new: cols}` as `inserted`, so the declaration is not
+  recoverable; the shadow snapshots triggers from the step there (ADR-0043 —
+  the tooling itself is no longer deferred on any dialect).
 - **A per-dialect body override** for a trigger (a body that must say what the
   tokens cannot, such as aborting a write): not provided — the three dialects
   and the fixture need none; a real case decides its form.
-- The `MIG-012` view-guard normalization against `sys.sql_modules` /
-  `pg_get_viewdef` output: untested beyond SQLite.
+- The `MIG-012` view guard against `sys.sql_modules` output: built (text,
+  normalized) and pinned by `migrations-cases/sqlserver/`, unrun until the
+  owner's engine is back; against `pg_get_viewdef` it is the probe round trip,
+  verified live.
 - Procedure execution (`SupportsProcedures` is declared, dormant); `REFRESH
   MATERIALIZED VIEW`; `jsonb` and array-typed columns; schema qualifiers beyond
   the metadata's `Schema`; batching (spec/unit-of-work.md "Batching") — all Level 4.
@@ -667,22 +736,25 @@ ports found (ADR-0040 add.1).
     `attname`); `Table` is `oid::regclass::text`. A port whose driver exposes no
     origin table for a column (PDO `sqlsrv` `getColumnMeta`) falls back to the
     expression-column rule — nullable member or `-- notnull:` — and says so.
-11. **The indexable length is a `CREATE TABLE` rule**, not a `StorageType` rule:
-    string and bytes columns of a declared index render `nvarchar(450)` /
-    `varbinary(450)` there, while `StorageType(property)` keeps the key-only rule
-    (snapshots and diff are SQLite-only on these dialects). Two such key columns
-    exceed SQL Server's 900-byte index limit — it creates with a warning; declare
-    real lengths in migrations.
+11. ~~**The indexable length is a `CREATE TABLE` rule**, not a `StorageType`
+    rule~~ — **superseded by ADR-0043**: `StorageType(map, property)` applies
+    the indexable length to a key column and to a column of a declared index
+    alike, so snapshots, diff, and sync see what `CREATE TABLE` emits and
+    introspection reports (`nvarchar(450)`). Two such key columns exceed SQL
+    Server's 900-byte index limit — it creates with a warning; declare real
+    lengths with a `Length` facet.
 12. **Testing contract, precisely.** "A database per fixture" may be one database
     per test class with the schema reset per test, or one per test; both drop
     afterwards, including on failure. Beyond the list above every live leg pins
     that all three fetch modes load the same graph and that the run lock excludes
     a second connection and is released by rollback. The LocalDB default applies
     only where the driver can address a LocalDB instance.
-13. **Unquoted names in tooling-only paths** (the derived rollback's `drop view if
-    exists <name>`, the generator's drop statements) stay as they are: those paths
-    are SQLite-only by the deferred list. The migration *actions* (`DropView`,
-    `RecreateView`, `DropIndex`) render through the seam and quote.
+13. ~~**Unquoted names in tooling-only paths** stay as they are~~ — **superseded
+    by ADR-0043**: the derived rollback, the shadow baseline, and the generator
+    render through `DropViewSql`, `CreateViewSql(name, body, …)`,
+    `CreateTableSql(schema)`, and `CreateIndexSql(table, index)`, quoting as
+    the dialect does. The migration *actions* (`DropView`, `RecreateView`,
+    `DropIndex`) rendered through the seam already.
 14. **`bytes` bind as binary parameters, chosen by the token** (owner ruling,
     ADR-0040 add.1). A value whose property's metadata type token is `bytes`
     binds as the driver's binary parameter on every dialect — generated CRUD, key
@@ -794,9 +866,10 @@ ports found (ADR-0040 add.1).
     therefore run with it off; an application using the SQL Server dialect must
     too. SQLite and PostgreSQL are unaffected.
 21. **An indexed `nvarchar` column reads back as `nvarchar(450)`** from
-    introspection, because that is what Clarification 11 writes; a live
-    expectation of `nvarchar(max)` for `users.display_name` (indexed) was the
-    Go leg's mistake, not the dialect's.
+    introspection, because that is what `CREATE TABLE` writes (and, since
+    ADR-0043, what `StorageType` says too); a live expectation of
+    `nvarchar(max)` for `users.display_name` (indexed) was the Go leg's
+    mistake, not the dialect's.
 22. **`RowsAffected` under a trigger, measured** (SQL Server 2016, 2026-10-19):
     a one-row `UPDATE` on a table whose `AFTER UPDATE` trigger inserts two log
     rows without `SET NOCOUNT ON` reports **3** rows affected through the
@@ -862,3 +935,13 @@ ports found (ADR-0040 add.1).
     delete, and the by-key delete of the gone row (an `AFTER` trigger fires
     once per statement, rows or not) — so the log holds 12 rows; the stale
     instance's version stays what it was.
+27. **Overload-less ports name the snapshot forms** (ADR-0043): where a
+    language has no overloading, `CreateTableSql(schema)`,
+    `CreateIndexSql(table, index)`, and `CreateViewSql(view, body,
+    materialized)` are `createTableSqlFromSchema` / `createIndexSqlFromSchema`
+    / `createViewSqlFromBody` (PHP) and `CreateTableFromSchemaSQL` /
+    `CreateIndexFromSchemaSQL` / `CreateViewFromBodySQL` (Go); the map forms
+    keep their names. The shadow host's shape is the port's (PHP a
+    `ShadowHost` interface with `canReadTriggers()`/`readTrigger()`, Go a
+    `ShadowHost` plus an optional `TriggerReadBack`), recorded in its §10.
+    The five introspection columns may be read by ordinal or by name.

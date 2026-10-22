@@ -15,7 +15,7 @@ namespace SimpleOrm.Tests;
 /// </summary>
 public sealed class PostgresFixture : IAsyncLifetime
 {
-    private static readonly string AdminConnectionString =
+    internal static readonly string AdminConnectionString =
         Environment.GetEnvironmentVariable("SIMPLEORM_POSTGRES")
         ?? "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=postgres;Timeout=5";
 
@@ -81,6 +81,18 @@ public sealed class PostgresCollection : ICollectionFixture<PostgresFixture>
 public sealed class PostgresFactAttribute : FactAttribute
 {
     public PostgresFactAttribute()
+    {
+        if (!PostgresFixture.Available)
+        {
+            Skip = "PostgreSQL is not available (set SIMPLEORM_POSTGRES or run a local server on 5432)";
+        }
+    }
+}
+
+/// <summary>A theory that runs only where a PostgreSQL server answers (the per-dialect conformance folders, ADR-0043).</summary>
+public sealed class PostgresTheoryAttribute : TheoryAttribute
+{
+    public PostgresTheoryAttribute()
     {
         if (!PostgresFixture.Available)
         {

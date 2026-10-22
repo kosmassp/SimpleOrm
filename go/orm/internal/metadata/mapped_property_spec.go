@@ -35,6 +35,11 @@ type MappedPropertySpec struct {
 	// RenamedFrom is the declared previous column name (Level 3 M5): nil when undeclared; an empty (or blank)
 	// name is MAP-027, reported by the assembler so every loader shares the rule.
 	RenamedFrom *string
+	// Length, Precision, and Scale are the declared storage facets (Level 4, ADR-0043): nil when undeclared. The
+	// assembler validates them (MAP-032), so every loader shares the rule.
+	Length    *int
+	Precision *int
+	Scale     *int
 	// ForeignKeyReferences is set from the descriptor's EntityDef.ForeignKeys,
 	// after every spec's PropertyName is known (ADR-0027, CODING-STANDARD §10).
 	ForeignKeyReferences reflect.Type

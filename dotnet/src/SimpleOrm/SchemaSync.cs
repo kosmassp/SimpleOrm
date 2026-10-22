@@ -53,7 +53,7 @@ public static class SchemaSync
                     if (property.IsNullable)
                     {
                         plan.Additive.Add(dialect.AddColumnSql(
-                            map.RelationName!, property.ColumnName, dialect.StorageType(property),
+                            map.RelationName!, property.ColumnName, dialect.StorageType(map, property),
                             nullable: true, defaultSql: null));
                     }
                     else
@@ -65,7 +65,7 @@ public static class SchemaSync
                     continue;
                 }
 
-                var expected = dialect.StorageType(property);
+                var expected = dialect.StorageType(map, property);
                 if (!string.Equals(column.DeclaredType, expected, StringComparison.OrdinalIgnoreCase)
                     || column.NotNull == property.IsNullable)
                 {

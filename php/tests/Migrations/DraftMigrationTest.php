@@ -12,7 +12,6 @@ use PHPUnit\Framework\TestCase;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use SimpleOrm\Dialect\SqliteDialect;
-use SimpleOrm\Dialect\SqliteShadow;
 use SimpleOrm\Errors\MappingException;
 use SimpleOrm\Errors\SchemaValidationException;
 use SimpleOrm\Errors\SimpleOrmException;
@@ -38,6 +37,7 @@ use SimpleOrm\Migrations\MigrationRunner;
 use SimpleOrm\Migrations\MigrationSet;
 use SimpleOrm\Migrations\MigrationState;
 use SimpleOrm\Migrations\MigrationVersion;
+use SimpleOrm\Migrations\SchemaShadow;
 use SimpleOrm\Migrations\SqlVersion;
 use SimpleOrm\Migrations\SqlVersionStep;
 use SimpleOrm\Migrations\TableSchema;
@@ -354,7 +354,7 @@ final class DraftMigrationTest extends TestCase
         $dir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'simpleorm_draft_shadow_' . bin2hex(random_bytes(6));
         mkdir($dir, 0777, true);
         try {
-            $result = SqliteShadow::rebuildSnapshots(
+            $result = SchemaShadow::for(new SqliteDialect())->rebuildSnapshots(
                 MigrationSet::of($this->create(), $this->addNoteDraft()),
                 $this->maps,
                 $dir,

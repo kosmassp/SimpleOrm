@@ -23,6 +23,10 @@ final class TriggerActions
     /** @var list<MigrationAction> */
     private array $actions = [];
 
+    private bool $leavesDeclaration = false;
+
+    private ?TriggerSchema $declared = null;
+
     /**
      * @param string $relation the table or view the trigger is on
      * @param ?EntityTrigger $linked the entity's link to this step's trigger class, null when the entity no longer links it
@@ -50,6 +54,8 @@ final class TriggerActions
                 . 'use recreate() with a literal declaration',
         );
 
+        $this->declare($linked->definition);
+
         return $this->track(new MigrationAction('create trigger ' . $this->triggerName, $this->replace($linked->definition)));
     }
 
@@ -62,10 +68,10 @@ final class TriggerActions
      */
     public function recreate(TriggerTiming $timing, array $events, string $sql, array $updateOf = []): MigrationAction
     {
-        return $this->track(new MigrationAction(
-            'recreate trigger ' . $this->triggerName,
-            $this->replace($this->literal($timing, $events, $sql, $updateOf)),
-        ));
+        $definition = $this->literal($timing, $events, $sql, $updateOf);
+        $this->declare($definition);
+
+        return $this->track(new MigrationAction('recreate trigger ' . $this->triggerName, $this->replace($definition)));
     }
 
     /**
@@ -94,10 +100,28 @@ final class TriggerActions
     /** Drops the trigger with whatever the dialect created beside it. */
     public function dropTrigger(): MigrationAction
     {
+        $this->leavesDeclaration = true;
+        $this->declared = null;
+
         return $this->track(new MigrationAction(
             'drop trigger ' . $this->triggerName,
             $this->dialect->dropTriggerSql($this->relation, $this->triggerName),
         ));
+    }
+
+    /**
+     * Whether any action creates, recreates, or drops the trigger — what the shadow reads to take the snapshot from the
+     * step instead of the catalog (ADR-0043); a step with only `expectDefinition()` leaves nothing declared.
+     */
+    public function leavesDeclaration(): bool
+    {
+        return $this->leavesDeclaration;
+    }
+
+    /** The declaration the actions leave behind, in order: the last create/recreate wins, a later drop leaves none (null). */
+    public function declared(): ?TriggerSchema
+    {
+        return $this->declared;
     }
 
     /** @return list<MigrationStatement> */
@@ -111,6 +135,12 @@ final class TriggerActions
         }
 
         return $statements;
+    }
+
+    private function declare(TriggerDefinition $definition): void
+    {
+        $this->leavesDeclaration = true;
+        $this->declared = new TriggerSchema($this->relation, $this->onView, $definition);
     }
 
     /**

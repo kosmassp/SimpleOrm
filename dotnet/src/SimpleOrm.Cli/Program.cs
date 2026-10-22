@@ -113,19 +113,23 @@ int Usage()
                                       (its raw SQL/hooks/data are not reproducible — re-add
                                       by hand); with --db, an applied draft gets a MIG-010
                                       heads-up (migrate down first, or recreate)
-          shadow --out <MigrationsDir> [--from V000N] [--to V000M]
+          shadow --out <MigrationsDir> [--from V000N] [--to V000M] [--dialect <name> --db <admin>]
                                       rebuild snapshots by replaying migrations in a
                                       throwaway database; --from trusts version N as
                                       correct (baseline from committed snapshots, no
-                                      verification below N) and regenerates only (N, M]
+                                      verification below N) and regenerates only (N, M].
+                                      On sqlserver/postgres --db is the ADMIN connection:
+                                      shadow creates and drops simpleorm_shadow_<hex>
+                                      there (CREATE DATABASE rights); on sqlite it uses
+                                      a temp file and --db is ignored
 
         options:
           --assembly <path>   the application assembly containing migrations/entities
           --db <value>        connection string, or a bare path to a SQLite file
           --namespace <ns>    migration namespace filter (default: whole assembly)
-          --dialect <name>    sqlite (default), sqlserver, or postgres
-                              (ADR-0024/0025); shadow is sqlite-only — other
-                              dialects override Down() instead
+          --dialect <name>    sqlite (default), sqlserver, or postgres (ADR-0024/0025/0043):
+                              a tree and its snapshots belong to one dialect — a
+                              snapshot stamped for another is MIG-014
         """);
     return 2;
 }
@@ -321,7 +325,7 @@ async Task<int> SnapshotAsync()
 
             // Tables snapshot by columns; views by DDL (ADR-0017 add.1). Kinds the
             // dialect cannot create (MV/procedure here) have no history to record.
-            var (folder, content) = SnapshotContent(db.Options.Dialect, type, map, version, generatedAt);
+            var (folder, content) = SnapshotContent(db.Options.Dialect, map, version, generatedAt);
             if (content is null)
             {
                 continue;
@@ -349,7 +353,7 @@ async Task<int> SnapshotAsync()
                 Directory.CreateDirectory(directory);
                 var file = Path.Combine(directory, $"V{version:0000}.schema.json");
                 File.WriteAllText(file, SchemaSnapshot.ExportTrigger(
-                    new TriggerSnapshot(map.RelationName!, map.Kind == RelationKind.View, trigger.Definition), version, generatedAt) + "\n");
+                    new TriggerSnapshot(map.RelationName!, map.Kind == RelationKind.View, trigger.Definition), version, generatedAt, db.Options.Dialect.Name) + "\n");
                 Console.WriteLine("wrote " + file);
             }
         }
@@ -359,7 +363,7 @@ async Task<int> SnapshotAsync()
 }
 
 static (string Folder, string? Content) SnapshotContent(
-    IDialect dialect, Type type, EntityMap map, long version, DateTimeOffset generatedAt)
+    IDialect dialect, EntityMap map, long version, DateTimeOffset generatedAt)
 {
     switch (map.Kind)
     {
@@ -367,10 +371,10 @@ static (string Folder, string? Content) SnapshotContent(
             return ("Table", SchemaSnapshot.Export(map, dialect, version, generatedAt));
         case RelationKind.View:
             return ("View", SchemaSnapshot.ExportDdl(
-                map.RelationName!, "view", dialect.CreateViewSql(map), version, generatedAt));
+                map.RelationName!, "view", dialect.CreateViewSql(map), version, generatedAt, dialect.Name));
         case RelationKind.MaterializedView when dialect.SupportsMaterializedViews:
             return ("MaterializedView", SchemaSnapshot.ExportDdl(
-                map.RelationName!, "materialized_view", dialect.CreateViewSql(map), version, generatedAt));
+                map.RelationName!, "materialized_view", dialect.CreateViewSql(map), version, generatedAt, dialect.Name));
         default:
             return (string.Empty, null);
     }
@@ -441,13 +445,19 @@ async Task<bool> IsAppliedAsync(long version)
     }
 }
 
+// The shadow's throwaway database per dialect (ADR-0043): a temp file on SQLite; on the
+// others a database created and dropped on the admin connection --db names.
+IShadowHost ShadowHostFor() => (Option("dialect") ?? "sqlite").ToLowerInvariant() switch
+{
+    "sqlite" => (IShadowHost)new SqliteShadowHost(),
+    "sqlserver" => new SqlServerShadowHost(),
+    "postgres" => new PostgresShadowHost(),
+    var name => throw new SimpleOrmException(
+        "CLI", "arguments", $"unknown --dialect '{name}' (sqlite, sqlserver, postgres)"),
+};
+
 async Task<int> ShadowAsync()
 {
-    if (Option("dialect") is { } dialectName && !string.Equals(dialectName, "sqlite", StringComparison.OrdinalIgnoreCase))
-    {
-        return Fail($"shadow replays into a throwaway SQLite database and supports only --dialect sqlite (ADR-0024); '{dialectName}' rollbacks need Down() overrides until snapshot tooling learns that dialect");
-    }
-
     if (Option("out") is not { } outDir)
     {
         return Fail("shadow requires --out <MigrationsDir>");
@@ -465,8 +475,8 @@ async Task<int> ShadowAsync()
         return Fail($"--to '{toRaw}': expected V000M or a number");
     }
 
-    var result = await SqliteShadow.RebuildSnapshotsAsync(
-        LoadAssembly(), Option("namespace"), outDir, from, to, CancellationToken.None);
+    var result = await SchemaShadow.RebuildSnapshotsAsync(
+        LoadAssembly(), Option("namespace"), outDir, DialectFor(), ShadowHostFor(), Option("db"), from, to, CancellationToken.None);
     foreach (var note in result.Notes)
     {
         Console.WriteLine(note);

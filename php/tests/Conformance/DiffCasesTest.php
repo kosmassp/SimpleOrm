@@ -7,6 +7,7 @@ namespace SimpleOrm\Tests\Conformance;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use SimpleOrm\Dialect\SqliteDialect;
 use SimpleOrm\Migrations\MigrationGenerator;
 use SimpleOrm\Migrations\SchemaSnapshot;
 use SimpleOrm\Migrations\TriggerSchema;
@@ -62,7 +63,7 @@ final class DiffCasesTest extends TestCase
             }
         }
 
-        $diff = MigrationGenerator::diff($current, $snapshot, $renames, $declared);
+        $diff = MigrationGenerator::diff($current, $snapshot, $renames, new SqliteDialect(), $declared);
         $expect = $spec['expect'];
 
         self::assertSame($expect['isNew'] ?? false, $diff->isNew);

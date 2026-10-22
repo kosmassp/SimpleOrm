@@ -361,7 +361,7 @@ func TestStorageType(t *testing.T) {
 	}
 	for _, c := range cases {
 		property := &core.PropertyMap{ColumnType: c.columnType}
-		if got := d.StorageType(property); got != c.want {
+		if got := d.StorageType(nil, property); got != c.want {
 			t.Errorf("StorageType(%s) = %q, want %q", c.columnType, got, c.want)
 		}
 	}
@@ -397,7 +397,12 @@ func TestCapabilityFlags(t *testing.T) {
 
 func TestIntrospectionSQL(t *testing.T) {
 	d := sqlite.New()
-	if got, want := d.ColumnsInfoSQL(), `select name, type, "notnull", pk from pragma_table_info(@relation)`; got != want {
+	wantColumns := "select name, type, \"notnull\", pk,\n" +
+		"       case when pk = 1 and upper(type) = 'INTEGER'\n" +
+		"                 and (select count(*) from pragma_table_info(@relation) where pk > 0) = 1\n" +
+		"            then 1 else 0 end as generated\n" +
+		"from pragma_table_info(@relation)"
+	if got, want := d.ColumnsInfoSQL(), wantColumns; got != want {
 		t.Errorf("ColumnsInfoSQL: got %q, want %q", got, want)
 	}
 	if got, want := d.ViewDefinitionSQL(), "select sql from sqlite_master where type = 'view' and name = @relation"; got != want {

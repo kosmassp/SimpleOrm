@@ -18,6 +18,9 @@ use SimpleOrm\Metadata\TriggerDefinition;
 use SimpleOrm\Metadata\TriggerEvent;
 use SimpleOrm\Metadata\TriggerTiming;
 use SimpleOrm\Metadata\TriggerTokenKind;
+use SimpleOrm\Migrations\TableSchema;
+use SimpleOrm\Migrations\TableSchemaIndex;
+use SimpleOrm\Migrations\TableSchemaIndexPart;
 use SimpleOrm\Query\AnsiSelectRenderer;
 use SimpleOrm\Query\SelectAst;
 use Throwable;
@@ -27,8 +30,8 @@ use Throwable;
  * `[brackets]`, `offset … rows fetch next … rows only` paging that requires an ORDER BY, no row-value `IN`
  * (the renderer rewrites composite membership as a correlated EXISTS), `datetimeoffset` for every temporal,
  * `create or alter view`, `sp_rename`, and a migration run lock held as one transaction around
- * `sp_getapplock`. Runtime-first like the reference: snapshot, shadow, diff, and force-sync tooling stays
- * SQLite-only (spec/dialects.md "Deferred").
+ * `sp_getapplock`. Since ADR-0043 the migration tooling (snapshot, shadow, diff, derived rollbacks, force sync)
+ * works here as on SQLite — `StorageType` spells every type as the columns query reports it back.
  *
  * **Drivers (CODING-STANDARD §10).** The connection string is a PDO DSN taken verbatim: `sqlsrv:` (`pdo_sqlsrv`)
  * or `odbc:` (`pdo_odbc` with "ODBC Driver 17/18 for SQL Server") — the SQL is the same over either. Prepared
@@ -45,6 +48,11 @@ final class SqlServerDialect implements Dialect, PdoConventions
 {
     /** The indexable `nvarchar`/`varbinary` length of a key column (SQL Server's 900-byte index key limit, spec/dialects.md). */
     private const KEY_LENGTH = '450';
+
+    public function name(): string
+    {
+        return Dialects::SQLSERVER;
+    }
 
     public function createConnection(string $connectionString): PDO
     {
@@ -77,17 +85,16 @@ final class SqlServerDialect implements Dialect, PdoConventions
     public function createTableSql(EntityMap $map): string
     {
         $table = (string) $map->relationName;
-        $indexed = self::indexedColumns($map);
 
         $lines = [];
         foreach ($map->properties as $property) {
             $column = $this->quoteIdentifier($property->columnName);
             if ($map->keyStrategy === KeyStrategy::DatabaseGenerated && $property->key) {
-                $lines[] = $column . ' ' . self::columnType($property, $indexed) . ' identity(1,1) primary key';
+                $lines[] = $column . ' ' . $this->storageType($map, $property) . ' identity(1,1) primary key';
                 continue;
             }
 
-            $line = $column . ' ' . self::columnType($property, $indexed);
+            $line = $column . ' ' . $this->storageType($map, $property);
             if (!$property->nullable) {
                 $line .= ' not null';
             }
@@ -129,7 +136,68 @@ final class SqlServerDialect implements Dialect, PdoConventions
 
     public function createViewSql(EntityMap $map): string
     {
-        return 'create or alter view ' . $this->quoteIdentifier((string) $map->relationName) . " as\n" . $map->definingSql;
+        return $this->createViewSqlFromBody((string) $map->relationName, (string) $map->definingSql, false);
+    }
+
+    /**
+     * The snapshot-driven table DDL (ADR-0043): one generated key inline as `identity(1,1) primary key`, any other key
+     * the trailing constraint, guarded like the metadata form.
+     */
+    public function createTableSqlFromSchema(TableSchema $schema): string
+    {
+        $lines = [];
+        $plainKeys = [];
+        $hasGeneratedKey = false;
+        foreach ($schema->columns as $column) {
+            if ($column->key && $column->generated) {
+                $hasGeneratedKey = true;
+                $lines[] = $this->quoteIdentifier($column->name) . ' ' . $column->storageType . ' identity(1,1) primary key';
+
+                continue;
+            }
+
+            if ($column->key) {
+                $plainKeys[] = $this->quoteIdentifier($column->name);
+            }
+
+            $lines[] = $this->quoteIdentifier($column->name) . ' ' . $column->storageType . ($column->nullable ? '' : ' not null');
+        }
+
+        if ($plainKeys !== [] && !$hasGeneratedKey) {
+            $lines[] = 'primary key (' . implode(', ', $plainKeys) . ')';
+        }
+
+        return 'if object_id(' . self::nLiteral($schema->name) . ", N'U') is null\n"
+            . 'create table ' . $this->quoteIdentifier($schema->name) . " (\n    " . implode(",\n    ", $lines) . "\n)";
+    }
+
+    public function createIndexSqlFromSchema(string $table, TableSchemaIndex $index): string
+    {
+        return 'if not exists (select 1 from sys.indexes where name = ' . self::nLiteral($index->name)
+            . ' and object_id = object_id(' . self::nLiteral($table) . "))\n"
+            . 'create ' . ($index->unique ? 'unique ' : '') . 'index ' . $this->quoteIdentifier($index->name)
+            . ' on ' . $this->quoteIdentifier($table) . ' (' . implode(', ', array_map(
+                fn (TableSchemaIndexPart $part): string => $this->quoteIdentifier($part->columnName) . ($part->descending ? ' desc' : ''),
+                $index->columns,
+            )) . ')';
+    }
+
+    /** SQL Server has no materialized views; the flag is ignored (`DDL-002` refuses them upstream). */
+    public function createViewSqlFromBody(string $view, string $body, bool $materialized): string
+    {
+        return 'create or alter view ' . $this->quoteIdentifier($view) . " as\n" . $body;
+    }
+
+    /** `drop view if exists` needs SQL Server 2016. */
+    public function dropViewSql(string $view, bool $materialized): string
+    {
+        return 'drop view if exists ' . $this->quoteIdentifier($view);
+    }
+
+    /** `sys.sql_modules.definition` keeps the text as submitted. */
+    public function viewDefinitionIsVerbatim(): bool
+    {
+        return true;
     }
 
     /**
@@ -283,7 +351,7 @@ final class SqlServerDialect implements Dialect, PdoConventions
     }
 
     /**
-     * The introspection result columns carry the spec's names (`name, type, notnull, pk`; `index_name, unique,
+     * The introspection result columns carry the spec's names (`name, type, notnull, pk, generated`; `index_name, unique,
      * seqno, column, desc`; `definition`) on every non-SQLite dialect of every implementation — SQLite's pragmas
      * name them so already — so a consumer may read by name (PDO does) or by ordinal (the reference does)
      * (spec/dialects.md "Introspection result shapes").
@@ -302,7 +370,8 @@ final class SqlServerDialect implements Dialect, PdoConventions
                        else t.name
                    end as [type],
                    cast(case when c.is_nullable = 1 then 0 else 1 end as bigint) as [notnull],
-                   cast(isnull(pk.key_ordinal, 0) as bigint) as [pk]
+                   cast(isnull(pk.key_ordinal, 0) as bigint) as [pk],
+                   cast(c.is_identity as bigint) as [generated]
             from sys.columns c
             join sys.types t on t.user_type_id = c.user_type_id
             left join (
@@ -369,38 +438,34 @@ final class SqlServerDialect implements Dialect, PdoConventions
     }
 
     /**
-     * The declared type `CREATE TABLE` emits for one property: the key columns of a `string`/`bytes` property
-     * get the indexable `(450)` length. {@see self::createTableSql()} extends that to columns of declared indexes,
-     * which only the whole map can tell.
+     * The declared type `CREATE TABLE` emits for one property, spelled as the columns query reports it back
+     * (ADR-0043; spec/dialects.md "Storage types"): a `string`/`bytes` column that is a key **or belongs to a declared
+     * index** gets the indexable `(450)` length (`max` cannot be an index key, error 1919), a `Length` facet wins over
+     * both, and a `Precision`/`Scale` facet renders `decimal(p,s)` (default `decimal(38,9)`, no space).
      */
-    public function storageType(PropertyMap $property): string
+    public function storageType(EntityMap $map, PropertyMap $property): string
     {
-        return self::columnType($property, []);
-    }
-
-    /**
-     * @param array<string, true> $indexed column names that belong to a declared index (they need the indexable length too)
-     */
-    private static function columnType(PropertyMap $property, array $indexed): string
-    {
-        $indexable = $property->key || isset($indexed[$property->columnName]);
+        $indexable = $property->key || isset(self::indexedColumns($map)[$property->columnName]);
+        $size = $property->length !== null ? (string) $property->length : ($indexable ? self::KEY_LENGTH : 'max');
 
         return match ($property->type) {
             ColumnType::Int16 => 'smallint',
             ColumnType::Int32, ColumnType::EnumInt => 'int',
             ColumnType::Int64 => 'bigint',
             ColumnType::Bool => 'bit',
-            ColumnType::Decimal => 'decimal(38, 9)',
+            ColumnType::Decimal => $property->precision !== null
+                ? 'decimal(' . $property->precision . ',' . ($property->scale ?? 0) . ')'
+                : 'decimal(38,9)',
             ColumnType::Double => 'float',
             ColumnType::Float => 'real',
             ColumnType::Guid => 'uniqueidentifier',
-            ColumnType::Bytes => $indexable ? 'varbinary(' . self::KEY_LENGTH . ')' : 'varbinary(max)',
+            ColumnType::Bytes => "varbinary({$size})",
             ColumnType::DateTime, ColumnType::DateTimeOffset => 'datetimeoffset',
             ColumnType::Date => 'date',
             ColumnType::Time => 'time',
             ColumnType::EnumText => 'nvarchar(100)',
             // string, JSON, and handler (custom) types
-            ColumnType::String, ColumnType::Custom => $indexable ? 'nvarchar(' . self::KEY_LENGTH . ')' : 'nvarchar(max)',
+            ColumnType::String, ColumnType::Custom => "nvarchar({$size})",
         };
     }
 
@@ -476,9 +541,18 @@ final class SqlServerDialect implements Dialect, PdoConventions
             . ($defaultSql === null ? '' : ' default ' . $defaultSql);
     }
 
+    /**
+     * One batch (ADR-0043): a `not null … default` addition leaves a system-named default constraint behind, and `drop
+     * column` refuses while it exists (error 5074), so the batch drops that constraint first when there is one.
+     */
     public function dropColumnSql(string $table, string $column): string
     {
-        return 'alter table ' . $this->quoteIdentifier($table) . ' drop column ' . $this->quoteIdentifier($column);
+        return 'declare @df sysname = (select dc.name from sys.default_constraints dc join sys.columns c on c.object_id = '
+            . 'dc.parent_object_id and c.column_id = dc.parent_column_id where dc.parent_object_id = object_id('
+            . self::nLiteral($table) . ') and c.name = ' . self::nLiteral($column) . '); '
+            . "if @df is not null exec(N'alter table " . str_replace("'", "''", $this->quoteIdentifier($table))
+            . " drop constraint ' + quotename(@df)); "
+            . 'alter table ' . $this->quoteIdentifier($table) . ' drop column ' . $this->quoteIdentifier($column);
     }
 
     public function dropTableSql(string $table): string

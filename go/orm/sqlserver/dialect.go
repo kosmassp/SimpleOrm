@@ -3,6 +3,7 @@ package sqlserver
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
@@ -20,6 +21,9 @@ type Dialect struct{}
 
 // New is the dialect; it carries no state.
 func New() *Dialect { return &Dialect{} }
+
+// Name is the CLI name of the dialect (ADR-0043): stamped into every snapshot written for it.
+func (*Dialect) Name() string { return "sqlserver" }
 
 var (
 	_ core.Dialect            = (*Dialect)(nil)
@@ -104,7 +108,8 @@ func (*Dialect) ColumnsInfoSQL() string {
 		"           else t.name\n" +
 		"       end as [type],\n" +
 		"       cast(case when c.is_nullable = 1 then 0 else 1 end as bigint) as [notnull],\n" +
-		"       cast(isnull(pk.key_ordinal, 0) as bigint) as [pk]\n" +
+		"       cast(isnull(pk.key_ordinal, 0) as bigint) as [pk],\n" +
+		"       cast(c.is_identity as bigint) as [generated]\n" +
 		"from sys.columns c\n" +
 		"join sys.types t on t.user_type_id = c.user_type_id\n" +
 		"left join (\n" +
@@ -200,19 +205,13 @@ func (*Dialect) IsMarkerlessTemporal(databaseTypeName string) bool {
 	return false
 }
 
-// StorageType is the token → SQL Server storage type (spec/dialects.md
-// "Storage types"): strings and blobs are `(max)` except key columns, which
-// take the indexable 450; dates are `datetimeoffset`, the only marker-carrying
-// storage; decimals default to `decimal(38, 9)` (declare the real precision
-// in migrations).
-func (*Dialect) StorageType(property *core.PropertyMap) string {
-	return storageType(property, property.IsKey)
-}
-
-// storageType is StorageType with the indexable flag explicit: a key column,
-// and — in generated CREATE TABLE only — a column a declared index lists, takes
-// the 450 length, because a `(max)` column cannot be an index key.
-func storageType(property *core.PropertyMap, indexable bool) string {
+// StorageType is the token → SQL Server storage type (spec/dialects.md "Storage types"), spelled exactly as
+// ColumnsInfoSQL reports it back (ADR-0043): strings and blobs are `(max)` except a key column or a column of a
+// declared index, which takes the indexable 450 (a `(max)` column cannot be an index key); a Length facet
+// renders `nvarchar(n)`/`varbinary(n)` and wins over both; dates are `datetimeoffset`, the only
+// marker-carrying storage; decimals default to `decimal(38,9)` (no space) and a Precision/Scale facet renders
+// `decimal(p,s)`.
+func (*Dialect) StorageType(m *core.EntityMap, property *core.PropertyMap) string {
 	switch property.ColumnType {
 	case core.TypeInt16:
 		return "smallint"
@@ -223,7 +222,10 @@ func storageType(property *core.PropertyMap, indexable bool) string {
 	case core.TypeBool:
 		return "bit"
 	case core.TypeDecimal:
-		return "decimal(38, 9)"
+		if property.Precision > 0 {
+			return fmt.Sprintf("decimal(%d,%d)", property.Precision, property.Scale)
+		}
+		return "decimal(38,9)"
 	case core.TypeDouble:
 		return "float"
 	case core.TypeFloat:
@@ -231,10 +233,7 @@ func storageType(property *core.PropertyMap, indexable bool) string {
 	case core.TypeGUID:
 		return "uniqueidentifier"
 	case core.TypeBytes:
-		if indexable {
-			return "varbinary(450)"
-		}
-		return "varbinary(max)"
+		return sizedType("varbinary", property, isIndexable(m, property))
 	case core.TypeDateTime, core.TypeDateTimeOffset:
 		return "datetimeoffset"
 	case core.TypeDate:
@@ -245,10 +244,37 @@ func storageType(property *core.PropertyMap, indexable bool) string {
 		return "nvarchar(100)"
 	}
 	// string, JSON, and handler-backed (custom) types.
-	if indexable {
-		return "nvarchar(450)"
+	return sizedType("nvarchar", property, isIndexable(m, property))
+}
+
+// sizedType is a string or binary type with its length: the declared facet, else the indexable 450, else max.
+func sizedType(name string, property *core.PropertyMap, indexable bool) string {
+	switch {
+	case property.Length > 0:
+		return fmt.Sprintf("%s(%d)", name, property.Length)
+	case indexable:
+		return name + "(450)"
 	}
-	return "nvarchar(max)"
+	return name + "(max)"
+}
+
+// isIndexable is whether the column is a key column or belongs to a declared index of the map: the two places
+// SQL Server cannot take a `(max)` type.
+func isIndexable(m *core.EntityMap, property *core.PropertyMap) bool {
+	if property.IsKey {
+		return true
+	}
+	if m == nil {
+		return false
+	}
+	for _, index := range m.Indexes {
+		for _, column := range index.Columns {
+			if column.ColumnName == property.ColumnName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // --- migrations (§7.23) -------------------------------------------------------------
@@ -314,8 +340,16 @@ func (d *Dialect) AddColumnSQL(table, column, storageType string, nullable bool,
 	return sql
 }
 
+// DropColumnSQL is one batch that drops a leftover default constraint first (ADR-0043): a `not null … default`
+// addition leaves a system-named default constraint behind, and `drop column` refuses while it exists (error
+// 5074) — which is what the derived rollback of such an addition runs into.
 func (d *Dialect) DropColumnSQL(table, column string) string {
-	return "alter table " + d.QuoteIdentifier(table) + " drop column " + d.QuoteIdentifier(column)
+	quotedTable := d.QuoteIdentifier(table)
+	return "declare @df sysname = (select dc.name from sys.default_constraints dc " +
+		"join sys.columns c on c.object_id = dc.parent_object_id and c.column_id = dc.parent_column_id " +
+		"where dc.parent_object_id = object_id(" + nLiteral(table) + ") and c.name = " + nLiteral(column) + "); " +
+		"if @df is not null exec(N'alter table " + strings.ReplaceAll(quotedTable, "'", "''") + " drop constraint ' + quotename(@df)); " +
+		"alter table " + quotedTable + " drop column " + d.QuoteIdentifier(column)
 }
 
 func (d *Dialect) DropTableSQL(table string) string { return "drop table " + d.QuoteIdentifier(table) }
@@ -332,7 +366,6 @@ func (d *Dialect) CreateViewSQL(m *core.EntityMap) string {
 }
 
 func (d *Dialect) CreateTableSQL(m *core.EntityMap) string {
-	indexed := indexedColumns(m)
 	var b strings.Builder
 	b.WriteString("if object_id(" + nLiteral(m.RelationName) + ", N'U') is null\n")
 	b.WriteString("create table ")
@@ -348,7 +381,7 @@ func (d *Dialect) CreateTableSQL(m *core.EntityMap) string {
 		first = false
 		b.WriteString(d.QuoteIdentifier(property.ColumnName))
 		b.WriteByte(' ')
-		stored := storageType(property, property.IsKey || indexed[property.ColumnName])
+		stored := d.StorageType(m, property)
 		if m.KeyStrategy == core.KeyDatabaseGenerated && property.IsKey {
 			b.WriteString(stored + " identity(1,1) primary key")
 			continue
@@ -368,18 +401,6 @@ func (d *Dialect) CreateTableSQL(m *core.EntityMap) string {
 	}
 	b.WriteString("\n)")
 	return b.String()
-}
-
-// indexedColumns is the set of column names any declared index lists: those
-// columns take the indexable storage length in generated CREATE TABLE.
-func indexedColumns(m *core.EntityMap) map[string]bool {
-	columns := map[string]bool{}
-	for _, index := range m.Indexes {
-		for _, column := range index.Columns {
-			columns[column.ColumnName] = true
-		}
-	}
-	return columns
 }
 
 func (d *Dialect) CreateIndexSQL(m *core.EntityMap) []string {
@@ -496,3 +517,77 @@ func (d *Dialect) quotedColumns(properties []*core.PropertyMap) []string {
 	}
 	return names
 }
+
+// --- DDL from a snapshot shape (ADR-0043) -------------------------------------------------
+
+// CreateTableFromSchemaSQL renders a table snapshot as CREATE TABLE guarded by `object_id(…) is null`: storage
+// types as recorded, one generated key inline as identity, any other key as the trailing constraint.
+func (d *Dialect) CreateTableFromSchemaSQL(schema *core.TableSchema) string {
+	var b strings.Builder
+	b.WriteString("if object_id(" + nLiteral(schema.Name) + ", N'U') is null\n")
+	b.WriteString("create table ")
+	b.WriteString(d.QuoteIdentifier(schema.Name))
+	b.WriteString(" (")
+	first := true
+	var plainKeys []string
+	hasGeneratedKey := false
+	for _, column := range schema.Columns {
+		if first {
+			b.WriteString("\n    ")
+		} else {
+			b.WriteString(",\n    ")
+		}
+		first = false
+		b.WriteString(d.QuoteIdentifier(column.Name))
+		b.WriteByte(' ')
+		if column.Key && column.Generated {
+			hasGeneratedKey = true
+			b.WriteString(column.StorageType + " identity(1,1) primary key")
+			continue
+		}
+		b.WriteString(column.StorageType)
+		if !column.Nullable {
+			b.WriteString(" not null")
+		}
+		if column.Key {
+			plainKeys = append(plainKeys, d.QuoteIdentifier(column.Name))
+		}
+	}
+	if len(plainKeys) > 0 && !hasGeneratedKey {
+		b.WriteString(",\n    primary key (" + strings.Join(plainKeys, ", ") + ")")
+	}
+	b.WriteString("\n)")
+	return b.String()
+}
+
+// CreateIndexFromSchemaSQL renders one snapshot index guarded by a sys.indexes lookup.
+func (d *Dialect) CreateIndexFromSchemaSQL(table string, index core.TableIndex) string {
+	unique := ""
+	if index.Unique {
+		unique = "unique "
+	}
+	columns := make([]string, len(index.Columns))
+	for i, part := range index.Columns {
+		columns[i] = d.QuoteIdentifier(part.ColumnName)
+		if part.Descending {
+			columns[i] += " desc"
+		}
+	}
+	return "if not exists (select 1 from sys.indexes where name = " + nLiteral(index.Name) +
+		" and object_id = object_id(" + nLiteral(table) + "))\n" +
+		"create " + unique + "index " + d.QuoteIdentifier(index.Name) + " on " + d.QuoteIdentifier(table) +
+		" (" + strings.Join(columns, ", ") + ")"
+}
+
+// CreateViewFromBodySQL is `create or alter view [v] as` over the body (indexed views are not materialized views).
+func (d *Dialect) CreateViewFromBodySQL(view, body string, _ bool) string {
+	return "create or alter view " + d.QuoteIdentifier(view) + " as\n" + body
+}
+
+// DropViewSQL is `drop view if exists [v]` (SQL Server 2016+).
+func (d *Dialect) DropViewSQL(view string, _ bool) string {
+	return "drop view if exists " + d.QuoteIdentifier(view)
+}
+
+// ViewDefinitionIsVerbatim is true: sys.sql_modules keeps the create text as submitted.
+func (*Dialect) ViewDefinitionIsVerbatim() bool { return true }

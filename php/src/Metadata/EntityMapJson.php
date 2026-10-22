@@ -152,6 +152,17 @@ final class EntityMapJson
                 $entry['renamedFrom'] = $property->renamedFrom;
             }
 
+            // Declared storage facets only, after renamedFrom (spec/metadata-model.md "Storage facets", ADR-0043): the scale
+            // always rides beside its precision.
+            if ($property->length !== null) {
+                $entry['length'] = $property->length;
+            }
+
+            if ($property->precision !== null) {
+                $entry['precision'] = $property->precision;
+                $entry['scale'] = $property->scale ?? 0;
+            }
+
             $columns[] = $entry;
         }
 

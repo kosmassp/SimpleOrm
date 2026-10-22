@@ -4,7 +4,9 @@ The PHP implementation of the SimpleOrm spec, **Levels 0–3** (ADR-0026 for the
 mapper, the micro-ORM with generated CRUD, the ADR-0012 criteria core,
 SchemaGuard, and code migrations with the diff generator; ADR-0033 for
 relationships: explicit/batch loading, the Level 2 query AST, and eager loading
-in all three fetch modes). It
+in all three fetch modes; the Level 4 items so far — the SQL Server and PostgreSQL
+dialects, triggers in the mapping, and the migration tooling beyond SQLite: ADR-0040,
+ADR-0042, ADR-0043). It
 shares no code with the C# reference; it shares `../spec/` and `../conformance/`,
 and it is correct when it passes the same conformance files unchanged.
 
@@ -34,7 +36,8 @@ src/Parameters    SqlPlaceholders, ParameterBinder (@name → :name, IN-list exp
 src/Query         Criteria, SelectAst (+ SelectJoin/JoinPair, projection), AnsiSelectRenderer,
                   CriteriaQuery (include/fetch), FetchMode
 src/Dialect       Dialect (the seam, same members as C# IDialect), SqliteDialect, SqlServerDialect,
-                  PostgresDialect, Dialects (the name → dialect registry behind --dialect)
+                  PostgresDialect, Dialects (the name → dialect registry behind --dialect), ShadowHost
+                  + one per dialect (the throwaway database of `shadow`), the trigger read-back parsers
 src/Session       Db, DbOptions, transaction scope, Query/Command registry types, DbLoading and
                   DbEagerJoin (the loading engines), KeyTuple, the Navigations trait
 src/Migrations    versions, steps, actions, runner, snapshots, derived downs, generator, sync
@@ -180,6 +183,18 @@ a pending draft (`MIG-013`, the whole plan, before anything executes) until you 
 removed the attribute; `status` lists it as `draft`, `shadow` replays it, `diff --amend` keeps the marker. A baseline
 below the draft is fine; a draft already recorded as applied is history, not pending work.
 
+### Storage facets (Level 4, ADR-0043)
+
+`#[Column(length: 50)]` on a string or bytes column and `#[Column(precision: 18, scale: 2)]` on a decimal declare a size the
+dialect's default storage type does not carry — SQL Server `nvarchar(50)` / `varbinary(50)` / `decimal(18,2)`, PostgreSQL
+`character varying(50)` / `numeric(18,2)` (`bytea` has no length), SQLite ignores them. A `scale` left out beside a `precision`
+is 0; a declared `length` wins over SQL Server's indexable default (`nvarchar(450)` for a key column or a column of a declared
+index). The export carries `"length"` or `"precision"` + `"scale"` only when declared; the mapper and the session ignore them,
+`Dialect::storageType($map, $property)`, snapshots, `diff`, and force sync read them — without them a real tree's `decimal(18,2)`
+would read as a type change against the model's `decimal(38,9)` on every `diff`. A misplaced facet (a length on an int, a
+precision on a string, a scale without or above its precision, a non-positive length or precision, any facet on a view) is
+`MAP-032` — from the attribute loader and `EntityMapBuilder::column(length:, precision:, scale:)` alike.
+
 ### Triggers in the mapping (Level 4, ADR-0042)
 
 A trigger is its own **declaration class**; the entity links it. The declaration names no dialect — the body is
@@ -226,8 +241,9 @@ under `<Ns>\Migrations` — override either with `--migrations`/
 migrations directory (`--snapshots` for `migrate down`; `--out` for
 `snapshot`/`diff`/`shadow`). `--db` is the dialect's native connection string — for
 SQLite a bare path, a `sqlite:` DSN, or `Data Source=...`; `--dialect
-sqlite|sqlserver|postgres` (default `sqlite`) picks the dialect for every database
-command, and `shadow` accepts SQLite only.
+sqlite|sqlserver|postgres` (default `sqlite`) picks the dialect for every command, `shadow`
+included: on SQL Server and PostgreSQL `shadow`'s `--db` is the **admin** connection (the right to create databases), on which a
+throwaway `simpleorm_shadow_<hex>` database is created and dropped (failure included); on SQLite it is ignored (a temp file).
 
 ```bash
 php bin/simpleorm migrate --src src --namespace 'App' --db app.db
@@ -251,14 +267,29 @@ new DbOptions(new SqlServerDialect());   // 'sqlsrv:Server=host;Database=app;Enc
 new DbOptions(new PostgresDialect());    // 'pgsql:host=localhost;port=5432;dbname=app;user=app;password=…' (pdo_pgsql)
 ```
 
-The two non-SQLite dialects are **runtime-first**: the session, generated CRUD,
-criteria queries, loading in every fetch mode, tracking, the unit of work, hooks,
-SchemaGuard, and the migration runner with the dialect's run lock (`sp_getapplock`
-/ `pg_advisory_xact_lock`) all work. The snapshot, shadow, diff, and force-sync
-tooling stays SQLite-only, so a rollback there needs a `Down()` override
-(`MIG-020` says so). On PostgreSQL a collection argument binds as one array
-parameter (`where id = any(:ids)`), and a legacy `timestamp without time zone` /
-`datetime2` column refuses `VAL-020` at read time unless a `TypeHandler` declares it.
+The two non-SQLite dialects run the session, generated CRUD, criteria queries,
+loading in every fetch mode, tracking, the unit of work, hooks, SchemaGuard, and the
+migration runner with the dialect's run lock (`sp_getapplock` / `pg_advisory_xact_lock`).
+Since ADR-0043 the migration tooling works on them as on SQLite: `snapshot`, `shadow`,
+`diff` (and `--amend`), derived rollbacks, and `migrate --force`. A tree belongs to one
+dialect — its literal SQL, its checksums, and its snapshots, every non-SQLite one stamped
+`"dialect": "<name>"` (format v3) and refused by the other dialects' readers with `MIG-014`.
+Storage types compare as introspection spells them (`decimal(38,9)`, `nvarchar(450)`,
+`format_type`'s spellings); view snapshots are dialect-neutral (`create [materialized] view
+<name> as <body>`) and render through the seam when a rollback restores one; the `MIG-012`
+view guard compares text where the engine stores it verbatim and round-trips the expected body
+through a probe view on PostgreSQL, whose `pg_get_viewdef` reformats. On PostgreSQL a
+collection argument binds as one array parameter (`where id = any(:ids)`), and a legacy
+`timestamp without time zone` / `datetime2` column refuses `VAL-020` at read time unless a
+`TypeHandler` declares it.
+
+`shadow` gets its throwaway database from a `ShadowHost` beside the seam (`Dialects::shadowHost()`:
+`SqliteShadowHost` a temp file, `SqlServerShadowHost` / `PostgresShadowHost` a database created
+on the admin connection and dropped afterwards). `SchemaShadow::for($dialect, $adminConnection)->rebuildSnapshots(…)`
+replays the history; tables are introspected through `columnsInfoSql`/`indexesInfoSql`, views and
+triggers are taken from the replayed step (a catalog may not hand them back as declared), and where
+the catalog is lossless (SQLite, PostgreSQL triggers; SQL Server views) the shadow reads it too and
+notes a disagreement. SQL Server has no trigger read-back.
 
 The live legs (`tests/Dialect/*LiveTest.php`) run against a real server and skip
 as a group where none answers: `composer test-live` loads `pdo_pgsql` and

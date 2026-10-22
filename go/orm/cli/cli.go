@@ -161,19 +161,22 @@ func dialectNames() []string {
 	return names
 }
 
-func connectionString(a arguments) (string, error) {
+// connectionString is --db as the dialect's native connection string (spec/dialects.md "Connection strings and
+// the CLI"): only SQLite also accepts a bare file path, which is wrapped; any other dialect takes the value as
+// given (a URL such as postgres://host/db has no '=' and is not a path).
+func connectionString(dialect orm.Dialect, a arguments) (string, error) {
 	value, ok := a.option("db")
 	if !ok {
 		return "", fmt.Errorf("--db <connection string or file> is required")
 	}
-	if strings.Contains(value, "=") {
+	if dialect.Name() != "sqlite" || strings.Contains(value, "=") {
 		return value, nil
 	}
 	return "Data Source=" + value, nil
 }
 
 func openPool(dialect orm.Dialect, a arguments) (*sql.DB, error) {
-	connStr, err := connectionString(a)
+	connStr, err := connectionString(dialect, a)
 	if err != nil {
 		return nil, err
 	}
@@ -434,7 +437,7 @@ func runValidate(ctx context.Context, registry orm.Registry, a arguments, stdout
 	if err != nil {
 		return fail(stderr, err.Error())
 	}
-	connStr, err := connectionString(a)
+	connStr, err := connectionString(dialect, a)
 	if err != nil {
 		return fail(stderr, err.Error())
 	}
@@ -502,7 +505,9 @@ func runSnapshot(ctx context.Context, registry orm.Registry, a arguments, stdout
 			if !touched {
 				continue
 			}
-			content := migrations.ExportTrigger(migrations.DeclarationFromEntity(m, trigger), triggerVersion, generatedAt)
+			declaration := migrations.DeclarationFromEntity(m, trigger)
+			declaration.Dialect = dialect.Name() // a trigger snapshot is neutral; the stamp says whose tree it is in (ADR-0043)
+			content := migrations.ExportTrigger(declaration, triggerVersion, generatedAt)
 			directory := filepath.Join(outDir, "Trigger", trigger.Type.Name())
 			if err := os.MkdirAll(directory, 0o777); err != nil {
 				return fail(stderr, err.Error())
@@ -526,13 +531,13 @@ func runSnapshot(ctx context.Context, registry orm.Registry, a arguments, stdout
 			content = migrations.Export(m, dialect, version, generatedAt)
 		case orm.RelationView:
 			folder = "View"
-			content = migrations.ExportDDL(m.RelationName, "view", dialect.CreateViewSQL(m), version, generatedAt)
+			content = migrations.ExportDDL(m.RelationName, dialect.Name(), "view", dialect.CreateViewSQL(m), version, generatedAt)
 		case orm.RelationMaterializedView:
 			if !dialect.SupportsMaterializedViews() {
 				continue // dormant on this dialect: no history to record
 			}
 			folder = "MaterializedView"
-			content = migrations.ExportDDL(m.RelationName, "materialized_view", dialect.CreateViewSQL(m), version, generatedAt)
+			content = migrations.ExportDDL(m.RelationName, dialect.Name(), "materialized_view", dialect.CreateViewSQL(m), version, generatedAt)
 		default:
 			continue
 		}
@@ -648,15 +653,31 @@ func parseRenames(raw []string) (map[string]map[string]string, error) {
 
 // --- shadow ------------------------------------------------------------------------
 
+// shadowHosts is every dialect's shadow host (ADR-0043), by the --dialect name: the throwaway database each
+// replays into. Adding a dialect is one entry here beside its entry in dialects.
+var shadowHosts = map[string]migrations.ShadowHost{
+	"postgres":  postgres.ShadowHost{},
+	"sqlite":    sqlite.ShadowHost{},
+	"sqlserver": sqlserver.ShadowHost{},
+}
+
 func runShadow(ctx context.Context, registry orm.Registry, a arguments, stdout, stderr io.Writer) int {
-	if name, ok := a.option("dialect"); ok && !strings.EqualFold(name, "sqlite") {
-		return fail(stderr, fmt.Sprintf(
-			"shadow replays into a throwaway SQLite database and supports only --dialect sqlite (ADR-0027); "+
-				"'%s' rollbacks need Down() overrides until snapshot tooling learns that dialect", name))
+	dialect, dialectName, err := dialectFor(a)
+	if err != nil {
+		return fail(stderr, err.Error())
 	}
 	outDir, ok := a.option("out")
 	if !ok {
 		return fail(stderr, "shadow requires --out <MigrationsDir>")
+	}
+
+	// On SQL Server and PostgreSQL --db is the admin connection (CREATE DATABASE rights): the throwaway
+	// simpleorm_shadow_<hex> database is created and dropped there. SQLite ignores it (a temp file).
+	admin := ""
+	if dialectName != "sqlite" {
+		if admin, err = connectionString(dialect, a); err != nil {
+			return fail(stderr, fmt.Sprintf("shadow on %s needs --db, the admin connection string the throwaway database is created on: %v", dialectName, err))
+		}
 	}
 
 	var from, to int64
@@ -682,7 +703,8 @@ func runShadow(ctx context.Context, registry orm.Registry, a arguments, stdout, 
 		return fail(stderr, refusal)
 	}
 
-	result, err := sqlite.Shadow(ctx, sqlite.ShadowOptions{
+	result, err := migrations.Shadow(ctx, migrations.ShadowOptions{
+		Dialect: dialect, Host: shadowHosts[dialectName], Admin: admin,
 		Set: registry.Migrations, Entities: registry.Entities, Triggers: registry.Triggers, OutDir: outDir, From: from, To: to,
 	})
 	if err != nil {
@@ -708,8 +730,9 @@ func printUsage(w io.Writer) { fmt.Fprint(w, usageText) }
 
 const usageText = `simpleorm — SQL-first micro-ORM CLI
 
-commands (migrate/status/baseline/validate/snapshot/shadow also need --db,
-except shadow which only replays into its own throwaway database):
+commands (migrate/status/baseline/validate also need --db; shadow needs it only
+on sqlserver and postgres, where it is the ADMIN connection the throwaway
+database is created on):
   migrate [--force [--allow-delete]]
                               apply pending versions; a guarded view step refuses
                               when the live view was changed outside the code
@@ -751,14 +774,22 @@ except shadow which only replays into its own throwaway database):
                               heads-up (migrate down first, or recreate)
   shadow --out <MigrationsDir> [--from V000N] [--to V000M]
                               rebuild snapshots by replaying migrations in a
-                              throwaway database; --from trusts version N as
-                              correct (baseline from committed snapshots, no
-                              verification below N) and regenerates only (N, M]
+                              throwaway database (SQLite a temp file; sqlserver and
+                              postgres a simpleorm_shadow_<hex> database created
+                              and dropped on the --db admin connection);
+                              --from trusts version N as correct (baseline from
+                              committed snapshots, no verification below N) and
+                              regenerates only (N, M]. A snapshot stamped for
+                              another dialect is MIG-014 (a tree belongs to one
+                              dialect)
 
 options:
-  --db <value>        connection string, or a bare path to a SQLite file
-  --dialect <name>    sqlite (default) — the only dialect this port supports
-                      (ADR-0027); any other name refuses
+  --db <value>        connection string in the dialect's native form (a bare
+                      path to a SQLite file also works for sqlite); for shadow
+                      on sqlserver/postgres, the admin connection
+  --dialect <name>    sqlite (default), sqlserver, or postgres; every command
+                      uses it, snapshots are stamped with it unless sqlite
+                      (format v3), and any other name refuses
   --snapshots <dir>   read schema snapshots from this directory instead of
                       the registry's embedded ones
   --package <path>    the migrations package's import path for generated code

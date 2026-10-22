@@ -21,6 +21,8 @@ namespace SimpleOrm.SqlServer;
 /// </summary>
 public sealed class SqlServerDialect : IDialect
 {
+    public string Name => "sqlserver";
+
     public DbConnection CreateConnection(string connectionString)
         => new SqlConnection(connectionString);
 
@@ -72,7 +74,8 @@ public sealed class SqlServerDialect : IDialect
                       else t.name
                   end as [type],
                   cast(case when c.is_nullable = 1 then 0 else 1 end as bigint) as [notnull],
-                  cast(isnull(pk.key_ordinal, 0) as bigint) as [pk]
+                  cast(isnull(pk.key_ordinal, 0) as bigint) as [pk],
+                  cast(c.is_identity as bigint) as [generated]
            from sys.columns c
            join sys.types t on t.user_type_id = c.user_type_id
            left join (
@@ -84,6 +87,9 @@ public sealed class SqlServerDialect : IDialect
            where c.object_id = object_id(@relation)
            order by c.column_id
            """;
+
+    /// <summary><c>sys.sql_modules</c> keeps the text as submitted (<c>or alter</c> aside, which the normalizer strips): the guard compares text.</summary>
+    public bool ViewDefinitionIsVerbatim => true;
 
     public string ViewDefinitionSql
         => "select m.definition as [definition] from sys.sql_modules m "
@@ -190,8 +196,19 @@ public sealed class SqlServerDialect : IDialect
             + (nullable ? string.Empty : " not null")
             + (defaultSql is null ? string.Empty : " default " + defaultSql);   // NOT NULL + default backfills existing rows
 
+    /// <summary>
+    /// A <c>not null … default</c> addition leaves a system-named default
+    /// constraint behind, and <c>drop column</c> refuses while it exists (error
+    /// 5074) — so the drop is one batch: find the constraint in
+    /// <c>sys.default_constraints</c>, drop it when present, then drop the column
+    /// (ADR-0043). SQLite and PostgreSQL drop a default with its column.
+    /// </summary>
     public string DropColumnSql(string table, string column)
-        => $"alter table {QuoteIdentifier(table)} drop column {QuoteIdentifier(column)}";
+        => "declare @df sysname = (select dc.name from sys.default_constraints dc "
+            + "join sys.columns c on c.object_id = dc.parent_object_id and c.column_id = dc.parent_column_id "
+            + $"where dc.parent_object_id = object_id(N'{Escape(table)}') and c.name = N'{Escape(column)}'); "
+            + $"if @df is not null exec(N'alter table {Escape(QuoteIdentifier(table))} drop constraint ' + quotename(@df)); "   // inside an N'…' literal: quotes doubled
+            + $"alter table {QuoteIdentifier(table)} drop column {QuoteIdentifier(column)}";
 
     public string DropTableSql(string table)
         => "drop table " + QuoteIdentifier(table);
@@ -200,7 +217,54 @@ public sealed class SqlServerDialect : IDialect
         => "drop index " + QuoteIdentifier(index) + " on " + QuoteIdentifier(table);
 
     public string CreateViewSql(EntityMap map)
-        => "create or alter view " + QuoteIdentifier(map.RelationName!) + " as\n" + map.DefiningSql;
+        => CreateViewSql(map.RelationName!, map.DefiningSql!, map.Kind == RelationKind.MaterializedView);
+
+    public string CreateViewSql(string view, string body, bool materialized)
+        => "create or alter view " + QuoteIdentifier(view) + " as\n" + body;   // no materialized views (DDL-002 upstream)
+
+    public string DropViewSql(string view, bool materialized)
+        => "drop view if exists " + QuoteIdentifier(view);   // SQL Server 2016+
+
+    /// <summary>A table from its snapshot (ADR-0043): one generated key renders inline as identity; any other key as the trailing constraint.</summary>
+    public string CreateTableSql(TableSchema schema)
+    {
+        var builder = new StringBuilder("if object_id(N'").Append(Escape(schema.Name))
+            .Append("', N'U') is null\ncreate table ").Append(QuoteIdentifier(schema.Name)).Append(" (");
+        var generatedKey = schema.Columns.Count(c => c.Key && c.Generated) == 1 && schema.Columns.Count(c => c.Key) == 1;
+        var first = true;
+        foreach (var column in schema.Columns)
+        {
+            builder.Append(first ? "\n    " : ",\n    ").Append(QuoteIdentifier(column.Name)).Append(' ').Append(column.StorageType);
+            first = false;
+            if (column.Key && generatedKey)
+            {
+                builder.Append(" identity(1,1) primary key");
+                continue;
+            }
+
+            if (!column.Nullable)
+            {
+                builder.Append(" not null");
+            }
+        }
+
+        if (!generatedKey && schema.Columns.Any(c => c.Key))
+        {
+            builder.Append(",\n    primary key (")
+                .Append(string.Join(", ", schema.Columns.Where(c => c.Key).Select(c => QuoteIdentifier(c.Name))))
+                .Append(')');
+        }
+
+        return builder.Append("\n)").ToString();
+    }
+
+    public string CreateIndexSql(string table, TableSchema.Index index)
+        => $"if not exists (select 1 from sys.indexes where name = N'{Escape(index.Name)}' "
+            + $"and object_id = object_id(N'{Escape(table)}'))\n"
+            + "create " + (index.Unique ? "unique " : string.Empty) + "index " + QuoteIdentifier(index.Name)
+            + " on " + QuoteIdentifier(table) + " ("
+            + string.Join(", ", index.Columns.Select(c => QuoteIdentifier(c.ColumnName) + (c.Descending ? " desc" : string.Empty)))
+            + ")";
 
     // --- triggers (ADR-0042) ---------------------------------------------------------
 
@@ -263,11 +327,6 @@ public sealed class SqlServerDialect : IDialect
         var builder = new StringBuilder("if object_id(N'").Append(Escape(map.RelationName!))
             .Append("', N'U') is null\ncreate table ").Append(QuoteIdentifier(map.RelationName!)).Append(" (");
 
-        // nvarchar(max)/varbinary(max) cannot be an index key column (error 1919), so
-        // a string or bytes column of a declared index gets the indexable length a
-        // key column gets (spec/dialects.md "Storage types").
-        var indexed = new HashSet<string>(map.Indexes.SelectMany(i => i.Columns).Select(c => c.ColumnName), StringComparer.Ordinal);
-
         var first = true;
         foreach (var property in map.Properties)
         {
@@ -276,11 +335,11 @@ public sealed class SqlServerDialect : IDialect
 
             if (map.KeyStrategy == KeyStrategy.DatabaseGenerated && property.IsKey)
             {
-                builder.Append(StorageType(property)).Append(" identity(1,1) primary key");
+                builder.Append(StorageType(map, property)).Append(" identity(1,1) primary key");
                 continue;
             }
 
-            builder.Append(StorageType(property, indexable: property.IsKey || indexed.Contains(property.ColumnName)));
+            builder.Append(StorageType(map, property));
             if (!property.IsNullable)
             {
                 builder.Append(" not null");
@@ -378,18 +437,19 @@ public sealed class SqlServerDialect : IDialect
         => string.Join(" and ", map.KeyProperties.Select(k => QuoteIdentifier(k.ColumnName) + " = @" + k.ColumnName));
 
     /// <summary>
-    /// CLR → SQL Server storage type (ADR-0024). Dates are <c>datetimeoffset</c> —
-    /// the storage that carries the §7.9 UTC marker; strings and byte arrays are
-    /// <c>(max)</c> except keys, which need an indexable length; decimals default
-    /// to <c>decimal(38, 9)</c> — declare the real precision in migrations.
+    /// CLR → SQL Server storage type (ADR-0024, ADR-0043), spelled as
+    /// <see cref="ColumnsInfoSql"/> reports it back. Dates are <c>datetimeoffset</c> —
+    /// the storage that carries the §7.9 UTC marker. Strings and byte arrays are
+    /// <c>(max)</c>, except a key column or a column of a declared index, which
+    /// takes the indexable length <c>(450)</c> — <c>nvarchar(max)</c> cannot be an
+    /// index key (error 1919) — and a declared <c>Length</c> facet wins over both.
+    /// Decimals default to <c>decimal(38,9)</c>; a <c>Precision</c>/<c>Scale</c>
+    /// facet renders <c>decimal(p,s)</c>.
     /// </summary>
-    public string StorageType(PropertyMap property) => StorageType(property, indexable: property.IsKey);
+    public string StorageType(EntityMap map, PropertyMap property)
+        => StorageType(property, indexable: property.IsKey
+            || map.Indexes.Any(i => i.Columns.Any(c => string.Equals(c.ColumnName, property.ColumnName, StringComparison.Ordinal))));
 
-    /// <summary>
-    /// The storage type with the indexable length applied when <paramref name="indexable"/>:
-    /// a key column, or a column of a declared index (CREATE TABLE only — snapshots and
-    /// diff see the key-only rule the seam's <see cref="StorageType(PropertyMap)"/> states).
-    /// </summary>
     private static string StorageType(PropertyMap property, bool indexable)
     {
         var type = Nullable.GetUnderlyingType(property.ClrType) ?? property.ClrType;
@@ -420,7 +480,7 @@ public sealed class SqlServerDialect : IDialect
 
         if (type == typeof(decimal))
         {
-            return "decimal(38, 9)";
+            return property.Precision is { } precision ? $"decimal({precision},{property.Scale ?? 0})" : "decimal(38,9)";
         }
 
         if (type == typeof(double))
@@ -435,7 +495,7 @@ public sealed class SqlServerDialect : IDialect
 
         if (type == typeof(byte[]))
         {
-            return indexable ? "varbinary(450)" : "varbinary(max)";
+            return property.Length is { } bytesLength ? $"varbinary({bytesLength})" : indexable ? "varbinary(450)" : "varbinary(max)";
         }
 
         if (type == typeof(Guid))
@@ -459,7 +519,7 @@ public sealed class SqlServerDialect : IDialect
         }
 
         // string, JSON, handler types.
-        return indexable ? "nvarchar(450)" : "nvarchar(max)";
+        return property.Length is { } length ? $"nvarchar({length})" : indexable ? "nvarchar(450)" : "nvarchar(max)";
     }
 
     /// <summary>The declared type's base name: lowercased, any <c>(length)</c> stripped.</summary>

@@ -9,8 +9,6 @@ use SimpleOrm\Metadata\TriggerDefinition;
 use SimpleOrm\Metadata\TriggerEvent;
 use SimpleOrm\Metadata\TriggerTiming;
 use SimpleOrm\Migrations\TriggerSchema;
-use SimpleOrm\Parameters\PdoBinder;
-use SimpleOrm\Parameters\SqlPlaceholders;
 
 /**
  * Reads a stored SQLite trigger back to its neutral declaration (Level 4, ADR-0042): the shadow's history side of the
@@ -19,8 +17,8 @@ use SimpleOrm\Parameters\SqlPlaceholders;
  * <name> <timing> <event>[ of a, b] on <relation> for each row begin … end`), the body's dialect expansions fold back
  * into the tokens (`(select new.a as a, new.b as b)` → `{new: a, b}`, the `strftime` UTC form → `{now}`), and the
  * per-event triggers of a multi-event declaration (`<name>_<event>`) merge into one. A hand-written trigger the grammar
- * does not match is not parsed: the result is null with a note. The shadow tooling is SQLite-only in every
- * implementation (spec/dialects.md "Deferred"), so this is the one parser.
+ * does not match is not parsed: the result is null with a note. SQLite's catalog keeps the text as submitted, so the
+ * read-back is lossless (ADR-0043; {@see SqliteShadowHost} offers it to the shadow).
  */
 final class SqliteTriggerParser
 {
@@ -37,10 +35,7 @@ final class SqliteTriggerParser
      */
     public static function definitions(PDO $connection, string $name): array
     {
-        $statement = $connection->prepare(SqlPlaceholders::toPdo((new SqliteDialect())->triggerDefinitionSql()));
-        PdoBinder::bindAndExecute($statement, ['relation' => $name]);
-
-        return array_map(static fn (mixed $definition): string => (string) $definition, $statement->fetchAll(PDO::FETCH_COLUMN));
+        return TriggerCatalog::definitions($connection, new SqliteDialect(), $name);
     }
 
     /**

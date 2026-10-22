@@ -9,6 +9,7 @@ package metadata
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -373,6 +374,12 @@ type fieldDeclaration struct {
 	// assembler reports it as MAP-027 for every loader.
 	renamedFrom *string
 
+	// The storage facets (Level 4, ADR-0043): tag options length=<n>, precision=<p>, scale=<s>. A malformed or
+	// repeated value is MAP-023; whether a facet fits the column is MAP-032, judged by the assembler.
+	length    *int
+	precision *int
+	scale     *int
+
 	// isOwned is the `owned` option (ADR-0030); ownedPrefix its `owned=<prefix>`
 	// value when given (an empty value disables prefixing), nil for the default.
 	isOwned     bool
@@ -386,6 +393,11 @@ type fieldDeclaration struct {
 	cascade    core.CascadeOperations
 }
 
+// hasFacet reports whether the field declares any storage facet.
+func (d fieldDeclaration) hasFacet() bool {
+	return d.length != nil || d.precision != nil || d.scale != nil
+}
+
 // hasHook reports whether the field declares any of the three hooks.
 func (d fieldDeclaration) hasHook() bool { return d.isCreatedAt || d.isUpdatedAt || d.isSoftDelete }
 
@@ -395,6 +407,22 @@ func declareRenamedFrom(decl *fieldDeclaration, old string, fieldTarget string, 
 		errs.add("MAP-023", fieldTarget, "malformed orm tag: renamed_from is named twice")
 	}
 	decl.renamedFrom = &old
+}
+
+// declareFacet records one storage facet option (length=, precision=, scale=): the value must be an integer and
+// the option may be named once, else the tag is malformed (MAP-023). Whether the number is sensible (positive,
+// scale within precision) and whether the column can carry it are MAP-032, the assembler's rule.
+func declareFacet(target **int, name, token, fieldTarget string, errs *errorCollector) {
+	if *target != nil {
+		errs.add("MAP-023", fieldTarget, "malformed orm tag: %s is named twice", name)
+		return
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(token[len(name)+1:]))
+	if err != nil {
+		errs.add("MAP-023", fieldTarget, "malformed orm tag: %s needs an integer, found '%s'", name, token[len(name)+1:])
+		return
+	}
+	*target = &value
 }
 
 // declareHook records one hook option; naming the same hook twice on one tag is a malformed declaration
@@ -440,6 +468,12 @@ func parseFieldTag(tagValue string, fieldTarget string, errs *errorCollector) fi
 			decl.isEnumInt = true
 		case token == "created_at" || token == "updated_at" || token == "soft_delete":
 			declareHook(&decl, token, fieldTarget, errs)
+		case strings.HasPrefix(token, "length="):
+			declareFacet(&decl.length, "length", token, fieldTarget, errs)
+		case strings.HasPrefix(token, "precision="):
+			declareFacet(&decl.precision, "precision", token, fieldTarget, errs)
+		case strings.HasPrefix(token, "scale="):
+			declareFacet(&decl.scale, "scale", token, fieldTarget, errs)
 		case token == "renamed_from":
 			declareRenamedFrom(&decl, "", fieldTarget, errs)
 		case strings.HasPrefix(token, "renamed_from="):
@@ -538,6 +572,10 @@ func readField(
 			errs.add("MAP-027", fieldTarget, "renamed_from needs a mapped column; an owned navigation is flattened into its owner and carries none")
 			return
 		}
+		if decl.hasFacet() {
+			errs.add("MAP-032", fieldTarget, "a storage facet is declared on an owned navigation; declare it on the owned type's column members")
+			return
+		}
 		if decl.hasCascade {
 			errs.add("MAP-025", fieldTarget, "cascade is declared on a navigation to an entity; an owned value type is flattened into its owner and has nothing to cascade")
 			return
@@ -565,6 +603,9 @@ func readField(
 		if decl.renamedFrom != nil {
 			errs.add("MAP-027", fieldTarget, "renamed_from needs a mapped column; a navigation has none")
 		}
+		if decl.hasFacet() {
+			errs.add("MAP-032", fieldTarget, "a storage facet needs a mapped column; a navigation has none")
+		}
 		rel := decl.relationships[0]
 		rel.cascade = decl.cascade
 		if decl.hasCascade && rel.kind == core.RelationshipManyToMany {
@@ -591,6 +632,9 @@ func readField(
 		if decl.renamedFrom != nil {
 			errs.add("MAP-027", fieldTarget, "renamed_from needs a mapped column; an ignored field has none")
 		}
+		if decl.hasFacet() {
+			errs.add("MAP-032", fieldTarget, "a storage facet needs a mapped column; an ignored field has none")
+		}
 		return
 	}
 
@@ -599,6 +643,9 @@ func readField(
 	}
 	if decl.renamedFrom != nil && !decl.isColumn {
 		errs.add("MAP-027", fieldTarget, "renamed_from needs a mapped column: add 'column' to the same orm tag")
+	}
+	if decl.hasFacet() && !decl.isColumn {
+		errs.add("MAP-032", fieldTarget, "a storage facet needs a mapped column: add 'column' to the same orm tag")
 	}
 
 	if !decl.isColumn {
@@ -640,6 +687,9 @@ func readField(
 		UpdatedAt:          decl.isUpdatedAt,
 		SoftDelete:         decl.isSoftDelete,
 		RenamedFrom:        decl.renamedFrom,
+		Length:             decl.length,
+		Precision:          decl.precision,
+		Scale:              decl.scale,
 	})
 }
 
@@ -707,11 +757,17 @@ func readOwnedType(
 			if decl.isColumn {
 				errs.add("MAP-019", memberTarget, "ignore cannot combine with column")
 			}
+			if decl.hasFacet() {
+				errs.add("MAP-032", memberTarget, "a storage facet needs a mapped column; an ignored field has none")
+			}
 			continue
 		}
 		if !decl.isColumn {
 			if decl.isEnumInt || decl.typeOverride != nil {
 				errs.add("MAP-019", memberTarget, "mapping options require 'column' on the same field")
+			}
+			if decl.hasFacet() {
+				errs.add("MAP-032", memberTarget, "a storage facet needs a mapped column: add 'column' to the same orm tag")
 			}
 			continue
 		}
@@ -732,6 +788,9 @@ func readOwnedType(
 			ExplicitColumn:     decl.columnName,
 			ColumnTypeOverride: decl.typeOverride,
 			EnumAsInt:          decl.isEnumInt,
+			Length:             decl.length,
+			Precision:          decl.precision,
+			Scale:              decl.scale,
 			Owner:              spec,
 		})
 		mapped++

@@ -10,6 +10,8 @@ use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\PropertyMap;
 use SimpleOrm\Metadata\TriggerDefinition;
+use SimpleOrm\Migrations\TableSchema;
+use SimpleOrm\Migrations\TableSchemaIndex;
 use SimpleOrm\Query\SelectAst;
 
 /**
@@ -24,6 +26,11 @@ abstract class DelegatingDialect implements Dialect
 {
     public function __construct(protected readonly Dialect $inner)
     {
+    }
+
+    public function name(): string
+    {
+        return $this->inner->name();
     }
 
     public function createConnection(string $connectionString): PDO
@@ -49,6 +56,31 @@ abstract class DelegatingDialect implements Dialect
     public function createViewSql(EntityMap $map): string
     {
         return $this->inner->createViewSql($map);
+    }
+
+    public function createTableSqlFromSchema(TableSchema $schema): string
+    {
+        return $this->inner->createTableSqlFromSchema($schema);
+    }
+
+    public function createIndexSqlFromSchema(string $table, TableSchemaIndex $index): string
+    {
+        return $this->inner->createIndexSqlFromSchema($table, $index);
+    }
+
+    public function createViewSqlFromBody(string $view, string $body, bool $materialized): string
+    {
+        return $this->inner->createViewSqlFromBody($view, $body, $materialized);
+    }
+
+    public function dropViewSql(string $view, bool $materialized): string
+    {
+        return $this->inner->dropViewSql($view, $materialized);
+    }
+
+    public function viewDefinitionIsVerbatim(): bool
+    {
+        return $this->inner->viewDefinitionIsVerbatim();
     }
 
     public function insertSql(EntityMap $map): string
@@ -141,9 +173,9 @@ abstract class DelegatingDialect implements Dialect
         return $this->inner->isDeclaredTypeCompatible($declaredType, $type);
     }
 
-    public function storageType(PropertyMap $property): string
+    public function storageType(EntityMap $map, PropertyMap $property): string
     {
-        return $this->inner->storageType($property);
+        return $this->inner->storageType($map, $property);
     }
 
     public function beginMigrationRunLock(PDO $connection): void

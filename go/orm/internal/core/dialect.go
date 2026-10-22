@@ -18,6 +18,10 @@ type BindCriteriaParameter func(value any, property *PropertyMap) (string, error
 // needs them, and SQLite's renderings then stay byte-identical (they are pinned
 // by conformance and hashed into migration checksums).
 type Dialect interface {
+	// Name is the dialect's name as the CLI spells it (`sqlite`, `sqlserver`, `postgres`; ADR-0043): stamped into
+	// every non-SQLite snapshot and compared on read (MIG-014).
+	Name() string
+
 	// CreateConnection opens the driver-level pool for a connection string (a
 	// bare SQLite path is accepted). Nothing connects until first use.
 	CreateConnection(connectionString string) (*sql.DB, error)
@@ -38,6 +42,26 @@ type Dialect interface {
 
 	// CreateViewSQL renders CREATE (MATERIALIZED) VIEW from the map's defining SQL.
 	CreateViewSQL(m *EntityMap) string
+
+	// CreateTableFromSchemaSQL renders CREATE TABLE from a snapshot shape (ADR-0043; the C# `CreateTableSql(schema)`):
+	// storage types as recorded, one generated key inline as identity, any other key as the trailing constraint.
+	CreateTableFromSchemaSQL(schema *TableSchema) string
+
+	// CreateIndexFromSchemaSQL renders one index's CREATE INDEX from a snapshot shape (ADR-0043; the C#
+	// `CreateIndexSql(table, index)`).
+	CreateIndexFromSchemaSQL(table string, index TableIndex) string
+
+	// CreateViewFromBodySQL renders a view from its neutral snapshot, name and body (ADR-0043; the C#
+	// `CreateViewSql(view, body, materialized)`) — the same text CreateViewSQL renders for that shape.
+	CreateViewFromBodySQL(view, body string, materialized bool) string
+
+	// DropViewSQL drops a view (or materialized view) idempotently (ADR-0043).
+	DropViewSQL(view string, materialized bool) string
+
+	// ViewDefinitionIsVerbatim: true -> ViewDefinitionSQL returns the text as submitted and the MIG-012 view guard
+	// compares normalized text; false -> the engine reformats it (PostgreSQL) and the guard round-trips the
+	// expected body through a probe view (ADR-0043, spec/migrations.md "The view and trigger apply guard").
+	ViewDefinitionIsVerbatim() bool
 
 	// InsertSQL renders the generated INSERT (§7.14): explicit column list, every
 	// non-generated column, RETURNING the key when the database generates it.
@@ -98,7 +122,8 @@ type Dialect interface {
 	// --- introspection (§7.25) ---
 
 	// ColumnsInfoSQL: columns of a relation — parameter @relation; result
-	// columns name, type, notnull, pk (empty = relation missing).
+	// columns name, type, notnull, pk, generated (ADR-0043: whether the database generates the value; empty =
+	// relation missing).
 	ColumnsInfoSQL() string
 
 	// ViewDefinitionSQL: a view's stored create DDL — parameter @relation; no
@@ -122,9 +147,11 @@ type Dialect interface {
 	// which the caller checks.
 	IsDeclaredTypeCompatible(declaredType string, columnType ColumnType) bool
 
-	// StorageType is the storage (declared) type a mapped property renders to —
-	// what CREATE TABLE emits (ADR-0017).
-	StorageType(property *PropertyMap) string
+	// StorageType is the storage (declared) type a mapped property renders to — what CREATE TABLE emits and
+	// introspection reports back, spelled exactly as ColumnsInfoSQL reports it (ADR-0017, ADR-0043). The map tells
+	// whether the column is a key or belongs to a declared index (SQL Server's indexable length); the property's
+	// storage facets override the defaults.
+	StorageType(m *EntityMap, property *PropertyMap) string
 
 	// --- migrations (§7.23) ---
 

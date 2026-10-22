@@ -16,7 +16,9 @@ use SimpleOrm\Errors\SimpleOrmException;
  * data-preservingly; everything else — restored columns, dropped columns,
  * index changes, a view's previous definition — comes from the snapshot diff.
  * `down()` remains the manual override; a change the snapshots can't express
- * (type/nullability) still refuses with `MIG-020`.
+ * (type/nullability) still refuses with `MIG-020`. Every statement renders through the
+ * dialect seam (ADR-0043) — the snapshots are the dialect's, and so is the rollback; a
+ * snapshot stamped for another dialect refuses with `MIG-014`.
  */
 final class DownDeriver
 {
@@ -49,10 +51,14 @@ final class DownDeriver
         }
 
         $before = $snapshots->latestBefore($objectName, $version);
+        SchemaSnapshot::assertDialect($at->dialect, $dialect, $objectName, $version);
+        if ($before !== null) {
+            SchemaSnapshot::assertDialect($before->dialect, $dialect, $objectName, $version - 1);
+        }
 
         return match (true) {
             $at->trigger !== null => self::deriveTrigger($objectName, $at->trigger, $before?->trigger, $dialect),
-            $at->ddl !== null => self::deriveView($objectName, $at->ddl, $before?->ddl),
+            $at->ddl !== null => self::deriveView($objectName, $at->ddl, $before?->ddl, $dialect),
             default => self::deriveTable($objectName, $version, $at->table, $before?->table, $upRenames, $notices, $dialect),
         };
     }
@@ -80,17 +86,31 @@ final class DownDeriver
         return $statements;
     }
 
-    /** @return list<MigrationStatement> */
-    private static function deriveView(string $objectName, string $ddlAt, ?string $ddlBefore): array
+    /**
+     * A view's rollback (ADR-0043): the `MIG-012` guard on this version's definition, the dialect's drop, and the
+     * previous definition rendered by the dialect from the neutral snapshot (`create [materialized] view <name> as <body>`
+     * split into name and body) — a DDL that is not a view create (a procedure) restores as recorded.
+     *
+     * @return list<MigrationStatement>
+     */
+    private static function deriveView(string $objectName, string $ddlAt, ?string $ddlBefore, Dialect $dialect): array
     {
+        $parts = SchemaSnapshot::splitViewDdl($ddlAt);
         $statements = [
             // The apply guard in reverse (MIG-012): a definition hotfixed
             // outside the code is not silently destroyed by a rollback either.
             new MigrationStatement($ddlAt, 'derived expect ' . $objectName, $objectName),
-            new MigrationStatement('drop view if exists ' . $objectName, 'derived drop ' . $objectName),
+            new MigrationStatement(
+                $dialect->dropViewSql($objectName, $parts['materialized'] ?? false),
+                'derived drop ' . $objectName,
+            ),
         ];
         if ($ddlBefore !== null) {
-            $statements[] = new MigrationStatement($ddlBefore, 'derived restore ' . $objectName);
+            $previous = SchemaSnapshot::splitViewDdl($ddlBefore);
+            $statements[] = new MigrationStatement(
+                $previous === null ? $ddlBefore : $dialect->createViewSqlFromBody($objectName, $previous['body'], $previous['materialized']),
+                'derived restore ' . $objectName,
+            );
         }
 
         return $statements;
@@ -146,6 +166,43 @@ final class DownDeriver
             $previous[strtolower($column->name)] = $column;
         }
 
+        // A same-name type or nullability change is not derivable: refuse before any statement renders.
+        foreach ($current as $key => $now) {
+            if (!isset($previous[$key])) {
+                continue;
+            }
+
+            $then = $previous[$key];
+            if (strcasecmp($now->storageType, $then->storageType) !== 0 || $now->nullable !== $then->nullable) {
+                throw new SimpleOrmException(
+                    'MIG-020',
+                    sprintf('V%04d %s', $version, $objectName),
+                    "column {$now->name} changed type/nullability at this version; that rollback cannot be derived — override down()",
+                );
+            }
+        }
+
+        // Indexes match structurally (ADR-0017 add.2) here too.
+        /** @var array<string, TableSchemaIndex> $atIndexes */
+        $atIndexes = [];
+        foreach ($at->indexes as $index) {
+            $atIndexes[MigrationGenerator::indexSignature($index)] = $index;
+        }
+
+        /** @var array<string, TableSchemaIndex> $beforeIndexes */
+        $beforeIndexes = [];
+        foreach ($before->indexes as $index) {
+            $beforeIndexes[MigrationGenerator::indexSignature($index)] = $index;
+        }
+
+        // The indexes this version added drop FIRST (ADR-0043): SQLite and SQL Server refuse to drop a column an index still
+        // covers, and the added columns drop below.
+        foreach ($atIndexes as $signature => $index) {
+            if (!isset($beforeIndexes[self::applyRenames($signature, $nameAtToBefore)])) {
+                $statements[] = new MigrationStatement($dialect->dropIndexSql($objectName, $index->name), 'derived drop index');
+            }
+        }
+
         foreach ($previous as $key => $column) {
             if (isset($current[$key])) {
                 continue;
@@ -176,40 +233,7 @@ final class DownDeriver
             $statements[] = new MigrationStatement($dialect->dropColumnSql($objectName, $column->name), 'derived remove ' . $objectName);
         }
 
-        foreach ($current as $key => $now) {
-            if (!isset($previous[$key])) {
-                continue;
-            }
-
-            $then = $previous[$key];
-            if (strcasecmp($now->storageType, $then->storageType) !== 0 || $now->nullable !== $then->nullable) {
-                throw new SimpleOrmException(
-                    'MIG-020',
-                    sprintf('V%04d %s', $version, $objectName),
-                    "column {$now->name} changed type/nullability at this version; that rollback cannot be derived — override down()",
-                );
-            }
-        }
-
-        // Indexes match structurally (ADR-0017 add.2) here too.
-        /** @var array<string, TableSchemaIndex> $atIndexes */
-        $atIndexes = [];
-        foreach ($at->indexes as $index) {
-            $atIndexes[MigrationGenerator::indexSignature($index)] = $index;
-        }
-
-        /** @var array<string, TableSchemaIndex> $beforeIndexes */
-        $beforeIndexes = [];
-        foreach ($before->indexes as $index) {
-            $beforeIndexes[MigrationGenerator::indexSignature($index)] = $index;
-        }
-
-        foreach ($atIndexes as $signature => $index) {
-            if (!isset($beforeIndexes[self::applyRenames($signature, $nameAtToBefore)])) {
-                $statements[] = new MigrationStatement($dialect->dropIndexSql($objectName, $index->name), 'derived drop index');
-            }
-        }
-
+        // The previous version's indexes come back last, over columns that exist again.
         foreach ($beforeIndexes as $signature => $index) {
             $stillPresent = false;
             foreach (array_keys($atIndexes) as $atSignature) {
@@ -221,7 +245,7 @@ final class DownDeriver
             }
 
             if (!$stillPresent) {
-                $statements[] = new MigrationStatement(SnapshotDdl::createIndexSql($objectName, $index), 'derived add index');
+                $statements[] = new MigrationStatement($dialect->createIndexSqlFromSchema($objectName, $index), 'derived add index');
             }
         }
 

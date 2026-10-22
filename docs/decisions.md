@@ -3743,3 +3743,177 @@ live trigger tests are written; they run when the owner's server is back
 
 **Status.** Accepted. Level 4 item 1 is built in C#, PHP, and Go. Next:
 migration tooling beyond SQLite (item 2).
+
+## ADR-0043 — Level 4 item 2: migration tooling beyond SQLite, in three implementations (2026-10-22)
+
+**Context.** ADR-0024/0025 shipped SQL Server and PostgreSQL runtime-first and
+deferred, by name, the migration tooling: `snapshot`, `shadow`, `diff`
+(+`--amend`), the derived rollbacks, and `migrate --force`. Rollbacks there
+needed `Down()` overrides (`MIG-020` said so), the shadow refused every
+dialect but SQLite, and ADR-0040 repeated the deferral for the ports. The
+owner opened item 2 on 2026-10-22 ("continue"): the tooling must work on
+SQL Server and PostgreSQL as it does on SQLite, in all three implementations,
+so rollbacks there stop needing hand-written `Down()`.
+
+**The design, and what reading the code settled before any ruling.** Three
+facts shaped it. (1) Neutral type tokens on disk cannot work: the forward map
+from token plus key and index facts to a storage type is pure, but the reverse
+is not — SQLite reports `TEXT` for eight tokens, SQL Server `int` for
+`int32` and `enum_int` — and a hand-written step declares `nvarchar(50)` or
+`decimal(18,2)`, which no token spells; the shadow reads the engine, so the
+byte-equality with the metadata side would die. (2) A migrations tree already
+belongs to one dialect: the sample's V0001 is literal SQL ending in `STRICT`,
+V0012 adds `avatar` as `BLOB`; table actions take literal types, so a tree runs
+on one engine, like its checksums — per-dialect snapshot files would describe
+a history that cannot run there. (3) Views and triggers are neutral or one
+normalization away: a trigger snapshot holds the declaration, a view's body is
+the one declared SQL, only the rendered prefix and quoting differ. Two more
+facts were defects: the dialect's `StorageType` defaults (`decimal(38, 9)`,
+`nvarchar(max)`) would make every real tree's `decimal(18,2)` a `DDL-004` on
+every `diff` forever; and the fixture itself disagreed with its own
+introspection on SQL Server — `StorageType` kept the key-only 450 rule
+(Clarification 11) while `CREATE TABLE` and the catalog said `nvarchar(450)`
+for the indexed `users.email`, and the dialect spelled `decimal(38, 9)` with a
+space where its columns query reconstructs `decimal(38,9)`.
+
+**Rulings (owner, 2026-10-22, twelve; 1, 2, 4–7, 9, 11, 12 as recommended, 3
+and 8 after a round of explanation).**
+
+1. **One stamped file per object and version; a tree belongs to one
+   dialect.** `V000N.schema.json` keeps its name; a document gains
+   `"dialect": "<name>"` right after `"object"` when the dialect is not
+   sqlite (format v3; an unstamped document is sqlite's, so nothing on disk
+   changed). Every consumer checks the stamp against the dialect in use and
+   refuses a mismatch with **`MIG-014`**. The alternative — neutral column
+   specs in table actions and per-dialect files — is a multi-dialect-tree
+   item of its own, not taken.
+2. **Storage facets on `[Column]`**: `Length` for strings and bytes,
+   `Precision`/`Scale` for decimals — dialect-neutral sizes each dialect
+   renders its own way (SQL Server `nvarchar(50)`, `decimal(18,2)`;
+   PostgreSQL `character varying(50)`, `numeric(18,2)`; SQLite ignores them),
+   exported when declared, `MAP-032` when misplaced. The fixture declares
+   `Transaction.Amount` at 18, 2. The fallback (base-type comparison, which
+   never detects a precision change) was rejected.
+3. **Every snapshot of a non-sqlite tree carries the stamp, whatever its
+   kind** ("make both": neutral where the content allows, dialect-specific
+   where the tree is), and the view normalizer makes view content neutral:
+   `create [materialized] view <name> as <body>` with `or alter`, `or
+   replace`, `if not exists`, and the name's quoting stripped. A per-dialect
+   body override stays deferred until a real case.
+4. **The shadow takes views and triggers from the replayed step**, on every
+   dialect: PostgreSQL's `pg_get_viewdef` is a reformatted parse tree, SQL
+   Server's `inserted` has lost a `{new: …}` token's column list; the step
+   always knows. Where the catalog is lossless (SQLite both kinds, SQL
+   Server views, PostgreSQL triggers) the shadow reads it too and notes a
+   disagreement.
+5. **The view guard per mode**: normalized text where the engine stores the
+   definition as submitted (`ViewDefinitionIsVerbatim`: SQLite, SQL Server);
+   on PostgreSQL the expected body is created as a probe view inside the run
+   under a savepoint, read back the same way, dropped, and the engine's two
+   renderings compared.
+6. **The columns introspection shape gains a fifth column `generated`**
+   (`is_identity`, `attidentity`, SQLite's rowid-alias rule in SQL) on all
+   three.
+7. **SQL Server `DropColumnSql` drops the default constraint first** as one
+   batch (error 5074 after a `not null … default` addition); the pinned
+   rendering changes, and a SQL Server database that applied a `RemoveColumn`
+   step will report `MIG-010` on it.
+8. **Canonical spelling is the introspection's** (`decimal(38,9)`; facets in
+   `format_type` spelling on PostgreSQL), and the indexable length moves
+   into `StorageType(map, property)` for key and indexed columns alike —
+   Clarification 11 retired.
+9. **Shadow provisioning through a tooling seam beside `IDialect`**
+   (`IShadowHost`: provision on the admin connection, drop afterwards, an
+   optional trigger read-back), the live fixtures' contract reused.
+10. **Conformance**: `snapshot-cases` expect one document per dialect (the
+    `ast/` precedent); `migrations-cases/postgres/` and `/sqlserver/` run the
+    derived rollbacks and the guards on a live engine, each case in a
+    throwaway database the shadow host provisions; a live shadow round trip
+    per dialect.
+11. **One new code, `MIG-014`** (and `MAP-032` for the facets; `IDialect.Name`
+    to spell the dialect).
+12. **The sample trees stay SQLite and byte-identical.**
+
+**Decision — the reference.** `[Column(Length, Precision, Scale)]` on
+`PropertyMap`, exported after `renamedFrom`, validated once in the assembler
+(`MAP-032`). The seam gained `Name`, `StorageType(map, property)` (replacing
+the property-only form), `CreateTableSql(schema)`, `CreateIndexSql(table,
+index)`, `CreateViewSql(view, body, materialized)`, `DropViewSql(view,
+materialized)`, `ViewDefinitionIsVerbatim`, and the fifth introspection column;
+beside it the tooling-only `IShadowHost` with `SqliteShadowHost` (temp file),
+`SqlServerShadowHost`, `PostgresShadowHost` (+ `PostgresTriggerDdl`, the
+read-back). Snapshot format v3 (`SchemaSnapshot.DialectOf`/`RequireDialect`);
+`NormalizeDdl` neutral, `TryParseViewDdl`, `IsDropView`; `SnapshotSet` carries
+the stamp; `DownDeriver` renders every statement through the seam and drops
+the version's indexes before the columns they cover (a latent reference bug —
+SQLite and SQL Server refuse the old order); `MigrationRunner` runs the probe
+and exposes `ReplayShapes` (each step's Up statements and the trigger
+declaration its actions leave behind) for `SchemaShadow`, the replayer moved
+from the SQLite package into the core; `SchemaSync` and the generator through
+the same members; the CLI's `shadow` on every dialect with `--db` as the
+admin connection. Three further reference fixes came from the ports' gap
+lists: view actions drop a materialized view as such and recreate through
+`DropViewSql` (the reference's `drop view if exists` on a materialized view
+fails on PostgreSQL); the SQL Server batch doubles quotes inside its `N''`
+literal; a failed shadow-database drop is a note. And from the review: the
+diff's trigger baseline had no stamp check; `MIG-014` checks the consulted
+snapshot only (the reference had refused on any file in an enumerated folder;
+both ports read the spec as consulted-only — the clearer rule); a guard-only
+trigger step leaves the trigger as it was; the probe releases its savepoint
+after a rollback.
+
+**Spec.** errors.md (`MAP-032`, `MIG-014`); metadata-model.md "Storage
+facets" (+ Clarifications); migrations.md — format v3, neutral view
+snapshots, the step rule, the derived order, the guard's modes, the new
+section "Dialects (ADR-0043)", the per-dialect conformance folders, ten
+Clarifications; dialects.md — the seam rows and flags, the snapshot-driven
+renderings table, the drop-column batch, facets and `decimal(38,9)`, the
+`generated` column and the three queries, "Migration tooling (ADR-0043)",
+the deferred list, Clarifications 11/13/21 revised, 27 added.
+
+**Conformance.** `snapshot-cases` per dialect (+ `transactions_v3` pinning
+the facet); `entities/transaction.json`; `migrations-cases/
+snapshot_of_another_dialect_is_refused`, `derived_down_drops_index_before_column`;
+`migrations-cases/postgres/` and `/sqlserver/` (derived downs, the type-change
+refusal, view guard + rollback, trigger rollback); `diff-cases` untouched (the
+comparator is shape-vs-shape; `addedIndexes` compare by name).
+
+**The ports, by the ADR-0031 method** (one Sonnet agent each, `spec/` and
+`conformance/` as their only source, forbidden to open another
+implementation; then the review). PHP: `#[Column(length:, precision:,
+scale:)]`, `Dialect\ShadowHost` + `Migrations\SchemaShadow` (the SQLite shadow
+retired), `PostgresTriggerParser`, `MigrationsCasesLiveTest` — 1014 tests, 29
+skipped (SQL Server), PostgreSQL live. Go: tag options `length=`/
+`precision=`/`scale=`, `migrations.Shadow` with `ShadowHost` per dialect,
+`TableSchema` moved into `core` because the seam renders it, overload-less
+names `CreateTableFromSchemaSQL`/`CreateIndexFromSchemaSQL`/
+`CreateViewFromBodySQL` — every package green, PostgreSQL live. Their 18 + 20
+gap questions became the Clarifications above; neither port contradicted a
+conformance file. The review found the ports in agreement with each other on
+every rule the spec left open — the reference moved to their reading twice
+(`MIG-014` scope; the probe's savepoint release) — and aligned two Go choices
+to the reference (any failure inside the probe is drift; the generated view
+step's drop is the neutral literal text). Known, recorded in §10 only: Go has
+no overloading; PHP's throwaway DSN edits `dbname`/`Database` (not `Initial
+Catalog`).
+
+**Verification.** PostgreSQL 16.4 live on this machine (Laragon's, started
+with `pg_ctl`), SQLite as always, no SQL Server: C# 494 passed / 16 skipped,
+PHP 1014 tests / 29 skipped, Go every package ok, `gofmt` and `go vet` clean.
+The PostgreSQL legs ran the four `migrations-cases/postgres/` cases, the
+shadow round trip, and the force-sync plan (one additive statement, no
+`DDL-004` — the proof of ruling 8) in all three implementations. **PENDING on
+the owner's SQL Server** (with the ADR-0040 add.3 and ADR-0042 runs): the
+`migrations-cases/sqlserver/` cases, the shadow round trip, the force-sync
+plan, and the drop-column batch have never run on an engine — same commands:
+
+```
+cd dotnet && dotnet test SimpleOrm.sln --filter "FullyQualifiedName~SqlServer"
+cd php && composer test-live -- --filter SqlServer
+go test -C go -count=1 -p 2 ./orm/sqlserver/ ./orm/internal/conformance/ -run "Live|SqlServer"
+```
+
+**Status.** Accepted. Level 4 item 2 is built in C#, PHP, and Go; the SQL
+Server live verification is pending the engine. Next: nothing is pending;
+the remaining Level 4 candidates (CI conformance matrix, performance,
+packaging, observability) wait for the owner.

@@ -91,9 +91,11 @@ that version and the latest one before it, then derives the reverse:
 - no earlier snapshot → the version created the object → drop it;
 - tables → the step's typed `RenameColumn` actions invert first (snapshots alone
   cannot tell a rename from a drop+add; the actions can, and inverting them
-  preserves data), then the shape diff: dropped columns restored (a NOT NULL
+  preserves data), then the shape diff: the indexes this version added drop
+  (before the columns they cover — SQLite and SQL Server refuse to drop a
+  column an index still uses, ADR-0043), dropped columns restored (a NOT NULL
   restore lands nullable with a notice — constraint and data are not derivable),
-  added columns dropped, indexes reverted structurally;
+  added columns dropped, the previous version's indexes recreated;
 - views → expected-definition guard on the current DDL (`MIG-012` — a rollback
   must not silently destroy an outside hotfix either), drop, previous definition
   restored;
@@ -104,9 +106,13 @@ that version and the latest one before it, then derives the reverse:
   exactly like a dropped table;
 - a same-column type/nullability change is not derivable → `MIG-020`.
 
-`Down()` remains the manual override and always wins; `PreDown`/`PostDown` hooks
-wrap whichever core runs and carry the data work (a data-only step derives an
-empty rollback — schema-correct; its inserted rows are the hooks' job). The
+Every derived statement renders through the dialect (ADR-0043): the snapshots
+are the dialect's, and so is the rollback — a snapshot stamped for another
+dialect refuses with `MIG-014` for the whole range before anything executes
+("Dialects" below). `Down()` remains the manual override and always wins;
+`PreDown`/`PostDown` hooks wrap whichever core runs and carry the data work (a
+data-only step derives an empty rollback — schema-correct; its inserted rows
+are the hooks' job). The
 snapshots ship **embedded in the migrations assembly**
 (`<EmbeddedResource Include="Migrations\**\*.schema.json" />`) so rollbacks work
 deployed; the CLI's `--snapshots <dir>` reads them from source instead.
@@ -152,8 +158,12 @@ The DDL-shaped form for the other kinds:
 ```
 
 The DDL is normalized — whitespace collapsed and the create-view prefix
-canonicalized (databases rewrite that prefix when storing it) — and stays
-executable.
+canonicalized to `create [materialized] view <name> as <body>`: `or alter`,
+`or replace`, `if not exists`, and the name's quoting are stripped, because
+databases rewrite that prefix when storing it and each dialect quotes its own
+way, while the body is the one SQL the entity declares. So a view snapshot's
+content is **dialect-neutral** (ADR-0043); it stays executable once a dialect
+renders it again from name and body.
 
 A trigger snapshots by **declaration** (ADR-0042), `Migrations/Trigger/<Class>/V000N.schema.json`:
 
@@ -166,16 +176,19 @@ A trigger snapshots by **declaration** (ADR-0042), `Migrations/Trigger/<Class>/V
 
 — the relation and its kind (`table` | `view`), the timing, the events in the
 fixed order, `updateOf` (column names) only when declared, and the body
-whitespace-collapsed with its tokens **unexpanded**. Unlike a table snapshot
-it is dialect-neutral: one tree serves every dialect. From metadata it is the
-linked declaration; from history (`shadow`) it is the stored SQLite trigger
-parsed back — header fields from the dialect's fixed grammar, the dialect's
-expansions folded back into the tokens — and the two must agree byte for byte
-apart from `generatedAt`; a hand-written trigger the grammar does not match
-is skipped with a note. Column `type` in the table form is the dialect **storage type** (what
-CREATE TABLE emits and what introspection reports), columns and indexes are
-**name-sorted** — so every snapshot is producible two ways, and the two must be
-byte-identical apart from `generatedAt`:
+whitespace-collapsed with its tokens **unexpanded**. Its content is
+dialect-neutral like a view's. From metadata it is the linked declaration;
+from history (`shadow`) it is the declaration the replayed step leaves behind
+(ADR-0043, "Dialects" below) — and where the dialect's catalog hands the text
+back losslessly (SQLite stores it as submitted; PostgreSQL reconstructs the
+header and keeps the body verbatim) the shadow also parses the stored trigger
+back — header fields from the dialect's fixed grammar, the expansions folded
+back into the tokens — and notes a disagreement; a hand-written trigger the
+grammar does not match is noted too. Column `type` in the table form is the
+dialect **storage type** (what CREATE TABLE emits and what introspection
+reports — spelled exactly as introspection reports it, ADR-0043), columns and
+indexes are **name-sorted** — so every snapshot is producible two ways, and the
+two must be byte-identical apart from `generatedAt`:
 
 - **from metadata** (`snapshot`): the current model rendered at the last version
   touching each object;
@@ -184,7 +197,15 @@ byte-identical apart from `generatedAt`:
 
 That equality is the integrity check between model and history. Snapshots are also
 directly renderable as DDL: derived rollbacks (ADR-0018) and trusted baselines
-come from them.
+come from them, through the dialect.
+
+**Format v3 (ADR-0043): the dialect stamp.** A snapshot written for any dialect
+but SQLite carries `"dialect": "<name>"` right after `"object"`, whatever its
+kind — a tree and its snapshots belong to one dialect, like its checksums. An
+unstamped document is SQLite's (every format v2 file, every SQLite tree:
+nothing on disk changes). Every consumer checks the stamp against the dialect
+in use — the derived rollback, the diff baseline, the shadow's trusted
+baseline — and refuses a mismatch with `MIG-014`.
 
 ## The generator toolchain (ADR-0017)
 
@@ -212,10 +233,16 @@ come from them.
   applied). A removal leaves no snapshot of its own, so it is recognised as
   already emitted when the trigger's newest step is later than its newest
   snapshot — never emitted twice. Trigger steps compose after view steps.
-- **`shadow`** — rebuilds the snapshot files from history (above). The range form
-  `--from V000N [--to V000M]` **trusts** version N: the baseline is reconstructed
-  from the committed snapshots at ≤ N (no verification below N), versions ≤ N are
-  baselined, and only (N, M] replays and re-snapshots.
+- **`shadow`** — rebuilds the snapshot files from history (above), on every
+  dialect (ADR-0043): the throwaway database comes from the dialect's shadow
+  host (SQLite a temp file; SQL Server and PostgreSQL a database
+  `simpleorm_shadow_<hex>` created on the admin connection `--db` names and
+  dropped afterwards, failure included — the live-test contract), tables are
+  introspected through `ColumnsInfoSql`/`IndexesInfoSql`, views and triggers
+  are taken from the replayed step ("Dialects" below). The range form
+  `--from V000N [--to V000M]` **trusts** version N: the baseline is rendered
+  from the committed snapshots at ≤ N through the dialect (no verification
+  below N), versions ≤ N are baselined, and only (N, M] replays and re-snapshots.
 - **`migrate --force`** — post-migration live-schema sync to the model: additive
   fixes apply; deletions require `--allow-delete` (`DDL-003`); inexpressible
   changes are reported as `DDL-004` and never auto-applied. Indexes on existing
@@ -228,9 +255,17 @@ come from them.
 Views get adjusted outside the code in urgencies. A view step may declare
 `ExpectDefinition(ddl)` — generated change steps always do, carrying the previous
 snapshot's definition. When the step applies, the runner compares the live
-definition (normalized) against the expectation: match → apply; mismatch or absent
+definition against the expectation: match → apply; mismatch or absent
 → the run refuses with `MIG-012` and, the run being one transaction, nothing is
-applied — the outside hotfix is preserved for review. Forcing
+applied — the outside hotfix is preserved for review. The comparison runs in
+the dialect's canonical form (ADR-0043, `ViewDefinitionIsVerbatim`): where the
+engine stores the text as submitted (SQLite, SQL Server) both sides normalize
+and compare as text; where it reformats the parse tree (PostgreSQL's
+`pg_get_viewdef`) the runner creates the expected body as a probe view inside
+the run, reads it back the same way, drops it, and compares the engine's two
+renderings — equal exactly when the parse trees are. The probe runs under a
+savepoint, so a body the current schema cannot parse counts as drift instead
+of poisoning the transaction. Forcing
 (`migrate --force` / `MigrateAsync(allowViewDrift: true, notify, ct)`) recreates
 the view from the code and reports the drift. Derived view rollbacks carry the
 mirrored guard. Guards evaluate at execution time (chained pending view changes
@@ -257,6 +292,125 @@ statement, procedure, or materialized view is `DDL-001` too. The `--from`
 shadow baseline restores triggers after tables and views from their latest
 snapshot at or below N — a trigger removed before N is restored wrongly, as a
 dropped table would be: the trusted baseline trusts snapshots, not history.
+
+## Dialects (ADR-0043)
+
+Everything above works on SQL Server and PostgreSQL as it does on SQLite —
+`snapshot`, `shadow`, `diff` (and `--amend`), the derived rollbacks, and
+`migrate --force`. The rules that make it so:
+
+- **A tree belongs to one dialect.** Its table steps hold literal column specs
+  in one dialect's text (the sample's `STRICT` creates, `AddColumn("avatar",
+  "BLOB")`), its checksums are one dialect's renderings, and so are its
+  snapshots: every non-SQLite snapshot carries the dialect stamp (format v3,
+  above) and `MIG-014` refuses one of another dialect. The CLI's `--dialect`
+  selects the dialect for every command; the sample trees are SQLite's.
+- **Storage types compare as introspection spells them.** `StorageType(map,
+  property)` renders what `CREATE TABLE` emits and what `ColumnsInfoSql`
+  reports back, byte for byte — SQL Server `decimal(38,9)` (no space),
+  `nvarchar(450)` for a key column *or a column of a declared index*,
+  PostgreSQL's `format_type` spellings — so snapshot-versus-shadow, diff, and
+  force sync are plain string equalities. A declared storage facet
+  (`[Column(Length = 50)]`, `[Column(Precision = 18, Scale = 2)]`,
+  metadata-model.md "Storage facets") renders through the same function, so a
+  real tree's `decimal(18,2)` is the model's type, not a `DDL-004` forever.
+- **Tables snapshot from the engine, views and triggers from the step.** The
+  shadow introspects tables after each version through `ColumnsInfoSql`
+  (`name, type, notnull, pk, generated`) and `IndexesInfoSql`. For a view it
+  takes the step's last create statement, normalized; for a trigger the
+  declaration the step's actions leave behind (`CreateTrigger()`/`Recreate`
+  → declared, `DropTrigger()` → gone) — because an engine's catalog may not
+  hand them back as declared: PostgreSQL reformats a view, SQL Server's
+  `inserted` has lost a `{new: …}` token's column list. A later drop ends the
+  history. Where the catalog is lossless (SQLite views and triggers, SQL
+  Server views, PostgreSQL triggers) the shadow reads it too and **notes** a
+  disagreement; a raw-SQL step with no create falls back to the catalog where
+  it is verbatim and is skipped with a note where it is not.
+- **The rollback renders through the seam.** `RenameColumnSql`,
+  `AddColumnSql`, `DropColumnSql` (SQL Server drops a leftover default
+  constraint first), `DropIndexSql`, `CreateIndexSql(table, index)` from the
+  snapshot index, `DropViewSql`, `CreateViewSql(name, body, materialized)`
+  from the neutral view snapshot, `CreateTableSql(schema)` for the trusted
+  baseline, and the trigger members — no tooling path holds SQLite text.
+- **The view guard has a mode per dialect** (above): text where verbatim, the
+  probe round trip where not.
+- **The shadow's database is the dialect's** (`IShadowHost` beside the seam,
+  a tooling contract never consulted at runtime): provision on the admin
+  connection, drop afterwards, and the optional trigger read-back for the
+  self-check (SQLite, PostgreSQL; none on SQL Server).
+- **`migrate --force`** reads the live schema through the same two
+  introspection queries and renders through the same members; its gates
+  (`DDL-003`, `DDL-004`) are unchanged.
+
+Not derivable stays the same everywhere: a type or nullability change, a
+removal step, and the data behind a NOT NULL restore (`MIG-020`, the notice).
+Still out of scope: materialized views beyond the view treatment on
+PostgreSQL, procedures, cross-dialect snapshot conversion, multi-dialect
+trees, defaults in snapshots, clustered, filtered, or included-column indexes.
+
+Conformance: `snapshot-cases` expect one document per dialect;
+`migrations-cases/postgres/` and `migrations-cases/sqlserver/` replay the
+derived rollbacks and the guards on a live engine (skip-gated, each case in a
+throwaway database the shadow host provisions); every implementation's live
+leg runs a shadow round trip — a short tree replayed, its snapshots equal to
+the metadata-side export apart from `generatedAt`.
+
+**Clarifications** (the PHP and Go ports asked; ADR-0043):
+
+- **Which snapshots `MIG-014` checks: the ones consulted.** For the derived
+  rollback, the snapshot at each reverting step's version and the latest
+  before it, for every step without a `Down()` override, checked for the
+  whole range before anything executes; for `diff` and `--amend`, each
+  baseline the diff uses; for `shadow --from`, each snapshot the baseline
+  restores. A foreign document the tool does not consult is never seen (the
+  reference once refused on any file in a folder it enumerated; the consulted
+  rule is the one). The stamp compares case-insensitively; the message names
+  the object, the stamp, and the dialect in use — its wording is free.
+- **The normalizer's limits.** It strips `"`, `[`/`]`, and backticks from the
+  name (a schema-qualified name keeps its dot) and matches the name as one
+  non-blank token: a quoted name containing spaces, or a view with a column
+  list before `as`, stays unnormalized and compares as text.
+- **The probe, exactly.** The live definition is read first — absent is
+  drift without a probe. Any failure inside the probe (the create, the read,
+  the drop) is drift: `rollback to savepoint`, then `release savepoint` so
+  the name is free for the next probe in the run. An expectation that is not
+  a view create (a procedure's DDL) compares as text. The probe may be a
+  plain view even for a materialized expectation (`pg_get_viewdef` renders
+  both alike).
+- **Shadow views: "the step's last create".** The step's rendered Up
+  statements are scanned in order (hooks included, guards skipped) for a
+  create or a drop of the object; the last one wins. Verbatim catalog, no
+  create in the step, no view in the catalog: the history ends silently.
+- **Shadow triggers.** A trigger step that neither creates nor drops (a
+  guard-only step) leaves the trigger as it was, exactly like a raw-SQL step:
+  the read-back where the host has one, else skipped with a note. Read-back
+  present and trigger absent: the history ends silently; hand-written text:
+  a note. A disagreement is judged on relation, relation kind, timing,
+  events, update-of columns, and the normalized body; the relation's kind
+  may come from the catalog or from the mapped entity. Note wording is free.
+- **The shadow host, edges.** SQLite ignores the admin connection string;
+  SQL Server and PostgreSQL refuse without one before provisioning anything
+  (a CLI error, no code). The throwaway connection string is the admin
+  string with its database name replaced — however the driver spells it
+  (`Database`/`Initial Catalog`, PDO's `dbname`/`Database`, a URL's path).
+  When the drop fails, the replay's result stands and the failure is a note;
+  when both fail, the replay's error surfaces. The SQL Server single-user
+  step is best effort.
+- **Generated view steps stay literal, neutral text:** `drop [materialized
+  ]view if exists <name>` unquoted and the normalized create, executable on
+  every dialect for conventional names; a reserved-word view name is
+  hand-written. The `DropView()` action keeps its frozen `drop view <name>`
+  for a plain view (checksums hash it) and says `drop materialized view` for
+  a materialized one; `RecreateView()` drops through `DropViewSql`.
+- **The diff core stays pure.** The shape-vs-shape diff yields the added
+  indexes as shapes; the emitter renders them through the dialect at emit
+  time, and `diff-cases` `addedIndexes` compare by index name.
+- **The live shadow tree is not fixed**, only its content: a literal create
+  with a unique index in the dialect's SQL, a view step, a trigger step, and
+  a literal add-column — the shadow's snapshots equal the metadata-side export
+  apart from `generatedAt`, with no note of disagreement.
+- **Introspection reads by ordinal or by name**, as Clarification 1 of
+  dialects.md allows; the fifth column is `generated` either way.
 
 ## Conformance cases
 
@@ -296,7 +450,13 @@ behavior in this document is expressible as data:
   shape — the `MIG-012` trigger guard; a `"snapshots"` entry with
   `"kind": "trigger"`; and the deep expect `"triggers": { "<name>": { "relation",
   "timing", "events", "updateOf"?, "sql" } | null }` — the live trigger read back
-  through the dialect and parsed to its declaration, or absent (ADR-0042).
+  through the dialect and parsed to its declaration, or absent (ADR-0042);
+- per dialect (ADR-0043): the root folder runs on SQLite; `postgres/` and
+  `sqlserver/` hold cases in that dialect's SQL with stamped snapshots
+  (`"dialect": "postgres"`), run on a live engine. `columns` reads through
+  `ColumnsInfoSql` on every dialect; `ddl` applies only where
+  `ViewDefinitionIsVerbatim`; `triggers` only where the dialect reads a trigger
+  back (not SQL Server).
 
 Two sibling suites cover the generator itself: `conformance/diff-cases/` feeds
 two shapes (snapshot form) plus declared renames through the diff and checks the
@@ -304,7 +464,8 @@ resulting change exactly — no database (a case with `"kind": "trigger"` feeds
 two trigger declarations, either null, and expects `isNew` | `isChanged` |
 `isRemoved` or nothing); `conformance/snapshot-cases/` pins a fixture entity,
 version, and generation time and expects the exact exported snapshot document
-(`"kind": "trigger"` names the linked trigger). `conformance/trigger-sql/` pins
+**per dialect** — `expect` keyed by dialect name, a shipped dialect missing from
+it fails the suite (ADR-0043; `"kind": "trigger"` names the linked trigger). `conformance/trigger-sql/` pins
 what every dialect renders for a declaration (`dialects.md` "Triggers"). See
 `conformance/README.md` for the schemas.
 

@@ -14,8 +14,11 @@ public sealed class SnapshotSet
     private readonly Dictionary<string, SortedList<long, Entry>> _byObject =
         new(StringComparer.OrdinalIgnoreCase);
 
-    internal sealed class Entry(TableSchema? table, string? ddl, TriggerSnapshot? trigger = null)
+    internal sealed class Entry(TableSchema? table, string? ddl, TriggerSnapshot? trigger = null, string dialect = SchemaSnapshot.DefaultDialect)
     {
+        /// <summary>The dialect the document is stamped for (format v3, ADR-0043); unstamped files are SQLite's.</summary>
+        public string Dialect { get; } = dialect;
+
         /// <summary>The table shape — null for a DDL-shaped (view/MV/procedure) or a trigger snapshot.</summary>
         public TableSchema? Table { get; } = table;
 
@@ -62,19 +65,21 @@ public sealed class SnapshotSet
         long version;
         bool isDdl;
         bool isTrigger;
+        string dialect;
         using (var document = JsonDocument.Parse(json))
         {
             objectName = document.RootElement.GetProperty("object").GetString()!;
             version = document.RootElement.GetProperty("asOfVersion").GetInt64();
             isDdl = document.RootElement.TryGetProperty("ddl", out _);
             isTrigger = document.RootElement.TryGetProperty("kind", out var kind) && kind.GetString() == "trigger";
+            dialect = SchemaSnapshot.DialectOf(document.RootElement);
         }
 
         var entry = isTrigger
-            ? new Entry(table: null, ddl: null, SchemaSnapshot.ParseTrigger(json).Snapshot)
+            ? new Entry(table: null, ddl: null, SchemaSnapshot.ParseTrigger(json).Snapshot, dialect)
             : isDdl
-                ? new Entry(table: null, SchemaSnapshot.ParseDdl(json).Ddl)
-                : new Entry(SchemaSnapshot.Parse(json).Schema, ddl: null);
+                ? new Entry(table: null, SchemaSnapshot.ParseDdl(json).Ddl, dialect: dialect)
+                : new Entry(SchemaSnapshot.Parse(json).Schema, ddl: null, dialect: dialect);
         if (!_byObject.TryGetValue(objectName, out var versions))
         {
             _byObject[objectName] = versions = [];

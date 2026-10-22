@@ -36,6 +36,17 @@ final class Dialects
         return [self::SQLITE, self::SQLSERVER, self::POSTGRES];
     }
 
+    /** The shadow host of a dialect (ADR-0043): where `shadow` gets its throwaway database, by the same names. */
+    public static function shadowHost(Dialect $dialect): ShadowHost
+    {
+        return match ($dialect->name()) {
+            self::SQLITE => new SqliteShadowHost(),
+            self::SQLSERVER => new SqlServerShadowHost($dialect),
+            self::POSTGRES => new PostgresShadowHost($dialect),
+            default => throw new SimpleOrmException('CLI', 'dialect', "dialect '{$dialect->name()}' has no shadow host"),
+        };
+    }
+
     /** A fresh dialect for a name (case-insensitive); an unknown name refuses before anything opens. */
     public static function create(string $name): Dialect
     {

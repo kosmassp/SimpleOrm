@@ -7,11 +7,12 @@ namespace SimpleOrm\Migrations;
 use FilesystemIterator;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
+use SimpleOrm\Dialect\Dialects;
 
 /**
  * Every committed schema snapshot of a migrations tree, indexed by
  * (object, version) — the history the derived-rollback deriver reads from
- * (ADR-0018). Loads from a directory of `*.schema.json` files (the PHP
+ * (ADR-0018); each entry keeps the snapshot's dialect stamp (ADR-0043). Loads from a directory of `*.schema.json` files (the PHP
  * counterpart of the C# reference's embedded-resource loading — no assemblies
  * in PHP, CODING-STANDARD §10), or from documents already in memory (the
  * conformance runner feeds cases this way).
@@ -76,16 +77,17 @@ final class SnapshotSet
 
     private function add(string $json): void
     {
-        /** @var array{object: string, asOfVersion: int|string, kind?: string} $data */
+        /** @var array{object: string, dialect?: string, asOfVersion: int|string, kind?: string} $data */
         $data = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
         $objectName = strtolower($data['object']);
         $version = (int) $data['asOfVersion'];
         $isDdl = array_key_exists('ddl', $data);
+        $stamp = $data['dialect'] ?? Dialects::SQLITE;
 
         $entry = match (true) {
-            ($data['kind'] ?? null) === 'trigger' => new SnapshotSetEntry(null, null, SchemaSnapshot::parseTrigger($json)->schema),
-            $isDdl => new SnapshotSetEntry(null, self::ddlFrom($json)),
-            default => new SnapshotSetEntry(SchemaSnapshot::parse($json)->schema, null),
+            ($data['kind'] ?? null) === 'trigger' => new SnapshotSetEntry(null, null, SchemaSnapshot::parseTrigger($json)->schema, $stamp),
+            $isDdl => new SnapshotSetEntry(null, self::ddlFrom($json), null, $stamp),
+            default => new SnapshotSetEntry(SchemaSnapshot::parse($json)->schema, null, null, $stamp),
         };
 
         $this->byObject[$objectName][$version] = $entry;
@@ -99,7 +101,7 @@ final class SnapshotSet
     /**
      * Immediate subdirectories of `$dir`, unsorted — the one implementation of
      * "each object's own directory under a kind root" (CODING-STANDARD §8),
-     * shared by `SqliteShadow`'s replay and `Diff\DiffCommand`'s generation.
+     * shared by `SchemaShadow`'s replay and `Diff\DiffCommand`'s generation.
      *
      * @return list<string>
      */

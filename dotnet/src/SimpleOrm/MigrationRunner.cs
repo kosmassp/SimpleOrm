@@ -319,6 +319,11 @@ public sealed class MigrationRunner
         /// <summary>The rollback derived from the snapshots, resolved during down validation.</summary>
         public IReadOnlyList<MigrationStatement>? DerivedDownCore { get; set; }
 
+        /// <summary>Whether the step is a trigger step, and the declaration it leaves behind (ADR-0043, for the shadow).</summary>
+        public bool IsTriggerStep { get; init; }
+
+        public TriggerSnapshot? DeclaredTrigger { get; init; }
+
         public string Checksum { get; } = ComputeChecksum(up);
     }
 
@@ -362,13 +367,21 @@ public sealed class MigrationRunner
             var builder = new VersionBuilder();
             version.Compose(builder);
             return new RenderedVersion(version.Version, version.IsDraft, builder.Steps
-                .Select(step => new RenderedStep(
-                    version.Version,
-                    step.ObjectName(_db.Maps),
-                    step.Description,
-                    step.RenderUp(_db.Maps, _db.Options.Dialect),
-                    step.RenderDown(_db.Maps, _db.Options.Dialect),
-                    step.UpRenames(_db.Maps, _db.Options.Dialect)))
+                .Select(step =>
+                {
+                    var outcome = step.TriggerOutcome(_db.Maps, _db.Options.Dialect);
+                    return new RenderedStep(
+                        version.Version,
+                        step.ObjectName(_db.Maps),
+                        step.Description,
+                        step.RenderUp(_db.Maps, _db.Options.Dialect),
+                        step.RenderDown(_db.Maps, _db.Options.Dialect),
+                        step.UpRenames(_db.Maps, _db.Options.Dialect))
+                    {
+                        IsTriggerStep = outcome.IsTriggerStep,
+                        DeclaredTrigger = outcome.Declared,
+                    };
+                })
                 .ToArray());
         }).ToArray();
 
@@ -492,8 +505,7 @@ public sealed class MigrationRunner
         }
 
         var live = await ReadViewDefinitionAsync(transaction, statement.GuardView, ct).ConfigureAwait(false);
-        var normalized = live is null ? null : SchemaSnapshot.NormalizeDdl(live);
-        if (normalized == statement.Sql)
+        if (live is not null && await ViewDefinitionMatchesAsync(transaction, live, statement.Sql, ct).ConfigureAwait(false))
         {
             return;
         }
@@ -576,6 +588,66 @@ public sealed class MigrationRunner
         }
 
         return definitions;
+    }
+
+    /// <summary>
+    /// Whether the live definition is the expected one (ADR-0043). Where the
+    /// dialect stores the text as submitted, both sides normalize and compare;
+    /// where the engine reformats it (PostgreSQL's <c>pg_get_viewdef</c>), the
+    /// expected body is created as a probe view inside the run, read back the
+    /// same way, and dropped — two engine renderings are equal exactly when the
+    /// parse trees are. The probe runs under a savepoint, so a body the current
+    /// schema cannot parse counts as drift instead of poisoning the transaction.
+    /// </summary>
+    private async Task<bool> ViewDefinitionMatchesAsync(DbTransaction transaction, string live, string expectedNormalized, CancellationToken ct)
+    {
+        var dialect = _db.Options.Dialect;
+        if (dialect.ViewDefinitionIsVerbatim || !SchemaSnapshot.TryParseViewDdl(expectedNormalized, out _, out var body, out _))
+        {
+            return SchemaSnapshot.NormalizeDdl(live) == expectedNormalized;
+        }
+
+        var probe = "simpleorm_expect_" + Guid.NewGuid().ToString("n").Substring(0, 12);
+        await ExecuteAsync(transaction, "savepoint simpleorm_probe", ct).ConfigureAwait(false);
+        try
+        {
+            await ExecuteAsync(transaction, dialect.CreateViewSql(probe, body, materialized: false), ct).ConfigureAwait(false);
+            var canonical = await ReadViewDefinitionAsync(transaction, probe, ct).ConfigureAwait(false);
+            await ExecuteAsync(transaction, dialect.DropViewSql(probe, materialized: false), ct).ConfigureAwait(false);
+            await ExecuteAsync(transaction, "release savepoint simpleorm_probe", ct).ConfigureAwait(false);
+            return canonical is not null && canonical.Trim() == live.Trim();
+        }
+        catch (SimpleOrmException)
+        {
+            // Any failure inside the probe is drift (the body does not parse against the current
+            // schema, most likely); the savepoint is released after the rollback so its name is free.
+            await ExecuteAsync(transaction, "rollback to savepoint simpleorm_probe", ct).ConfigureAwait(false);
+            await ExecuteAsync(transaction, "release savepoint simpleorm_probe", ct).ConfigureAwait(false);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// What each step leaves behind, for the shadow replayer (ADR-0043): its
+    /// rendered Up statements (a view's create DDL is among them) and, for a
+    /// trigger step, the declaration it ends with.
+    /// </summary>
+    internal IReadOnlyList<ReplayShape> ReplayShapes()
+        => RenderAll()
+            .SelectMany(v => v.Steps.Select(s => new ReplayShape(v.Version, s.ObjectName, s.Up, s.IsTriggerStep, s.DeclaredTrigger)))
+            .ToArray();
+
+    internal sealed class ReplayShape(long version, string objectName, IReadOnlyList<MigrationStatement> up, bool isTriggerStep, TriggerSnapshot? declaredTrigger)
+    {
+        public long Version { get; } = version;
+
+        public string ObjectName { get; } = objectName;
+
+        public IReadOnlyList<MigrationStatement> Up { get; } = up;
+
+        public bool IsTriggerStep { get; } = isTriggerStep;
+
+        public TriggerSnapshot? DeclaredTrigger { get; } = declaredTrigger;
     }
 
     private async Task<string?> ReadViewDefinitionAsync(DbTransaction transaction, string view, CancellationToken ct)

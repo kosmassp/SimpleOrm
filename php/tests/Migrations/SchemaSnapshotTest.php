@@ -96,7 +96,7 @@ final class SchemaSnapshotTest extends TestCase
         $json = SchemaSnapshot::export($schema, 7, new DateTimeImmutable('2026-08-29T12:00:00Z'));
 
         $expectedPath = dirname(__DIR__, 3) . '/conformance/snapshot-cases/users_v7.json';
-        $expected = json_decode(file_get_contents($expectedPath), true, flags: JSON_THROW_ON_ERROR)['expect'];
+        $expected = json_decode(file_get_contents($expectedPath), true, flags: JSON_THROW_ON_ERROR)['expect']['sqlite'];
         $actual = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
 
         self::assertSame($expected, $actual);

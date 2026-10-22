@@ -6,6 +6,7 @@ namespace SimpleOrm\Tests\Migrations;
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use SimpleOrm\Dialect\PostgresDialect;
 use SimpleOrm\Dialect\SqliteDialect;
 use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Metadata\EntityIndex;
@@ -169,6 +170,26 @@ final class MigrationGeneratorTest extends TestCase
         self::assertSame('note', $undeclared->added[0]->name);
         self::assertCount(1, $undeclared->removed);
         self::assertSame('remark', $undeclared->removed[0]->name);
+    }
+
+    #[Test]
+    public function the_diff_compares_the_models_storage_types_as_the_dialect_spells_them_and_renders_added_indexes_through_it(): void
+    {
+        $postgres = new PostgresDialect();
+        $snapshot = $this->snapshot(
+            [
+                new TableSchemaColumn('id', 'bigint', false, key: true, generated: true),
+                new TableSchemaColumn('name', 'text', false),
+                new TableSchemaColumn('note', 'text', true),
+            ],
+            [],
+        );
+
+        $diff = MigrationGenerator::diffMap($this->map(), $postgres, $snapshot, []);
+
+        // The model's types (bigint, text) equal the snapshot's: no phantom type change; only the missing index is added.
+        self::assertSame([], $diff->unsupported);
+        self::assertSame(['create index if not exists "ix_gen_widgets_name" on "gen_widgets" ("name")'], $diff->addedIndexSql);
     }
 
     #[Test]

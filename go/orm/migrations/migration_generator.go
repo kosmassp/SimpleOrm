@@ -50,7 +50,7 @@ type TableDiff struct {
 	Added             []ColumnSpec
 	Removed           []ColumnSpec
 	Renamed           []ColumnRename
-	AddedIndexSQL     []string
+	AddedIndexes      []TableIndex
 	RemovedIndexNames []string
 	// Unsupported entries name a change the generator cannot express safely
 	// (DDL-004: a same-column type/nullability change, or a non-nullable
@@ -58,10 +58,20 @@ type TableDiff struct {
 	Unsupported []string
 }
 
+// IndexSQL renders the added indexes through the dialect (ADR-0043): the diff holds them as structural
+// snapshot indexes, and the SQL is the target dialect's, never a fixed text.
+func (d *TableDiff) IndexSQL(table string, dialect core.Dialect) []string {
+	statements := make([]string, len(d.AddedIndexes))
+	for i, index := range d.AddedIndexes {
+		statements[i] = dialect.CreateIndexFromSchemaSQL(table, index)
+	}
+	return statements
+}
+
 // HasChanges reports whether the diff has anything to emit.
 func (d *TableDiff) HasChanges() bool {
 	return d.IsNew || len(d.Added) > 0 || len(d.Removed) > 0 || len(d.Renamed) > 0 ||
-		len(d.AddedIndexSQL) > 0 || len(d.RemovedIndexNames) > 0
+		len(d.AddedIndexes) > 0 || len(d.RemovedIndexNames) > 0
 }
 
 // Diff diffs m's current shape against snapshot (nil = new table); renames maps old column name -> new column
@@ -210,7 +220,7 @@ func DiffSchemas(current, snapshot *TableSchema, renames, declared map[string]st
 	}
 	for _, index := range current.Indexes {
 		if !oldSignatures[IndexSignature(index)] {
-			diff.AddedIndexSQL = append(diff.AddedIndexSQL, CreateIndexSQL(current.Name, index))
+			diff.AddedIndexes = append(diff.AddedIndexes, index)
 		}
 	}
 	for _, index := range snapshot.Indexes {
@@ -356,7 +366,7 @@ func EmitTableStep(m *core.EntityMap, dialect core.Dialect, version int64, descr
 		for _, column := range diff.Removed {
 			fmt.Fprintf(&body, "\tactions.RemoveColumn(%s)\n", strconv.Quote(column.Name))
 		}
-		for _, indexSQL := range diff.AddedIndexSQL {
+		for _, indexSQL := range diff.IndexSQL(m.RelationName, dialect) {
 			fmt.Fprintf(&body, "\tactions.SQL(%s)\n", goStringLiteral(indexSQL))
 		}
 		for _, name := range diff.RemovedIndexNames {
@@ -380,13 +390,15 @@ func EmitTableStep(m *core.EntityMap, dialect core.Dialect, version int64, descr
 // first (MIG-012 on outside drift), followed by the drop and the create.
 func EmitViewStep(
 	entityType reflect.Type, materialized bool, objectName string,
-	version int64, description string, createDDL string, previousDDL *string,
+	version int64, description string, createDDL string, previousDDL *string, dialect core.Dialect,
 ) (string, error) {
 	entityImportPath := entityType.PkgPath()
 	entityAlias := packageAlias(entityImportPath)
 	typeName := fmt.Sprintf("V%04d_%s", version, description)
 	pkgName := strings.ToLower(entityType.Name())
 
+	// The generated step is literal, dialect-neutral text like its create: unquoted, executable on every
+	// dialect for conventional names (spec/migrations.md Clarifications, ADR-0043).
 	dropSQL := "drop view if exists " + objectName
 	if materialized {
 		dropSQL = "drop materialized view if exists " + objectName

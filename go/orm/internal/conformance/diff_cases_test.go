@@ -68,14 +68,12 @@ func TestDiffCases_BehaveAsSpecified(t *testing.T) {
 			assertRenamePairs(t, c.Expect.Renamed, diff.Renamed)
 			assertNames(t, "removedIndexes", c.Expect.RemovedIndexes, diff.RemovedIndexNames)
 
-			if len(c.Expect.AddedIndexes) != len(diff.AddedIndexSQL) {
-				t.Errorf("addedIndexes: want %d, got %d (%v)", len(c.Expect.AddedIndexes), len(diff.AddedIndexSQL), diff.AddedIndexSQL)
+			// addedIndexes: the names of the indexes the diff adds (the SQL is the dialect's rendering, ADR-0043).
+			added := make([]string, len(diff.AddedIndexes))
+			for i, index := range diff.AddedIndexes {
+				added[i] = index.Name
 			}
-			for _, name := range c.Expect.AddedIndexes {
-				if !containsSubstring(diff.AddedIndexSQL, name) {
-					t.Errorf("expected an added-index statement containing %q, got %v", name, diff.AddedIndexSQL)
-				}
-			}
+			assertNames(t, "addedIndexes", c.Expect.AddedIndexes, added)
 
 			if len(c.Expect.Unsupported) != len(diff.Unsupported) {
 				t.Errorf("unsupported: want %d, got %d (%v)", len(c.Expect.Unsupported), len(diff.Unsupported), diff.Unsupported)

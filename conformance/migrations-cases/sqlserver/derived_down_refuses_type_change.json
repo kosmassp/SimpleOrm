@@ -1,0 +1,26 @@
+{
+  "name": "derived_down_refuses_type_change",
+  "comment": "ADR-0018 on SQL Server: a same-column type change between adjacent snapshots is not derivable on any dialect; migrate down refuses with MIG-020 (override Down() by hand).",
+  "versions": [
+    { "version": 1, "steps": [ { "object": "widgets", "description": "create",
+        "up": ["create table [widgets] ([id] bigint identity(1,1) primary key, [price] nvarchar(max) not null)"] } ] },
+    { "version": 2, "steps": [ { "object": "widgets", "description": "retype_price",
+        "up": ["alter table [widgets] alter column [price] bigint not null"] } ] }
+  ],
+  "snapshots": [
+    { "object": "widgets", "dialect": "sqlserver", "asOfVersion": 1,
+      "columns": [
+        { "column": "id", "type": "bigint", "nullable": false, "key": true, "generated": true },
+        { "column": "price", "type": "nvarchar(max)", "nullable": false } ],
+      "indexes": [] },
+    { "object": "widgets", "dialect": "sqlserver", "asOfVersion": 2,
+      "columns": [
+        { "column": "id", "type": "bigint", "nullable": false, "key": true, "generated": true },
+        { "column": "price", "type": "bigint", "nullable": false } ],
+      "indexes": [] }
+  ],
+  "run": [
+    { "command": "migrate", "expect": { "applied": [[1, "widgets"], [2, "widgets"]] } },
+    { "command": "down", "to": 1, "expect": { "error": "MIG-020" } }
+  ]
+}

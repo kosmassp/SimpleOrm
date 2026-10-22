@@ -1,27 +1,71 @@
 {
   "name": "users_v7",
-  "comment": "The table-shaped snapshot (ADR-0017 format v2): dialect storage types, name-sorted columns and indexes, key/generated flags. Every implementation must export this exact document from its native User entity.",
+  "comment": "The table-shaped snapshot (ADR-0017 format v2, ADR-0043 format v3): dialect storage types spelled as the dialect's introspection reports them, name-sorted columns and indexes, key/generated flags, and — for every dialect but sqlite — the dialect stamp right after the object. Every implementation must export each document exactly from its native User entity; a shipped dialect missing from expect fails the suite. On SQL Server the indexed string columns (display_name, email) take the indexable length (450); unindexed strings are nvarchar(max).",
   "entity": "User",
   "asOfVersion": 7,
   "generatedAt": "2026-08-29T12:00:00.0000000Z",
   "expect": {
-    "object": "users",
-    "asOfVersion": 7,
-    "generatedAt": "2026-08-29T12:00:00.0000000Z",
-    "columns": [
-      { "column": "created_at", "type": "TEXT", "nullable": false },
-      { "column": "display_name", "type": "TEXT", "nullable": true },
-      { "column": "email", "type": "TEXT", "nullable": false },
-      { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
-      { "column": "name", "type": "TEXT", "nullable": false },
-      { "column": "updated_at", "type": "TEXT", "nullable": true }
-    ],
-    "indexes": [
-      { "name": "ix_users_display_name",
-        "columns": [ { "column": "display_name", "direction": "asc" } ] },
-      { "name": "ix_users_email",
-        "columns": [ { "column": "email", "direction": "asc" } ],
-        "unique": true }
-    ]
+    "sqlite": {
+      "object": "users",
+      "asOfVersion": 7,
+      "generatedAt": "2026-08-29T12:00:00.0000000Z",
+      "columns": [
+        { "column": "created_at", "type": "TEXT", "nullable": false },
+        { "column": "display_name", "type": "TEXT", "nullable": true },
+        { "column": "email", "type": "TEXT", "nullable": false },
+        { "column": "id", "type": "INTEGER", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "TEXT", "nullable": false },
+        { "column": "updated_at", "type": "TEXT", "nullable": true }
+      ],
+      "indexes": [
+        { "name": "ix_users_display_name",
+          "columns": [ { "column": "display_name", "direction": "asc" } ] },
+        { "name": "ix_users_email",
+          "columns": [ { "column": "email", "direction": "asc" } ],
+          "unique": true }
+      ]
+    },
+    "sqlserver": {
+      "object": "users",
+      "dialect": "sqlserver",
+      "asOfVersion": 7,
+      "generatedAt": "2026-08-29T12:00:00.0000000Z",
+      "columns": [
+        { "column": "created_at", "type": "datetimeoffset", "nullable": false },
+        { "column": "display_name", "type": "nvarchar(450)", "nullable": true },
+        { "column": "email", "type": "nvarchar(450)", "nullable": false },
+        { "column": "id", "type": "bigint", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "nvarchar(max)", "nullable": false },
+        { "column": "updated_at", "type": "datetimeoffset", "nullable": true }
+      ],
+      "indexes": [
+        { "name": "ix_users_display_name",
+          "columns": [ { "column": "display_name", "direction": "asc" } ] },
+        { "name": "ix_users_email",
+          "columns": [ { "column": "email", "direction": "asc" } ],
+          "unique": true }
+      ]
+    },
+    "postgres": {
+      "object": "users",
+      "dialect": "postgres",
+      "asOfVersion": 7,
+      "generatedAt": "2026-08-29T12:00:00.0000000Z",
+      "columns": [
+        { "column": "created_at", "type": "timestamp with time zone", "nullable": false },
+        { "column": "display_name", "type": "text", "nullable": true },
+        { "column": "email", "type": "text", "nullable": false },
+        { "column": "id", "type": "bigint", "nullable": false, "key": true, "generated": true },
+        { "column": "name", "type": "text", "nullable": false },
+        { "column": "updated_at", "type": "timestamp with time zone", "nullable": true }
+      ],
+      "indexes": [
+        { "name": "ix_users_display_name",
+          "columns": [ { "column": "display_name", "direction": "asc" } ] },
+        { "name": "ix_users_email",
+          "columns": [ { "column": "email", "direction": "asc" } ],
+          "unique": true }
+      ]
+    }
   }
 }

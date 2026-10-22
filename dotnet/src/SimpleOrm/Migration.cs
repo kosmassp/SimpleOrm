@@ -512,13 +512,16 @@ public sealed class ViewActions
         return Track(new MigrationAction("create " + View, statements));
     }
 
-    public MigrationAction DropView()
-        => Track(new MigrationAction("drop " + View, ["drop view " + _dialect.QuoteIdentifier(View)]));
+    private bool Materialized => _map.Kind == RelationKind.MaterializedView;
 
-    /// <summary>Drops (if present) and re-creates from the current defining SQL.</summary>
+    /// <summary>Drops the view (a materialized one as such — ADR-0043); the plain-view text is the frozen one.</summary>
+    public MigrationAction DropView()
+        => Track(new MigrationAction("drop " + View, [(Materialized ? "drop materialized view " : "drop view ") + _dialect.QuoteIdentifier(View)]));
+
+    /// <summary>Drops (if present) and re-creates from the current defining SQL; the drop renders through the seam (byte-identical for a plain view).</summary>
     public MigrationAction RecreateView()
     {
-        var statements = new List<string> { "drop view if exists " + _dialect.QuoteIdentifier(View), _dialect.CreateViewSql(_map) };
+        var statements = new List<string> { _dialect.DropViewSql(View, Materialized), _dialect.CreateViewSql(_map) };
         statements.AddRange(_dialect.CreateIndexSql(_map));
         return Track(new MigrationAction("recreate " + View, statements));
     }

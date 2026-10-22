@@ -207,7 +207,7 @@ public sealed class SqlServerDialect : IDialect
         => "declare @df sysname = (select dc.name from sys.default_constraints dc "
             + "join sys.columns c on c.object_id = dc.parent_object_id and c.column_id = dc.parent_column_id "
             + $"where dc.parent_object_id = object_id(N'{Escape(table)}') and c.name = N'{Escape(column)}'); "
-            + $"if @df is not null exec(N'alter table {QuoteIdentifier(table)} drop constraint ' + quotename(@df)); "
+            + $"if @df is not null exec(N'alter table {Escape(QuoteIdentifier(table))} drop constraint ' + quotename(@df)); "   // inside an N'…' literal: quotes doubled
             + $"alter table {QuoteIdentifier(table)} drop column {QuoteIdentifier(column)}";
 
     public string DropTableSql(string table)

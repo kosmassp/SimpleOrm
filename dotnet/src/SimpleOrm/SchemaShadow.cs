@@ -126,7 +126,15 @@ public static class SchemaShadow
         }
         finally
         {
-            await host.DropAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await host.DropAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is DbException or IOException)
+            {
+                // Best effort (Clarification): the replay's result stands; the straggler is reported, never thrown over it.
+                result.Notes.Add("the shadow database could not be dropped: " + exception.Message);
+            }
         }
 
         return result;

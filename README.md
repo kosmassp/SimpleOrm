@@ -345,7 +345,8 @@ dotnet run --project dotnet/src/SimpleOrm.Cli -- diff --draft --assembly App.dll
 ```
 
 `shadow` rebuilds the snapshots from history instead — it replays every version
-into a throwaway database and introspects after each one, which both regenerates
+into a throwaway database and records what each one leaves behind (tables by
+introspection, views and triggers from the replayed step), which both regenerates
 lost files and proves the snapshots match the migrations. When history is too long
 to replay, `--from V000N` trusts version N (baseline restored from the committed
 snapshots, nothing below N verified) and regenerates only `--to V000M`:
@@ -353,6 +354,12 @@ snapshots, nothing below N verified) and regenerates only `--to V000M`:
 ```bash
 dotnet run --project dotnet/src/SimpleOrm.Cli -- shadow --assembly App.dll --out App/Migrations --from V0007 --to V0009
 ```
+
+On SQL Server and PostgreSQL the same commands run with `--dialect` (ADR-0043);
+for `shadow`, `--db` is then the admin connection on which the throwaway
+`simpleorm_shadow_<hex>` database is created and dropped. A tree and its
+snapshots belong to one dialect — a non-SQLite snapshot carries `"dialect"`,
+and one of another dialect refuses with `MIG-014`.
 
 A generated view change step opens with `ExpectDefinition(<previous ddl>)`:
 because views get patched directly in the database during urgencies, the step
@@ -451,13 +458,16 @@ reads back as `DateTime` Kind=Utc. A legacy `datetime`/`datetime2` column reads
 back **refusing with `VAL-020`** (no marker — same strictness as markerless TEXT
 on SQLite); if you know such a column's kind, register an `ITypeHandler<DateTime>`
 that declares it. Generated DDL uses `nvarchar(max)` for strings
-(`nvarchar(450)` for keys) and `decimal(38, 9)` — declare real precision in
-migrations.
+(`nvarchar(450)` for key and indexed columns) and `decimal(38,9)`; declare the
+real sizes on the model with the storage facets, `[Column(Length = 50)]` and
+`[Column(Precision = 18, Scale = 2)]`, which every dialect renders its own way
+(ADR-0043).
 
-Not there yet (deferred loudly, not silently): `shadow`/snapshot regeneration —
-so `migrate down` on SQL Server needs `Down()` overrides (`MIG-020` names this);
-`diff`/force-sync are untested against SQL Server; procedures stay dormant until
-Level 4. Tests run on SQL Server LocalDB when present and skip cleanly when not.
+`snapshot`, `shadow`, `diff`, derived rollbacks, and `migrate --force` work here
+as on SQLite since ADR-0043 (pinned by `conformance/migrations-cases/sqlserver/`
+and a shadow round trip; their live run awaits the owner's engine). Procedures
+stay dormant until Level 4. Tests run on SQL Server LocalDB or
+`SIMPLEORM_SQLSERVER` when present and skip cleanly when not.
 
 Two requirements the first live run against a real engine taught (ADR-0040 add.2): the
 process must **not** run in globalization-invariant mode (`Microsoft.Data.SqlClient`
@@ -501,8 +511,10 @@ await using var db = await Db.OpenAsync(
   `format_type` spellings (`numeric` unconstrained, `text` everywhere strings
   live). The CLI takes `--dialect postgres`.
 
-Same deferrals as SQL Server (`shadow`/snapshot/`diff` are SQLite-only — 
-`migrate down` needs `Down()` overrides). Tests run against a local server
+The migration tooling works here too (ADR-0043): `shadow` provisions its
+database on the admin connection, the view guard round-trips through a probe
+view because `pg_get_viewdef` reformats definitions, and the trigger read-back
+is lossless. Tests run against a local server
 (`SIMPLEORM_POSTGRES` connection string, or localhost:5432 by convention) and
 skip cleanly without one. On `netstandard2.0` the dialect rides Npgsql 4.1 with
 known legacy-temporal caveats — prefer `net10.0` for Postgres.

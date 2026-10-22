@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -71,26 +70,57 @@ type migRunStepSpec struct {
 	Expect     map[string]json.RawMessage `json:"expect"`
 }
 
+// migrationsHarness is the engine a migrations-cases folder runs against (ADR-0043): the dialect, and the
+// shadow host that provisions the throwaway database each case runs in — a temp file on SQLite, a
+// `simpleorm_shadow_<hex>` database on a live engine (the admin connection comes from the testing contract's
+// environment variable, and the case skips where nothing answers).
+type migrationsHarness struct {
+	dialect core.Dialect
+	host    migrations.ShadowHost
+	admin   string
+	// skip, when set, skips the calling test where the engine is absent.
+	skip func(t *testing.T)
+}
+
 func TestMigrationsCases_BehaveAsSpecified(t *testing.T) {
-	for _, file := range testsupport.ConformanceCases(t, "migrations-cases") {
+	runMigrationsCases(t, "migrations-cases", migrationsHarness{dialect: sqlite.New(), host: sqlite.ShadowHost{}})
+}
+
+// runMigrationsCases feeds every case of a folder through the runner against a fresh database each (spec/migrations.md
+// "Conformance cases"). The deep expects are dialect-aware: `columns` reads through ColumnsInfoSQL everywhere, `ddl`
+// applies only where the dialect stores view text verbatim, `triggers` only where the host reads a trigger back.
+func runMigrationsCases(t *testing.T, folder string, harness migrationsHarness) {
+	for _, file := range testsupport.ConformanceCases(t, folder) {
 		t.Run(file, func(t *testing.T) {
-			data := testsupport.ReadConformance(t, "migrations-cases", file)
+			if harness.skip != nil {
+				harness.skip(t)
+			}
+			data := testsupport.ReadConformance(t, folder, file)
 			var spec migrationsCase
 			if err := json.Unmarshal(data, &spec); err != nil {
 				t.Fatalf("parse case: %v", err)
 			}
 
 			ctx := context.Background()
-			pool, err := sqlite.New().CreateConnection("Data Source=" + testsupport.TempDatabase(t))
+			dialect := harness.dialect
+			connectionString, drop, err := harness.host.Provision(ctx, harness.admin)
+			if err != nil {
+				t.Fatalf("provision the case's database: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := drop(context.Background()); err != nil {
+					t.Errorf("drop the case's database: %v", err)
+				}
+			})
+			pool, err := dialect.CreateConnection(connectionString)
 			if err != nil {
 				t.Fatalf("open pool: %v", err)
 			}
-			defer pool.Close()
+			t.Cleanup(func() { pool.Close() }) // registered after the drop, so it runs first
 
 			snapshots := loadCaseSnapshots(t, spec.Snapshots)
 			defaultVersions := buildVersions(spec.Versions)
 			maps := metadata.NewLoader(nil)
-			dialect := sqlite.New()
 
 			for _, step := range spec.Run {
 				versions := defaultVersions
@@ -147,13 +177,15 @@ func TestMigrationsCases_BehaveAsSpecified(t *testing.T) {
 				}
 
 				if raw, ok := step.Expect["columns"]; ok {
-					assertColumns(t, ctx, pool, raw)
+					assertColumns(t, ctx, pool, dialect, raw)
 				}
-				if raw, ok := step.Expect["ddl"]; ok {
-					assertDDL(t, ctx, pool, raw)
+				if raw, ok := step.Expect["ddl"]; ok && dialect.ViewDefinitionIsVerbatim() {
+					assertDDL(t, ctx, pool, dialect, raw)
 				}
 				if raw, ok := step.Expect["triggers"]; ok {
-					assertTriggers(t, ctx, pool, dialect, raw)
+					if readBack, hasReadBack := harness.host.(migrations.TriggerReadBack); hasReadBack {
+						assertTriggers(t, ctx, pool, dialect, readBack, raw)
+					}
 				}
 			}
 		})
@@ -284,27 +316,24 @@ func equalApplied(a, b []appliedPair) bool {
 	return true
 }
 
-func assertColumns(t *testing.T, ctx context.Context, pool *sql.DB, raw json.RawMessage) {
+// assertColumns is the deep expect `columns` (ADR-0017): each table's live column names, name-sorted, read
+// through the dialect's ColumnsInfoSQL on every dialect (ADR-0043).
+func assertColumns(t *testing.T, ctx context.Context, pool *sql.DB, dialect core.Dialect, raw json.RawMessage) {
 	t.Helper()
 	var expected map[string][]string
 	if err := json.Unmarshal(raw, &expected); err != nil {
 		t.Fatalf("parse expected columns: %v", err)
 	}
 	for table, want := range expected {
-		rows, err := pool.QueryContext(ctx, "select name from pragma_table_info(@t) order by name", sql.Named("t", table))
+		live, err := migrations.ReadLiveColumns(ctx, pool, dialect, table)
 		if err != nil {
 			t.Fatalf("read columns for %s: %v", table, err)
 		}
-		var got []string
-		for rows.Next() {
-			var name string
-			if err := rows.Scan(&name); err != nil {
-				rows.Close()
-				t.Fatalf("scan column: %v", err)
-			}
-			got = append(got, name)
+		got := make([]string, 0, len(live))
+		for _, column := range live {
+			got = append(got, column.Name)
 		}
-		rows.Close()
+		sort.Strings(got)
 		wantSorted := append([]string(nil), want...)
 		sort.Strings(wantSorted)
 		if !equalStrings(wantSorted, got) {
@@ -313,23 +342,24 @@ func assertColumns(t *testing.T, ctx context.Context, pool *sql.DB, raw json.Raw
 	}
 }
 
-func assertDDL(t *testing.T, ctx context.Context, pool *sql.DB, raw json.RawMessage) {
+// assertDDL is the deep expect `ddl` (ADR-0017 add.1): each view's stored definition, normalized, read through
+// ViewDefinitionSQL. It runs only where the dialect stores view text verbatim — PostgreSQL's catalog reformats it.
+func assertDDL(t *testing.T, ctx context.Context, pool *sql.DB, dialect core.Dialect, raw json.RawMessage) {
 	t.Helper()
 	var expected map[string]string
 	if err := json.Unmarshal(raw, &expected); err != nil {
 		t.Fatalf("parse expected ddl: %v", err)
 	}
 	for view, want := range expected {
-		var got string
-		row := pool.QueryRowContext(ctx, "select sql from sqlite_master where type = 'view' and name = @v", sql.Named("v", view))
-		if err := row.Scan(&got); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				t.Fatalf("view %s does not exist", view)
-			}
+		got, err := migrations.ReadViewDefinition(ctx, pool, dialect, view)
+		if err != nil {
 			t.Fatalf("read ddl for %s: %v", view, err)
 		}
-		if migrations.NormalizeDDL(want) != migrations.NormalizeDDL(got) {
-			t.Fatalf("ddl of %s: want %q, got %q", view, migrations.NormalizeDDL(want), migrations.NormalizeDDL(got))
+		if got == nil {
+			t.Fatalf("view %s does not exist", view)
+		}
+		if migrations.NormalizeDDL(want) != migrations.NormalizeDDL(*got) {
+			t.Fatalf("ddl of %s: want %q, got %q", view, migrations.NormalizeDDL(want), migrations.NormalizeDDL(*got))
 		}
 	}
 }
@@ -361,8 +391,11 @@ func triggerDeclaration(spec *migTriggerSpec) *migrations.TriggerDeclaration {
 
 // assertTriggers is the deep expect `triggers` (ADR-0042): each named trigger is read back through the
 // dialect's TriggerDefinitionSQL and parsed to its declaration, which must be the expected one — or absent
-// (null). It exercises the parse the shadow replayer uses, per-event merge included.
-func assertTriggers(t *testing.T, ctx context.Context, pool *sql.DB, dialect *sqlite.Dialect, raw json.RawMessage) {
+// (null). It exercises the parse the shadow replayer uses, per-event merge included. It runs only for a host with
+// a trigger read-back (not SQL Server).
+func assertTriggers(
+	t *testing.T, ctx context.Context, pool *sql.DB, dialect core.Dialect, readBack migrations.TriggerReadBack, raw json.RawMessage,
+) {
 	t.Helper()
 	var expected map[string]*migTriggerSpec
 	if err := json.Unmarshal(raw, &expected); err != nil {
@@ -373,7 +406,7 @@ func assertTriggers(t *testing.T, ctx context.Context, pool *sql.DB, dialect *sq
 		if err != nil {
 			t.Fatalf("read trigger %s: %v", name, err)
 		}
-		got, note := sqlite.ParseTriggerRows(name, rows)
+		got, note := readBack.ReadBackTrigger(name, rows)
 		if want == nil {
 			if len(rows) != 0 {
 				t.Fatalf("trigger %s should be absent, found %v", name, rows)

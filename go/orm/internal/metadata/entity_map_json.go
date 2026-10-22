@@ -113,6 +113,15 @@ func buildColumns(m *core.EntityMap) []any {
 		if p.RenamedFrom != nil {
 			obj = obj.Set("renamedFrom", *p.RenamedFrom)
 		}
+		// Storage facets export only when declared, after renamedFrom (spec/metadata-model.md "Storage facets"):
+		// the length, or the precision with its scale beside it.
+		if p.Length > 0 {
+			obj = obj.Set("length", int64(p.Length))
+		}
+		if p.Precision > 0 {
+			obj = obj.Set("precision", int64(p.Precision))
+			obj = obj.Set("scale", int64(p.Scale))
+		}
 		result[i] = obj
 	}
 	return result

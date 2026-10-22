@@ -139,6 +139,12 @@ type RenderedStep struct {
 	Up          []MigrationStatement
 	Down        DownPlan
 	Renames     []ColumnRename
+	// Trigger is, for a trigger step, the neutral declaration its actions leave behind, and TriggerDropped says
+	// they end with the trigger dropped (ADR-0043): what the shadow replayer snapshots, instead of reading it
+	// back from an engine that may not hand it back as declared. Both are zero for a step with no declaration
+	// (a raw-SQL one) and for every other kind.
+	Trigger        *TriggerDeclaration
+	TriggerDropped bool
 }
 
 // Render composes every version's steps against maps and dialect. A version
@@ -346,6 +352,7 @@ func renderRawStep(
 		Up:          up,
 		Down:        DownPlan{Core: down},
 		Renames:     desc.renames,
+		Trigger:     rawTriggerDeclaration(desc, objectName),
 	}, nil
 }
 
@@ -410,10 +417,25 @@ func renderTriggerStep(
 	}
 
 	return RenderedStep{
-		Version:     versionNumber,
-		ObjectName:  objectName,
-		Description: description,
-		Up:          upStatements,
-		Down:        DownPlan{Pre: pre.render("pre-down"), Core: downStatements, Post: post.render("post-down")},
+		Version:        versionNumber,
+		ObjectName:     objectName,
+		Description:    description,
+		Up:             upStatements,
+		Down:           DownPlan{Pre: pre.render("pre-down"), Core: downStatements, Post: post.render("post-down")},
+		Trigger:        up.declared,
+		TriggerDropped: up.dropped,
 	}, nil
+}
+
+// rawTriggerDeclaration is the declaration a data-driven step leaves behind (ADR-0043): its trigger form,
+// named by the step's object; nil for a step with none.
+func rawTriggerDeclaration(desc stepDescriptor, objectName string) *TriggerDeclaration {
+	if desc.trigger == nil {
+		return nil
+	}
+	declaration := withName(desc.trigger, objectName)
+	if declaration.RelationKind == "" {
+		declaration.RelationKind = RelationKindTable
+	}
+	return declaration
 }

@@ -12,7 +12,7 @@ type Transaction struct {
 	// User is populated only by the library (Level 2 loading); it can never disagree with UserID.
 	User    *User             `orm:"many_to_one=UserID"`
 	Status  TransactionStatus `orm:"column"`
-	Amount  orm.Decimal       `orm:"column"`
+	Amount  orm.Decimal       `orm:"column,precision=18,scale=2"`
 	Version int64             `orm:"column,version"`
 	// Note was added by migration V0003.
 	Note *string `orm:"column"`

@@ -299,7 +299,13 @@ func TestMigrationActionDDL(t *testing.T) {
 	if got, want := d.AddColumnSQL("users", "note", "nvarchar(max)", false, "N'x'"), "alter table [users] add [note] nvarchar(max) not null default N'x'"; got != want {
 		t.Errorf("AddColumnSQL not null with default: got %q, want %q", got, want)
 	}
-	if got, want := d.DropColumnSQL("users", "note"), "alter table [users] drop column [note]"; got != want {
+	// ADR-0043: one batch that drops a leftover default constraint first (error 5074).
+	wantDropColumn := "declare @df sysname = (select dc.name from sys.default_constraints dc " +
+		"join sys.columns c on c.object_id = dc.parent_object_id and c.column_id = dc.parent_column_id " +
+		"where dc.parent_object_id = object_id(N'users') and c.name = N'note'); " +
+		"if @df is not null exec(N'alter table [users] drop constraint ' + quotename(@df)); " +
+		"alter table [users] drop column [note]"
+	if got, want := d.DropColumnSQL("users", "note"), wantDropColumn; got != want {
 		t.Errorf("DropColumnSQL: got %q, want %q", got, want)
 	}
 	if got, want := d.DropTableSQL("users"), "drop table [users]"; got != want {
@@ -353,7 +359,7 @@ func TestStorageType_EveryToken(t *testing.T) {
 		{core.TypeInt32, false, "int"},
 		{core.TypeInt64, false, "bigint"},
 		{core.TypeBool, false, "bit"},
-		{core.TypeDecimal, false, "decimal(38, 9)"},
+		{core.TypeDecimal, false, "decimal(38,9)"},
 		{core.TypeDouble, false, "float"},
 		{core.TypeFloat, false, "real"},
 		{core.TypeString, false, "nvarchar(max)"},
@@ -373,7 +379,7 @@ func TestStorageType_EveryToken(t *testing.T) {
 		{core.TypeEnumInt, false, "int"},
 	}
 	for _, c := range cases {
-		got := d.StorageType(&core.PropertyMap{ColumnType: c.token, IsKey: c.key})
+		got := d.StorageType(nil, &core.PropertyMap{ColumnType: c.token, IsKey: c.key})
 		if got != c.want {
 			t.Errorf("StorageType(%s, key=%v): got %q, want %q", c.token, c.key, got, c.want)
 		}
@@ -501,7 +507,7 @@ func TestIntrospectionQueriesTakeTheRelationParameter(t *testing.T) {
 
 	// The result columns carry the spec's names (spec/dialects.md "Introspection result shapes").
 	for query, aliases := range map[string][]string{
-		d.ColumnsInfoSQL():    {"as [name]", "as [type]", "as [notnull]", "as [pk]"},
+		d.ColumnsInfoSQL():    {"as [name]", "as [type]", "as [notnull]", "as [pk]", "as [generated]"},
 		d.IndexesInfoSQL():    {"as [index_name]", "as [unique]", "as [seqno]", "as [column]", "as [desc]"},
 		d.ViewDefinitionSQL(): {"as [definition]"},
 	} {

@@ -2,10 +2,10 @@ package migrations
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -567,11 +567,11 @@ func (r *Runner) applyStatement(
 		return r.execute(ctx, tx, statement.SQL)
 	}
 
-	live, err := r.readViewDefinition(ctx, tx, statement.GuardView)
+	live, matches, err := r.viewMatchesExpectation(ctx, tx, statement)
 	if err != nil {
 		return err
 	}
-	if live != nil && NormalizeDDL(*live) == statement.SQL {
+	if matches {
 		return nil
 	}
 
@@ -595,15 +595,7 @@ func (r *Runner) applyStatement(
 }
 
 func (r *Runner) readViewDefinition(ctx context.Context, tx *sql.Tx, view string) (*string, error) {
-	row := tx.QueryRowContext(ctx, r.dialect.ViewDefinitionSQL(), sql.Named("relation", view))
-	var definition string
-	if err := row.Scan(&definition); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &definition, nil
+	return ReadViewDefinition(ctx, tx, r.dialect, view)
 }
 
 func (r *Runner) execute(ctx context.Context, tx *sql.Tx, statement string) error {
@@ -673,4 +665,59 @@ func ReadTriggerDefinitions(ctx context.Context, q queryer, dialect core.Dialect
 
 func (r *Runner) readTriggerDefinitions(ctx context.Context, tx *sql.Tx, name string) ([]string, error) {
 	return ReadTriggerDefinitions(ctx, tx, r.dialect, name)
+}
+
+// viewMatchesExpectation is the MIG-012 view comparison in the dialect's mode (ADR-0043, spec/migrations.md
+// "The view and trigger apply guard"). Where the engine stores the text as submitted
+// (Dialect.ViewDefinitionIsVerbatim) both sides normalize and compare as text. Where it reformats the parse
+// tree (PostgreSQL) the expected body is created as a probe view inside the run, read back the same way as the
+// live view, and dropped, and the engine's two renderings are compared — equal exactly when the parse trees
+// are. The probe runs under a savepoint, so a body the current schema cannot parse counts as drift instead of
+// poisoning the transaction. live is nil when the view is absent.
+func (r *Runner) viewMatchesExpectation(ctx context.Context, tx *sql.Tx, statement MigrationStatement) (live *string, matches bool, err error) {
+	live, err = r.readViewDefinition(ctx, tx, statement.GuardView)
+	if err != nil || live == nil {
+		return live, false, err
+	}
+	if r.dialect.ViewDefinitionIsVerbatim() {
+		return live, NormalizeDDL(*live) == statement.SQL, nil
+	}
+
+	_, body, _, ok := ViewParts(statement.SQL)
+	if !ok {
+		return live, NormalizeDDL(*live) == statement.SQL, nil // not a view create: nothing to probe with
+	}
+
+	const savepoint = "simpleorm_probe"
+	probe := "simpleorm_expect_" + randomHex(8)
+	if _, err := tx.ExecContext(ctx, "savepoint "+savepoint); err != nil {
+		return live, false, err
+	}
+	rollBack := func() {
+		_, _ = tx.ExecContext(ctx, "rollback to savepoint "+savepoint)
+		_, _ = tx.ExecContext(ctx, "release savepoint "+savepoint)
+	}
+	if _, err := tx.ExecContext(ctx, r.dialect.CreateViewFromBodySQL(probe, body, false)); err != nil {
+		rollBack() // the body does not parse against the current schema: drift, not a failed run
+		return live, false, nil
+	}
+	expected, err := r.readViewDefinition(ctx, tx, probe)
+	if err == nil {
+		_, err = tx.ExecContext(ctx, r.dialect.DropViewSQL(probe, false))
+	}
+	if err != nil {
+		rollBack() // any failure inside the probe counts as drift (spec/migrations.md Clarifications, ADR-0043)
+		return live, false, nil
+	}
+	if _, err := tx.ExecContext(ctx, "release savepoint "+savepoint); err != nil {
+		return live, false, err
+	}
+	return live, expected != nil && strings.TrimSpace(*expected) == strings.TrimSpace(*live), nil
+}
+
+// randomHex is n random bytes as lowercase hex — the probe view's and the shadow database's name suffix.
+func randomHex(n int) string {
+	buf := make([]byte, n)
+	_, _ = rand.Read(buf) // crypto/rand only fails when the OS entropy source is broken
+	return hex.EncodeToString(buf)
 }

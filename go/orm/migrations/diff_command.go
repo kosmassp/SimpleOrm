@@ -180,6 +180,11 @@ func ExecuteDiff(ctx context.Context, options DiffOptions, stdout, stderr io.Wri
 			linkedTriggers[trigger.Type] = true
 			snapshotDir := filepath.Join(options.OutDir, "Trigger", trigger.Type.Name())
 			previous := latestTriggerSnapshotBelow(snapshotDir, version)
+			if previous != nil {
+				if err := CheckSnapshotDialect(previous.Dialect, options.Dialect, "trigger "+previous.Name); err != nil {
+					return fail(err.Error())
+				}
+			}
 			if _, migrated := triggersBelow.newest[trigger.Type.Name()]; previous == nil && migrated {
 				unrecorded = append(unrecorded, trigger.Definition.Name)
 				continue
@@ -204,6 +209,11 @@ func ExecuteDiff(ctx context.Context, options DiffOptions, stdout, stderr io.Wri
 		case m.Kind == core.RelationTable:
 			snapshotDir := filepath.Join(options.OutDir, "Table", t.Name())
 			baseline := latestTableSnapshotBelow(snapshotDir, version)
+			if baseline != nil {
+				if err := CheckSnapshotDialect(baseline.Dialect, options.Dialect, m.RelationName); err != nil {
+					return fail(err.Error())
+				}
+			}
 			if baseline == nil && migratedBelow[t] {
 				unrecorded = append(unrecorded, m.RelationName)
 				continue
@@ -231,10 +241,18 @@ func ExecuteDiff(ctx context.Context, options DiffOptions, stdout, stderr io.Wri
 			}
 			current := NormalizeDDL(options.Dialect.CreateViewSQL(m))
 			snapshotDir := filepath.Join(options.OutDir, folder, t.Name())
-			previous := latestDDLSnapshotBelow(snapshotDir, version)
-			if previous == nil && migratedBelow[t] {
+			previousSnapshot := latestDDLSnapshotBelow(snapshotDir, version)
+			if previousSnapshot == nil && migratedBelow[t] {
 				unrecorded = append(unrecorded, m.RelationName)
 				continue
+			}
+			var previous *string
+			if previousSnapshot != nil {
+				if err := CheckSnapshotDialect(previousSnapshot.Dialect, options.Dialect, m.RelationName); err != nil {
+					return fail(err.Error())
+				}
+				normalized := NormalizeDDL(previousSnapshot.DDL)
+				previous = &normalized
 			}
 			if previous == nil || *previous != current {
 				viewChanges = append(viewChanges, diffChangedView{
@@ -320,7 +338,7 @@ func ExecuteDiff(ctx context.Context, options DiffOptions, stdout, stderr io.Wri
 			typeName := entry.Type.Name()
 			className := prefix + "_" + description
 			content, err := EmitViewStep(
-				entry.Type, entry.Folder == "MaterializedView", entry.ObjectName, version, description, entry.DDL, entry.PreviousDDL)
+				entry.Type, entry.Folder == "MaterializedView", entry.ObjectName, version, description, entry.DDL, entry.PreviousDDL, options.Dialect)
 			if err != nil {
 				return fail(err.Error())
 			}
@@ -570,12 +588,12 @@ func latestTableSnapshotBelow(dir string, version int64) *TableSchema {
 
 // latestDDLSnapshotBelow is the object's latest view/materialized-view DDL
 // snapshot strictly below version, or nil.
-func latestDDLSnapshotBelow(dir string, version int64) *string {
-	_, ddl, _, ok := latestDDLSnapshot(dir, func(v int64) bool { return v < version })
+func latestDDLSnapshotBelow(dir string, version int64) *DDLSnapshot {
+	snapshot, ok := latestDDLSnapshot(dir, func(v int64) bool { return v < version })
 	if !ok {
 		return nil
 	}
-	return &ddl
+	return snapshot
 }
 
 // lookupRenames finds relation's declared renames case-insensitively; nil is treated as none.
@@ -707,6 +725,9 @@ func triggerRemovals(
 		}
 		if newest, migrated := steps.newest[className]; migrated && newest > atVersion {
 			continue // the removal already emitted
+		}
+		if err := CheckSnapshotDialect(previous.Dialect, options.Dialect, "trigger "+previous.Name); err != nil {
+			return nil, err.Error()
 		}
 
 		triggerType, hasClass := classes[className]

@@ -42,7 +42,7 @@ func TestSnapshotsFromDirectory_IndexesTableAndDDLSnapshots(t *testing.T) {
 			},
 		}, 2, generatedAt))
 	writeSchemaFile(t, dir, "View/WidgetTotal/V0001.schema.json",
-		migrations.ExportDDL("widget_totals", "view", "create view widget_totals as select 1", 1, generatedAt))
+		migrations.ExportDDL("widget_totals", "sqlite", "view", "create view widget_totals as select 1", 1, generatedAt))
 	// A non-snapshot file must be ignored.
 	writeSchemaFile(t, dir, "Table/Widget/notes.txt", "ignore me")
 

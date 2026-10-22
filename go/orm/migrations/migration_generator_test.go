@@ -150,7 +150,7 @@ func TestDiffSchemas_IndexMatchesStructurallyAcrossNames(t *testing.T) {
 		},
 	}
 	diff := migrations.DiffSchemas(current, snapshot, nil, nil)
-	if len(diff.AddedIndexSQL) != 0 || len(diff.RemovedIndexNames) != 0 {
+	if len(diff.AddedIndexes) != 0 || len(diff.RemovedIndexNames) != 0 {
 		t.Fatalf("a structurally-identical index under another name must count as implemented: %+v", diff)
 	}
 }
@@ -166,8 +166,8 @@ func TestDiffSchemas_IndexUniqueMismatchAddsAndRemoves(t *testing.T) {
 		{Name: "idx_dba_hotfix", Columns: []migrations.IndexPart{{ColumnName: "name"}}, Unique: true},
 	}}
 	diff := migrations.DiffSchemas(current, snapshot, nil, nil)
-	if len(diff.AddedIndexSQL) != 1 || !strings.Contains(diff.AddedIndexSQL[0], "ix_widgets_name") {
-		t.Fatalf("expected the model's index to be added: %v", diff.AddedIndexSQL)
+	if len(diff.AddedIndexes) != 1 || diff.AddedIndexes[0].Name != "ix_widgets_name" {
+		t.Fatalf("expected the model's index to be added: %v", diff.AddedIndexes)
 	}
 	if len(diff.RemovedIndexNames) != 1 || diff.RemovedIndexNames[0] != "idx_dba_hotfix" {
 		t.Fatalf("expected the stranger index to be removed: %v", diff.RemovedIndexNames)
@@ -233,7 +233,7 @@ func TestEmitTableStep_AddRenameRemove(t *testing.T) {
 func TestEmitViewStep_NewView(t *testing.T) {
 	m := widgetTotalMap()
 	source, err := migrations.EmitViewStep(
-		m.Type, false, m.RelationName, 1, "CreateTotals", sqlite.New().CreateViewSQL(m), nil)
+		m.Type, false, m.RelationName, 1, "CreateTotals", sqlite.New().CreateViewSQL(m), nil, sqlite.New())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestEmitViewStep_ChangeCarriesGuard(t *testing.T) {
 	m := widgetTotalMap()
 	previous := "create view widget_totals as select 0"
 	source, err := migrations.EmitViewStep(
-		m.Type, false, m.RelationName, 2, "AddColumn", sqlite.New().CreateViewSQL(m), &previous)
+		m.Type, false, m.RelationName, 2, "AddColumn", sqlite.New().CreateViewSQL(m), &previous, sqlite.New())
 	if err != nil {
 		t.Fatal(err)
 	}

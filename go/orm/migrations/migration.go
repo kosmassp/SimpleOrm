@@ -471,12 +471,17 @@ func (a *ViewActions) CreateView() *MigrationAction {
 
 // DropView drops the view.
 func (a *ViewActions) DropView() *MigrationAction {
-	return a.track(newAction("drop "+a.view, []string{"drop view " + a.dialect.QuoteIdentifier(a.view)}))
+	drop := "drop view "
+	if a.entityMap.Kind == core.RelationMaterializedView {
+		drop = "drop materialized view "
+	}
+	return a.track(newAction("drop "+a.view, []string{drop + a.dialect.QuoteIdentifier(a.view)}))
 }
 
 // RecreateView drops (if present) and re-creates the view from its current defining SQL.
 func (a *ViewActions) RecreateView() *MigrationAction {
-	statements := append([]string{"drop view if exists " + a.dialect.QuoteIdentifier(a.view)}, a.dialect.CreateViewSQL(a.entityMap))
+	statements := append(
+		[]string{a.dialect.DropViewSQL(a.view, a.entityMap.Kind == core.RelationMaterializedView)}, a.dialect.CreateViewSQL(a.entityMap))
 	statements = append(statements, a.dialect.CreateIndexSQL(a.entityMap)...)
 	return a.track(newAction("recreate "+a.view, statements))
 }

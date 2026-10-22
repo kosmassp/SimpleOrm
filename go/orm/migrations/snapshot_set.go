@@ -15,6 +15,9 @@ type SnapshotEntry struct {
 	Table   *TableSchema
 	DDL     string
 	Trigger *TriggerDeclaration
+	// Dialect is the document's stamp (format v3, ADR-0043): "" is sqlite's. The derived rollback refuses a
+	// stamp that is not the dialect in use (MIG-014).
+	Dialect string
 }
 
 // SnapshotSet is every committed schema snapshot of a migrations tree,
@@ -88,6 +91,7 @@ func isSchemaJSON(name string) bool {
 func (s *SnapshotSet) add(data []byte) error {
 	var probe struct {
 		Object      string  `json:"object"`
+		Dialect     string  `json:"dialect"`
 		AsOfVersion int64   `json:"asOfVersion"`
 		Kind        string  `json:"kind"`
 		DDL         *string `json:"ddl"`
@@ -104,7 +108,7 @@ func (s *SnapshotSet) add(data []byte) error {
 		if err != nil {
 			return err
 		}
-		s.byObject[key][asOfVersion] = SnapshotEntry{Trigger: declaration}
+		s.byObject[key][asOfVersion] = SnapshotEntry{Trigger: declaration, Dialect: probe.Dialect}
 		return nil
 	}
 	if probe.DDL != nil {
@@ -112,14 +116,14 @@ func (s *SnapshotSet) add(data []byte) error {
 		if err != nil {
 			return err
 		}
-		s.byObject[key][asOfVersion] = SnapshotEntry{DDL: ddl}
+		s.byObject[key][asOfVersion] = SnapshotEntry{DDL: ddl, Dialect: probe.Dialect}
 		return nil
 	}
 	schema, asOfVersion, err := ParseTable(data)
 	if err != nil {
 		return err
 	}
-	s.byObject[key][asOfVersion] = SnapshotEntry{Table: schema}
+	s.byObject[key][asOfVersion] = SnapshotEntry{Table: schema, Dialect: probe.Dialect}
 	return nil
 }
 

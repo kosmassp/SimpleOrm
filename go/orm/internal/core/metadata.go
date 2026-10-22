@@ -206,6 +206,14 @@ type PropertyMap struct {
 	// migrations"): a declared rename the diff generator reads; nil when undeclared. The mapper and the
 	// session ignore it.
 	RenamedFrom *string
+	// Length, Precision, and Scale are the declared storage facets (Level 4, ADR-0043, spec/metadata-model.md
+	// "Storage facets"): dialect-neutral sizes the dialect renders its own way (Dialect.StorageType), 0 when
+	// undeclared. Length applies to a string or bytes column; Precision (with Scale, 0 when left out) to a
+	// decimal. The mapper and the session ignore them; StorageType, snapshots, the diff generator, and force sync
+	// read them.
+	Length    int
+	Precision int
+	Scale     int
 	// ForeignKeyReferences is the entity this FK column references (the descriptor's ForeignKey), or nil.
 	ForeignKeyReferences reflect.Type
 	// Owner is the owned navigation this member is flattened through

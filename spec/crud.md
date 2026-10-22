@@ -76,6 +76,13 @@ With a mapped **version column** (integer-valued):
 Without a version column, zero rows affected is `CRUD-001` — silently updating
 nothing is a bug, not a no-op.
 
+The affected-row count these rules judge is the driver's, unless the dialect
+reports it by a trailing select of the statement's own count
+(`ReportsAffectedRowsBySelect`, spec/dialects.md "Update and delete — the
+affected-row count": SQL Server, whose driver otherwise adds a trigger's rows);
+the rules are the same either way, and a registry command's count is always the
+driver's.
+
 ## Update by column list (ADR-0028)
 
 A second, **separately named** operation (C# `UpdateOnlyAsync`, PHP `updateOnly`,

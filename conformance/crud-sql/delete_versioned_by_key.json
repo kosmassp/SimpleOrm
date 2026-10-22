@@ -1,0 +1,12 @@
+{
+  "name": "delete_versioned_by_key",
+  "comment": "The by-key DELETE of a versioned entity (Transaction): no version in the WHERE.",
+  "entity": "Transaction",
+  "statement": "delete",
+  "checkVersion": false,
+  "expect": {
+    "sqlite": "delete from transactions where id = @id",
+    "sqlserver": "set nocount on; delete from [transactions] where [id] = @id; select @@rowcount; set nocount off",
+    "postgres": "delete from \"transactions\" where \"id\" = @id"
+  }
+}

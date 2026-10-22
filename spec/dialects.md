@@ -26,6 +26,7 @@ shadow, diff, and force-sync tooling is SQLite-only in every implementation (see
 | `QuoteIdentifier(name)` | every relation and column name the library emits passes through it | renderer, generated CRUD, `Get`, DDL |
 | `CreateTableSql(map)`, `CreateIndexSql(map)`, `CreateViewSql(map)` | metadata-rendered DDL, idempotent (`IF NOT EXISTS` or the dialect's guard) | `CreateTable`/`CreateView`, an object's initial migration |
 | `InsertSql`, `UpdateSql`, `UpdateOnlySql`, `DeleteSql` | the generated CRUD of spec/crud.md | the session, the unit of work |
+| `ReportsAffectedRowsBySelect` | true → the generated UPDATE and DELETE renderings end in a one-row, one-column select of the statement's own affected-row count, and the session judges that scalar instead of the driver's count (ADR-0040 add.3, Clarification 23) | the session's generated writes — never a registry command |
 | `LimitOffsetClause(limit, offset)` | the paging clause from pre-bound placeholders | the renderer |
 | `PagingRequiresOrderBy` | a paged select without orderings gains `order by (select null)` | the renderer |
 | `SupportsRowValueIn` | false → composite subquery membership rewrites as a correlated EXISTS (spec/query-ast.md) | the renderer |
@@ -59,6 +60,7 @@ shield transaction) — its §10 says which.
 | `SupportsMaterializedViews` | false | false | **true** |
 | `SupportsProcedures` | false | true (dormant — no execution machinery before Level 4) | true (dormant) |
 | `SupportsTransactionalDdl` | true | true | true |
+| `ReportsAffectedRowsBySelect` | false | **true** | false |
 
 ## Rendering
 
@@ -85,7 +87,34 @@ generates the key:
   triggers, and legacy schemas have them. The generated-key strategy is
   identity-only (ADR-0020), which `scope_identity()` always covers.
 
-Update, column-list update, and delete differ between dialects only by quoting.
+### Update and delete — the affected-row count (spec/crud.md)
+
+The generated full-row update, column-list update (the hook-stamped and
+soft-delete forms are column-list updates), and delete differ between SQLite
+and PostgreSQL only by quoting, and the session judges the driver's affected-row
+count (spec/crud.md: zero rows is `CRUD-010` or `CRUD-001`).
+
+SQL Server reports the count itself (`ReportsAffectedRowsBySelect`, ADR-0040
+add.3): a table whose `AFTER` trigger lacks `SET NOCOUNT ON` makes the driver
+add the trigger's rows to the statement's (Clarification 22), so every generated
+UPDATE and DELETE renders as one batch
+
+```sql
+set nocount on; <statement>; select @@rowcount; set nocount off
+```
+
+— the counts suppressed, the write, the statement's own count as a one-row,
+one-column result the session reads as a scalar, and the session setting
+restored, because `SET NOCOUNT` outlives the batch on SQL Server and a registry
+command on the same connection must keep the driver's count. Not `OUTPUT`: it is
+refused without `INTO` on a triggered table (error 334). The `<statement>` is
+the SQLite rendering under SQL Server quoting; `conformance/crud-sql/` pins
+every form on every dialect. Inserts are unchanged: `scope_identity()` is already
+trigger-safe.
+
+Only the generated writes are affected. A registry command (`Execute`) returns
+the driver's count on every dialect — hand-written SQL is the author's, and the
+author of a trigger-bearing command adds its own `SET NOCOUNT ON`.
 
 ### Metadata-rendered DDL
 
@@ -428,8 +457,10 @@ Named here so that no implementation attempts it ahead of the reference:
   Clarification 16 (typed nulls) is verified: the NULL avatar write passed in
   Go as built, exposed the reference's untyped `DBNull` (fixed, Clarification
   18), and needed nothing in PHP.
-- **`RowsAffected` under triggers** is measured (Clarification 22) and awaits
-  the owner's ruling; nothing in the three implementations changed for it.
+- **`RowsAffected` under triggers** is measured (Clarification 22) and ruled
+  (Clarification 23, ADR-0040 add.3): the SQL Server dialect reports the count
+  itself (`ReportsAffectedRowsBySelect`, "Update and delete — the affected-row
+  count" above), in every implementation.
 
 
 ## Testing contract
@@ -449,7 +480,8 @@ database, ADR-0003).
 Each live leg covers at least (ADR-0024/0025): generated-key write-back and a
 temporal round-trip reading back marked; criteria paging with and without
 orderings; reserved-word identifiers end to end (table `order`, column `desc`);
-version-column concurrency on update and delete; transaction scopes; explicit,
+version-column concurrency on update and delete (SQL Server additionally under
+an `AFTER` trigger without `SET NOCOUNT ON`, Clarification 23); transaction scopes; explicit,
 batch, and link loading; a subselect include over a paged root; the composite-key
 subselect (through the EXISTS rewrite on SQL Server, native row-value IN on
 PostgreSQL); migrations up, re-run, and down under the run lock (with `Down()`
@@ -683,9 +715,63 @@ ports found (ADR-0040 add.1).
     rows without `SET NOCOUNT ON` reports **3** rows affected through the
     driver; `SET NOCOUNT ON; <update>; SELECT @@ROWCOUNT` reports **1**; an
     `OUTPUT inserted.id` without `INTO` is refused outright on the triggered
-    table (error 334). So the version-checked write's "exactly one row" rule
-    would raise `CRUD-010` falsely on such a table today, in every
-    implementation. No rule yet — the owner decides between the `@@ROWCOUNT`
-    rendering for SQL Server writes and leaving the burden with trigger authors
-    (Hibernate's stance); triggers in the mapping (Level 4) would let the
-    strategy key off declared triggers.
+    table (error 334). The hazard for the "zero rows affected" rule of
+    spec/crud.md runs the other way from a false `CRUD-010`: an `AFTER` trigger
+    fires once per statement, rows or not, so a **stale** version-checked write
+    affects no row of its own and the driver still reports the trigger's two —
+    the conflict passes for a success, in every implementation as they stood.
+    Ruled by Clarification 23.
+23. **The SQL Server dialect reports the affected-row count itself** (owner
+    ruling, ADR-0040 add.3, closing item 3). `ReportsAffectedRowsBySelect` is a
+    seam member — true on SQL Server, false on SQLite and PostgreSQL, whose
+    drivers report the statement's own count triggers or not — under which the
+    dialect's `UpdateSql`, `UpdateOnlySql`, and `DeleteSql` render
+    `set nocount on; <statement>; select @@rowcount; set nocount off` and the
+    session reads the batch's first scalar as the count on exactly the paths
+    that judge it (the full-row, column-list, dirty, hook-stamped, and
+    soft-delete updates; the by-key and version-checked deletes), leaving the
+    `CRUD-010`/`CRUD-001` rules untouched. The trailing `set nocount off`
+    exists because the setting is session-scoped: without it every later
+    registry command on the connection would report no count at all (−1
+    through ADO.NET). Registry commands keep the driver's count on every
+    dialect. Not chosen:
+    `OUTPUT` (refused on triggered tables), leaving the burden with trigger
+    authors (Hibernate's stance — a silent lost update is not a convenience),
+    and keying the rendering off declared triggers (Level 4's triggers in the
+    mapping may narrow it to the tables that need it; today every generated
+    write pays one round trip of the same size). Pinned by
+    `conformance/crud-sql/` (every generated form, every dialect) and by each
+    implementation's SQL Server leg: an `AFTER UPDATE, DELETE` trigger inserting
+    two log rows without `SET NOCOUNT ON`, under which the version-checked
+    update, column-list update, and delete of one row succeed, a stale update
+    and delete are `CRUD-010`, a by-key delete of the gone row is `CRUD-001`,
+    and a registry command on the same session still reports its own count.
+24. **Reading the reported count** (the PHP and Go port gap lists of ADR-0040
+    add.3). The count is the first column of the first row of the first result
+    that has columns; a count-only result a driver surfaces before it (PDO can)
+    is skipped. It is read as an integer whatever the driver's shape (go-mssqldb
+    returns `@@rowcount` as a 32-bit integer, `pdo_odbc` as a string). A batch
+    that yields no such row, or a non-numeric value, is a dialect bug, not a
+    conflict: the session fails with an internal or driver error naming the
+    statement — the absence is **never zero**, so it is never `CRUD-010` or
+    `CRUD-001`. There is no error code for it, as for any other broken seam
+    contract.
+25. **`SET NOCOUNT` residue after an aborted batch.** The trailing `set nocount
+    off` runs only when the batch completes. A batch-aborting error inside the
+    wrapped write (a deadlock victim, a conversion error under `XACT_ABORT ON`)
+    leaves `NOCOUNT` on for the connection, so a registry command run on that
+    session afterwards reports no count (−1 through ADO.NET, 0 or −1
+    elsewhere) until the next generated write restores it or the connection is
+    reset. The session does not repair this: the error is the caller's to
+    handle, and the generated writes themselves are unaffected (they never read
+    the driver's count on SQL Server). Hand-written SQL that must count under
+    such a failure adds its own `set nocount off`.
+26. **The trigger of the SQL Server leg** is the same shape in every
+    implementation: `AFTER UPDATE, DELETE` on `transactions`, two single-row
+    `INSERT` statements into a log table, no `SET NOCOUNT ON`, created with
+    `create trigger` as the batch's only statement (`create or alter` needs
+    2016 SP1) and dropped afterwards. Six statements fire it — the full update,
+    the column-list update, the stale update, the stale delete, the entity
+    delete, and the by-key delete of the gone row (an `AFTER` trigger fires
+    once per statement, rows or not) — so the log holds 12 rows; the stale
+    instance's version stays what it was.

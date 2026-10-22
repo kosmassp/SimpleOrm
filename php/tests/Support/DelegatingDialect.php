@@ -70,6 +70,11 @@ abstract class DelegatingDialect implements Dialect
         return $this->inner->deleteSql($map, $checkVersion);
     }
 
+    public function reportsAffectedRowsBySelect(): bool
+    {
+        return $this->inner->reportsAffectedRowsBySelect();
+    }
+
     public function limitOffsetClause(?string $limitParameter, ?string $offsetParameter): string
     {
         return $this->inner->limitOffsetClause($limitParameter, $offsetParameter);

@@ -210,6 +210,9 @@ public sealed class SqliteDialect : IDialect
             + " where " + KeyPredicate(map)
             + (checkVersion && map.VersionProperty is { } v ? " and " + v.ColumnName + " = @" + v.ColumnName : string.Empty);
 
+    /// <summary>SQLite has no triggers-inflate-the-count problem: <c>changes()</c> is the statement's own count (ADR-0040 add.3).</summary>
+    public bool ReportsAffectedRowsBySelect => false;
+
     private static string KeyPredicate(EntityMap map)
         => string.Join(" and ", map.KeyProperties.Select(k => k.ColumnName + " = @" + k.ColumnName));
 

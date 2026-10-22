@@ -676,6 +676,25 @@ func ownedNavigation(m *core.EntityMap, name string) *core.OwnedMap {
 	return nil
 }
 
+// executeWrite runs a generated UPDATE or DELETE and returns the affected-row count the CRUD rules judge
+// (CRUD-010 / CRUD-001, spec/crud.md): the driver's, unless the dialect reports it by a select of the
+// statement's own count (ReportsAffectedRowsBySelect, ADR-0040 add.3, spec/dialects.md Clarification 23),
+// whose first scalar is read instead. Registry commands never come through here — they keep the driver's count.
+func (db *Db) executeWrite(ctx context.Context, sqlText string, args []any) (int64, error) {
+	if db.options.Dialect.ReportsAffectedRowsBySelect() {
+		var affected int64
+		if err := db.exec().QueryRowContext(ctx, sqlText, args...).Scan(&affected); err != nil {
+			return 0, err
+		}
+		return affected, nil
+	}
+	result, err := db.exec().ExecContext(ctx, sqlText, args...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 // executeUpdate is the shared tail of both updates (§7.15–16): bind, execute,
 // judge the row count, bump the version.
 func executeUpdate(ctx context.Context, db *Db, entityType reflect.Type, m *core.EntityMap, entity any, sqlText string, bound []*core.PropertyMap) error {
@@ -688,11 +707,7 @@ func executeUpdate(ctx context.Context, db *Db, entityType reflect.Type, m *core
 		args = append(args, sql.Named(p.ColumnName, converted))
 	}
 
-	result, err := db.exec().ExecContext(ctx, sqlText, args...)
-	if err != nil {
-		return err
-	}
-	affected, err := result.RowsAffected()
+	affected, err := db.executeWrite(ctx, sqlText, args)
 	if err != nil {
 		return err
 	}
@@ -758,11 +773,7 @@ func Delete[T any](ctx context.Context, db *Db, key any) error {
 		args[i] = sql.Named(m.KeyProperties[i].ColumnName, converted)
 	}
 
-	result, err := db.exec().ExecContext(ctx, db.options.Dialect.DeleteSQL(m, false), args...)
-	if err != nil {
-		return err
-	}
-	affected, err := result.RowsAffected()
+	affected, err := db.executeWrite(ctx, db.options.Dialect.DeleteSQL(m, false), args)
 	if err != nil {
 		return err
 	}
@@ -822,11 +833,7 @@ func deleteEntity(ctx context.Context, db *Db, entityType reflect.Type, entity a
 		args = append(args, sql.Named(version.ColumnName, converted))
 	}
 
-	result, err := db.exec().ExecContext(ctx, db.options.Dialect.DeleteSQL(m, checkVersion), args...)
-	if err != nil {
-		return err
-	}
-	affected, err := result.RowsAffected()
+	affected, err := db.executeWrite(ctx, db.options.Dialect.DeleteSQL(m, checkVersion), args)
 	if err != nil {
 		return err
 	}

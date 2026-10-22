@@ -169,6 +169,13 @@ final class SqliteDialectTest extends TestCase
     }
 
     #[Test]
+    public function the_driver_count_is_judged_and_the_write_renderings_carry_no_count_select(): void
+    {
+        self::assertFalse($this->dialect->reportsAffectedRowsBySelect());
+        self::assertStringNotContainsString('nocount', $this->dialect->deleteSql(self::transactionMap(), checkVersion: true));
+    }
+
+    #[Test]
     public function update_sql_bumps_the_version_and_requires_it_in_the_where(): void
     {
         self::assertSame(

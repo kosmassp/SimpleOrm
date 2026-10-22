@@ -393,6 +393,94 @@ func TestLive_VersionColumnConcurrencyOnUpdateAndDelete(t *testing.T) {
 	}
 }
 
+// liveTouchUserArgs binds liveTouchUser's placeholder.
+type liveTouchUserArgs struct{ ID int64 }
+
+// liveTouchUser is a registry command that writes one row of an untriggered table: its count is the driver's.
+var liveTouchUser = orm.InlineCommand[liveTouchUserArgs]("update users set display_name = display_name where id = @ID")
+
+// TestLive_VersionCheckedWritesUnderAnAfterTriggerWithoutNocount is the item-3 leg (ADR-0040 add.3,
+// spec/dialects.md Clarification 23): an AFTER UPDATE, DELETE trigger on transactions inserts two log rows
+// and does not SET NOCOUNT ON, so the driver adds its rows to the statement's — a stale version-checked
+// write (no row of its own) would report 2 and pass. The dialect reports the count itself, so the stale
+// update and delete are CRUD-010, the current ones succeed, a by-key delete of the gone row is CRUD-001,
+// and a registry command on the same session still reports the driver's own count (set nocount off
+// restored the session). Six statements fire the trigger: twelve log rows.
+func TestLive_VersionCheckedWritesUnderAnAfterTriggerWithoutNocount(t *testing.T) {
+	ctx := context.Background()
+	db, connectionString := newSampleSession(t, orm.Options{})
+	pool := rawPool(t, connectionString)
+
+	for _, statement := range []string{
+		"create table [trigger_log] ([id] int identity(1,1) primary key, [note] nvarchar(20) not null)",
+		"create trigger [transactions_log] on [transactions] after update, delete as begin " +
+			"insert into [trigger_log] ([note]) values (N'first'); insert into [trigger_log] ([note]) values (N'second'); end",
+	} {
+		if _, err := pool.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("create the trigger fixture: %v", err)
+		}
+	}
+	t.Cleanup(func() { _, _ = pool.ExecContext(ctx, "drop trigger if exists [transactions_log]") }) // the database is dropped next anyway
+
+	ada := testsupport.InsertUser(t, db, "Ada", "ada@example.com")
+	order := &sample.Transaction{UserID: ada.ID, Status: sample.Pending, Amount: orm.MustDecimal("5")}
+	mustInsert(t, db, order)
+
+	winner, err := orm.Get[sample.Transaction](ctx, db, order.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loser, err := orm.Get[sample.Transaction](ctx, db, order.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	winner.Status = sample.Completed
+	if err := orm.Update(ctx, db, &winner); err != nil || winner.Version != 1 {
+		t.Fatalf("the version-checked full update succeeds under the trigger (version %d): %v", winner.Version, err)
+	}
+	winner.Status = sample.Cancelled
+	if err := orm.UpdateOnly(ctx, db, &winner, "Status"); err != nil || winner.Version != 2 {
+		t.Fatalf("the version-checked column-list update succeeds under the trigger (version %d): %v", winner.Version, err)
+	}
+
+	loser.Status = sample.Cancelled
+	if err := orm.Update(ctx, db, &loser); orm.CodeOf(err) != "CRUD-010" {
+		t.Fatalf("a stale update is CRUD-010 although the trigger reports rows, got %v", err)
+	}
+	if err := orm.DeleteEntity(ctx, db, &loser); orm.CodeOf(err) != "CRUD-010" {
+		t.Fatalf("a stale delete is CRUD-010 although the trigger reports rows, got %v", err)
+	}
+	if loser.Version != 0 {
+		t.Fatalf("a refused write leaves the stale version untouched, got %d", loser.Version)
+	}
+
+	touched, err := orm.Execute(ctx, db, liveTouchUser, liveTouchUserArgs{ID: ada.ID})
+	if err != nil || touched != 1 {
+		t.Fatalf("a registry command keeps the driver's own count after the generated writes: %d, %v", touched, err)
+	}
+
+	if err := orm.DeleteEntity(ctx, db, &winner); err != nil {
+		t.Fatalf("the current version deletes under the trigger: %v", err)
+	}
+	if err := orm.Delete[sample.Transaction](ctx, db, order.ID); orm.CodeOf(err) != "CRUD-001" {
+		t.Fatalf("a by-key delete of the gone row is CRUD-001 although the trigger reports rows, got %v", err)
+	}
+
+	touched, err = orm.Execute(ctx, db, liveTouchUser, liveTouchUserArgs{ID: ada.ID})
+	if err != nil || touched != 1 {
+		t.Fatalf("the registry command still reports its own count at the end: %d, %v", touched, err)
+	}
+
+	var logged int
+	if err := pool.QueryRowContext(ctx, "select count(*) from [trigger_log]").Scan(&logged); err != nil {
+		t.Fatal(err)
+	}
+	if logged != 12 {
+		t.Errorf("six statements fired the trigger, two log rows each: got %d rows", logged)
+	}
+}
+
 // --- transaction scopes ------------------------------------------------------------------------------------------
 
 func TestLive_TransactionScopeCommitAndRollback(t *testing.T) {

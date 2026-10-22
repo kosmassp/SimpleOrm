@@ -57,6 +57,7 @@ final class PostgresDialectTest extends TestCase
         self::assertTrue($this->dialect->supportsMaterializedViews());
         self::assertTrue($this->dialect->supportsProcedures());
         self::assertTrue($this->dialect->supportsTransactionalDdl());
+        self::assertFalse($this->dialect->reportsAffectedRowsBySelect());
     }
 
     #[Test]

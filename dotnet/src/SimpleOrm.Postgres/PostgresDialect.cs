@@ -293,6 +293,9 @@ public sealed class PostgresDialect : IDialect
             + " where " + KeyPredicate(map)
             + (checkVersion && map.VersionProperty is { } v ? " and " + QuoteIdentifier(v.ColumnName) + " = @" + v.ColumnName : string.Empty);
 
+    /// <summary>The command tag's count is the statement's own, triggers or not (ADR-0040 add.3).</summary>
+    public bool ReportsAffectedRowsBySelect => false;
+
     private string KeyPredicate(EntityMap map)
         => string.Join(" and ", map.KeyProperties.Select(k => QuoteIdentifier(k.ColumnName) + " = @" + k.ColumnName));
 

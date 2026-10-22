@@ -63,7 +63,34 @@ public sealed class SqlServerDialectTests
     {
         var sql = Dialect.UpdateSql(Maps.Load<Transaction>());
         Assert.Contains("[version] = [version] + 1", sql, StringComparison.Ordinal);
-        Assert.EndsWith("where [id] = @id and [version] = @version", sql, StringComparison.Ordinal);
+        Assert.Contains("where [id] = @id and [version] = @version;", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Generated_writes_report_their_own_row_count()
+    {
+        // ADR-0040 add.3 (item 3): a trigger without SET NOCOUNT ON inflates the
+        // driver's count with its own rows, so every generated UPDATE and DELETE
+        // suppresses the counts, writes, selects @@rowcount, and restores the
+        // session setting; the session reads the scalar. Inserts keep scope_identity().
+        var transactions = Maps.Load<Transaction>();
+        Assert.True(Dialect.ReportsAffectedRowsBySelect);
+        Assert.Equal(
+            "set nocount on; update [transactions] set [user_id] = @user_id, [status] = @status, [amount] = @amount,"
+            + " [note] = @note, [created_at] = @created_at, [updated_at] = @updated_at, [version] = [version] + 1"
+            + " where [id] = @id and [version] = @version; select @@rowcount; set nocount off",
+            Dialect.UpdateSql(transactions));
+        Assert.Equal(
+            "set nocount on; update [transactions] set [amount] = @amount, [version] = [version] + 1"
+            + " where [id] = @id and [version] = @version; select @@rowcount; set nocount off",
+            Dialect.UpdateOnlySql(transactions, [transactions.Properties.Single(p => p.PropertyName == "Amount")]));
+        Assert.Equal(
+            "set nocount on; delete from [transactions] where [id] = @id and [version] = @version; select @@rowcount; set nocount off",
+            Dialect.DeleteSql(transactions, checkVersion: true));
+        Assert.Equal(
+            "set nocount on; delete from [transactions] where [id] = @id; select @@rowcount; set nocount off",
+            Dialect.DeleteSql(transactions, checkVersion: false));
+        Assert.DoesNotContain("nocount", Dialect.InsertSql(transactions), StringComparison.Ordinal);
     }
 
     [Fact]

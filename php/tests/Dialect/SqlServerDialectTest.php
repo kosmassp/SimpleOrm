@@ -186,37 +186,45 @@ final class SqlServerDialectTest extends TestCase
     }
 
     #[Test]
-    public function update_and_delete_differ_from_the_reference_only_by_quoting(): void
+    public function update_and_delete_render_the_batch_that_reports_its_own_count(): void
     {
         $transactions = $this->maps->load(Transaction::class);
 
         self::assertSame(
-            'update [transactions] set [user_id] = @user_id, [status] = @status, [amount] = @amount, [note] = @note,'
+            'set nocount on; update [transactions] set [user_id] = @user_id, [status] = @status, [amount] = @amount, [note] = @note,'
                 . ' [created_at] = @created_at, [updated_at] = @updated_at, [version] = [version] + 1'
-                . ' where [id] = @id and [version] = @version',
+                . ' where [id] = @id and [version] = @version; select @@rowcount; set nocount off',
             $this->dialect->updateSql($transactions),
         );
         self::assertSame(
-            'update [transactions] set [status] = @status, [version] = [version] + 1 where [id] = @id and [version] = @version',
+            'set nocount on; update [transactions] set [status] = @status, [version] = [version] + 1'
+                . ' where [id] = @id and [version] = @version; select @@rowcount; set nocount off',
             $this->dialect->updateOnlySql($transactions, [$transactions->property('status') ?? self::fail('status')]),
         );
         self::assertSame(
-            'update [users] set [name] = @name, [email] = @email, [display_name] = @display_name,'
-                . ' [created_at] = @created_at, [updated_at] = @updated_at where [id] = @id',
+            'set nocount on; update [users] set [name] = @name, [email] = @email, [display_name] = @display_name,'
+                . ' [created_at] = @created_at, [updated_at] = @updated_at where [id] = @id; select @@rowcount; set nocount off',
             $this->dialect->updateSql($this->maps->load(User::class)),
         );
         self::assertSame(
-            'delete from [transactions] where [id] = @id',
+            'set nocount on; delete from [transactions] where [id] = @id; select @@rowcount; set nocount off',
             $this->dialect->deleteSql($transactions, checkVersion: false),
         );
         self::assertSame(
-            'delete from [transactions] where [id] = @id and [version] = @version',
+            'set nocount on; delete from [transactions] where [id] = @id and [version] = @version; select @@rowcount; set nocount off',
             $this->dialect->deleteSql($transactions, checkVersion: true),
         );
         self::assertSame(
-            'delete from [user_roles] where [user_id] = @user_id and [role_id] = @role_id',
+            'set nocount on; delete from [user_roles] where [user_id] = @user_id and [role_id] = @role_id; select @@rowcount; set nocount off',
             $this->dialect->deleteSql($this->maps->load(UserRole::class), checkVersion: true),
         );
+    }
+
+    #[Test]
+    public function the_dialect_reports_the_affected_rows_by_select_and_inserts_are_untouched(): void
+    {
+        self::assertTrue($this->dialect->reportsAffectedRowsBySelect());
+        self::assertStringNotContainsString('nocount', $this->dialect->insertSql($this->maps->load(User::class)));
     }
 
     #[Test]
@@ -377,6 +385,7 @@ final class SqlServerDialectTest extends TestCase
         self::assertFalse($this->dialect->supportsMaterializedViews());
         self::assertTrue($this->dialect->supportsProcedures());
         self::assertTrue($this->dialect->supportsTransactionalDdl());
+        self::assertTrue($this->dialect->reportsAffectedRowsBySelect());
     }
 
     #[Test]

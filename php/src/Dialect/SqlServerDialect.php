@@ -177,7 +177,7 @@ final class SqlServerDialect implements Dialect, PdoConventions
             $sql .= ' and ' . $this->quoteIdentifier($map->versionProperty->columnName) . ' = @' . $map->versionProperty->columnName;
         }
 
-        return $sql;
+        return self::reportingItsOwnCount($sql);
     }
 
     public function deleteSql(EntityMap $map, bool $checkVersion): string
@@ -187,7 +187,22 @@ final class SqlServerDialect implements Dialect, PdoConventions
             $sql .= ' and ' . $this->quoteIdentifier($map->versionProperty->columnName) . ' = @' . $map->versionProperty->columnName;
         }
 
-        return $sql;
+        return self::reportingItsOwnCount($sql);
+    }
+
+    public function reportsAffectedRowsBySelect(): bool
+    {
+        return true;
+    }
+
+    /**
+     * The batch the session judges (ADR-0040 add.3, spec/dialects.md Clarification 23): counts suppressed, the write, its
+     * own count as a one-row result, and the session setting restored — `set nocount` outlives the batch, and a registry
+     * command on the same connection must keep the driver's count.
+     */
+    private static function reportingItsOwnCount(string $statement): string
+    {
+        return 'set nocount on; ' . $statement . '; select @@rowcount; set nocount off';
     }
 
     private function keyPredicate(EntityMap $map): string

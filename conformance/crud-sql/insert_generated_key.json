@@ -1,0 +1,11 @@
+{
+  "name": "insert_generated_key",
+  "comment": "The generated INSERT of a database-generated key (User): every non-generated column, the key read back the dialect way (spec/dialects.md Generated keys).",
+  "entity": "User",
+  "statement": "insert",
+  "expect": {
+    "sqlite": "insert into users (name, email, display_name, created_at, updated_at) values (@name, @email, @display_name, @created_at, @updated_at) returning id",
+    "sqlserver": "insert into [users] ([name], [email], [display_name], [created_at], [updated_at]) values (@name, @email, @display_name, @created_at, @updated_at); select cast(scope_identity() as bigint)",
+    "postgres": "insert into \"users\" (\"name\", \"email\", \"display_name\", \"created_at\", \"updated_at\") values (@name, @email, @display_name, @created_at, @updated_at) returning \"id\""
+  }
+}

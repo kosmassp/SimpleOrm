@@ -390,6 +390,9 @@ func TestCapabilityFlags(t *testing.T) {
 	if !d.SupportsTransactionalDDL() {
 		t.Error("SupportsTransactionalDDL should be true")
 	}
+	if d.ReportsAffectedRowsBySelect() {
+		t.Error("ReportsAffectedRowsBySelect should be false")
+	}
 }
 
 func TestIntrospectionSQL(t *testing.T) {

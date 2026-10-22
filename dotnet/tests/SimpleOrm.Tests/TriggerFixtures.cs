@@ -218,4 +218,16 @@ namespace TriggerFixture
 
     [Trigger("trg_built", TriggerTiming.After, TriggerEvent.Insert, "select 1 from {new: id} n;")]
     public sealed class BuiltWidgetTrigger;
+
+    [Trigger("t_new_ins_del", TriggerTiming.After, TriggerEvent.Insert | TriggerEvent.Delete, "select 1 from {new: id} n;")]
+    public sealed class NewOnInsertAndDelete;
+
+    [Table("w13")]
+    [Trigger(typeof(NewOnInsertAndDelete))]
+    public sealed class LinksNewOnInsertAndDelete
+    {
+        [Key]
+        [Column]
+        public long Id { get; set; }
+    }
 }

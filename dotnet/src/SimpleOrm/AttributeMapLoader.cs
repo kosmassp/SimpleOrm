@@ -198,19 +198,21 @@ internal static class AttributeMapLoader
             return null;
         }
 
-        var hasInsertOrUpdate = declaration.Events.HasFlag(TriggerEvent.Insert) || declaration.Events.HasFlag(TriggerEvent.Update);
-        var hasUpdateOrDelete = declaration.Events.HasFlag(TriggerEvent.Update) || declaration.Events.HasFlag(TriggerEvent.Delete);
+        // The body is shared by every declared event, so a row token must have rows on
+        // each of them: {new} needs every event to be insert or update, {old} update or delete.
+        var newImpossible = declaration.Events.HasFlag(TriggerEvent.Delete);
+        var oldImpossible = declaration.Events.HasFlag(TriggerEvent.Insert);
         foreach (var segment in segments.Where(s => s.Kind is "new" or "old"))
         {
-            if (segment.Kind == "new" && !hasInsertOrUpdate)
+            if (segment.Kind == "new" && newImpossible)
             {
-                errors.Add(new MappingError("MAP-029", target, "{new: …} has no rows on a delete-only trigger"));
+                errors.Add(new MappingError("MAP-029", target, "{new: …} has no rows on the delete event; a body is shared by every declared event"));
                 valid = false;
             }
 
-            if (segment.Kind == "old" && !hasUpdateOrDelete)
+            if (segment.Kind == "old" && oldImpossible)
             {
-                errors.Add(new MappingError("MAP-029", target, "{old: …} has no rows on an insert-only trigger"));
+                errors.Add(new MappingError("MAP-029", target, "{old: …} has no rows on the insert event; a body is shared by every declared event"));
                 valid = false;
             }
         }

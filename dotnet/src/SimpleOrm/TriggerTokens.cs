@@ -15,7 +15,11 @@ namespace SimpleOrm;
 /// </summary>
 public static class TriggerTokens
 {
-    private static readonly Regex Token = new(@"\{(?<body>[^{}]*)\}", RegexOptions.Compiled);
+    // A -- line comment outside a single-quoted literal.
+    private static readonly Regex LineComment = new(@"^(?:[^'-]|'(?:[^']|'')*'|-(?!-))*--", RegexOptions.Compiled);
+
+    // A single-quoted SQL literal is matched first so braces inside it are text; a token is the braces outside.
+    private static readonly Regex Token = new(@"'(?:[^']|'')*'|\{(?<body>[^{}]*)\}", RegexOptions.Compiled);
 
     /// <summary>One parsed piece of a body: literal SQL, or a token with its kind and columns.</summary>
     public sealed class Segment
@@ -47,8 +51,20 @@ public static class TriggerTokens
     {
         var segments = new List<Segment>();
         var last = 0;
+        if (LineComment.IsMatch(sql))
+        {
+            // Snapshots and exports collapse whitespace, which would fold the rest of the
+            // body into a -- comment; a body re-rendered from its snapshot must stay whole.
+            errors.Add(new MappingError("MAP-029", target, "a body cannot carry a -- line comment (whitespace is collapsed in snapshots); use /* … */"));
+        }
+
         foreach (Match match in Token.Matches(sql))
         {
+            if (!match.Groups["body"].Success)
+            {
+                continue;   // a string literal: text
+            }
+
             if (match.Index > last)
             {
                 segments.Add(new Segment(sql.Substring(last, match.Index - last)));
@@ -124,6 +140,15 @@ public static class TriggerTokens
 
         return builder.ToString();
     }
+
+    /// <summary>
+    /// The canonical spelling of a token — <c>{new: a, b}</c>, <c>{old: a, b}</c>,
+    /// <c>{now}</c> — whatever case and spacing the author used. The normalized
+    /// body (exports, snapshots, diffs) renders tokens this way, so the metadata
+    /// snapshot and the shadow's folded read-back meet byte for byte.
+    /// </summary>
+    public static string Canonical(Segment segment)
+        => segment.Kind == "now" ? "{now}" : "{" + segment.Kind + ": " + string.Join(", ", segment.Columns) + "}";
 
     /// <summary>A one-row derived table over a row variable: <c>(select new.a as a, new.b as b)</c> — SQLite's and PostgreSQL's row relation.</summary>
     public static string RowSelect(string rowVariable, IReadOnlyList<string> columns, Func<string, string> quote)

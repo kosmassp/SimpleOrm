@@ -97,8 +97,11 @@ that version and the latest one before it, then derives the reverse:
 - views → expected-definition guard on the current DDL (`MIG-012` — a rollback
   must not silently destroy an outside hotfix either), drop, previous definition
   restored;
-- triggers → the guard on this version's rendering (`MIG-012`), the drop, and
-  the previous declaration rendered through the dialect (creation → drop only);
+- triggers → the guard on this version's rendering (`MIG-012`, at the creating
+  version too, as for views), the drop, and the previous declaration rendered
+  through the dialect (creation → guard and drop only); a removal step has no
+  snapshot at its version and derives nothing (`MIG-020`, override `Down()`),
+  exactly like a dropped table;
 - a same-column type/nullability change is not derivable → `MIG-020`.
 
 `Down()` remains the manual override and always wins; `PreDown`/`PostDown` hooks
@@ -206,7 +209,9 @@ come from them.
   literal declaration (`Recreate`), a change opens with `ExpectDefinition` of
   the previous one, a removal is a bare `DropTrigger()` — and needs the trigger
   class and its entity still in the assembly (keep them until the removal has
-  applied). Trigger steps compose after view steps.
+  applied). A removal leaves no snapshot of its own, so it is recognised as
+  already emitted when the trigger's newest step is later than its newest
+  snapshot — never emitted twice. Trigger steps compose after view steps.
 - **`shadow`** — rebuilds the snapshot files from history (above). The range form
   `--from V000N [--to V000M]` **trusts** version N: the baseline is reconstructed
   from the committed snapshots at ≤ N (no verification below N), versions ≤ N are
@@ -240,9 +245,18 @@ PostgreSQL's function and trigger), both sides normalized (whitespace
 collapsed, the leading `create [or replace] trigger|function` keywords
 lowercased), must be the same set. Absent or different refuses; `--force`
 recreates with notice. The checksum counts the rendered expectation, so it is
-the dialect's, like every other rendering. `migrate --force` never syncs
-triggers to the model (views are not synced either): for both kinds the flag
-is only this override.
+the dialect's, like every other rendering (the reference joins the
+normalized expected statements with `
+;
+`; checksums are never compared
+across implementations). `migrate --force` never syncs triggers to the model
+(views are not synced either): for both kinds the flag is only this override.
+`CreateTrigger()` in a step whose entity does not link the trigger class is
+`DDL-001` (schema creation that does not apply); a trigger step on a
+statement, procedure, or materialized view is `DDL-001` too. The `--from`
+shadow baseline restores triggers after tables and views from their latest
+snapshot at or below N — a trigger removed before N is restored wrongly, as a
+dropped table would be: the trusted baseline trusts snapshots, not history.
 
 ## Conformance cases
 

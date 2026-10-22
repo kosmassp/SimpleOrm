@@ -137,7 +137,7 @@ granularity, the wrapper, the token expansions. The create statements:
 | `before` | native | **`DDL-005`** | native |
 | `instead of` on a table | **`DDL-005`** (views only) | native | **`DDL-005`** (views only) |
 | `instead of` on a view | native | native | native |
-| update-of | `update of a, b` | the `if not (update(…)) return;` prologue | `update of "a", "b"` |
+| update-of | `update of a, b` | the prologue `if not (update([a]) or update([b])) return;` — `if exists (select 1 from inserted) and not (…) return;` when the declaration also fires on delete, where `update()` is always false | `update of "a", "b"` on the update event (`after update of "a", "b" or delete`) |
 | drop | `drop trigger if exists <n>`, `<n>_insert`, `<n>_update`, `<n>_delete` (every possible per-event name) | `if object_id(N'n', N'TR') is not null drop trigger [n]` | `drop trigger if exists "n" on "t"`, `drop function if exists "n_fn"()` |
 
 The body is trimmed and inserted verbatim between the wrapper's lines; identifiers

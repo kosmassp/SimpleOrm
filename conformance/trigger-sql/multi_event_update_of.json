@@ -31,7 +31,7 @@
     },
     "sqlserver": {
       "create": [
-        "create trigger [trg_widgets_changes] on [widgets] after update, delete as\nbegin\n    set nocount on;\n    if not (update([name]) or update([price])) return;\ninsert into widget_log (widget_id, at) select o.id, todatetimeoffset(sysutcdatetime(), 0) from deleted o;\nend"
+        "create trigger [trg_widgets_changes] on [widgets] after update, delete as\nbegin\n    set nocount on;\n    if exists (select 1 from inserted) and not (update([name]) or update([price])) return;\ninsert into widget_log (widget_id, at) select o.id, todatetimeoffset(sysutcdatetime(), 0) from deleted o;\nend"
       ],
       "drop": [
         "if object_id(N'trg_widgets_changes', N'TR') is not null drop trigger [trg_widgets_changes]"

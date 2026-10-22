@@ -89,6 +89,39 @@ public sealed class TriggerTests : IDisposable
     }
 
     [Fact]
+    public void Tokens_canonicalize_and_literals_and_comments_are_handled()
+    {
+        // Any spelling of a token normalizes to the canonical one; braces inside a string literal are text.
+        var definition = new TriggerDefinition("t", TriggerTiming.After, TriggerEvent.Update, "select  '{x}', n.id from { NEW : id ,name } n;");
+        Assert.Equal("select '{x}', n.id from {new: id, name} n;", definition.NormalizedSql);
+        var errors = new List<MappingError>();
+        Assert.Equal(2, TriggerTokens.Parse("select '{x}' from {new: id} n; -- note", "t", errors).Count(s => s.Literal is not null) + 0);
+        Assert.Contains(errors, e => e.Code == "MAP-029" && e.Message.Contains("line comment"));
+        var clean = new List<MappingError>();
+        TriggerTokens.Parse("select '--' from {new: id} n; /* ok */", "t", clean);   // a -- inside a literal is text
+        Assert.Empty(clean);
+    }
+
+    [Fact]
+    public void A_row_token_must_have_rows_on_every_declared_event()
+    {
+        // (insert, delete) shares one body: {new} has no rows on delete, {old} none on insert.
+        var exception = LoadFails(typeof(LinksNewOnInsertAndDelete));
+        Assert.Contains(exception.Errors, e => e.Code == "MAP-029" && e.Message.Contains("delete event"));
+    }
+
+    [Fact]
+    public void Sql_server_lets_a_delete_through_the_update_of_prologue()
+    {
+        var narrowed = new TriggerDefinition("t", TriggerTiming.After, TriggerEvent.Update | TriggerEvent.Delete, "select 1;", ["a"]);
+        var sql = Assert.Single(new SqlServerDialect().CreateTriggerSql("w", false, narrowed));
+        Assert.Contains("if exists (select 1 from inserted) and not (update([a])) return;", sql);
+
+        var updateOnly = new TriggerDefinition("t", TriggerTiming.After, TriggerEvent.Update, "select 1;", ["a"]);
+        Assert.Contains("    if not (update([a])) return;", Assert.Single(new SqlServerDialect().CreateTriggerSql("w", false, updateOnly)));
+    }
+
+    [Fact]
     public void A_trigger_class_is_not_an_entity()
     {
         Assert.Equal("MAP-029", Assert.Single(LoadFails(typeof(RoleAuditTrigger)).Errors).Code);

@@ -190,13 +190,21 @@ public static class DiffCommand
                 declaredTriggerClasses.Add(trigger.TriggerType.Name);
                 var current = new TriggerSnapshot(map.RelationName!, map.Kind == RelationKind.View, trigger.Definition);
                 var previous = LatestTriggerSnapshotBelow(Path.Combine(options.OutDir, "Trigger", trigger.TriggerType.Name), version);
-                if (previous is null && triggersMigratedBelow.Contains(trigger.TriggerType))
+                if (previous is null && triggersMigratedBelow.ContainsKey(trigger.TriggerType))
                 {
                     unrecorded.Add(trigger.Name);
                     continue;
                 }
 
                 var diff = MigrationGenerator.DiffTrigger(current, previous);
+                if (diff.IsChanged && previous is not null
+                    && (!string.Equals(previous.Relation, current.Relation, StringComparison.Ordinal) || previous.OnView != current.OnView))
+                {
+                    // The generated guard and drop would target the new relation while the trigger lives on the old one.
+                    problems.Add($"trigger {trigger.Name}: moved from {previous.Relation} to {current.Relation} — write the migration by hand (drop on the old relation, create on the new)");
+                    continue;
+                }
+
                 if (diff.HasChanges)
                 {
                     triggerChanges.Add((type, trigger.TriggerType, trigger.Definition, previous?.Definition));
@@ -216,8 +224,19 @@ public static class DiffCommand
                     continue;
                 }
 
-                var previous = LatestTriggerSnapshotBelow(folder, version);
-                if (previous is null)
+                var latestTrigger = LatestTriggerSnapshotVersionBelow(folder, version);
+                if (latestTrigger is null)
+                {
+                    continue;
+                }
+
+                var previous = latestTrigger.Value.Snapshot;
+
+                // A removal leaves no snapshot of its own: a trigger step newer than the
+                // newest snapshot is the removal already emitted — not emitted again.
+                var removedAlready = triggersMigratedBelow
+                    .Any(t => t.Key.Name == className && t.Value > latestTrigger.Value.AsOfVersion);
+                if (removedAlready)
                 {
                     continue;
                 }
@@ -428,14 +447,22 @@ public static class DiffCommand
 
     /// <summary>The latest trigger snapshot of a folder strictly below the version, or null.</summary>
     private static TriggerSnapshot? LatestTriggerSnapshotBelow(string snapshotDir, long version)
-        => Directory.Exists(snapshotDir)
-            ? Directory.GetFiles(snapshotDir, "V*.schema.json")
-                .Select(f => SchemaSnapshot.ParseTrigger(File.ReadAllText(f)))
-                .Where(s => s.AsOfVersion < version)
-                .OrderByDescending(s => s.AsOfVersion)
-                .Select(s => s.Snapshot)
-                .FirstOrDefault()
-            : null;
+        => LatestTriggerSnapshotVersionBelow(snapshotDir, version)?.Snapshot;
+
+    private static (TriggerSnapshot Snapshot, long AsOfVersion)? LatestTriggerSnapshotVersionBelow(string snapshotDir, long version)
+    {
+        if (!Directory.Exists(snapshotDir))
+        {
+            return null;
+        }
+
+        var latest = Directory.GetFiles(snapshotDir, "V*.schema.json")
+            .Select(f => SchemaSnapshot.ParseTrigger(File.ReadAllText(f)))
+            .Where(s => s.AsOfVersion < version)
+            .OrderByDescending(s => s.AsOfVersion)
+            .FirstOrDefault();
+        return latest.Snapshot is null ? null : latest;
+    }
 
     /// <summary>
     /// The entity types that migration steps below <paramref name="version"/>
@@ -444,24 +471,25 @@ public static class DiffCommand
     /// objects with a migration history, which therefore need a recorded schema to
     /// diff against.
     /// </summary>
-    private static (HashSet<Type> Entities, HashSet<Type> Triggers) MigratedBelow(DiffOptions options, long version)
+    private static (HashSet<Type> Entities, Dictionary<Type, long> Triggers) MigratedBelow(DiffOptions options, long version)
     {
         var entities = new HashSet<Type>();
-        var triggers = new HashSet<Type>();
+        var triggers = new Dictionary<Type, long>();
         foreach (var type in options.Assembly.GetTypes()
             .Where(t => !t.IsAbstract && typeof(MigrationStep).IsAssignableFrom(t)
                 && t.GetConstructor(Type.EmptyTypes) is not null
                 && InNamespace(t, options.RootNamespace)))
         {
             var (entity, trigger) = ObjectOf(type);
-            if (entity is null || ((MigrationStep)Activator.CreateInstance(type)!).Version >= version)
+            var stepVersion = entity is null ? 0 : ((MigrationStep)Activator.CreateInstance(type)!).Version;
+            if (entity is null || stepVersion >= version)
             {
                 continue;
             }
 
             if (trigger is not null)
             {
-                triggers.Add(trigger);
+                triggers[trigger] = Math.Max(stepVersion, triggers.TryGetValue(trigger, out var known) ? known : 0);   // the newest step per trigger class
             }
             else
             {

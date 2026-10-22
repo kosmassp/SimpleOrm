@@ -119,8 +119,19 @@ public sealed class TriggerDefinition
         }
     }
 
-    /// <summary>The body with whitespace collapsed — how exports and snapshots compare it (layout is not schema).</summary>
-    public string NormalizedSql => string.Join(" ", Sql.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+    /// <summary>The body with whitespace collapsed and every token in its canonical spelling — how exports and snapshots compare it (layout is not schema).</summary>
+    public string NormalizedSql
+    {
+        get
+        {
+            var errors = new List<MappingError>();
+            var segments = TriggerTokens.Parse(Sql, Name, errors);
+            var canonical = errors.Count > 0
+                ? Sql   // a malformed body never reaches here through the loader; the data-driven forms compare it as written
+                : string.Concat(segments.Select(s => s.Literal ?? TriggerTokens.Canonical(s)));
+            return string.Join(" ", canonical.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        }
+    }
 
     /// <summary>Whether two definitions declare the same trigger (name, timing, events, update-of columns, normalized body).</summary>
     public bool SameAs(TriggerDefinition other)

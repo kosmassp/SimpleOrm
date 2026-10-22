@@ -227,8 +227,11 @@ public sealed class SqlServerDialect : IDialect
             "old" => "deleted",
             _ => "todatetimeoffset(sysutcdatetime(), 0)",
         });
+        // update(col) is false in a delete, so a declaration that also fires on delete
+        // applies the narrowing only when rows were inserted or updated.
         var prologue = trigger.UpdateOf.Count > 0
-            ? "    if not (" + string.Join(" or ", trigger.UpdateOf.Select(c => "update(" + QuoteIdentifier(c) + ")")) + ") return;\n"
+            ? "    if " + (trigger.Events.HasFlag(TriggerEvent.Delete) ? "exists (select 1 from inserted) and " : string.Empty)
+                + "not (" + string.Join(" or ", trigger.UpdateOf.Select(c => "update(" + QuoteIdentifier(c) + ")")) + ") return;\n"
             : string.Empty;
         return
         [

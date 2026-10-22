@@ -216,8 +216,14 @@ public sealed class Role { … }
 
   The column list is required (the rendering then depends on the body alone,
   never on the table's current shape), the names are **column** names of the
-  entity's relation, and the row tokens must be possible for the events
-  (`{new}` needs insert or update, `{old}` update or delete). Everything around
+  entity's relation (matched exactly), and a row token must have rows on
+  **every** declared event, since one body serves them all: `{new}` refuses a
+  declaration that includes delete, `{old}` one that includes insert.
+  Braces inside a single-quoted SQL literal are text, not tokens; any spelling
+  of a token (`{ NEW : id ,name }`) is accepted and canonicalized to
+  `{new: id, name}` wherever the body is normalized (exports, snapshots,
+  diffs); a `--` line comment is refused (whitespace is collapsed in
+  snapshots and would fold the rest of the body into it — use `/* … */`). Everything around
   the body — `set nocount on`, `begin/end`, the PostgreSQL function and its
   `return`, the granularity (`for each row` where it exists; SQL Server is
   statement-level) — is the dialect's rendering (`dialects.md` "Triggers"),
@@ -235,6 +241,40 @@ public sealed class Role { … }
   like `MAP-028`): a trigger class linked by two entities, or two classes
   declaring one name — one `MAP-029` per conflict; a lone load cannot see them.
 - The manual builder links a trigger class under the same rules.
+
+**Clarifications** (the PHP and Go port gap lists; ADR-0042):
+
+- **Telling the two attribute shapes apart** is the language's business: C#
+  by constructor, PHP by the arguments given (a single class argument is a
+  link; an incomplete declaration is `MAP-029`, never read as a link), Go by
+  a descriptor method on the trigger type and a typed link in the entity's
+  descriptor. A declaration with no timing where the language allows one
+  (a Go zero value) is `MAP-029`, never a default.
+- **A class carrying a link counts as mapped** (it routes to the annotation
+  loader, so the link is never silently ignored); a pure declaration class
+  does not, so scans skip it; a class that is both an entity and a
+  declaration is `MAP-029`. Where class-level annotations are not inherited,
+  a link on a base class is simply invisible; where they are (C#), the link
+  is read without inheritance like `[Index]` and a base carrying one is
+  `MAP-028`.
+- **`updateOf`** names properties (dotted paths for owned members), resolved
+  to columns, compared in declared order and exactly; the scan rule compares
+  trigger names case-insensitively and enforces model-wide uniqueness on
+  every dialect, PostgreSQL's per-table names included.
+- **A trigger's name is its object.** Renaming a declaration is a removal
+  plus a creation, never a change; a declaration moved to another relation
+  (or between a table and a view) is `DDL-004` for the generator — the
+  generated guard and drop would target the new relation while the trigger
+  lives on the old one — and is written by hand (drop on the old relation,
+  create on the new).
+- **What the dialect renders from metadata** is the author's body trimmed,
+  verbatim; only exports, snapshots, and diffs normalize it. The `--` rule
+  above keeps the two equivalent. A body may not contain `$$` (PostgreSQL's
+  function quoting); the SQLite `{now}` carries three fractional digits
+  (`%f`), which the reader accepts like any marked ISO text.
+- **`before`/`after` on a view** is refused by the loader only; a dialect
+  asked for it through the data-driven step form renders it and the database
+  refuses. `DDL-005` stays the two forms of the renderings table.
 
 ## Entity identity
 

@@ -11,26 +11,27 @@ use SimpleOrm\Metadata\PropertyMap;
 use function array_reverse;
 
 /**
- * Puts the session's in-memory state back when a flush fails (Level 3 M2, spec/unit-of-work.md
- * Clarifications, ADR-0036: "a failed flush undoes its in-memory effects"). The database side is the
- * transaction's rollback; this is the rest: the identity map and the snapshots (a checkpoint of
- * {@see DbTracking}, whose entries are immutable), and the two values a statement writes onto an
- * instance — a generated or client-assigned key (an insert) and the bumped version (an update).
- * After {@see rollback()} the whole schedule flushes again as it was.
+ * Puts the session's in-memory state back when a batched call fails (Level 3 M2, spec/unit-of-work.md
+ * Clarifications, ADR-0036: "a failed flush undoes its in-memory effects"; Level 4, ADR-0044: the same for the send
+ * of an explicit batch). The database side is the transaction's rollback; this is the rest: the identity map and the
+ * snapshots (a checkpoint of {@see DbTracking}, whose entries are immutable; none in an untracked session), and the
+ * values a statement writes onto an instance — a generated or client-assigned key, the created-at fill, the bumped
+ * version, the updated-at stamp, a soft delete's flag. After {@see rollback()} every instance is as it was before the
+ * call, and a flush's whole schedule flushes again as it was.
  *
- * @internal owned by {@see DbUnitOfWork}
+ * @internal owned by {@see Db::runCall()}
  */
 final class FlushJournal
 {
-    /** @var array{0: array<class-string, array<string, TrackedInstance>>, 1: array<int, TrackedInstance>} */
-    private readonly array $checkpoint;
+    /** @var array{0: array<class-string, array<string, TrackedInstance>>, 1: array<int, TrackedInstance>}|null */
+    private readonly ?array $checkpoint;
 
     /** @var list<Closure(): void> */
     private array $undo = [];
 
-    public function __construct(private readonly DbTracking $tracking)
+    public function __construct(private readonly ?DbTracking $tracking)
     {
-        $this->checkpoint = $tracking->checkpoint();
+        $this->checkpoint = $tracking?->checkpoint();
     }
 
     /** Remembers the key values an insert is about to assign (or leave unset) and the `#[CreatedAt]` value it may fill. */
@@ -64,7 +65,10 @@ final class FlushJournal
 
     public function rollback(): void
     {
-        $this->tracking->rollbackTo($this->checkpoint);
+        if ($this->tracking !== null && $this->checkpoint !== null) {
+            $this->tracking->rollbackTo($this->checkpoint);
+        }
+
         foreach (array_reverse($this->undo) as $undo) {
             $undo();
         }

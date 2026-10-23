@@ -24,6 +24,7 @@ use SimpleOrm\Migrations\SqlVersionStep;
 use SimpleOrm\Query\Criteria;
 use SimpleOrm\Query\FetchMode;
 use SimpleOrm\Query\SortOrder;
+use SimpleOrm\Session\BatchingMode;
 use SimpleOrm\Session\Db;
 use SimpleOrm\Session\DbOptions;
 use SimpleOrm\Session\TrackingMode;
@@ -49,6 +50,7 @@ use SimpleOrm\Tests\Sample\Models\TransactionStatus;
 use SimpleOrm\Tests\Sample\Models\User;
 use SimpleOrm\Tests\Sample\Models\UserProfile;
 use SimpleOrm\Tests\Sample\Models\UserRole;
+use SimpleOrm\Tests\Support\BatchingLiveScenarios;
 use SimpleOrm\Tests\Support\LiveServer;
 use SimpleOrm\Tests\Support\PostgresDatabase;
 use SimpleOrm\Tests\Support\BytesRoundTrip;
@@ -726,6 +728,57 @@ final class PostgresLiveTest extends TestCase
         $detail->unitPrice = Decimal::of('2.50');
 
         return $detail;
+    }
+
+    // --- statement batching (Level 4 item 3, ADR-0044) -----------------------------------------------------
+
+    /**
+     * A session with `Batching = Auto` on the sample schema and a plain observer on the same database. In PHP PostgreSQL
+     * is the **sequential** realization (`pdo_pgsql` refuses several commands in one prepared statement and its emulated
+     * form returns only the last result), so `batchingInEffect()` is false and the plan's messages run one statement at a time.
+     *
+     * @return array{0: Db, 1: Db}
+     */
+    private function openBatching(TrackingMode $tracking = TrackingMode::Untracked): array
+    {
+        $db = $this->open(new DbOptions(new PostgresDialect(), tracking: $tracking, batching: BatchingMode::Auto));
+        $observer = Db::open(self::database()->connectionString(), new DbOptions(new PostgresDialect()));
+        $this->sessions[] = $observer;
+
+        return [$db, $observer];
+    }
+
+    #[Test]
+    public function a_batched_flush_flows_generated_keys_across_messages_by_the_plan_though_each_message_runs_sequentially(): void
+    {
+        [$db, $observer] = $this->openBatching(TrackingMode::Tracked);
+
+        BatchingLiveScenarios::aBatchedFlushFlowsGeneratedKeysAcrossMessages($db, $observer, inEffect: false, expectedMessages: [2, 2, 2]);
+    }
+
+    #[Test]
+    public function an_explicit_batch_carries_every_operation(): void
+    {
+        [$db, $observer] = $this->openBatching();
+
+        // PostgreSQL's driver count is the statement's own, so no generated write reads a result and one message carries all five.
+        BatchingLiveScenarios::anExplicitBatchCarriesEveryOperation($db, $observer, inEffect: false, expectedMessages: [5]);
+    }
+
+    #[Test]
+    public function a_stale_version_in_the_middle_of_a_message_fails_the_send_and_leaves_nothing_applied(): void
+    {
+        [$db, $observer] = $this->openBatching();
+
+        BatchingLiveScenarios::aStaleVersionInTheMiddleOfAMessageFailsTheSendAndLeavesNothingApplied($db, $observer);
+    }
+
+    #[Test]
+    public function a_failing_statement_in_the_middle_of_a_message_fails_the_send_with_the_providers_error(): void
+    {
+        [$db, $observer] = $this->openBatching();
+
+        BatchingLiveScenarios::aFailingStatementInTheMiddleOfAMessageFailsTheSendWithTheProvidersError($db, $observer);
     }
 
     // --- force sync through the seam (ADR-0043) ----------------------------------------------------------

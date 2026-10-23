@@ -13,7 +13,11 @@ namespace SimpleOrm\Parameters;
  */
 final class SqlPlaceholders
 {
-    private const PATTERN = '/@([A-Za-z_][A-Za-z0-9_]*)/';
+    /**
+     * A placeholder is `@name`; the lookbehind keeps SQL Server's system functions (`@@rowcount`, `@@identity`) out of it —
+     * their second `@` is not the start of a name. Without it `select @@rowcount` became `@:rowcount` under {@see toPdo()}.
+     */
+    private const PATTERN = '/(?<!@)@([A-Za-z_][A-Za-z0-9_]*)/';
 
     /**
      * Distinct placeholder names (without the leading `@`), in first-occurrence
@@ -74,6 +78,25 @@ final class SqlPlaceholders
             [$text, $offset] = $matches[0][$i];
             $name = $matches[1][$i][0];
             $result = substr_replace($result, ':' . $name, $offset, strlen($text));
+        }
+
+        return $result;
+    }
+
+    /**
+     * Renames every real `@name` to `@<prefix>name`, literals and comments untouched (ADR-0044): the SQL Server
+     * realization of a planned message joins several statements into one text and renames each statement's
+     * placeholders apart (`@p<i>_name` for the i-th statement) so the bound names cannot collide.
+     */
+    public static function prefixed(string $sql, string $prefix): string
+    {
+        $masked = self::mask($sql);
+        preg_match_all(self::PATTERN, $masked, $matches, PREG_OFFSET_CAPTURE);
+
+        $result = $sql;
+        for ($i = count($matches[0]) - 1; $i >= 0; $i--) {
+            [$text, $offset] = $matches[0][$i];
+            $result = substr_replace($result, '@' . $prefix . $matches[1][$i][0], $offset, strlen($text));
         }
 
         return $result;

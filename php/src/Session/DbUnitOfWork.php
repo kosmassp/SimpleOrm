@@ -10,7 +10,6 @@ use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\RelationshipKind;
 use SimpleOrm\Metadata\RelationshipMap;
 use SplMinHeap;
-use Throwable;
 
 use function array_fill_keys;
 use function array_filter;
@@ -32,11 +31,13 @@ use function usort;
  * first — inside the session's transaction (or one the flush owns). A collaborator beside
  * {@see DbTracking} (CODING-STANDARD §10), owned by {@see Db} only in `Tracked` mode.
  *
- * **Every statement is the session's own `insert`/`update`/`delete`** (CODING-STANDARD §8, spec
- * "every statement is the same generated CRUD"): the identity gate (`UOW-002`), snapshots, version
- * rules (`CRUD-010`), and `CRUD-004` apply unchanged — this class decides only *what* and *in
- * which order*, never *how*. Cascades are declared metadata ({@see RelationshipMap::$cascade});
- * nothing here loads, and "never loaded" is an uninitialized collection property, tested with
+ * **Every statement is the session's own insert/update/delete** (CODING-STANDARD §8, spec
+ * "every statement is the same generated CRUD"): the flush hands `Db::runCall()` one operation per statement
+ * (`Db::insertOperation()` and friends), which prepares and completes it through the same halves the immediate
+ * calls use — the identity gate (`UOW-002`), snapshots, version rules (`CRUD-010`), and `CRUD-004` apply
+ * unchanged. This class decides only *what* and *in which order*, never *how*; under `BatchingMode::Auto` the
+ * call forms messages by the plan (Level 4, ADR-0044, `Session\WriteRun`). Cascades are declared metadata
+ * ({@see RelationshipMap::$cascade}); nothing here loads, and "never loaded" is an uninitialized collection property, tested with
  * `ReflectionProperty::isInitialized()` so it never fires the `REL-004` guard.
  *
  * A `persist`/`remove` is planned on a clone of the schedule and swapped in only when its whole
@@ -270,26 +271,9 @@ final class DbUnitOfWork
             return new FlushSummary(0, 0, 0);
         }
 
-        $connection = $this->db->connection();
-        $ownsTransaction = !$connection->inTransaction();
-        if ($ownsTransaction) {
-            $connection->beginTransaction();
-        }
-
-        $journal = new FlushJournal($this->tracking);
-        try {
-            $this->write($inserts, $insertOrder, $dirty, $removals, $deleteOrder, $journal);
-            if ($ownsTransaction) {
-                $connection->commit();
-            }
-        } catch (Throwable $failure) {
-            $journal->rollback();
-            if ($ownsTransaction && $connection->inTransaction()) {
-                $connection->rollBack();
-            }
-
-            throw $failure;
-        }
+        // Inside the session's transaction when one is active, else one the call begins, commits, and rolls back on
+        // failure; a failed call undoes its in-memory effects and the schedule stays (Db::runCall()).
+        $this->db->runCall($this->operations($inserts, $insertOrder, $dirty, $removals, $deleteOrder));
 
         $this->schedule = new UnitOfWorkSchedule();
 
@@ -297,35 +281,64 @@ final class DbUnitOfWork
     }
 
     /**
-     * The statements, in order — each the session's own insert/update/delete, journaled so a failure can undo
-     * what it moved in memory.
+     * The statements, in order, as the operations of one batched call (ADR-0044) — each prepared and completed through the
+     * session's own insert/update/delete halves, so the identity gate, the version rules, and `CRUD-004` apply unchanged and
+     * a failure is undone by the call's journal. Under `BatchingMode::Auto` the call forms messages by the plan; under `Off`
+     * every statement is a message of its own.
      *
      * @param array<int, array{instance: object, map: EntityMap, seq: int, direct: bool, links: array<string, array{owner: object, relationship: RelationshipMap}>}> $inserts
      * @param list<int> $insertOrder
      * @param list<TrackedInstance> $dirty
      * @param array<int, array{instance: object, map: EntityMap, seq: int}> $removals
      * @param list<int> $deleteOrder
+     * @return list<WriteOperation>
      */
-    private function write(array $inserts, array $insertOrder, array $dirty, array $removals, array $deleteOrder, FlushJournal $journal): void
+    private function operations(array $inserts, array $insertOrder, array $dirty, array $removals, array $deleteOrder): array
     {
+        $operations = [];
         foreach ($insertOrder as $id) {
             $entry = $inserts[$id];
-            $this->flowKeys($entry);
-            $journal->recordInsert($entry['map'], $entry['instance']);
-            $this->db->insert($entry['instance']);
+            // Keys flow before each insert, so before its key properties are remembered; a cascade owner is a dependency
+            // of the plan (rule 1b) beside the child's own many-to-one navigations.
+            $operations[] = $this->db->insertOperation(
+                $entry['instance'],
+                function () use ($entry): void {
+                    $this->flowKeys($entry);
+                },
+                $this->cascadeOwners($entry),
+            );
         }
 
         foreach ($dirty as $entry) {
-            $journal->recordUpdate($entry->map, $entry->instance);
-            $this->db->update($entry->instance);
+            $operations[] = $this->db->updateOperation($entry->instance);
         }
 
         foreach ($deleteOrder as $id) {
             // The entity form: identity-gated and version-checked (CRUD-010), so a stale instance is never deleted blindly.
             // A soft delete (spec/hooks.md) also moves the flag, stamp, and version on the instance: journaled like an update.
-            $journal->recordDelete($removals[$id]['map'], $removals[$id]['instance']);
-            $this->db->delete($removals[$id]['map']->entityType, $removals[$id]['instance']);
+            $operations[] = $this->db->deleteOperation($removals[$id]['map']->entityType, $removals[$id]['instance']);
         }
+
+        return $operations;
+    }
+
+    /**
+     * The owners a persist cascade reached this insert through a one-to-many/one-to-one: the instances it takes its key
+     * from at flush.
+     *
+     * @param array{instance: object, map: EntityMap, seq: int, direct: bool, links: array<string, array{owner: object, relationship: RelationshipMap}>} $entry
+     * @return list<object>
+     */
+    private function cascadeOwners(array $entry): array
+    {
+        $owners = [];
+        foreach ($entry['links'] as $link) {
+            if ($link['relationship']->kind !== RelationshipKind::ManyToOne) {
+                $owners[] = $link['owner'];
+            }
+        }
+
+        return $owners;
     }
 
     /**

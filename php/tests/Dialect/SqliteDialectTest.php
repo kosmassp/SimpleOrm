@@ -176,6 +176,13 @@ final class SqliteDialectTest extends TestCase
     }
 
     #[Test]
+    public function planned_messages_run_one_statement_at_a_time_and_have_no_parameter_cap(): void
+    {
+        self::assertFalse($this->dialect->supportsStatementBatching());
+        self::assertNull($this->dialect->maxParametersPerMessage());
+    }
+
+    #[Test]
     public function update_sql_bumps_the_version_and_requires_it_in_the_where(): void
     {
         self::assertSame(

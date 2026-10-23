@@ -7,6 +7,7 @@ namespace SimpleOrm\Tests\Conformance;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use SimpleOrm\Session\BatchingMode;
 use SimpleOrm\Tests\Support\ConformancePaths;
 use SimpleOrm\Tests\Support\StepScriptRunner;
 
@@ -16,15 +17,21 @@ use SimpleOrm\Tests\Support\StepScriptRunner;
  * `flush` (`expectStatements`, `expectSummary`), `begin`/`commit`/`rollback`, `new.navigations`, and
  * the `pending`/`sameValue`/`count` expectations — all replayed by the shared {@see StepScriptRunner}
  * against the seeded fixture database, the statement order observed at the dialect seam.
+ *
+ * Every case runs **twice**, `Off` and `Auto` (the default `MaxStatementsPerMessage`), with the same expectations — the
+ * statements, the summary, and every expectation must come out the same in both modes (spec/session.md "The step
+ * scripts", ADR-0044); the grouping is `batch-cases`'.
  */
 final class FlushCasesTest extends TestCase
 {
-    /** @return array<string, list<string>> */
+    /** @return array<string, array{0: string, 1: BatchingMode}> */
     public static function caseFiles(): array
     {
         $cases = [];
         foreach (ConformancePaths::cases('flush-cases') as $file) {
-            $cases[$file] = [$file];
+            foreach (BatchingMode::cases() as $mode) {
+                $cases["{$file} [{$mode->value}]"] = [$file, $mode];
+            }
         }
 
         return $cases;
@@ -32,8 +39,8 @@ final class FlushCasesTest extends TestCase
 
     #[Test]
     #[DataProvider('caseFiles')]
-    public function case_behaves_as_specified(string $fileName): void
+    public function case_behaves_as_specified(string $fileName, BatchingMode $batching): void
     {
-        StepScriptRunner::replay('flush-cases', $fileName);
+        StepScriptRunner::replay('flush-cases', $fileName, $batching);
     }
 }

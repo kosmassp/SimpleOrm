@@ -231,6 +231,40 @@ metadata, `shadow` parses the stored SQLite trigger back (the two agree byte for
 `diff` emits literal-declaration steps (a removal is a bare `dropTrigger()`, gated by `--allow-remove`). In a dev/test
 session `$db->createTriggers(Role::class)` creates an entity's triggers (drop then create, so it is safe to repeat).
 
+### Statement batching (Level 4, ADR-0044)
+
+A **message** is what one round trip sends. By default (`BatchingMode::Off`) every statement is a message of its
+own — the Level 0–3 session exactly. With `BatchingMode::Auto` the statements of **one call** — a `flush()` or the
+`send()` of an explicit batch — are grouped into as few messages as a fixed plan allows (`spec/session.md`
+"Batching"); nothing waits, nothing is deferred past the call that holds the statements, and a lone statement runs as it
+always did:
+
+```php
+$db = Db::open($dsn, new DbOptions(new SqlServerDialect(), batching: BatchingMode::Auto, maxStatementsPerMessage: 100));
+
+$batch = $db->batch();                         // queuing does no I/O and checks nothing
+$batch->insert($order);
+$batch->updateOnly($user, ['name']);
+$batch->execute(Commands::markShipped(), new MarkShippedArgs(id: 7));
+$batch->delete(Role::class, 3);                // the key or the entity form, as $db->delete()
+$result = $batch->send();                      // BatchResult: ->affected (one count per operation), ->messages
+```
+
+`send()` always runs in a transaction (the session's, else one it begins and commits) and each operation behaves exactly
+as its immediate call would at that point of the sequence — the same gates (`CRUD-002`…`CRUD-007`, `UOW-002`,
+`CRUD-004`), the same judging (`CRUD-010`/`CRUD-001`), the same effect on the instance and the tracking; keys do **not**
+flow between queued operations (the unit of work is the form that flows keys). A batch is spent by its send or
+`dispose()`: using it again is `TX-003`. A failed call undoes every in-memory effect of every statement it prepared and
+rolls its own transaction back; inside **your** transaction the rows of the statements that ran stay yours to roll back.
+Reads are not batched.
+
+`$db->batchingInEffect()` says which realization is in force. Only **SQL Server** sends a planned message as one
+round trip in PHP (one multi-statement text with the placeholders renamed apart, its results read with `nextRowset()`; a
+registry command always goes on its own). **SQLite** and **PostgreSQL** are *sequential* — `pdo_sqlite` prepares one
+statement and `pdo_pgsql` cannot carry per-statement results — so the same plan is formed and each message's statements
+run one at a time, **reusing one prepared `PDOStatement` per distinct SQL text** within the call (on SQLite, where
+there is no round trip to save, that reuse is the gain). Nothing refuses: one configuration serves every database.
+
 ## The CLI
 
 `bin/simpleorm` has no assembly to load, so it takes a PSR-4 root instead:

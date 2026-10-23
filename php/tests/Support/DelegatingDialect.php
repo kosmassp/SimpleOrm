@@ -108,6 +108,16 @@ abstract class DelegatingDialect implements Dialect
         return $this->inner->reportsAffectedRowsBySelect();
     }
 
+    public function supportsStatementBatching(): bool
+    {
+        return $this->inner->supportsStatementBatching();
+    }
+
+    public function maxParametersPerMessage(): ?int
+    {
+        return $this->inner->maxParametersPerMessage();
+    }
+
     public function limitOffsetClause(?string $limitParameter, ?string $offsetParameter): string
     {
         return $this->inner->limitOffsetClause($limitParameter, $offsetParameter);

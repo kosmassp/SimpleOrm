@@ -104,6 +104,21 @@ interface Dialect
      */
     public function reportsAffectedRowsBySelect(): bool;
 
+    /**
+     * Whether this implementation's driver for the dialect can carry several statements in one message and hand back each
+     * statement's result (ADR-0044, spec/dialects.md "Statement batching"). In PHP only SQL Server does (one multi-statement
+     * text read with `nextRowset()`); `pdo_sqlite` prepares one statement and `pdo_pgsql` cannot carry per-statement results,
+     * so under `BatchingMode::Auto` their planned messages run one statement at a time. Consulted by `Db::batchingInEffect()`.
+     */
+    public function supportsStatementBatching(): bool;
+
+    /**
+     * The most bound parameters one message may carry, or null for no cap (SQL Server: 2098 — `sp_executesql` takes 2100, two
+     * of them its own). Part of the batching plan (spec/session.md "Batching", rule 3), so every dialect forms the same
+     * messages whatever its driver can do.
+     */
+    public function maxParametersPerMessage(): ?int;
+
     // --- criteria rendering (§10.4, ADR-0020) ---------------------------------------------
 
     /** Renders the limit/offset clause from pre-bound parameter names; either may be null. */

@@ -14,14 +14,19 @@ use SimpleOrm\Metadata\MappingOptions;
 
 /**
  * Options fixed at {@see Db::open}: the dialect, metadata configuration, the type-handler registry (§7.17),
- * the tracking mode (ADR-0034 add.1 — `Untracked` by default, the Level 0–2 session exactly), and the session
- * clock the declared hooks write (Level 3 M3, spec/hooks.md "The session clock").
+ * the tracking mode (ADR-0034 add.1 — `Untracked` by default, the Level 0–2 session exactly), the session
+ * clock the declared hooks write (Level 3 M3, spec/hooks.md "The session clock"), and the statement-batching option
+ * (Level 4, ADR-0044 — `Off` by default, the Level 0–3 behaviour exactly; spec/session.md "Batching").
  */
 final readonly class DbOptions
 {
     /**
      * @param (Closure(): DateTimeImmutable)|null $clock the instant `#[CreatedAt]`/`#[UpdatedAt]` write — UTC, the wall
      *        clock when null; tests and the conformance runners fix it
+     * @param BatchingMode $batching `Off` (one message per statement) or `Auto` (the statements of one flush or one
+     *        explicit batch go out in as few messages as the plan allows)
+     * @param int $maxStatementsPerMessage the most statements one message carries, 100 by default; below 1 is an
+     *        `InvalidArgumentException` when the session opens
      */
     public function __construct(
         public Dialect $dialect,
@@ -29,6 +34,8 @@ final readonly class DbOptions
         public TypeHandlerRegistry $typeHandlers = new TypeHandlerRegistry(),
         public TrackingMode $tracking = TrackingMode::Untracked,
         public ?Closure $clock = null,
+        public BatchingMode $batching = BatchingMode::Off,
+        public int $maxStatementsPerMessage = 100,
     ) {
     }
 

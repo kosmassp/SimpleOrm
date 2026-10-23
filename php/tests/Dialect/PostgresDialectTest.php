@@ -62,6 +62,13 @@ final class PostgresDialectTest extends TestCase
     }
 
     #[Test]
+    public function statement_batching_is_sequential_in_php_because_pdo_pgsql_cannot_carry_per_statement_results(): void
+    {
+        self::assertFalse($this->dialect->supportsStatementBatching());
+        self::assertNull($this->dialect->maxParametersPerMessage());
+    }
+
+    #[Test]
     public function quote_identifier_always_double_quotes_and_doubles_an_embedded_quote(): void
     {
         self::assertSame('"users"', $this->dialect->quoteIdentifier('users'));

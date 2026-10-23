@@ -6,6 +6,7 @@ namespace SimpleOrm\Session;
 
 use Closure;
 use Generator;
+use InvalidArgumentException;
 use LogicException;
 use PDO;
 use PDOStatement;
@@ -63,6 +64,9 @@ final class Db
     /** The schedule and the ordered flush; null in an untracked session — the unit of work needs the map and the snapshots (ADR-0034 §7c M2). */
     private readonly ?DbUnitOfWork $unitOfWork;
 
+    /** The test hook of {@see observeMessages()}; null in every real session. */
+    private ?Closure $messageObserver = null;
+
     private function __construct(
         PDO $connection,
         private readonly DbOptions $options,
@@ -82,9 +86,18 @@ final class Db
         $this->unitOfWork = $this->tracking !== null ? new DbUnitOfWork($this, $this->tracking) : null;
     }
 
-    /** Opens the connection now (§7.17): a failed open leaves nothing behind. */
+    /**
+     * Opens the connection now (§7.17): a failed open leaves nothing behind. A `maxStatementsPerMessage` below 1 is the
+     * language's argument error, raised before anything opens (ADR-0044, spec/session.md "Batching").
+     */
     public static function open(string $connectionString, DbOptions $options): self
     {
+        if ($options->maxStatementsPerMessage < 1) {
+            throw new InvalidArgumentException(
+                "maxStatementsPerMessage must be at least 1, got {$options->maxStatementsPerMessage}",
+            );
+        }
+
         return new self($options->dialect->createConnection($connectionString), $options);
     }
 
@@ -817,6 +830,33 @@ final class Db
      */
     public function insert(object $entity): void
     {
+        $this->runImmediate($this->prepareInsert($entity));
+    }
+
+    /**
+     * Runs one prepared statement on its own round trip — a message of one, the Level 0–3 path of every immediate write
+     * (ADR-0044): execute, read what the statement returns, let it judge and apply that. Anything that fails puts back what
+     * preparing moved on the instance and propagates unchanged.
+     */
+    private function runImmediate(PreparedWrite $write): void
+    {
+        try {
+            $statement = $this->connection()->prepare(SqlPlaceholders::toPdo($write->sql));
+            PdoBinder::bindAndExecute($statement, $write->parameters);
+            $write->complete(ResultReader::read($statement, $write->result, $this->options->dialect->reportsAffectedRowsBySelect()));
+        } catch (Throwable $failure) {
+            $write->undo();
+
+            throw $failure;
+        }
+    }
+
+    /**
+     * The prepare half of an insert (ADR-0044): the gates, the client key, the created-at fill, the rendered SQL, and the
+     * converted row. Completing it writes a database-generated key back onto the entity and registers the instance.
+     */
+    private function prepareInsert(object $entity): PreparedWrite
+    {
         $map = $this->maps->load($entity::class);
         if (!$map->kind->isWritable()) {
             throw new SimpleOrmException(
@@ -842,24 +882,57 @@ final class Db
             $this->tracking?->identityFor($map, $entity);
         }
 
-        $sql = SqlPlaceholders::toPdo($this->options->dialect->insertSql($map));
-        $statement = $this->connection()->prepare($sql);
+        $sql = $this->options->dialect->insertSql($map);
 
         // The hooks run after the gates (spec/hooks.md Clarifications); a failed statement puts created-at back to unset.
         $restoreCreatedAt = $this->fillCreatedAt($map, $entity);
         try {
-            $this->runInsert($map, $entity, $statement);
+            $parameters = $this->insertParameters($map, $entity);
         } catch (Throwable $failure) {
             $restoreCreatedAt();
 
             throw $failure;
         }
 
-        $this->tracking?->register($map, $entity);
+        // The key is column 0 of the first result that has columns: `returning` yields it first on SQLite and
+        // PostgreSQL; SQL Server's unnamed `scope_identity()` scalar follows the insert's own row-count result
+        // as the batch's next rowset (spec/dialects.md "Generated keys").
+        $generatedKey = $map->keyStrategy === KeyStrategy::DatabaseGenerated ? $map->keyProperties[0] : null;
+        $restoreKey = $generatedKey?->remember($entity);
+
+        return new PreparedWrite(
+            sql: $sql,
+            parameters: $parameters,
+            result: $generatedKey !== null ? ResultKind::Key : ResultKind::None,
+            complete: function (mixed $key) use ($map, $entity, $generatedKey): int {
+                if ($generatedKey !== null) {
+                    $generatedKey->setValue($entity, $this->converter->fromDatabase(
+                        $key,
+                        $generatedKey->type,
+                        $generatedKey->phpType,
+                        "{$map->entityName()}.{$generatedKey->propertyName()}",
+                    ));
+                }
+
+                $this->tracking?->register($map, $entity);
+
+                return 1;
+            },
+            undo: static function () use ($restoreKey, $restoreCreatedAt): void {
+                if ($restoreKey !== null) {
+                    $restoreKey();
+                }
+
+                $restoreCreatedAt();
+            },
+            instance: $entity,
+            insertsGeneratedKey: $generatedKey !== null,
+            identity: $this->entityIdentity($map, $entity),
+        );
     }
 
-    /** Binds the row, executes the insert, and writes a database-generated key back onto the entity. */
-    private function runInsert(EntityMap $map, object $entity, PDOStatement $statement): void
+    /** The row an insert binds: every non-generated column, converted by its property's rules. @return array<string, mixed> */
+    private function insertParameters(EntityMap $map, object $entity): array
     {
         $parameters = [];
         foreach ($map->properties as $property) {
@@ -875,27 +948,7 @@ final class Db
             );
         }
 
-        PdoBinder::bindAndExecute($statement, $parameters);
-
-        if ($map->keyStrategy === KeyStrategy::DatabaseGenerated) {
-            // The key is column 0 of the first result that has columns: `returning` yields it first on SQLite and
-            // PostgreSQL; SQL Server's unnamed `scope_identity()` scalar follows the insert's own row-count result
-            // as the batch's next rowset (spec/dialects.md "Generated keys").
-            while ($statement->columnCount() === 0 && $statement->nextRowset()) {
-                // advance to the rowset that carries the key
-            }
-
-            $row = $statement->fetch(PDO::FETCH_NUM);
-            $statement->closeCursor();
-            $keyProperty = $map->keyProperties[0];
-            $generated = is_array($row) ? ($row[0] ?? null) : null;
-            $keyProperty->setValue($entity, $this->converter->fromDatabase(
-                $generated,
-                $keyProperty->type,
-                $keyProperty->phpType,
-                "{$map->entityName()}.{$keyProperty->propertyName()}",
-            ));
-        }
+        return $parameters;
     }
 
     /**
@@ -912,6 +965,15 @@ final class Db
      */
     public function update(object $entity): void
     {
+        $write = $this->prepareUpdate($entity);
+        if ($write !== null) {
+            $this->runImmediate($write);
+        }
+    }
+
+    /** The prepare half of {@see update()}: null when a clean tracked instance issues no statement. */
+    private function prepareUpdate(object $entity): ?PreparedWrite
+    {
         $map = $this->requireWritableKeyed($entity::class);
         // Full-row semantics for validation: every navigation is checked (CRUD-004)
         // before the identity gate and before the snapshot decides what to write
@@ -920,35 +982,40 @@ final class Db
         $entry = $this->tracking?->identityFor($map, $entity);
 
         if ($entry !== null) {
-            $this->updateDirty($map, $entry);
-
-            return;
+            return $this->prepareDirtyUpdate($map, $entry);
         }
 
         // Bind SET values, key values, and the current version for the WHERE;
         // database-generated non-key columns are never written.
-        $this->executeUpdate($map, $entity, $this->options->dialect->updateSql($map), array_values(array_filter(
-            $map->properties,
-            static fn (PropertyMap $p): bool => $p->key || $p->version || !$p->generated,
-        )));
-
-        $this->tracking?->register($map, $entity);
+        return $this->updateWrite(
+            $map,
+            $entity,
+            $entity,
+            $this->options->dialect->updateSql($map),
+            array_values(array_filter(
+                $map->properties,
+                static fn (PropertyMap $p): bool => $p->key || $p->version || !$p->generated,
+            )),
+            function () use ($map, $entity): void {
+                $this->tracking?->register($map, $entity);
+            },
+        );
     }
 
     /**
      * The tracked update (ADR-0034 add.1): the dirty properties an update may write — never a
      * key, the version, or a database-generated column — through the ADR-0028 statement; none
-     * dirty means no round trip. The snapshot moves forward only for what was written (and the
+     * dirty means no statement. The snapshot moves forward only for what was written (and the
      * bumped version), so an unwritten change can never look clean.
      */
-    private function updateDirty(EntityMap $map, TrackedInstance $entry): void
+    private function prepareDirtyUpdate(EntityMap $map, TrackedInstance $entry): ?PreparedWrite
     {
         $dirty = $this->tracking?->writableDirtyProperties($entry) ?? [];
         // Only key/version/generated values differing is clean: no statement, no snapshot change
         // (spec/session.md Clarifications, ADR-0035). The CRUD-004 check likewise covers only the
         // FK properties actually written, so a clean instance is never refused.
         if ($dirty === []) {
-            return;
+            return null;
         }
 
         // The [UpdatedAt] stamp joins the SET of a write that changes the row — but was never what made the
@@ -960,8 +1027,16 @@ final class Db
             $bound[] = $map->versionProperty;
         }
 
-        $this->executeUpdate($map, $entity, $this->options->dialect->updateOnlySql($map, $set), $bound);
-        $this->tracking?->resnapshotWritten($entry, $set);
+        return $this->updateWrite(
+            $map,
+            $entity,
+            $entity,
+            $this->options->dialect->updateOnlySql($map, $set),
+            $bound,
+            function () use ($entry, $set): void {
+                $this->tracking?->resnapshotWritten($entry, $set);
+            },
+        );
     }
 
     /**
@@ -977,6 +1052,16 @@ final class Db
      * @param list<string> $properties
      */
     public function updateOnly(object $entity, array $properties): void
+    {
+        $this->runImmediate($this->prepareUpdateOnly($entity, $properties));
+    }
+
+    /**
+     * The prepare half of {@see updateOnly()}.
+     *
+     * @param list<string> $properties
+     */
+    private function prepareUpdateOnly(object $entity, array $properties): PreparedWrite
     {
         $map = $this->requireWritableKeyed($entity::class);
         $set = self::resolveUpdateList($map, $properties);
@@ -994,11 +1079,18 @@ final class Db
             $bound[] = $map->versionProperty;
         }
 
-        $this->executeUpdate($map, $entity, $this->options->dialect->updateOnlySql($map, $set), $bound);
-
-        if ($entry !== null) {
-            $this->tracking?->resnapshotWritten($entry, $set);
-        }
+        return $this->updateWrite(
+            $map,
+            $entity,
+            $entity,
+            $this->options->dialect->updateOnlySql($map, $set),
+            $bound,
+            function () use ($entry, $set): void {
+                if ($entry !== null) {
+                    $this->tracking?->resnapshotWritten($entry, $set);
+                }
+            },
+        );
     }
 
     /**
@@ -1063,22 +1155,33 @@ final class Db
     }
 
     /**
-     * The shared tail of every update (§7.15–16): stamp `[UpdatedAt]` (every write that changes a row
-     * takes the session clock, spec/hooks.md), bind, execute, judge the row count, bump the version. A
-     * failed statement puts the previous stamp back, so a refused write leaves no value behind that an
-     * unwritten row never had.
+     * The prepare half shared by every update and soft delete (§7.15–16): stamp `[UpdatedAt]` (every write that changes
+     * a row takes the session clock, spec/hooks.md) and convert the bound values. Completing it judges the statement's
+     * count — zero rows is `CRUD-010` with a version column, `CRUD-001` without — bumps the version, and runs `$applied`
+     * (the tracking step). Undoing it puts the previous stamp back, so a refused write leaves no value behind that an
+     * unwritten row never had, plus whatever `$undoExtra` restores.
      *
      * @param list<PropertyMap> $bound
+     * @param object|null $planned the instance plan rule 1a keys on (null for a by-key soft delete's scratch instance)
+     * @param Closure(): void $applied
+     * @param (Closure(): void)|null $undoExtra
      */
-    private function executeUpdate(EntityMap $map, object $entity, string $sql, array $bound): void
-    {
+    private function updateWrite(
+        EntityMap $map,
+        object $entity,
+        ?object $planned,
+        string $sql,
+        array $bound,
+        Closure $applied,
+        ?Closure $undoExtra = null,
+    ): PreparedWrite {
         // A failed write leaves the instance as it was (spec/hooks.md Clarifications): the previous stamp is put back, so a
         // refused write leaves nothing a row never held. The clock is read after the callers' gates.
         $stamp = $map->updatedAtProperty();
         $restoreStamp = $stamp?->remember($entity);
         $stamp?->setValue($entity, $this->options->now());
         try {
-            $this->runUpdate($map, $entity, $sql, $bound);
+            $parameters = $this->updateParameters($map, $entity, $bound);
         } catch (Throwable $failure) {
             if ($restoreStamp !== null) {
                 $restoreStamp();
@@ -1086,39 +1189,37 @@ final class Db
 
             throw $failure;
         }
+
+        return new PreparedWrite(
+            sql: $sql,
+            parameters: $parameters,
+            result: ResultKind::Count,
+            complete: function (mixed $count) use ($map, $entity, $applied): int {
+                $this->judgeUpdate($map, $entity, (int) $count);
+                $applied();
+
+                return (int) $count;
+            },
+            undo: static function () use ($restoreStamp, $undoExtra): void {
+                if ($restoreStamp !== null) {
+                    $restoreStamp();
+                }
+
+                if ($undoExtra !== null) {
+                    $undoExtra();
+                }
+            },
+            instance: $planned,
+            identity: $this->entityIdentity($map, $entity),
+        );
     }
 
     /**
-     * The affected-row count of an executed generated UPDATE or DELETE, the one number `CRUD-010` and `CRUD-001` judge
-     * (ADR-0040 add.3): the driver's `rowCount()`, unless the dialect renders the statement to end in a select of its
-     * own count (SQL Server, whose driver adds an AFTER trigger's rows) — then the batch's first scalar. `pdo_odbc`
-     * hands that scalar back as a string, hence the cast. Registry commands never come through here.
+     * @param list<PropertyMap> $bound
+     * @return array<string, mixed>
      */
-    private function affectedRows(PDOStatement $statement): int
+    private function updateParameters(EntityMap $map, object $entity, array $bound): array
     {
-        if (!$this->options->dialect->reportsAffectedRowsBySelect()) {
-            return $statement->rowCount();
-        }
-
-        // The count is the first result that has a column; a result without columns is a row-count result.
-        while ($statement->columnCount() === 0 && $statement->nextRowset()) {
-            // advance to the rowset that carries the count
-        }
-
-        $count = $statement->columnCount() === 0 ? false : $statement->fetchColumn();
-        $statement->closeCursor();
-        if ($count === false || $count === null || !is_numeric($count)) {
-            throw new LogicException('the generated write did not report its affected-row count; the dialect renders it with a trailing select');
-        }
-
-        return (int) $count;
-    }
-
-    /** @param list<PropertyMap> $bound */
-    private function runUpdate(EntityMap $map, object $entity, string $sql, array $bound): void
-    {
-        $statement = $this->connection()->prepare(SqlPlaceholders::toPdo($sql));
-
         $parameters = [];
         foreach ($bound as $property) {
             $parameters[$property->columnName] = $this->converter->toParameter(
@@ -1129,9 +1230,16 @@ final class Db
             );
         }
 
-        PdoBinder::bindAndExecute($statement, $parameters);
+        return $parameters;
+    }
 
-        if ($this->affectedRows($statement) === 0) {
+    /**
+     * Judges an update's affected-row count — the one number `CRUD-010` and `CRUD-001` read (ADR-0040 add.3; the driver's, or
+     * the dialect's reported count, by the time it gets here) — and bumps the in-memory version on success.
+     */
+    private function judgeUpdate(EntityMap $map, object $entity, int $count): void
+    {
+        if ($count === 0) {
             if ($map->versionProperty !== null) {
                 throw new ConcurrencyException(
                     $map->entityName(),
@@ -1165,6 +1273,12 @@ final class Db
      */
     public function delete(string $entityType, mixed $keyOrEntity): void
     {
+        $this->runImmediate($this->prepareDelete($entityType, $keyOrEntity));
+    }
+
+    /** The prepare half of {@see delete()}: both forms, and the soft-delete update where the entity declares the flag. */
+    private function prepareDelete(string $entityType, mixed $keyOrEntity): PreparedWrite
+    {
         $map = $this->requireWritableKeyed($entityType);
 
         $byEntity = is_object($keyOrEntity) && $keyOrEntity instanceof $entityType;
@@ -1177,16 +1291,15 @@ final class Db
 
         $flag = $map->softDeleteProperty();
         if ($flag !== null) {
-            $this->softDelete($map, $flag, $keyOrEntity, $byEntity);
-
-            return;
+            return $this->prepareSoftDelete($map, $flag, $keyOrEntity, $byEntity);
         }
 
-        $sql = SqlPlaceholders::toPdo($this->options->dialect->deleteSql($map, $checkVersion));
-        $statement = $this->connection()->prepare($sql);
+        $sql = $this->options->dialect->deleteSql($map, $checkVersion);
 
         $parameters = [];
+        $identity = null;
         if ($byEntity) {
+            $identity = $this->entityIdentity($map, $keyOrEntity);
             foreach ($map->keyProperties as $key) {
                 $parameters[$key->columnName] = $this->converter->toParameter(
                     $key->getValue($keyOrEntity),
@@ -1205,6 +1318,7 @@ final class Db
             }
         } else {
             $keyValues = self::validateKey($map, $keyOrEntity);
+            $identity = self::writeIdentity($map, $keyValues);
             foreach ($keyValues as $i => $value) {
                 $parameters[$map->keyProperties[$i]->columnName] = $this->converter->toParameter(
                     $value,
@@ -1214,28 +1328,40 @@ final class Db
             }
         }
 
-        PdoBinder::bindAndExecute($statement, $parameters);
+        return new PreparedWrite(
+            sql: $sql,
+            parameters: $parameters,
+            result: ResultKind::Count,
+            complete: function (mixed $count) use ($map, $keyOrEntity, $byEntity, $checkVersion): int {
+                if ((int) $count === 0) {
+                    if ($checkVersion) {
+                        throw new ConcurrencyException($map->entityName(), 'delete affected no rows: the version is stale or the row is gone');
+                    }
 
-        if ($this->affectedRows($statement) === 0) {
-            if ($checkVersion) {
-                throw new ConcurrencyException($map->entityName(), 'delete affected no rows: the version is stale or the row is gone');
-            }
+                    throw new SimpleOrmException(
+                        'CRUD-001',
+                        $map->entityName(),
+                        sprintf(
+                            'delete affected no rows: no row with key (%s)',
+                            $byEntity ? self::formatKeyOf($map, $keyOrEntity) : self::formatKey($keyOrEntity),
+                        ),
+                    );
+                }
 
-            throw new SimpleOrmException(
-                'CRUD-001',
-                $map->entityName(),
-                sprintf(
-                    'delete affected no rows: no row with key (%s)',
-                    $byEntity ? self::formatKeyOf($map, $keyOrEntity) : self::formatKey($keyOrEntity),
-                ),
-            );
-        }
+                // A delete forgets the key: the deleted instance is no longer tracked.
+                $this->tracking?->forget(
+                    $map,
+                    $byEntity ? $map->getKeyValues($keyOrEntity) : self::validateKey($map, $keyOrEntity),
+                    $byEntity ? $keyOrEntity : null,
+                );
 
-        // A delete forgets the key: the deleted instance is no longer tracked.
-        $this->tracking?->forget(
-            $map,
-            $byEntity ? $map->getKeyValues($keyOrEntity) : self::validateKey($map, $keyOrEntity),
-            $byEntity ? $keyOrEntity : null,
+                return (int) $count;
+            },
+            undo: static function (): void {
+                // A hard delete moves nothing on the instance.
+            },
+            instance: $byEntity ? $keyOrEntity : null,
+            identity: $identity,
         );
     }
 
@@ -1246,7 +1372,7 @@ final class Db
      * flag, and stamp on a scratch instance and refuses a versioned entity (`CRUD-012`: it cannot bump a version it
      * does not know). Zero rows is `CRUD-001`. Either way the key is forgotten afterwards, like any deleted row.
      */
-    private function softDelete(EntityMap $map, PropertyMap $flag, mixed $keyOrEntity, bool $byEntity): void
+    private function prepareSoftDelete(EntityMap $map, PropertyMap $flag, mixed $keyOrEntity, bool $byEntity): PreparedWrite
     {
         $instance = $byEntity ? $keyOrEntity : $this->scratchForKey($map, $keyOrEntity);
         $restoreFlag = $flag->remember($instance);
@@ -1259,14 +1385,22 @@ final class Db
         }
 
         try {
-            $this->executeUpdate($map, $instance, $this->options->dialect->updateOnlySql($map, $set), $bound);
+            return $this->updateWrite(
+                $map,
+                $instance,
+                $byEntity ? $instance : null,
+                $this->options->dialect->updateOnlySql($map, $set),
+                $bound,
+                function () use ($map, $instance, $byEntity): void {
+                    $this->tracking?->forget($map, $map->getKeyValues($instance), $byEntity ? $instance : null);
+                },
+                $restoreFlag,
+            );
         } catch (Throwable $failure) {
             $restoreFlag();
 
             throw $failure;
         }
-
-        $this->tracking?->forget($map, $map->getKeyValues($instance), $byEntity ? $instance : null);
     }
 
     /**
@@ -1413,6 +1547,264 @@ final class Db
             substr($hex, 16, 4),
             substr($hex, 20, 12),
         );
+    }
+
+    // --- statement batching (Level 4, ADR-0044, spec/session.md "Batching") --------------------------------
+
+    /**
+     * Whether the option is `Auto` and this implementation's driver for the dialect sends a planned message as **one**
+     * round trip with a result per statement (`Dialect::supportsStatementBatching()`). Where it is false under `Auto` —
+     * SQLite and PostgreSQL in PHP — the plan is formed all the same and each message's statements run one at a time, in
+     * order, reusing one prepared statement per distinct text within the call: nothing refuses, one configuration serves
+     * every database, and this question says which realization is in force.
+     */
+    public function batchingInEffect(): bool
+    {
+        return $this->options->batching === BatchingMode::Auto && $this->options->dialect->supportsStatementBatching();
+    }
+
+    /**
+     * Starts an explicit batch (ADR-0044): a queue bound to this session of writes and registry commands, sent together by
+     * {@see DbBatch::send()}. Queuing does no I/O; the send is the visible round trip(s). Reads are not batched.
+     */
+    public function batch(): DbBatch
+    {
+        return new DbBatch($this);
+    }
+
+    /**
+     * The test hook: `$observer` is told the statement count of every message a flush or a batch send forms, as the
+     * message is sent — registry commands counted too. It is how the conformance runner checks the plan
+     * (`expectMessages`, spec/session.md "The step scripts"); **not part of the public API** — the plan is the spec's,
+     * the grouping is not something application code branches on. Pass null to remove it.
+     *
+     * @param (Closure(int): void)|null $observer
+     * @internal
+     */
+    public function observeMessages(?Closure $observer): void
+    {
+        $this->messageObserver = $observer;
+    }
+
+    /**
+     * Runs the operations of one call — a flush, or the send of an explicit batch — as messages by the plan: inside the
+     * session's transaction when one is active, else one this call begins, commits after the last message, and rolls back
+     * on failure. A failed call undoes every in-memory effect of every statement it prepared (keys, versions, stamps, flags,
+     * tracking), so the instances are as they were before it; inside a caller's transaction the rows of the statements that
+     * ran are the caller's to roll back (ADR-0044). An empty call begins no transaction.
+     *
+     * @param list<WriteOperation> $operations
+     * @internal used by {@see DbBatch} and {@see DbUnitOfWork}
+     */
+    public function runCall(array $operations): BatchResult
+    {
+        if ($operations === []) {
+            return new BatchResult([], 0);
+        }
+
+        $connection = $this->connection();
+        $ownsTransaction = !$connection->inTransaction();
+        if ($ownsTransaction) {
+            $connection->beginTransaction();
+        }
+
+        $journal = new FlushJournal($this->tracking);
+        try {
+            $dialect = $this->options->dialect;
+            $result = (new WriteRun(
+                $connection,
+                $this->options->batching,
+                $this->options->maxStatementsPerMessage,
+                $dialect->maxParametersPerMessage(),
+                $dialect->reportsAffectedRowsBySelect(),
+                $this->batchingInEffect(),
+                $this->messageObserver,
+            ))->run($operations, $journal);
+
+            if ($ownsTransaction) {
+                $connection->commit();
+            }
+        } catch (Throwable $failure) {
+            $journal->rollback();
+            if ($ownsTransaction && $connection->inTransaction()) {
+                $connection->rollBack();
+            }
+
+            throw $failure;
+        }
+
+        return $result;
+    }
+
+    /**
+     * An insert as one operation of a batched call: nothing runs until the call does. `$beforeRecording` is a step the
+     * caller needs done to the instance before its key properties are remembered (a flush's key flow); `$owners` are the
+     * cascade owners the instance takes its key from — dependencies plan rule 1b reads beside its many-to-one navigations.
+     *
+     * @param (Closure(): void)|null $beforeRecording
+     * @param list<object> $owners
+     * @internal
+     */
+    public function insertOperation(object $entity, ?Closure $beforeRecording = null, array $owners = []): WriteOperation
+    {
+        return new WriteOperation(
+            $entity,
+            fn (): ?string => $this->entityIdentity($this->maps->load($entity::class), $entity),
+            fn (): array => [...$this->navigationParents($entity), ...$owners],
+            function (FlushJournal $journal) use ($entity, $beforeRecording): void {
+                if ($beforeRecording !== null) {
+                    $beforeRecording();
+                }
+
+                $journal->recordInsert($this->maps->load($entity::class), $entity);
+            },
+            fn (): ?PreparedWrite => $this->prepareInsert($entity),
+        );
+    }
+
+    /** @internal */
+    public function updateOperation(object $entity): WriteOperation
+    {
+        return new WriteOperation(
+            $entity,
+            fn (): ?string => $this->entityIdentity($this->maps->load($entity::class), $entity),
+            fn (): array => $this->navigationParents($entity),
+            fn (FlushJournal $journal) => $journal->recordUpdate($this->maps->load($entity::class), $entity),
+            fn (): ?PreparedWrite => $this->prepareUpdate($entity),
+        );
+    }
+
+    /**
+     * @param list<string> $properties
+     * @internal
+     */
+    public function updateOnlyOperation(object $entity, array $properties): WriteOperation
+    {
+        return new WriteOperation(
+            $entity,
+            fn (): ?string => $this->entityIdentity($this->maps->load($entity::class), $entity),
+            fn (): array => $this->navigationParents($entity),
+            fn (FlushJournal $journal) => $journal->recordUpdate($this->maps->load($entity::class), $entity),
+            fn (): ?PreparedWrite => $this->prepareUpdateOnly($entity, $properties),
+        );
+    }
+
+    /** The key or the entity form, dispatched as {@see delete()} is. @internal */
+    public function deleteOperation(string $entityType, mixed $keyOrEntity): WriteOperation
+    {
+        $entity = is_object($keyOrEntity) && $keyOrEntity instanceof $entityType ? $keyOrEntity : null;
+
+        return new WriteOperation(
+            $entity,
+            // A delete by key compares its key argument, as given; the entity form its instance's key.
+            function () use ($entityType, $entity, $keyOrEntity): ?string {
+                $map = $this->maps->load($entityType);
+
+                return $entity !== null ? $this->entityIdentity($map, $entity) : self::keyArgumentIdentity($map, $keyOrEntity);
+            },
+            fn (): array => $entity === null ? [] : $this->navigationParents($entity),
+            function (FlushJournal $journal) use ($entityType, $entity): void {
+                if ($entity !== null) {
+                    $journal->recordDelete($this->maps->load($entityType), $entity);
+                }
+            },
+            fn (): ?PreparedWrite => $this->prepareDelete($entityType, $keyOrEntity),
+        );
+    }
+
+    /** A registry command as one operation of a batched call: its args bind when the call prepares it. @internal */
+    public function commandOperation(Command $command, object $args): WriteOperation
+    {
+        return new WriteOperation(
+            null,
+            static fn (): ?string => null,
+            static fn (): array => [],
+            static function (FlushJournal $journal): void {
+                // A registry command moves nothing on an instance.
+            },
+            fn (): ?PreparedWrite => $this->prepareCommand($command, $args),
+        );
+    }
+
+    /** The prepare half of a registry command: its args bound, the SQL kept in `@name` form for a multi-statement text. */
+    private function prepareCommand(Command $command, object $args): PreparedWrite
+    {
+        $bound = ParameterBinder::bindKeepingPlaceholders(
+            $command->source->sql,
+            $args,
+            $command->source->description,
+            $this->converter,
+            $this->options->dialect->supportsArrayParameters(),
+        );
+
+        return new PreparedWrite(
+            sql: $bound->sql,
+            parameters: $bound->parameters,
+            result: ResultKind::CommandCount,
+            complete: static fn (mixed $count): int => (int) $count,
+            undo: static function (): void {
+                // Nothing in memory to put back.
+            },
+        );
+    }
+
+    /**
+     * The (entity type, key) an instance stands on, when its key is **set** — plan rule 1a's key clause (spec/session.md
+     * "Batching"): two statements of one call on different instances with the same set key must not share a message, or
+     * the identity gate would read a map the message has not yet updated. Null for a keyless map or an unset key.
+     */
+    private function entityIdentity(EntityMap $map, object $entity): ?string
+    {
+        return $map->keyProperties === [] ? null : self::writeIdentity($map, $map->getKeyValues($entity));
+    }
+
+    /** A delete by key's identity from its argument as given (a scalar, or a list in key order); null when it names no set key. */
+    private static function keyArgumentIdentity(EntityMap $map, mixed $key): ?string
+    {
+        $parts = is_array($key) ? array_values($key) : [$key];
+
+        return count($parts) === count($map->keyProperties) ? self::writeIdentity($map, $parts) : null;
+    }
+
+    /**
+     * The identity of a key tuple: the entity type and the value-wise key token, unless the key is not set — a null part,
+     * a database-generated key at its default, an empty client GUID (the "unset key" of spec/unit-of-work.md "Detach and
+     * merge"). A natural key's default value is a key.
+     *
+     * @param list<mixed> $keyValues
+     */
+    private static function writeIdentity(EntityMap $map, array $keyValues): ?string
+    {
+        if ($keyValues === [] || (new KeyTuple($keyValues))->hasNullPart() || self::isUnsetGeneratedKey($map, $keyValues)) {
+            return null;
+        }
+
+        return $map->entityType . '|' . (new KeyTuple($keyValues))->token();
+    }
+
+    /**
+     * The targets of an instance's non-null many-to-one navigations — what plan rule 1b asks about: a statement on an
+     * instance that points at one inserted in the current message (with a key the database generates) must wait for it.
+     *
+     * @return list<object>
+     */
+    private function navigationParents(object $entity): array
+    {
+        $map = $this->maps->load($entity::class);
+        $parents = [];
+        foreach ($map->relationships as $relationship) {
+            if ($relationship->kind !== RelationshipKind::ManyToOne) {
+                continue;
+            }
+
+            $property = $map->navigationProperty($relationship);
+            $target = $property->isInitialized($entity) ? $property->getValue($entity) : null;
+            if ($target !== null) {
+                $parents[] = $target;
+            }
+        }
+
+        return $parents;
     }
 
     // --- statement-backed entities (ADR-0010): the type IS the query ------------

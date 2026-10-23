@@ -19,6 +19,7 @@ use SimpleOrm\Migrations\SqlVersionStep;
 use SimpleOrm\Query\Criteria;
 use SimpleOrm\Query\FetchMode;
 use SimpleOrm\Query\SortOrder;
+use SimpleOrm\Session\BatchingMode;
 use SimpleOrm\Session\Command;
 use SimpleOrm\Session\Db;
 use SimpleOrm\Session\DbOptions;
@@ -41,6 +42,7 @@ use SimpleOrm\Tests\Sample\Models\TransactionDetail;
 use SimpleOrm\Tests\Sample\Models\User;
 use SimpleOrm\Tests\Sample\Models\UserProfile;
 use SimpleOrm\Tests\Sample\Models\UserRole;
+use SimpleOrm\Tests\Support\BatchingLiveScenarios;
 use SimpleOrm\Tests\Support\ConformanceClock;
 use SimpleOrm\Tests\Support\BytesRoundTrip;
 use SimpleOrm\Tests\Support\SampleDatabase;
@@ -704,6 +706,58 @@ final class SqlServerLiveTest extends TestCase
         self::assertEquals($clock(), $stored->updatedAtUtc);
         self::assertEquals($clock(), $stored->createdAtUtc);
         self::assertSame(1, self::rowCount($observer, TransactionDetail::class));
+    }
+
+    // --- statement batching (Level 4 item 3, ADR-0044) ----------------------------------------------------------------------------
+
+    /**
+     * A session with `Batching = Auto` on the sample schema and a plain observer on the same database. SQL Server is the
+     * one dialect that batches in PHP: a planned message is one multi-statement text, placeholders renamed apart, its results
+     * read with `nextRowset()` (a registry command, whose count a text cannot tell from its neighbours', goes on its own).
+     *
+     * @return array{0: Db, 1: Db}
+     */
+    private function openBatching(TrackingMode $tracking = TrackingMode::Untracked): array
+    {
+        $db = $this->openSample(new DbOptions(new SqlServerDialect(), tracking: $tracking, batching: BatchingMode::Auto));
+        $observer = $this->session();
+        $this->extraSessions[] = $observer;
+
+        return [$db, $observer];
+    }
+
+    #[Test]
+    public function a_batched_flush_flows_generated_keys_across_messages_one_round_trip_each(): void
+    {
+        [$db, $observer] = $this->openBatching(TrackingMode::Tracked);
+
+        BatchingLiveScenarios::aBatchedFlushFlowsGeneratedKeysAcrossMessages($db, $observer, inEffect: true, expectedMessages: [2, 2, 2]);
+    }
+
+    #[Test]
+    public function an_explicit_batch_carries_every_operation(): void
+    {
+        [$db, $observer] = $this->openBatching();
+
+        // The generated updates read their reported counts, and plan rule 2 keeps a result-reading statement behind no
+        // registry command: the soft delete after the command starts the second message.
+        BatchingLiveScenarios::anExplicitBatchCarriesEveryOperation($db, $observer, inEffect: true, expectedMessages: [4, 1]);
+    }
+
+    #[Test]
+    public function a_stale_version_in_the_middle_of_a_message_fails_the_send_and_leaves_nothing_applied(): void
+    {
+        [$db, $observer] = $this->openBatching();
+
+        BatchingLiveScenarios::aStaleVersionInTheMiddleOfAMessageFailsTheSendAndLeavesNothingApplied($db, $observer);
+    }
+
+    #[Test]
+    public function a_failing_statement_in_the_middle_of_a_message_fails_the_send_with_the_providers_error(): void
+    {
+        [$db, $observer] = $this->openBatching();
+
+        BatchingLiveScenarios::aFailingStatementInTheMiddleOfAMessageFailsTheSendWithTheProvidersError($db, $observer);
     }
 
     // --- force sync through the seam (ADR-0043) ------------------------------------------------------------------------------------

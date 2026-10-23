@@ -58,6 +58,18 @@ var summary = await tracked.FlushAsync(ct);           // inserts in FK order (ge
                                                       // then every dirty tracked instance, then deletes children-first —
                                                       // in the session transaction, or one the flush opens and commits
 // UOW-004: a cycle among scheduled instances; UOW-005: a remove cascading over a never-loaded collection
+
+// Statement batching (Level 4, ADR-0044): Off by default; Auto sends the statements one call holds —
+// a flush, a batch send — in as few messages as the plan allows. No timer, nothing deferred past the call.
+await using var batched = await Db.OpenAsync(connectionString,
+    new DbOptions { Dialect = new PostgresDialect(), Batching = BatchingMode.Auto, MaxStatementsPerMessage = 100 }, ct);
+await using var batch = batched.Batch();             // queuing does no I/O
+batch.Insert(order);
+batch.UpdateOnly(user, [nameof(User.Name)]);
+batch.Execute(Commands.MarkShipped, new MarkShippedArgs(Id: 7));
+var result = await batch.SendAsync(ct);              // one transaction; result.Affected per operation, result.Messages
+// batched.BatchingInEffect: one round trip per message (SqlBatch / NpgsqlBatch on net10.0); SQLite runs the plan
+// statement by statement, reusing prepared commands. TX-003: a batch used after it was sent or disposed
 // (nothing loads implicitly); UOW-006: Persist of an instance scheduled for removal
 
 // Detach / merge (Level 3 M3): the session forgets an instance, or takes a detached copy's values back
@@ -581,8 +593,20 @@ the journal does not swamp the library):
 Tracking costs an identity lookup per row read and a snapshot per row registered;
 a flush sweeps every tracked instance (linear in the session's size, as in every
 snapshot-tracking ORM), so a session is a unit of work, not a process-wide cache.
-The reference does not batch: `Microsoft.Data.Sqlite` cannot, and the flush
-measures within the cost of the same inserts issued one by one.
+
+Statement batching (ADR-0044; `BatchBenchmarks`, `Off` against `Auto`, same
+machine; PostgreSQL 16.4 on loopback, so the round trip saved is the cheapest
+there is — over a network the gain grows with latency):
+
+| Path | SQLite `Off` → `Auto` | PostgreSQL `Off` → `Auto` |
+|---|---|---|
+| `Persist` × 100 + `Flush` (session opened per call) | 2.04 → 1.66 ms (noisy) | 19.5 → 5.1 ms (3.9×) |
+| 100 inserts, one explicit batch | 1.65 → 0.73 ms (2.3×) | 19.7 → 4.8 ms (4.1×) |
+| 100 registry commands, one explicit batch | 0.78 → 0.34 ms (2.3×) | 20.5 → 5.5 ms (3.8×) |
+
+On SQLite there is no round trip to save: `Auto` reuses one prepared command per
+statement text within the call. On PostgreSQL a message goes out as one
+`NpgsqlBatch`. Allocation is unchanged within a few percent.
 
 Numbers are machine-specific — run `dotnet run -c Release` in the benchmarks
 project for yours.

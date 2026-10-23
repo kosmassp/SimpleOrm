@@ -161,6 +161,14 @@ public sealed class BatchingTests(SqliteFixture fixture)
     public void A_command_holds_several_statements_only_outside_literals_and_comments(string sql, bool several)
         => Assert.Equal(several, SqlPlaceholders.HoldsSeveralStatements(sql));
 
+    [Fact]
+    public void System_functions_are_never_placeholders()
+    {
+        // Found by the PHP port (ADR-0044): the second @ of @@rowcount read as a placeholder.
+        Assert.Equal(["Id"], SqlPlaceholders.Find("update users set name = 'x' where id = @Id; select @@rowcount"));
+        Assert.Empty(SqlPlaceholders.Find("select @@identity"));
+    }
+
     /// <summary>The SQLite dialect with a parameter cap, to show rule 3 where SQLite has none.</summary>
     private sealed class CappedDialect(IDialect inner, int cap) : ForwardingDialect(inner)
     {

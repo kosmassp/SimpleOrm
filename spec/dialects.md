@@ -567,20 +567,38 @@ carry in a message on its own), never fewer, and never reorders.
   query). Plan rule 2 keeps a registry command's own result sets behind every
   result the session reads in its message, so they are never mistaken for one.
 - **Multi-statement text** (Go and PHP on SQL Server): the message is one
-  command text, its statements joined by `;` in order, sent as one
+  command text, its statements joined in order by `;` and a line break (so a
+  statement ending in a line comment cannot swallow the next), sent as one
   `sp_executesql`; each statement's placeholders are renamed apart by the
   session before joining — `@name` in the *i*-th statement (from 0) becomes
-  `@p<i>_name` (literals and comments untouched, as for IN-list expansion), and
-  the parameters are bound under the new names. SQL Server caps one
-  `sp_executesql` at 2100 parameters, two of them its own — hence
-  `MaxParametersPerMessage` 2098, applied by every implementation so the plan
-  stays the same. A statement whose own count the driver cannot tell apart from
-  its neighbours' (a registry command's count among other counted statements)
-  is sent on its own.
+  `@p<i>_name` (literals, comments, and `@@` system functions untouched, as for
+  IN-list expansion; the case of the new names is the implementation's, SQL
+  Server compares them case-insensitively), and the parameters are bound under
+  the new names. SQL Server caps one `sp_executesql` at 2100 parameters, two of
+  them its own — hence `MaxParametersPerMessage` 2098, applied by every
+  implementation so the plan stays the same. **A registry command is always
+  sent on its own** in this realization: its SQL may emit any number of counts
+  and result sets, which a multi-statement text cannot attribute. The results
+  are read in statement order, each result set to its end before the next, and
+  then **drained**: a failure in a statement whose result the session never
+  reads (a client-key insert, a trailing `set nocount off`) surfaces only when
+  the driver steps past it, and must fail the call before anything is judged
+  final or committed — never be discarded with the cursor.
+- **Draining applies to every one-round-trip realization**: after the last
+  result the session reads, the rest of the response is stepped through (C#
+  `NextResult` to the end, PHP `nextRowset`, Go `NextResultSet`; pgx reports a
+  pipelined failure on the queued query that raised it).
 - **A statement the driver cannot carry in a message**: Npgsql refuses more than
-  one SQL statement in one batch command, so the C# realization sends a
-  registry command whose SQL holds several statements on its own (the
-  generated statements are single statements on PostgreSQL).
+  one SQL statement in one batch command, and a pgx pipeline query is one
+  statement too, so C# and Go send a registry command whose SQL holds several
+  statements on its own (the generated statements are single statements on
+  PostgreSQL). "Several statements" is lexical: a `;` outside string literals and
+  comments with anything but whitespace or more `;` after it. (A parameterized
+  command of several statements fails on PostgreSQL immediately as well — the
+  extended protocol takes one statement; a parameterless one runs.)
+- **A cached plan inside a batched call** (Go, Clarification 15): a pipelined
+  statement that hits SQLSTATE 0A000 is surfaced as `TX-002` and never retried —
+  a batched call always runs in a transaction, which PostgreSQL has aborted.
 - **Transactions.** Every batched call runs in a transaction (the session's or
   its own), so a message is never a set of separately committed statements; a
   PostgreSQL pipeline's implicit transaction and SQL Server's per-RPC autocommit

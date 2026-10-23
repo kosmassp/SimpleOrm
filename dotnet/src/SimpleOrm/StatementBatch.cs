@@ -29,7 +29,7 @@ public sealed class StatementBatch : IAsyncDisposable
         where TEntity : class
     {
         Require(entity);
-        Enqueue(entity, entity, () => _db.Maps.Load<TEntity>(), map => _db.PrepareInsertFor(map, entity));
+        Enqueue(entity, entity, () => _db.Maps.Load<TEntity>(), map => _db.PrepareInsertFor(map, entity), map => Db.SetKeyOf(map, entity));
     }
 
     /// <summary>Queues the full-row update (<see cref="Db.UpdateAsync{TEntity}"/>; a clean tracked instance issues nothing).</summary>
@@ -37,7 +37,7 @@ public sealed class StatementBatch : IAsyncDisposable
         where TEntity : class
     {
         Require(entity);
-        Enqueue(entity, entity, () => _db.Maps.Load<TEntity>(), _ => _db.PrepareUpdateFor(entity));
+        Enqueue(entity, entity, () => _db.Maps.Load<TEntity>(), _ => _db.PrepareUpdateFor(entity), map => Db.SetKeyOf(map, entity));
     }
 
     /// <summary>Queues the update by column list (<see cref="Db.UpdateOnlyAsync{TEntity}"/>).</summary>
@@ -45,7 +45,7 @@ public sealed class StatementBatch : IAsyncDisposable
         where TEntity : class
     {
         Require(entity);
-        Enqueue(entity, entity, () => _db.Maps.Load<TEntity>(), _ => _db.PrepareUpdateOnlyFor(entity, properties));
+        Enqueue(entity, entity, () => _db.Maps.Load<TEntity>(), _ => _db.PrepareUpdateOnlyFor(entity, properties), map => Db.SetKeyOf(map, entity));
     }
 
     /// <summary>Queues the delete (<see cref="Db.DeleteAsync{TEntity}"/>): by key, or the entity's version-checked form.</summary>
@@ -54,7 +54,9 @@ public sealed class StatementBatch : IAsyncDisposable
     {
         Require(keyOrEntity);
         var entity = keyOrEntity as TEntity;
-        Enqueue(entity, entity, () => _db.Maps.Load<TEntity>(), _ => _db.PrepareDeleteFor<TEntity>(keyOrEntity));
+        Enqueue(
+            entity, entity, () => _db.Maps.Load<TEntity>(), _ => _db.PrepareDeleteFor<TEntity>(keyOrEntity),
+            map => entity is not null ? Db.SetKeyOf(map, entity) : Db.KeyArgumentOf(map, keyOrEntity));
     }
 
     /// <summary>Queues a registry command (<see cref="Db.ExecuteAsync{TArgs}"/>); its count is the driver's.</summary>
@@ -62,7 +64,7 @@ public sealed class StatementBatch : IAsyncDisposable
     {
         Require(command);
         RequireOpen();
-        _queued.Add(new Queued(null, static () => [], () => _db.PrepareCommand(command.Source, args!)));
+        _queued.Add(new Queued(null, static () => null, static () => [], () => _db.PrepareCommand(command.Source, args!)));
     }
 
     /// <summary>
@@ -87,11 +89,13 @@ public sealed class StatementBatch : IAsyncDisposable
         return default;
     }
 
-    private void Enqueue(object? instance, object? navigationsOf, Func<EntityMap> map, Func<EntityMap, PendingWrite?> prepare)
+    private void Enqueue(
+        object? instance, object? navigationsOf, Func<EntityMap> map, Func<EntityMap, PendingWrite?> prepare, Func<EntityMap, EntityKey?> key)
     {
         RequireOpen();
         _queued.Add(new Queued(
             instance,
+            () => key(map()),
             () => navigationsOf is null ? [] : _db.ManyToOneTargets(map(), navigationsOf),
             () => prepare(map())));
     }
@@ -113,8 +117,9 @@ public sealed class StatementBatch : IAsyncDisposable
         }
     }
 
-    /// <summary>One queued operation: the instance it writes (plan rule 1a), the instances whose keys it may read (rule 1b), and its preparation.</summary>
-    internal sealed record Queued(object? Instance, Func<IReadOnlyCollection<object>> Reads, Func<PendingWrite?> Prepare);
+    /// <summary>One queued operation: the instance it writes and its set key (plan rule 1a), the instances whose keys it may read (rule 1b), and its preparation.</summary>
+    internal sealed record Queued(
+        object? Instance, Func<EntityKey?> Key, Func<IReadOnlyCollection<object>> Reads, Func<PendingWrite?> Prepare);
 }
 
 /// <summary>

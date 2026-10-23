@@ -133,6 +133,7 @@ public sealed partial class Db
         Action? undoForget = null;
         return new PendingWrite(command, AffectedResult, null, generatesKey: false)
         {
+            Key = new EntityKey(map.EntityType, keyValues),
             Complete = result =>
             {
                 if (AffectedCount(result, sql) == 0)

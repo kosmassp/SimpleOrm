@@ -522,6 +522,7 @@ public sealed partial class Db : IAsyncDisposable
         var completed = false;
         return new PendingWrite(command, generated ? WriteResult.Scalar : WriteResult.None, entity, generatesKey: generated)
         {
+            Key = SetKeyOf(map, entity),
             Complete = result =>
             {
                 if (generated)
@@ -761,6 +762,7 @@ public sealed partial class Db : IAsyncDisposable
         Action? undoSuccess = null;
         return new PendingWrite(command, AffectedResult, entity, generatesKey: false)
         {
+            Key = SetKeyOf(map, entity),
             Complete = result =>
             {
                 var affected = AffectedCount(result, sql);
@@ -866,6 +868,7 @@ public sealed partial class Db : IAsyncDisposable
         Action? undoForget = null;
         return new PendingWrite(command, AffectedResult, byEntity ? keyOrEntity : null, generatesKey: false)
         {
+            Key = new EntityKey(map.EntityType, key),
             Complete = result =>
             {
                 var affected = AffectedCount(result, sql);

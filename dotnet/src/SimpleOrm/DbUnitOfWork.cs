@@ -127,6 +127,7 @@ public sealed partial class Db
                 var map = Maps.Load(entity.GetType());
                 await call.AddAsync(
                     entity,
+                    () => SetKeyOf(map, entity),
                     () => ManyToOneTargets(map, entity).Concat(CascadeOwners(entity)).ToList(),
                     () =>
                     {
@@ -138,14 +139,14 @@ public sealed partial class Db
             foreach (var entity in updates)
             {
                 var map = Maps.Load(entity.GetType());
-                await call.AddAsync(entity, () => ManyToOneTargets(map, entity), () => PrepareUpdate(RequireWritableKeyed(map.EntityType), entity))
+                await call.AddAsync(entity, () => SetKeyOf(map, entity), () => ManyToOneTargets(map, entity), () => PrepareUpdate(RequireWritableKeyed(map.EntityType), entity))
                     .ConfigureAwait(false);
             }
 
             foreach (var entity in removes)
             {
                 var map = Maps.Load(entity.GetType());
-                await call.AddAsync(entity, () => ManyToOneTargets(map, entity), () => PrepareDelete(RequireWritableKeyed(map.EntityType), entity))
+                await call.AddAsync(entity, () => SetKeyOf(map, entity), () => ManyToOneTargets(map, entity), () => PrepareDelete(RequireWritableKeyed(map.EntityType), entity))
                     .ConfigureAwait(false);
             }
 

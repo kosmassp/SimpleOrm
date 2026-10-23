@@ -110,8 +110,9 @@ in as many messages as it has levels, not one round trip per row; updates and
 deletes join the message in progress unless a rule cuts it (an update whose
 many-to-one navigation points at an instance just inserted in it, the size cap).
 
-Nothing else changes with the mode: the statement order, the generated keys, the
-per-row version checks (`CRUD-010` per statement), the summary, and the undo of a
+Nothing else changes with the mode (session.md "Batching", Clarifications 1–9,
+state the few edges where a failing call reports differently): the statement
+order, the generated keys, the per-row version checks (`CRUD-010` per statement), the summary, and the undo of a
 failed flush are as specified above — `flush-cases/` pin them and every runner
 runs them in both modes; `batch-cases/` pin the grouping. A failed batched flush
 is the failure of session.md "Batching": everything it did in memory is undone,

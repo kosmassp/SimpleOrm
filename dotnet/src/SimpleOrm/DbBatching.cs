@@ -15,6 +15,9 @@ internal enum WriteResult
     Count,
 }
 
+/// <summary>An instance's identity as the batching plan compares it (rule 1a): the entity type and a key that is set.</summary>
+internal readonly record struct EntityKey(Type Type, object?[] Values);
+
 /// <summary>
 /// One statement, prepared and not yet executed (ADR-0044): the bound command,
 /// the result the session reads, and two continuations — <see cref="Complete"/>
@@ -38,6 +41,9 @@ internal sealed class PendingWrite(DbCommand command, WriteResult result, object
 
     /// <summary>A registry command (plan rule 2; its count is the driver's).</summary>
     public bool IsCommand { get; init; }
+
+    /// <summary>The key the statement was prepared with, when set (plan rule 1a); null for an unset key and a registry command.</summary>
+    public EntityKey? Key { get; init; }
 
     /// <summary>Judges and applies the statement's result; returns the count the batch result reports.</summary>
     public required Func<object?, int> Complete { get; init; }
@@ -171,6 +177,43 @@ public sealed partial class Db
         };
     }
 
+    /// <summary>
+    /// An instance's key when it is set (plan rule 1a): no null part, not a
+    /// database-generated key at its default, not an empty client GUID — the
+    /// "unset key" of spec/unit-of-work.md "Detach and merge".
+    /// </summary>
+    internal static EntityKey? SetKeyOf(EntityMap map, object entity)
+    {
+        if (map.KeyProperties.Count == 0)
+        {
+            return null;
+        }
+
+        var values = map.GetKeyValues(entity);
+        if (values.Any(v => v is null)
+            || (map.KeyStrategy == KeyStrategy.DatabaseGenerated
+                && Convert.ToInt64(values[0], System.Globalization.CultureInfo.InvariantCulture) == 0)
+            || (map.KeyStrategy == KeyStrategy.ClientGuid && Equals(values[0], Guid.Empty)))
+        {
+            return null;
+        }
+
+        return new EntityKey(map.EntityType, values);
+    }
+
+    /// <summary>A delete by key's identity for rule 1a: its key argument, validated; none when it would not validate (the preparation refuses it).</summary>
+    internal static EntityKey? KeyArgumentOf(EntityMap map, object key)
+    {
+        try
+        {
+            return new EntityKey(map.EntityType, ValidateKey(map, key));
+        }
+        catch (SimpleOrmException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>The instances a statement on <paramref name="entity"/> may read the key of (plan rule 1b): its non-null many-to-one targets.</summary>
     internal List<object> ManyToOneTargets(EntityMap map, object entity)
     {
@@ -205,7 +248,7 @@ public sealed partial class Db
             var writes = new PendingWrite?[queued.Count];
             for (var i = 0; i < queued.Count; i++)
             {
-                writes[i] = await call.AddAsync(queued[i].Instance, queued[i].Reads, queued[i].Prepare).ConfigureAwait(false);
+                writes[i] = await call.AddAsync(queued[i].Instance, queued[i].Key, queued[i].Reads, queued[i].Prepare).ConfigureAwait(false);
             }
 
             await call.FinishAsync().ConfigureAwait(false);
@@ -244,7 +287,7 @@ public sealed partial class Db
     /// </summary>
     private sealed class WriteCall(Db db, CancellationToken ct) : IDisposable
     {
-        private readonly bool _auto = db.Options.Batching == BatchingMode.Auto;
+        private readonly int _maxStatements = db.Options.Batching == BatchingMode.Auto ? db.Options.MaxStatementsPerMessage : 1;
         private readonly List<PendingWrite> _journal = [];
         private readonly List<PendingWrite> _current = [];
         private readonly Dictionary<string, DbCommand>? _reuse =
@@ -255,26 +298,17 @@ public sealed partial class Db
         public int Messages { get; private set; }
 
         /// <summary>
-        /// Plans one operation: rule 1 before it is prepared (its preparation may
-        /// read what the current message produces), rules 2 and 3 after. Returns
-        /// the prepared statement, or null when the operation issues none.
+        /// Plans one operation. Before it is prepared — its preparation may read what
+        /// the current message produces — a full message goes out (rule 3's statement
+        /// cap) and so does one it depends on (rule 1); after, rule 2 and the
+        /// parameter cap. Under <c>Off</c> the cap is one, so every statement is
+        /// prepared and run in turn, exactly as the immediate operations. Returns the
+        /// prepared statement, or null when the operation issues none.
         /// </summary>
-        public async Task<PendingWrite?> AddAsync(object? instance, Func<IReadOnlyCollection<object>> reads, Func<PendingWrite?> prepare)
+        public async Task<PendingWrite?> AddAsync(
+            object? instance, Func<EntityKey?> key, Func<IReadOnlyCollection<object>> reads, Func<PendingWrite?> prepare)
         {
-            if (!_auto)
-            {
-                var alone = prepare();
-                if (alone is not null)
-                {
-                    _journal.Add(alone);
-                    _current.Add(alone);
-                    await SendCurrentAsync().ConfigureAwait(false);
-                }
-
-                return alone;
-            }
-
-            if (_current.Count > 0 && DependsOnCurrent(instance, reads))
+            if (_current.Count > 0 && (_current.Count >= _maxStatements || DependsOnCurrent(instance, key, reads)))
             {
                 await SendCurrentAsync().ConfigureAwait(false);
             }
@@ -286,7 +320,7 @@ public sealed partial class Db
             }
 
             _journal.Add(write);
-            if (_current.Count > 0 && (ReadsAfterCommand(write) || Overflows(write)))
+            if (_current.Count > 0 && (ReadsAfterCommand(write) || OverflowsParameters(write)))
             {
                 await SendCurrentAsync().ConfigureAwait(false);
             }
@@ -315,10 +349,23 @@ public sealed partial class Db
             }
         }
 
-        /// <summary>Rule 1: the current message holds a statement on the same instance, or the insert of an instance this one may read the generated key of.</summary>
-        private bool DependsOnCurrent(object? instance, Func<IReadOnlyCollection<object>> reads)
+        /// <summary>
+        /// Rule 1: the current message holds a statement on the same instance, or on
+        /// one of the same type with the same set key — the new statement's key as it
+        /// stands before its preparation against the keys the message's statements
+        /// were prepared with — or the insert of an instance this one may read the
+        /// generated key of.
+        /// </summary>
+        private bool DependsOnCurrent(object? instance, Func<EntityKey?> key, Func<IReadOnlyCollection<object>> reads)
         {
             if (instance is not null && _current.Any(w => ReferenceEquals(w.Instance, instance)))
+            {
+                return true;
+            }
+
+            if (key() is { } identity
+                && _current.Any(w => w.Key is { } other && other.Type == identity.Type
+                    && KeyTupleComparer.Instance.Equals(other.Values, identity.Values)))
             {
                 return true;
             }
@@ -336,11 +383,10 @@ public sealed partial class Db
         private bool ReadsAfterCommand(PendingWrite write)
             => write.Result == WriteResult.Scalar && _current.Any(w => w.IsCommand);
 
-        /// <summary>Rule 3: the statement cap, and the dialect's parameter cap.</summary>
-        private bool Overflows(PendingWrite write)
-            => _current.Count >= db.Options.MaxStatementsPerMessage
-                || (db.Options.Dialect.MaxParametersPerMessage is { } cap
-                    && _currentParameters + write.Command.Parameters.Count > cap);
+        /// <summary>Rule 3, the dialect's parameter cap (the statement cap is checked before preparing).</summary>
+        private bool OverflowsParameters(PendingWrite write)
+            => db.Options.Dialect.MaxParametersPerMessage is { } cap
+                && _currentParameters + write.Command.Parameters.Count > cap;
 
         private async Task SendCurrentAsync()
         {
@@ -432,6 +478,13 @@ public sealed partial class Db
 
                     first = false;
                     results[i] = await reader.ReadAsync(ct).ConfigureAwait(false) ? reader.GetValue(0) : null;
+                }
+
+                // Step through everything after the last result read: a failure in a
+                // statement whose result the session never reads surfaces here, before
+                // anything is judged — never discarded with the reader.
+                while (await reader.NextResultAsync(ct).ConfigureAwait(false))
+                {
                 }
             }
 

@@ -90,6 +90,12 @@ every execution:
 Values cross the boundary through the conversion pipeline (mapping-rules.md);
 a conversion error names the query and the placeholder.
 
+**System functions are not placeholders.** `@@name` (SQL Server's
+`@@rowcount`, `@@identity`) is never a placeholder: a placeholder is an `@`
+not preceded by another `@`. (Found by both ADR-0044 ports: the second `@` of a
+generated `select @@rowcount` read as the placeholder `@rowcount`, and a
+registry command using a system function was `PRM-001` in the reference.)
+
 **Collections (IN lists).** A collection-typed property (strings and byte
 arrays are values, not collections) expands its placeholder into one generated
 placeholder per element — `IN (@Ids)` becomes `IN (@Ids_0, …, @Ids_N)` — each
@@ -175,7 +181,13 @@ not empty and
 
 1. **it depends on the current message** — decided *before* the statement is
    prepared, because preparing reads what the earlier statements produce:
-   a. the current message holds a statement on the **same instance**; or
+   a. the current message holds a statement on the **same instance**, or on an
+      instance of the **same entity type with the same key** — when that key is
+      set (not null, not a database-generated key at its default, not an empty
+      client GUID — the "unset key" of unit-of-work.md "Detach and merge"); the
+      new statement's key is taken as it stands before its preparation (a key
+      the flush is about to flow in is not there yet), the message's as its
+      statements were prepared; a delete by key compares its key argument; or
    b. the statement's instance has a non-null **many-to-one navigation** — or,
       in a flush, a **cascade owner** it takes its key from (unit-of-work.md
       "Keys flow before each insert") — pointing at an instance whose insert is
@@ -192,10 +204,13 @@ not empty and
    parameters would take the message over the cap. A statement alone over the
    cap is a message of its own.
 
-Rules 2 and 3 are decided after the statement is prepared. An operation that
-turns out to issue no statement (an explicit batch's clean tracked update) adds
-nothing to the message, but still ended the current one if rule 1 said so.
-Under `Off` every statement is its own message.
+A message that holds `MaxStatementsPerMessage` statements goes out **as soon as
+it is full** — before the next statement is prepared, like a rule-1 cut; rule 2
+and the parameter cap are decided after the statement is prepared. An operation
+that turns out to issue no statement (an explicit batch's clean tracked update)
+adds nothing to the message, but still ended the current one if rule 1 said so.
+Under `Off` the cap is one: every statement is prepared and run before the next
+is prepared, exactly as the immediate operations.
 
 The plan is a property of the session, not of the driver: it reads the
 statements and two facts of the dialect — whether a generated update or delete
@@ -277,9 +292,66 @@ BatchResult result = await batch.SendAsync(ct);  // the visible round trip(s)
   pipeline) are deferred (ADR-0044).
 
 Where a language has no overloading the operations keep these names as the
-immediate calls do (PHP `$db->batch()`, `insert`, `updateOnly`, `delete`,
-`execute`, `send`; Go `db.Batch()`, `Insert`, `UpdateOnly`, `Delete` /
-`DeleteEntity`, `Execute`, `Send(ctx)`).
+immediate calls do: PHP `$db->batch()`, `insert`, `update`, `updateOnly`,
+`delete`, `execute`, `send`, and `dispose()` for disposal; Go `db.Batch()` with
+the package functions `orm.BatchInsert`, `BatchUpdate`, `BatchUpdateOnly`,
+`BatchDelete[T]`, `BatchDeleteEntity`, `BatchExecute` (generic operations cannot
+be methods in Go, as for the immediate calls), `b.Send(ctx)`, and `b.Discard()`
+as the analog of disposal.
+
+**Clarifications** (the PHP and Go port gap lists of ADR-0044, 14 + 16
+questions, consolidated; each the answer the three implementations now embody):
+
+1. **A message's statements are all prepared before it is sent.** A refusal at
+   preparation (`CRUD-004`, `UOW-002`, a converter's code) therefore fails the
+   call before the message holding the earlier statements runs. When two
+   statements of one call would both fail — an earlier one at execution
+   (`CRUD-010`), a later one at preparation in the same message — `Auto` reports
+   the preparation's code where `Off` reports the execution's. Either way the
+   call fails and nothing applies.
+2. **Prepared-command reuse is `Auto`'s.** Under `Off` every statement is
+   prepared fresh — the Level 0–3 path exactly.
+3. **Rule 3 counts bound parameters**: the values bound to the prepared
+   statement, after IN-list expansion — for a generated statement the same as
+   its placeholders.
+4. **Rule 1a and the key.** The same-key clause keeps a planned call equal to
+   its immediate calls where two instances share a key: a delete of A followed by
+   an insert of B with A's key (`Off` succeeds — A is forgotten before B's
+   identity gate), two new instances with one natural key (`Off` refuses the
+   second with `UOW-002`, not the database's key violation). Without it the
+   identity gate would read a map the current message has not yet updated.
+5. **Rule 1b for every statement.** It applies to a statement on any instance
+   with such a navigation — inserts, updates (their `CRUD-004` check reads the
+   target's key), and deletes alike. The cascade owner is the one a persist
+   cascade recorded through a one-to-many or one-to-one navigation, whose key the
+   child takes.
+6. **The message hook and `Messages`** count the plan's messages, not round
+   trips: a realization that splits a message adds none. The hook is told a
+   message's size as it is sent, before its outcome is known, so a message that
+   fails is counted; a call with nothing to send tells it nothing. Under `Off`
+   `Messages` equals the number of statements.
+7. **A send whose operations all issue no statement** (clean tracked updates)
+   still begins and commits a transaction; only an empty queue begins none. It is
+   unobservable outside the transaction.
+8. **The option is validated at open**, before the connection opens, so a refused
+   open leaves nothing behind. Where the language's zero value cannot tell
+   "unset" from 0 (Go), 0 means the default of 100 and a negative value is
+   refused; the port records it in its §10.
+9. **A key flowed into a foreign-key property stays after a failed flush** (as
+   before batching): the flush copies parents' keys into children before each
+   insert's preparation, and the undo restores what the statements did — keys,
+   versions, stamps, flags, tracking — not the copied foreign keys.
+10. **In the step scripts an unset integer key reads as 0** (`"equals": 0`),
+    whatever the language's own representation of "unset" (a PHP typed property
+    with no value, a Go zero value).
+11. **The keys rule 1a compares** (the review round). Every statement that has an
+    instance or a key argument carries its key — inserts, updates, deletes by
+    entity and by key alike. A delete by key's argument is compared after the
+    same validation and coercion the delete applies (an `int` matches an `int64`
+    key); an argument that does not validate carries no key and is refused when
+    it is prepared. A client-GUID insert's key counts once its preparation has
+    filled it, so two inserts that both arrived with an empty GUID never cut each
+    other.
 
 ## The rest of the session
 
@@ -487,7 +559,7 @@ key and, optionally, `"expectError": "<code>"`. The verbs and their fields:
 
 | verb | fields | meaning |
 |---|---|---|
-| `get` | `entity`, `key`, `as` | read by key; binds the ref |
+| `get` | `entity`, `key`, `as` | read by key; binds the ref (a composite key is an array of its parts in key order, ADR-0044) |
 | `new` | `entity`, `as`, `values`?, `navigations`? | construct in user code — `values` sets properties, `navigations` sets a navigation to a ref or a collection to a list of refs; the database is not touched |
 | `set` | `ref`, `property`, `value` | assign a property |
 | `insert`, `refresh`, `persist`, `remove`, `detach` | `ref` | the operation of that name on the instance |

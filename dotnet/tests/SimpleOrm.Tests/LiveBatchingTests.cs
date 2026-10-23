@@ -193,6 +193,15 @@ public static class LiveBatchingTests
         Assert.Equal(0, reader.Id);
         Assert.Equal(1, await CountAsync(db, CountUsers));
         Assert.Equal(1, await CountAsync(db, CountRoles));
+
+        // The failing statement last in its message, whose result the session never
+        // reads: the drain surfaces it before anything is judged or committed.
+        await using var trailing = db.Batch();
+        trailing.Insert(newcomer);
+        trailing.Insert(new UserRole { UserId = ada.Id, RoleId = admin.Id, CreatedAtUtc = TestDb.SeedTime });
+        await Assert.ThrowsAnyAsync<DbException>(() => trailing.SendAsync(CancellationToken.None));
+        Assert.Equal(0, newcomer.Id);
+        Assert.Equal(1, await CountAsync(db, CountUsers));
     }
 
     /// <summary>A registry command of several statements in a batch: the C# realization sends it on its own; its count is the driver's for the whole command.</summary>

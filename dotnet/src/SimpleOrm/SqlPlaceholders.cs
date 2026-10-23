@@ -6,7 +6,8 @@ namespace SimpleOrm;
 /// <summary>Finds <c>@name</c> placeholders in SQL, ignoring string literals and comments.</summary>
 internal static class SqlPlaceholders
 {
-    private static readonly Regex Placeholder = new(@"@([A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled);
+    // Not after another @: SQL Server's system functions (@@rowcount, @@identity) are never placeholders.
+    private static readonly Regex Placeholder = new(@"(?<!@)@([A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled);
 
     public static IReadOnlyList<string> Find(string sql)
     {

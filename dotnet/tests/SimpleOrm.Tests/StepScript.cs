@@ -81,7 +81,7 @@ internal sealed class StepScript
             var type = ConformanceDatabase.EntityTypes[get.GetProperty("entity").GetString()!];
             object key = get.TryGetProperty("keyOf", out var keyOf)
                 ? db.Maps.Load(type).GetKeyValues(_refs[keyOf.GetString()!])[0]!
-                : get.GetProperty("key").GetInt64();
+                : KeyOf(get.GetProperty("key"));
             _refs[get.GetProperty("as").GetString()!] = await InvokeWithResultAsync(nameof(Db.GetAsync), type, key);
         }
         else if (step.TryGetProperty("new", out var @new))
@@ -150,7 +150,7 @@ internal sealed class StepScript
             else
             {
                 var type = ConformanceDatabase.EntityTypes[delete.GetProperty("entity").GetString()!];
-                await InvokeAsync(nameof(Db.DeleteAsync), type, delete.GetProperty("key").GetInt64());
+                await InvokeAsync(nameof(Db.DeleteAsync), type, KeyOf(delete.GetProperty("key")));
             }
         }
         else if (step.TryGetProperty("refresh", out var refresh))
@@ -286,7 +286,7 @@ internal sealed class StepScript
         if (verb == "delete" && !fields.TryGetProperty("ref", out _))
         {
             var type = ConformanceDatabase.EntityTypes[fields.GetProperty("entity").GetString()!];
-            QueueGeneric(batch, nameof(StatementBatch.Delete), type, fields.GetProperty("key").GetInt64());
+            QueueGeneric(batch, nameof(StatementBatch.Delete), type, KeyOf(fields.GetProperty("key")));
             return;
         }
 
@@ -317,6 +317,20 @@ internal sealed class StepScript
         => Unwrap(() => typeof(StatementBatch).GetMethod(method)!
             .MakeGenericMethod(entityType)
             .Invoke(batch, [argument]) ?? 0);
+
+    /// <summary>A key as the scripts spell it: a bare scalar, or the parts of a composite key in key order (a tuple).</summary>
+    private static object KeyOf(JsonElement key)
+    {
+        if (key.ValueKind != JsonValueKind.Array)
+        {
+            return key.GetInt64();
+        }
+
+        var parts = key.EnumerateArray().Select(p => p.GetInt64()).ToArray();
+        return parts.Length == 2
+            ? (parts[0], parts[1])
+            : throw new InvalidOperationException("the fixture's composite keys have two parts: " + key.GetRawText());
+    }
 
     private void ExpectMessages(JsonElement step)
     {

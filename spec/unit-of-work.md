@@ -74,7 +74,9 @@ it open; otherwise it begins one, commits it after the last statement, and
 rolls it back on failure so nothing applied. A failed flush **keeps the
 schedule** (fix and flush again) and, per session.md, does not touch the
 identity map or the snapshots — `Refresh` is the way back for instances the
-database no longer agrees with.
+database no longer agrees with. Under `Batching = Auto` a failure inside the
+caller's transaction may leave rows of statements *after* the failing one in
+its message ("Batching" below): roll the transaction back.
 
 ## Cascades — declared, never inferred
 
@@ -97,15 +99,30 @@ The fixture: `Transaction.Details` cascades both.
 
 ## Batching
 
-A flush issues one statement per row through the session's connection. A
-provider batch (C# `DbBatch` on `net6+`) is an execution detail a port may
-add; it changes nothing observable — the statement sequence, the generated
-keys, and the per-row version checks stay as specified. **The reference does
-not batch** (Level 3 exit, ADR-0039): its reference provider cannot
-(`Microsoft.Data.Sqlite` reports no batch support), and a 100-row flush
-measured within the cost of the same inserts issued one by one in one
-transaction; a dialect whose provider batches (SQL Server, PostgreSQL) may
-adopt it in the Level 4 performance pass, measured there.
+A flush is **one call** in the sense of session.md "Batching": under `Batching =
+Auto` its statements — the same ones, in the order above — go out in as few
+messages as the plan allows. The plan's dependency rule is what keeps keys
+flowing: an insert whose parent (its many-to-one navigation, or the cascade owner
+it takes its key from) is inserted in the current message with a key the database
+generates starts the next message, after the parent's key came back and flowed
+into it. A graph of parents and children with generated keys therefore flushes
+in as many messages as it has levels, not one round trip per row; updates and
+deletes join the message in progress unless a rule cuts it (an update whose
+many-to-one navigation points at an instance just inserted in it, the size cap).
+
+Nothing else changes with the mode: the statement order, the generated keys, the
+per-row version checks (`CRUD-010` per statement), the summary, and the undo of a
+failed flush are as specified above — `flush-cases/` pin them and every runner
+runs them in both modes; `batch-cases/` pin the grouping. A failed batched flush
+is the failure of session.md "Batching": everything it did in memory is undone,
+its own transaction rolls back, and in a caller's transaction it may leave rows
+beyond the failing statement.
+
+Until ADR-0044 the reference did not batch (ADR-0039: its SQLite provider has no
+batch API and the 100-row flush measured within the cost of the same inserts one
+by one). The gain is the round trip, which SQLite does not have; ADR-0044
+measures it on PostgreSQL, and measures the prepared-command reuse that is
+SQLite's realization.
 
 ## Conformance: `flush-cases/`
 
@@ -139,7 +156,8 @@ row count, read outside the session so a rolled-back flush is visible).
   update's snapshot and version, a delete's tracking — so the session is as it
   was before the flush and **the whole schedule flushes again as it was**.
   The database is rolled back when the flush owned the transaction; inside a
-  caller's transaction the rows that ran are the caller's to roll back (a
+  caller's transaction the rows that ran (under `Auto`, possibly some after the
+  failing statement, session.md "Batching") are the caller's to roll back (a
   caller who commits after a failed flush has rows the session does not
   know — `Refresh` is the way back, as after any rollback). (The reference
   left memory half-applied until ADR-0036; the Go port's undo journal became

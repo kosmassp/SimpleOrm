@@ -32,6 +32,8 @@ spec/migrations.md "Dialects").
 | `ViewDefinitionIsVerbatim` | true → `ViewDefinitionSql` returns the text as submitted and the `MIG-012` view guard compares normalized text; false → the engine reformats it (PostgreSQL) and the guard round-trips the expected body through a probe view (migrations.md "The view and trigger apply guard") | the runner |
 | `InsertSql`, `UpdateSql`, `UpdateOnlySql`, `DeleteSql` | the generated CRUD of spec/crud.md | the session, the unit of work |
 | `ReportsAffectedRowsBySelect` | true → the generated UPDATE and DELETE renderings end in a one-row, one-column select of the statement's own affected-row count, and the session judges that scalar instead of the driver's count (ADR-0040 add.3, Clarification 23) | the session's generated writes — never a registry command |
+| `SupportsStatementBatching` | true → this implementation's driver for the dialect can carry several statements in one message and hand back each statement's result; false → under `Batching = Auto` the planned messages run one statement at a time (ADR-0044, "Statement batching" below) | the session's batching realization (`BatchingInEffect`) |
+| `MaxParametersPerMessage` | the most bound parameters one message may carry, or none | the batching plan (spec/session.md "Batching", rule 3) |
 | `LimitOffsetClause(limit, offset)` | the paging clause from pre-bound placeholders | the renderer |
 | `PagingRequiresOrderBy` | a paged select without orderings gains `order by (select null)` | the renderer |
 | `SupportsRowValueIn` | false → composite subquery membership rewrites as a correlated EXISTS (spec/query-ast.md) | the renderer |
@@ -70,6 +72,8 @@ shield transaction) — its §10 says which.
 | `SupportsTransactionalDdl` | true | true | true |
 | `ReportsAffectedRowsBySelect` | false | **true** | false |
 | `ViewDefinitionIsVerbatim` | true | true | **false** (`pg_get_viewdef` reformats) |
+| `SupportsStatementBatching` | false (every implementation) | **true** (C# on `net10.0`; Go; PHP) | **true** in C# on `net10.0` and Go; **false** in PHP (`pdo_pgsql`) |
+| `MaxParametersPerMessage` | none | **2098** | none |
 | `Name` | `sqlite` | `sqlserver` | `postgres` |
 
 ## Rendering
@@ -533,6 +537,55 @@ join pg_proc p on p.oid = t.tgfoid
 where t.tgname = @relation and not t.tgisinternal
 ```
 
+## Statement batching (ADR-0044)
+
+The plan — which statements share a message — is the session's and the same
+everywhere (spec/session.md "Batching"); this section is the realization: how a
+planned message reaches the database. A realization may always take **more**
+round trips than the plan's messages (sending a statement its driver cannot
+carry in a message on its own), never fewer, and never reorders.
+
+| | SQLite | SQL Server | PostgreSQL |
+|---|---|---|---|
+| C# (`net10.0`) | sequential — `Microsoft.Data.Sqlite` has no batch (`CanCreateBatch` false) | `DbBatch` → `SqlBatch`: one TDS message, one RPC per statement, each statement's text exactly as unbatched | `DbBatch` → `NpgsqlBatch`: the statements pipelined, one `Sync` |
+| C# (`netstandard2.0`) | sequential | sequential (no `DbBatch` type) | sequential |
+| Go | sequential (modernc has no batch) | one multi-statement text, placeholders renamed apart | pgx `Batch` / `SendBatch` on the session's connection |
+| PHP | sequential (`pdo_sqlite` prepares one statement) | one multi-statement text with `nextRowset()`, placeholders renamed apart | sequential — measured: `pdo_pgsql` refuses several commands in a prepared statement (42601), and its emulated form returns only the last result (`nextRowset` is IM001) |
+
+- **Sequential** means the planned message's statements run one at a time, in
+  order, each judged before the next runs, reusing one prepared command per
+  distinct statement text within the call. `SupportsStatementBatching` is false
+  for it; on SQLite there is no network round trip to save and the reuse is the
+  gain.
+- **Reading results.** The statements that return a result set — an insert
+  whose key the database generates (`returning <key>`, SQL Server's
+  `select cast(scope_identity() as bigint)`) and, on SQL Server, every generated
+  update and delete (`select @@rowcount`) — return exactly one each, one row and
+  one column, in statement order; the session reads them in that order. Every
+  other statement's count is the driver's count **for that statement**
+  (ADO.NET `DbBatchCommand.RecordsAffected`, pgx's command tag per queued
+  query). Plan rule 2 keeps a registry command's own result sets behind every
+  result the session reads in its message, so they are never mistaken for one.
+- **Multi-statement text** (Go and PHP on SQL Server): the message is one
+  command text, its statements joined by `;` in order, sent as one
+  `sp_executesql`; each statement's placeholders are renamed apart by the
+  session before joining — `@name` in the *i*-th statement (from 0) becomes
+  `@p<i>_name` (literals and comments untouched, as for IN-list expansion), and
+  the parameters are bound under the new names. SQL Server caps one
+  `sp_executesql` at 2100 parameters, two of them its own — hence
+  `MaxParametersPerMessage` 2098, applied by every implementation so the plan
+  stays the same. A statement whose own count the driver cannot tell apart from
+  its neighbours' (a registry command's count among other counted statements)
+  is sent on its own.
+- **A statement the driver cannot carry in a message**: Npgsql refuses more than
+  one SQL statement in one batch command, so the C# realization sends a
+  registry command whose SQL holds several statements on its own (the
+  generated statements are single statements on PostgreSQL).
+- **Transactions.** Every batched call runs in a transaction (the session's or
+  its own), so a message is never a set of separately committed statements; a
+  PostgreSQL pipeline's implicit transaction and SQL Server's per-RPC autocommit
+  never come into play.
+
 ## Connection strings and the CLI
 
 A dialect takes its driver's **native** connection string; the SQLite dialect also
@@ -591,7 +644,11 @@ Named here so that no implementation attempts it ahead of the reference:
   verified live.
 - Procedure execution (`SupportsProcedures` is declared, dormant); `REFRESH
   MATERIALIZED VIEW`; `jsonb` and array-typed columns; schema qualifiers beyond
-  the metadata's `Schema`; batching (spec/unit-of-work.md "Batching") — all Level 4.
+  the metadata's `Schema` — all Level 4. Batching itself is built (ADR-0044,
+  "Statement batching"); **batched reads** (a read queued in an explicit batch,
+  filled at send) and **multi-row inserts** (`values (…), (…)` — only for keys the
+  database does not generate: no engine promises the order of a multi-row
+  `returning`) are deferred by the owner's ruling.
 - `migrations-cases/` and `cases/` fixtures per dialect: the conformance folders
   that reach a database run on SQLite; `ast/` is the per-dialect pin.
 - Found by the ports, not yet ruled on: `time`- and `decimal`-typed array
@@ -646,7 +703,12 @@ of Clarification 14 (insert, column-list and full update, a criteria and a
 registry match, a NULL). PostgreSQL additionally: array parameters filled and
 empty, a temporal criteria comparison against `timestamptz`, a materialized view
 created and read, and — where the driver caches statements — the cached-plan
-policy of Clarification 15 in and out of a transaction.
+policy of Clarification 15 in and out of a transaction. Both legs, where the
+implementation batches (ADR-0044): a batched flush whose generated keys flow
+across messages, an explicit batch carrying every operation, a stale version
+in the middle of a message (`CRUD-010`, nothing applied, every instance as it
+was), and a failing statement in the middle of a message (the provider's error,
+nothing applied).
 
 ## Clarifications
 

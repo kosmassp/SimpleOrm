@@ -38,3 +38,18 @@ func TestFindPlaceholders_UnterminatedBlockCommentMasksToEnd(t *testing.T) {
 		t.Errorf("got %v", got)
 	}
 }
+
+func TestPlaceholders_ASystemFunctionIsNeverAPlaceholder(t *testing.T) {
+	sql := "update t set a = @a where id = @id; select @@rowcount, @@identity, @@ROWCOUNT; select @b"
+	if got, want := FindPlaceholders(sql), []string{"a", "id", "b"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("FindPlaceholders = %v, want %v", got, want)
+	}
+	for _, name := range []string{"rowcount", "identity"} {
+		if spans := PlaceholderOccurrences(sql, name); len(spans) != 0 {
+			t.Errorf("@@%s is a system function, got spans %v", name, spans)
+		}
+	}
+	if spans := PlaceholderOccurrences(sql, "a"); len(spans) != 1 || sql[spans[0].Index:spans[0].Index+spans[0].Length] != "@a" {
+		t.Errorf("@a is still found, got %v", spans)
+	}
+}

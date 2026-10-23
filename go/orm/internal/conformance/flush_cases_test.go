@@ -20,8 +20,15 @@ import (
 // rollback), navigations on `new`, and the pending / sameValue / count
 // expectations. A flush's statements are what the recording dialect was asked to
 // render, in order.
+//
+// Every flush case runs three ways — Batching Off, Auto, and Auto with the dialect sending each message as one round
+// trip (default MaxStatementsPerMessage) — and the statements, the summary, and every expectation must come out the same (spec/session.md "The step scripts", ADR-0044):
+// the grouping is batch-cases'.
 func TestFlushCases_BehaveAsSpecified(t *testing.T) {
-	runStepCases(t, "flush-cases")
+	runStepCases(t, "flush-cases",
+		stepVariant{name: "batching off", batching: &batchingSpec{Mode: "off"}},
+		stepVariant{name: "batching auto", batching: &batchingSpec{Mode: "auto"}},
+		stepVariant{name: "batching auto, one round trip per message", batching: &batchingSpec{Mode: "auto"}, oneRoundTrip: true})
 }
 
 // expectedStatement is one entry of a flush's expectStatements.
@@ -31,25 +38,56 @@ type expectedStatement struct {
 	Columns json.RawMessage `json:"columns"`
 }
 
-// checkFlush judges a flush step's expectStatements (absent: unchecked) and
-// expectSummary against what the dialect rendered and what Flush returned.
-func (r *trackingRun) checkFlush(i int, step trackingStep) {
+// checkStatements judges an expectStatements list (absent: unchecked) against what the dialect was asked to render.
+func (r *trackingRun) checkStatements(i int, raw json.RawMessage) {
 	r.t.Helper()
-	if raw := step.Flush.ExpectStatements; len(raw) > 0 {
-		var want []expectedStatement
-		if err := json.Unmarshal(raw, &want); err != nil {
-			r.fatalf(i, "expectStatements is not a list of statements: %s", raw)
-		}
-		got := r.dialect.Statements
-		if len(got) != len(want) {
-			r.fatalf(i, "expected %d statements, the dialect rendered %d: %s", len(want), len(got), describeStatements(got))
-		}
-		for n := range want {
-			if !statementMatches(got[n], want[n]) {
-				r.fatalf(i, "statement %d: expected %s %s %s, the dialect rendered %s", n+1, want[n].Op, want[n].Entity, want[n].Columns, describeStatements(got[n:n+1]))
-			}
+	if len(raw) == 0 {
+		return
+	}
+	var want []expectedStatement
+	if err := json.Unmarshal(raw, &want); err != nil {
+		r.fatalf(i, "expectStatements is not a list of statements: %s", raw)
+	}
+	got := r.dialect.Statements
+	if len(got) != len(want) {
+		r.fatalf(i, "expected %d statements, the dialect rendered %d: %s", len(want), len(got), describeStatements(got))
+	}
+	for n := range want {
+		if !statementMatches(got[n], want[n]) {
+			r.fatalf(i, "statement %d: expected %s %s %s, the dialect rendered %s", n+1, want[n].Op, want[n].Entity, want[n].Columns, describeStatements(got[n:n+1]))
 		}
 	}
+}
+
+// checkMessages judges an expectMessages list (absent: unchecked) against the message sizes the session reported —
+// the plan's grouping of the step's statements, one entry per message.
+func (r *trackingRun) checkMessages(i int, raw json.RawMessage) {
+	r.t.Helper()
+	if len(raw) == 0 {
+		return
+	}
+	var want []int
+	if err := json.Unmarshal(raw, &want); err != nil {
+		r.fatalf(i, "expectMessages is not a list of statement counts: %s", raw)
+	}
+	got := r.dialect.Messages
+	if len(got) != len(want) {
+		r.fatalf(i, "expected messages %v, the session formed %v", want, got)
+	}
+	for n := range want {
+		if got[n] != want[n] {
+			r.fatalf(i, "expected messages %v, the session formed %v", want, got)
+		}
+	}
+}
+
+// checkFlush judges a flush step's expectStatements (absent: unchecked), expectMessages, and
+// expectSummary against what the dialect rendered, the session planned, and what Flush returned.
+func (r *trackingRun) checkFlush(i int, step trackingStep) {
+	r.t.Helper()
+	r.checkStatements(i, step.Flush.ExpectStatements)
+	// A flush case run under Off carries no grouping to pin: the message plan is batch-cases'.
+	r.checkMessages(i, step.Flush.ExpectMessages)
 	if expected := step.Flush.ExpectSummary; expected != nil {
 		if r.summary.Inserted != expected.Inserted || r.summary.Updated != expected.Updated || r.summary.Deleted != expected.Deleted {
 			r.fatalf(i, "summary = %+v, want inserted %d updated %d deleted %d", r.summary, expected.Inserted, expected.Updated, expected.Deleted)

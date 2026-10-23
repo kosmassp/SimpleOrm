@@ -13,16 +13,31 @@ type PlaceholderSpan struct {
 	Length int
 }
 
+// placeholderMatches finds the `@name` matches of masked SQL as index pairs (the whole match, then the name). A
+// placeholder is an `@` not preceded by another `@`: `@@rowcount` and `@@identity`, SQL Server's system functions, are
+// never placeholders (spec/session.md "Parameters", ADR-0044) — the regular expression alone would read the second
+// `@` as the start of `@rowcount`.
+func placeholderMatches(masked string) [][]int {
+	var matches [][]int
+	for _, match := range placeholderPattern.FindAllStringSubmatchIndex(masked, -1) {
+		if match[0] > 0 && masked[match[0]-1] == '@' {
+			continue
+		}
+		matches = append(matches, match)
+	}
+	return matches
+}
+
 // FindPlaceholders finds the distinct @name placeholders in SQL, in first-seen
-// order, ignoring lookalikes inside string literals and comments
-// (spec/session.md). The one placeholder scanner (CODING-STANDARD §8): the
+// order, ignoring lookalikes inside string literals and comments, and `@@` system
+// functions (spec/session.md). The one placeholder scanner (CODING-STANDARD §8): the
 // binder, the statement loader (PRM-010/011), and SchemaGuard all use it.
 func FindPlaceholders(sql string) []string {
 	masked := maskSQL(sql)
 	seen := map[string]bool{}
 	var names []string
-	for _, match := range placeholderPattern.FindAllStringSubmatch(masked, -1) {
-		name := match[1]
+	for _, match := range placeholderMatches(masked) {
+		name := masked[match[2]:match[3]]
 		if !seen[name] {
 			seen[name] = true
 			names = append(names, name)
@@ -36,7 +51,7 @@ func FindPlaceholders(sql string) []string {
 func PlaceholderOccurrences(sql string, placeholder string) []PlaceholderSpan {
 	masked := maskSQL(sql)
 	var spans []PlaceholderSpan
-	for _, match := range placeholderPattern.FindAllStringSubmatchIndex(masked, -1) {
+	for _, match := range placeholderMatches(masked) {
 		name := masked[match[2]:match[3]]
 		if strings.EqualFold(name, placeholder) {
 			spans = append(spans, PlaceholderSpan{Index: match[0], Length: match[1] - match[0]})

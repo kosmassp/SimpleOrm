@@ -1,7 +1,11 @@
 package testsupport
 
 import (
+	"context"
+	"database/sql"
+
 	"github.com/kosmassp/SimpleOrm/go/orm"
+	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
 	"github.com/kosmassp/SimpleOrm/go/orm/sqlite"
 )
 
@@ -14,6 +18,28 @@ import (
 type RecordingDialect struct {
 	orm.Dialect
 	Statements []RenderedStatement
+	// Messages is the size of every message a flush or an explicit batch formed since Reset, in order: the test hook of
+	// spec/session.md "The step scripts" (the message boundary is the session's, so the recorder implements the
+	// session's optional core.MessageObserver, never a seam member).
+	Messages []int
+	// OneRoundTrip makes the dialect behave as one that batches (ADR-0044): SupportsStatementBatching reports true and a
+	// planned message is handed to SendMessage — SequentialMessage, the statements run in order on the real SQLite
+	// database with every result judged afterwards — instead of running one statement at a time. The conformance
+	// runners replay the batch and flush cases both ways: the plan is the same, and so is every expectation.
+	OneRoundTrip bool
+}
+
+// ObserveMessage records one message's statement count (core.MessageObserver).
+func (d *RecordingDialect) ObserveMessage(statements int) {
+	d.Messages = append(d.Messages, statements)
+}
+
+// SupportsStatementBatching is false unless the dialect was asked to behave as a batching one (OneRoundTrip).
+func (d *RecordingDialect) SupportsStatementBatching() bool { return d.OneRoundTrip }
+
+// SendMessage is the core.StatementBatcher capability; the session asks for it only where OneRoundTrip says so.
+func (d *RecordingDialect) SendMessage(ctx context.Context, _ *sql.Conn, exec core.SQLExecutor, statements []core.MessageStatement) ([]core.MessageResult, error) {
+	return SequentialMessage(ctx, exec, statements)
 }
 
 // RenderedStatement is one statement the dialect was asked to render: Op is
@@ -32,7 +58,10 @@ func NewRecordingDialect() *RecordingDialect {
 }
 
 // Reset forgets what was recorded so far.
-func (d *RecordingDialect) Reset() { d.Statements = nil }
+func (d *RecordingDialect) Reset() {
+	d.Statements = nil
+	d.Messages = nil
+}
 
 // Ops lists the recorded statements as "op Entity" strings, in order — the
 // compact form unit-of-work tests compare.

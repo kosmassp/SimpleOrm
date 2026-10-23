@@ -309,6 +309,14 @@ func (*Dialect) DeleteSQL(m *core.EntityMap, checkVersion bool) string {
 // (spec/dialects.md "Update and delete — the affected-row count").
 func (*Dialect) ReportsAffectedRowsBySelect() bool { return false }
 
+// SupportsStatementBatching is false: modernc has no batch API, and SQLite has no network round trip to save.
+// Under Batching = Auto the plan's messages run one statement at a time, reusing one prepared command per distinct
+// statement text within the call — on SQLite that reuse is the gain (ADR-0044, spec/dialects.md "Statement batching").
+func (*Dialect) SupportsStatementBatching() bool { return false }
+
+// MaxParametersPerMessage is 0, no cap (spec/dialects.md capability flags).
+func (*Dialect) MaxParametersPerMessage() int { return 0 }
+
 func keyPredicate(m *core.EntityMap) string {
 	parts := make([]string, len(m.KeyProperties))
 	for i, key := range m.KeyProperties {

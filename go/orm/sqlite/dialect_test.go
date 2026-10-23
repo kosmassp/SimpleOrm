@@ -412,3 +412,16 @@ func TestIntrospectionSQL(t *testing.T) {
 		t.Errorf("IndexesInfoSQL: got %q, want %q", got, want)
 	}
 }
+
+func TestBatchingFlags(t *testing.T) {
+	d := sqlite.New()
+	if d.SupportsStatementBatching() {
+		t.Error("SupportsStatementBatching should be false: modernc has no batch, and its messages run one statement at a time")
+	}
+	if d.MaxParametersPerMessage() != 0 {
+		t.Errorf("MaxParametersPerMessage should be 0 (no cap), got %d", d.MaxParametersPerMessage())
+	}
+	if _, ok := core.Dialect(d).(core.StatementBatcher); ok {
+		t.Error("SQLite has no StatementBatcher capability")
+	}
+}

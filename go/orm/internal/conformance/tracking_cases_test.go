@@ -21,9 +21,35 @@ import (
 // replayed against named instances. conformance/flush-cases/*.json (spec/unit-of-work.md,
 // Level 3 M2) is the same shape with more verbs; one step engine replays both.
 type trackingCaseSpec struct {
-	Name     string         `json:"name"`
-	Tracking string         `json:"tracking"`
+	Name     string `json:"name"`
+	Tracking string `json:"tracking"`
+	// Batching opens the session with the batching option (Level 4, spec/session.md "The step scripts"); absent: Off.
+	Batching *batchingSpec  `json:"batching"`
 	Steps    []trackingStep `json:"steps"`
+}
+
+// batchingSpec is a case's `batching` header: { "mode": "auto" | "off", "maxStatementsPerMessage"? }.
+type batchingSpec struct {
+	Mode                    string `json:"mode"`
+	MaxStatementsPerMessage int    `json:"maxStatementsPerMessage"`
+}
+
+// options applies the header to session options.
+func (b *batchingSpec) options(t *testing.T, options orm.Options) orm.Options {
+	t.Helper()
+	if b == nil {
+		return options
+	}
+	switch b.Mode {
+	case "auto":
+		options.Batching = orm.BatchingAuto
+	case "off", "":
+		options.Batching = orm.BatchingOff
+	default:
+		t.Fatalf("unknown batching mode %q", b.Mode)
+	}
+	options.MaxStatementsPerMessage = b.MaxStatementsPerMessage
+	return options
 }
 
 // trackingStep is one step: exactly one verb key is set, plus an optional
@@ -96,11 +122,18 @@ type trackingStep struct {
 			Updated  int `json:"updated"`
 			Deleted  int `json:"deleted"`
 		} `json:"expectSummary"`
+		// ExpectMessages is the plan's grouping of the step's statements (spec/session.md "The step scripts"):
+		// the statement count of each message, in order (absent: unchecked).
+		ExpectMessages json.RawMessage `json:"expectMessages"`
 	} `json:"flush"`
-	Begin    *struct{} `json:"begin"`
-	Commit   *struct{} `json:"commit"`
-	Rollback *struct{} `json:"rollback"`
-	Expect   *struct {
+	// Batch queues every op on one explicit batch and sends it (Level 4, spec/session.md "The explicit batch");
+	// BatchAgain uses a kept batch again — queue the op on it, or send it.
+	Batch      *batchStep      `json:"batch"`
+	BatchAgain *batchAgainStep `json:"batchAgain"`
+	Begin      *struct{}       `json:"begin"`
+	Commit     *struct{}       `json:"commit"`
+	Rollback   *struct{}       `json:"rollback"`
+	Expect     *struct {
 		Pending   *bool    `json:"pending"`
 		SameValue []string `json:"sameValue"`
 		Count     *struct {
@@ -144,6 +177,12 @@ type trackingOps struct {
 	remove     func(db *orm.Db, entity any) error
 	detach     func(db *orm.Db, entity any) error
 	merge      func(ctx context.Context, db *orm.Db, entity any) (any, error)
+	// The explicit batch's queuing (Level 4): the generic package functions, erased over the entity type.
+	batchInsert     func(b *orm.Batch, entity any) error
+	batchUpdate     func(b *orm.Batch, entity any) error
+	batchUpdateOnly func(b *orm.Batch, entity any, properties []string) error
+	batchDelKey     func(b *orm.Batch, key any) error
+	batchDelEntity  func(b *orm.Batch, entity any) error
 }
 
 func trackingOpsOf[T any]() trackingOps {
@@ -183,6 +222,13 @@ func trackingOpsOf[T any]() trackingOps {
 		merge: func(ctx context.Context, db *orm.Db, entity any) (any, error) {
 			return orm.Merge(ctx, db, entity.(*T))
 		},
+		batchInsert: func(b *orm.Batch, entity any) error { return orm.BatchInsert(b, entity.(*T)) },
+		batchUpdate: func(b *orm.Batch, entity any) error { return orm.BatchUpdate(b, entity.(*T)) },
+		batchUpdateOnly: func(b *orm.Batch, entity any, properties []string) error {
+			return orm.BatchUpdateOnly(b, entity.(*T), properties...)
+		},
+		batchDelKey:    func(b *orm.Batch, key any) error { return orm.BatchDelete[T](b, key) },
+		batchDelEntity: func(b *orm.Batch, entity any) error { return orm.BatchDeleteEntity(b, entity.(*T)) },
 	}
 }
 
@@ -216,14 +262,39 @@ func TestTrackingCases_BehaveAsSpecified(t *testing.T) {
 	runStepCases(t, "tracking-cases")
 }
 
+// stepVariant is one way to replay a folder's cases (Level 4 item 3, ADR-0044): the batching option to open the
+// session with in place of the case's own header (nil: keep the header), and whether the dialect behaves as one that
+// sends a planned message as one round trip (RecordingDialect.OneRoundTrip). The plan is the session's, so every
+// variant of a case meets the same expectations.
+type stepVariant struct {
+	name         string
+	batching     *batchingSpec
+	oneRoundTrip bool
+}
+
 // runStepCases replays every case file of a step-script folder (tracking-cases,
-// flush-cases): one engine, so the two folders cannot drift apart.
-func runStepCases(t *testing.T, folder string) {
+// flush-cases, batch-cases, …): one engine, so the folders cannot drift apart. With no
+// variants each case runs as its own `batching` header says; with variants, once per variant
+// (spec/session.md "The step scripts": every flush-cases file runs under Off and Auto).
+func runStepCases(t *testing.T, folder string, variants ...stepVariant) {
+	if len(variants) == 0 {
+		runStepCasesIn(t, folder, stepVariant{})
+		return
+	}
+	for _, variant := range variants {
+		t.Run(variant.name, func(t *testing.T) { runStepCasesIn(t, folder, variant) })
+	}
+}
+
+func runStepCasesIn(t *testing.T, folder string, variant stepVariant) {
 	for _, name := range testsupport.ConformanceCases(t, folder) {
 		t.Run(name, func(t *testing.T) {
 			var spec trackingCaseSpec
 			if err := json.Unmarshal(testsupport.ReadConformance(t, folder, name), &spec); err != nil {
 				t.Fatalf("parse %s: %v", name, err)
+			}
+			if variant.batching != nil {
+				spec.Batching = variant.batching
 			}
 
 			ctx := context.Background()
@@ -239,13 +310,17 @@ func runStepCases(t *testing.T, folder string) {
 				t.Fatalf("%s: unknown tracking mode %q", spec.Name, spec.Tracking)
 			}
 			dialect := testsupport.NewRecordingDialect()
-			db, err := orm.Open(ctx, path, orm.Options{Dialect: dialect, Tracking: mode, Clock: testsupport.FixedClock})
+			dialect.OneRoundTrip = variant.oneRoundTrip
+			db, err := orm.Open(ctx, path, spec.Batching.options(t, orm.Options{Dialect: dialect, Tracking: mode, Clock: testsupport.FixedClock}))
 			if err != nil {
 				t.Fatalf("%s: open: %v", spec.Name, err)
 			}
 			defer db.Close()
+			if want := variant.oneRoundTrip && db.Options().Batching == orm.BatchingAuto; db.BatchingInEffect() != want {
+				t.Fatalf("%s: BatchingInEffect() = %v, want %v", spec.Name, db.BatchingInEffect(), want)
+			}
 
-			run := &trackingRun{t: t, ctx: ctx, db: db, dialect: dialect, path: path, name: spec.Name, refs: map[string]any{}}
+			run := &trackingRun{t: t, ctx: ctx, db: db, dialect: dialect, path: path, name: spec.Name, refs: map[string]any{}, batches: map[string]*orm.Batch{}}
 			for i, step := range spec.Steps {
 				run.step(i, step)
 			}
@@ -264,6 +339,9 @@ type trackingRun struct {
 	summary orm.FlushSummary
 	name    string
 	refs    map[string]any
+	// batches are the spent explicit batches kept under a name (`as`), for batchAgain; result is the last send's.
+	batches map[string]*orm.Batch
+	result  orm.BatchResult
 }
 
 func (r *trackingRun) fatalf(i int, format string, args ...any) {
@@ -290,6 +368,9 @@ func (r *trackingRun) step(i int, step trackingStep) {
 	}
 	if step.Flush != nil {
 		r.checkFlush(i, step)
+	}
+	if step.Batch != nil {
+		r.checkBatch(i, step.Batch)
 	}
 }
 
@@ -391,6 +472,10 @@ func (r *trackingRun) perform(i int, step trackingStep) error {
 		summary, err := r.db.Flush(r.ctx)
 		r.summary = summary
 		return err
+	case step.Batch != nil:
+		return r.performBatch(i, step.Batch)
+	case step.BatchAgain != nil:
+		return r.performBatchAgain(i, step.BatchAgain)
 	case step.Begin != nil:
 		tx, err := r.db.Begin(r.ctx)
 		r.tx = tx

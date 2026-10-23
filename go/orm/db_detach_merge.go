@@ -132,18 +132,13 @@ func completeKey(m *core.EntityMap, entity any) ([]any, error) {
 		return nil, err
 	}
 	for i, value := range values {
-		if value == nil || (m.KeyStrategy != core.KeyNatural && isZeroKeyPart(value)) {
-			// "Unset key": null, a database-generated key at its default, or an empty client-generated GUID; a natural
-			// key's default value is a key (spec/unit-of-work.md "Clarifications on detach and merge").
+		if unsetKeyPart(m, value) {
+			// "Unset key" (batching.go's unsetKeyPart, spec/unit-of-work.md "Clarifications on detach and merge").
 			return nil, core.Errorf("CRUD-002", m.EntityName(),
 				"key part %d (%s) is not set; merge needs a complete key — persist new instances instead", i, m.KeyProperties[i].PropertyName)
 		}
 	}
 	return validateKey(m, values)
-}
-
-func isZeroKeyPart(value any) bool {
-	return reflect.ValueOf(value).IsZero()
 }
 
 // mergeValues writes every mapped non-key value of source (the detached copy) onto target (the

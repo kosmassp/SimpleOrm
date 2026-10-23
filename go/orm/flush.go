@@ -54,9 +54,12 @@ func (db *Db) Flush(ctx context.Context) (FlushSummary, error) {
 
 	// A failed flush undoes its in-memory effects (Clarifications): the journal puts keys, tracking, snapshots,
 	// and versions back — in the flush's own transaction and in a caller's alike; rows written before the
-	// failure inside a caller's transaction stay in it until the caller rolls back.
-	journal := &flushJournal{}
-	summary, err := db.executeFlush(ctx, plan, journal)
+	// failure inside a caller's transaction stay in it until the caller rolls back (under Batching = Auto,
+	// possibly rows of statements after the failing one in its message, spec/session.md "Batching").
+	journal := &undoJournal{}
+	call := db.newCall(journal)
+	summary, err := db.executeFlush(ctx, plan, call)
+	call.close() // the prepared commands belong to the transaction that is about to end
 	if err == nil && tx != nil {
 		err = tx.Commit(ctx)
 	}
@@ -477,41 +480,83 @@ func (h *readyHeap) Pop() any {
 
 // --- execution --------------------------------------------------------------
 
-// executeFlush runs the plan's statements in order, journaling how to undo
-// each one's effect on the session's in-memory state.
-func (db *Db) executeFlush(ctx context.Context, plan *flushPlan, journal *flushJournal) (FlushSummary, error) {
+// executeFlush prepares the plan's statements in order — each the session's own generated CRUD, so the identity
+// gate, the version rules, and CRUD-004 apply unchanged — and feeds them to the call, which forms them into
+// messages (batching.go, spec/unit-of-work.md "Batching") and journals how to undo each one's effect on the
+// session's in-memory state. Under Off every statement is its own message, exactly the Level 3 flush.
+func (db *Db) executeFlush(ctx context.Context, plan *flushPlan, call *batchCall) (FlushSummary, error) {
 	var summary FlushSummary
 
 	for _, scheduled := range plan.inserts {
+		// Rule 1b: the instances this insert reads a generated key from — its many-to-one targets, and the cascade
+		// owners it takes its key from — are dependencies; if one is inserted in the message in progress, that
+		// message is sent first and the keys flow after it.
+		operation := subject{m: scheduled.m, instance: scheduled.ptr, depends: append(m2oTargets(scheduled.m, scheduled.ptr), cascadeOwners(scheduled)...)}
+		if err := call.before(ctx, operation); err != nil {
+			return summary, err
+		}
 		if err := flowKeys(db, scheduled); err != nil {
 			return summary, err
 		}
-		journal.recordInsert(db, scheduled)
-		if err := insertEntity(ctx, db, scheduled.m.Type, scheduled.ptr); err != nil {
+		call.journal.recordWrite(db, scheduled.m, scheduled.ptr)
+		write, err := db.prepareInsert(scheduled.m.Type, scheduled.ptr)
+		if err != nil {
+			return summary, err
+		}
+		if err := call.add(ctx, write, operation); err != nil {
 			return summary, err
 		}
 		summary.Inserted++
 	}
 
 	for _, entry := range plan.dirty {
-		journal.recordUpdate(entry)
-		wrote, err := updateEntity(ctx, db, entry.m.Type, entry.ptr.Interface())
+		ptr := entry.ptr.Interface()
+		operation := subject{m: entry.m, instance: ptr, depends: m2oTargets(entry.m, ptr)}
+		if err := call.before(ctx, operation); err != nil {
+			return summary, err
+		}
+		call.journal.recordWrite(db, entry.m, ptr)
+		write, err := db.prepareUpdate(entry.m.Type, ptr)
 		if err != nil {
 			return summary, err
 		}
-		if wrote {
-			summary.Updated++
+		if write == nil {
+			continue // a clean instance writes nothing: the summary counts statements
 		}
+		if err := call.add(ctx, write, operation); err != nil {
+			return summary, err
+		}
+		summary.Updated++
 	}
 
 	for _, scheduled := range plan.deletes {
-		journal.recordDelete(db, scheduled)
-		if err := deleteEntity(ctx, db, scheduled.m.Type, scheduled.ptr); err != nil {
+		operation := subject{m: scheduled.m, instance: scheduled.ptr, depends: m2oTargets(scheduled.m, scheduled.ptr)}
+		if err := call.before(ctx, operation); err != nil {
+			return summary, err
+		}
+		call.journal.recordWrite(db, scheduled.m, scheduled.ptr)
+		write, err := db.prepareDeleteEntity(scheduled.m.Type, scheduled.ptr)
+		if err != nil {
+			return summary, err
+		}
+		if err := call.add(ctx, write, operation); err != nil {
 			return summary, err
 		}
 		summary.Deleted++
 	}
-	return summary, nil
+	return summary, call.finish(ctx)
+}
+
+// cascadeOwners lists the owners whose persist cascade reached a scheduled insert and whose key it takes into its
+// foreign key at flush: the plan's rule 1b treats them like many-to-one targets.
+func cascadeOwners(scheduled *scheduledInsert) []any {
+	var owners []any
+	for _, link := range scheduled.links {
+		if link.relationship.Kind == core.RelationshipOneToMany || link.relationship.Kind == core.RelationshipOneToOne {
+			owners = append(owners, link.owner)
+		}
+	}
+	return owners
 }
 
 // flowKeys copies keys into the foreign keys of an instance about to be
@@ -568,105 +613,4 @@ func copyKey(sourceMap *core.EntityMap, source any, targetMap *core.EntityMap, t
 		}
 	}
 	return nil
-}
-
-// --- undo journal -----------------------------------------------------------
-
-// flushJournal remembers how to put the session's in-memory state back when a
-// flush fails: the database side is the transaction's rollback; this is the
-// identity map, the snapshots, the versions, and the generated keys.
-type flushJournal struct {
-	undo []func()
-}
-
-func (j *flushJournal) rollback() {
-	for i := len(j.undo) - 1; i >= 0; i-- {
-		j.undo[i]()
-	}
-}
-
-// recordInsert is registered before the insert runs, so a partial failure is undone too.
-func (j *flushJournal) recordInsert(db *Db, scheduled *scheduledInsert) {
-	m := scheduled.m
-	priorKeys := make([]any, len(m.KeyProperties))
-	for i, key := range m.KeyProperties {
-		priorKeys[i] = key.Get(scheduled.ptr)
-	}
-	var displaced *trackedEntry
-	if key, ok := keyOf(m, scheduled.ptr); ok {
-		displaced = db.tracker.find(m.Type, key)
-	}
-	// The [CreatedAt] hook fills an unset value as the insert runs; the undo puts it back so a retried flush fills it
-	// afresh (spec/hooks.md Clarifications: the fill of an undone insert's created-at).
-	createdAt := m.CreatedAtProperty
-	var priorCreatedAt any
-	if createdAt != nil {
-		priorCreatedAt = createdAt.Get(scheduled.ptr)
-	}
-	j.undo = append(j.undo, func() {
-		if createdAt != nil {
-			_ = createdAt.Set(scheduled.ptr, priorCreatedAt) // the value came from Get, so it always assigns back
-		}
-		if entry := db.entryOf(scheduled.ptr); entry != nil {
-			db.tracker.forget(entry)
-		}
-		if displaced != nil {
-			db.tracker.restore(displaced)
-		}
-		for i, key := range m.KeyProperties {
-			_ = key.Set(scheduled.ptr, priorKeys[i]) // the value came from Get, so it always assigns back
-		}
-	})
-}
-
-// recordUpdate restores the snapshot and the version an update moved.
-func (j *flushJournal) recordUpdate(entry *trackedEntry) {
-	snapshot := append([]any(nil), entry.snapshot...)
-	version := entry.m.VersionProperty
-	var versionValue any
-	if version != nil {
-		versionValue = version.Get(entry.ptr.Interface())
-	}
-	// The [UpdatedAt] stamp the update wrote goes back with the snapshot and the version (spec/hooks.md).
-	stamp := entry.m.UpdatedAtProperty
-	var stampValue any
-	if stamp != nil {
-		stampValue = stamp.Get(entry.ptr.Interface())
-	}
-	j.undo = append(j.undo, func() {
-		copy(entry.snapshot, snapshot)
-		if version != nil {
-			_ = version.Set(entry.ptr.Interface(), versionValue) // the value came from Get, so it always assigns back
-		}
-		if stamp != nil {
-			_ = stamp.Set(entry.ptr.Interface(), stampValue)
-		}
-	})
-}
-
-// recordDelete re-registers the instance a delete forgot, exactly as it was. A soft delete (spec/hooks.md)
-// also changed the instance — the flag, the stamp, and the bumped version — and those go back too.
-func (j *flushJournal) recordDelete(db *Db, scheduled *scheduledRemove) {
-	entry := db.entryOf(scheduled.ptr)
-	m := scheduled.m
-	var restoreValues []func()
-	if m.SoftDeleteProperty != nil {
-		for _, property := range []*core.PropertyMap{m.SoftDeleteProperty, m.UpdatedAtProperty, m.VersionProperty} {
-			if property == nil {
-				continue
-			}
-			prior := property.Get(scheduled.ptr)
-			restoreValues = append(restoreValues, func() {
-				_ = property.Set(scheduled.ptr, prior) // the value came from Get, so it always assigns back
-			})
-		}
-	}
-	j.undo = append(j.undo, func() {
-		for _, restore := range restoreValues {
-			restore()
-		}
-		if entry != nil {
-			db.tracker.restore(entry)
-		}
-	})
 }

@@ -467,6 +467,13 @@ func (d *Dialect) DeleteSQL(m *core.EntityMap, checkVersion bool) string {
 // (spec/dialects.md "Update and delete — the affected-row count").
 func (*Dialect) ReportsAffectedRowsBySelect() bool { return false }
 
+// SupportsStatementBatching is true: a planned message goes out as one pgx Batch pipeline on the session's
+// connection (SendMessage, batch.go; ADR-0044, spec/dialects.md "Statement batching").
+func (*Dialect) SupportsStatementBatching() bool { return true }
+
+// MaxParametersPerMessage is 0, no cap: the plan is cut by statement count alone on PostgreSQL.
+func (*Dialect) MaxParametersPerMessage() int { return 0 }
+
 func (d *Dialect) keyPredicate(m *core.EntityMap) string {
 	parts := make([]string, len(m.KeyProperties))
 	for i, key := range m.KeyProperties {

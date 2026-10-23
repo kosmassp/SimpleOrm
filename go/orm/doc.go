@@ -14,7 +14,9 @@
 // internal/core (Error, EntityMap, Decimal, Criteria factories, the Dialect
 // seam). orm/sqlite is the SQLite dialect and orm/cli the command.
 // Level 3 M1 adds opt-in tracking (Options.Tracking): an identity map and
-// change snapshots — see tracking.go.
+// change snapshots — see tracking.go. Level 4 item 3 adds opt-in statement
+// batching (Options.Batching): a flush and an explicit batch (Db.Batch) send
+// their statements in as few messages as the driver allows — see batching.go.
 // How Go differs from the reference — and only there — is the §10 table in
 // CODING-STANDARD.md.
 package orm

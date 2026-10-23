@@ -6,6 +6,11 @@
     <Description>SQL-first micro-ORM core. Depends only on System.Data.Common; dialects are separate packages.</Description>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- The batching message hook (ADR-0044) is a test seam, never public API. -->
+    <InternalsVisibleTo Include="SimpleOrm.Tests" />
+  </ItemGroup>
+
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
     <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" />
     <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="9.0.0" />

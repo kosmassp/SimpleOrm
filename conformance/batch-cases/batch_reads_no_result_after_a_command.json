@@ -1,0 +1,93 @@
+{
+  "name": "batch_reads_no_result_after_a_command",
+  "comment": "Rule 2: an insert whose key the database generates returns a result the session reads, so it never follows a registry command in a message; a column-list update (no result read on SQLite) joins the message that follows.",
+  "tracking": "untracked",
+  "batching": {
+    "mode": "auto"
+  },
+  "steps": [
+    {
+      "new": {
+        "entity": "Role",
+        "as": "r",
+        "values": {
+          "Name": "reader",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "get": {
+        "entity": "User",
+        "key": 2,
+        "as": "g"
+      }
+    },
+    {
+      "set": {
+        "ref": "g",
+        "property": "DisplayName",
+        "value": "G"
+      }
+    },
+    {
+      "batch": {
+        "ops": [
+          {
+            "execute": {
+              "command": "SetDisplayName",
+              "args": {
+                "Id": 1,
+                "DisplayName": "Ada"
+              }
+            }
+          },
+          {
+            "insert": {
+              "ref": "r"
+            }
+          },
+          {
+            "updateOnly": {
+              "ref": "g",
+              "properties": [
+                "DisplayName"
+              ]
+            }
+          }
+        ],
+        "expectStatements": [
+          {
+            "op": "insert",
+            "entity": "Role"
+          },
+          {
+            "op": "update",
+            "entity": "User",
+            "columns": [
+              "DisplayName",
+              "UpdatedAtUtc"
+            ]
+          }
+        ],
+        "expectMessages": [
+          1,
+          2
+        ],
+        "expectAffected": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "expect": {
+        "count": {
+          "entity": "Role",
+          "equals": 4
+        }
+      }
+    }
+  ]
+}

@@ -275,4 +275,23 @@ public interface IDialect
     /// driver's — hand-written SQL is the author's.
     /// </summary>
     bool ReportsAffectedRowsBySelect { get; }
+
+    /// <summary>
+    /// Whether this dialect's driver can carry several statements in one message
+    /// and hand back each statement's result (ADR-0044): true for SQL Server and
+    /// PostgreSQL on <c>net10.0</c>, whose providers implement <c>DbBatch</c>;
+    /// false for SQLite (<c>Microsoft.Data.Sqlite</c> has no batch) and for every
+    /// dialect on <c>netstandard2.0</c>. Under <c>Batching = Auto</c> a false
+    /// dialect runs each planned message one statement at a time
+    /// (<see cref="Db.BatchingInEffect"/> says which realization is in force).
+    /// </summary>
+    bool SupportsStatementBatching { get; }
+
+    /// <summary>
+    /// The most bound parameters one message may carry, or null for none
+    /// (ADR-0044). SQL Server: 2098 — one <c>sp_executesql</c> takes 2100, two of
+    /// them its own; the cap holds for every implementation so the batching plan
+    /// (spec/session.md "Batching", rule 3) is the same everywhere.
+    /// </summary>
+    int? MaxParametersPerMessage { get; }
 }

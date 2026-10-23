@@ -1,0 +1,98 @@
+{
+  "name": "batch_same_instance_starts_a_new_message",
+  "comment": "Rule 1a: a second operation on an instance already written in the current message waits for it - here the update needs the key the insert generates. A second insert of another instance shares the first message.",
+  "tracking": "untracked",
+  "batching": {
+    "mode": "auto"
+  },
+  "steps": [
+    {
+      "new": {
+        "entity": "Role",
+        "as": "r1",
+        "values": {
+          "Name": "reader",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "new": {
+        "entity": "Role",
+        "as": "r2",
+        "values": {
+          "Name": "writer",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "batch": {
+        "ops": [
+          {
+            "insert": {
+              "ref": "r1"
+            }
+          },
+          {
+            "insert": {
+              "ref": "r2"
+            }
+          },
+          {
+            "updateOnly": {
+              "ref": "r1",
+              "properties": [
+                "Name"
+              ]
+            }
+          }
+        ],
+        "expectStatements": [
+          {
+            "op": "insert",
+            "entity": "Role"
+          },
+          {
+            "op": "insert",
+            "entity": "Role"
+          },
+          {
+            "op": "update",
+            "entity": "Role",
+            "columns": [
+              "Name",
+              "UpdatedAtUtc"
+            ]
+          }
+        ],
+        "expectMessages": [
+          2,
+          1
+        ],
+        "expectAffected": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "expect": {
+        "value": {
+          "ref": "r1",
+          "property": "UpdatedAtUtc",
+          "equals": "2026-08-29T00:00:00.0000000Z"
+        }
+      }
+    },
+    {
+      "expect": {
+        "count": {
+          "entity": "Role",
+          "equals": 5
+        }
+      }
+    }
+  ]
+}

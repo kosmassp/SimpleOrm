@@ -292,6 +292,12 @@ public sealed class SqliteDialect : IDialect
     /// <summary>SQLite has no triggers-inflate-the-count problem: <c>changes()</c> is the statement's own count (ADR-0040 add.3).</summary>
     public bool ReportsAffectedRowsBySelect => false;
 
+    /// <summary><c>Microsoft.Data.Sqlite</c> has no batch (<c>CanCreateBatch</c> is false); SQLite has no network round trip to save. Under <c>Auto</c> the planned messages run one statement at a time, reusing prepared commands (ADR-0044).</summary>
+    public bool SupportsStatementBatching => false;
+
+    /// <inheritdoc />
+    public int? MaxParametersPerMessage => null;
+
     private static string KeyPredicate(EntityMap map)
         => string.Join(" and ", map.KeyProperties.Select(k => k.ColumnName + " = @" + k.ColumnName));
 

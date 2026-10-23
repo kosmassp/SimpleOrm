@@ -1,0 +1,53 @@
+{
+  "name": "batch_is_spent_after_send",
+  "comment": "A sent batch takes nothing more: queuing on it or sending it again is TX-003. An empty send returns an empty result and forms no message.",
+  "tracking": "untracked",
+  "batching": {
+    "mode": "auto"
+  },
+  "steps": [
+    {
+      "batch": {
+        "ops": [],
+        "as": "b",
+        "expectMessages": [],
+        "expectAffected": []
+      }
+    },
+    {
+      "new": {
+        "entity": "Role",
+        "as": "r",
+        "values": {
+          "Name": "reader",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "batchAgain": {
+        "ref": "b",
+        "op": {
+          "insert": {
+            "ref": "r"
+          }
+        }
+      },
+      "expectError": "TX-003"
+    },
+    {
+      "batchAgain": {
+        "ref": "b"
+      },
+      "expectError": "TX-003"
+    },
+    {
+      "expect": {
+        "count": {
+          "entity": "Role",
+          "equals": 3
+        }
+      }
+    }
+  ]
+}

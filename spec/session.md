@@ -197,9 +197,13 @@ turns out to issue no statement (an explicit batch's clean tracked update) adds
 nothing to the message, but still ended the current one if rule 1 said so.
 Under `Off` every statement is its own message.
 
-The plan is a property of the session, not of the driver: every implementation
-forms the same messages from the same statements on every dialect, and
-`batch-cases/` pins them. A realization may use **more** round trips than the
+The plan is a property of the session, not of the driver: it reads the
+statements and two facts of the dialect — whether a generated update or delete
+returns its count as a result (`ReportsAffectedRowsBySelect`, rule 2) and the
+parameter cap (rule 3) — so every implementation forms the same messages from
+the same statements on the same dialect, whatever its driver can do;
+`batch-cases/` pins them under the SQLite dialect's facts (no reported counts,
+no cap). A realization may use **more** round trips than the
 plan's messages — the sequential one does, and a driver that cannot carry a
 particular statement in a message (spec/dialects.md) sends that statement on its
 own — never fewer.
@@ -492,7 +496,8 @@ key and, optionally, `"expectError": "<code>"`. The verbs and their fields:
 | `delete` | `ref` (the entity form) or `entity` + `key` (the key form) | |
 | `load` | `ref`, `navigation` | explicit loading of one navigation |
 | `flush` | `expectStatements`?, `expectSummary`?, `expectMessages`? | unit-of-work.md "Conformance" |
-| `batch` | `ops`, `expectStatements`?, `expectMessages`?, `expectAffected`? | queue every op on one explicit batch, then send it ("The explicit batch"); each op is an object with one key — `insert`, `update`, `updateOnly`, `delete` (fields as the steps of those names), or `execute` (`command` — a fixture command by name — and `args`); `expectAffected` is the result's per-operation counts |
+| `batch` | `ops`, `as`?, `expectStatements`?, `expectMessages`?, `expectAffected`? | queue every op on one explicit batch, then send it ("The explicit batch"); each op is an object with one key — `insert`, `update`, `updateOnly`, `delete` (fields as the steps of those names), or `execute` (`command` — a fixture command by name — and `args`); `expectAffected` is the result's per-operation counts; `as` keeps the spent batch under a name |
+| `batchAgain` | `ref`, `op`? | use a kept batch again: queue `op` on it, or, without `op`, send it — both `TX-003` |
 | `merge` | `ref`, `as` | binds the instance merge returns |
 | `begin`, `commit`, `rollback` | `{}` | the session transaction |
 | `expect` | one expectation kind | below |
@@ -523,8 +528,9 @@ exists; members are checked one by one).
 **Messages.** `expectMessages` is the plan's grouping of the step's
 statements ("Batching" above): one entry per message, in order, each the
 number of statements it carried — registry commands included, although the
-recorder below lists generated writes only. It is the plan, the same on every
-dialect, whether or not the realization sent each message as one round trip.
+recorder below lists generated writes only. It is the plan — formed under the
+runner's dialect, SQLite — whether or not the realization sent each message as
+one round trip.
 
 **The fixture command** for `execute`: `SetDisplayName`, the registry command
 `update users set display_name = @DisplayName where id = @Id`, args `Id`

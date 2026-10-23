@@ -438,6 +438,16 @@ public sealed class PostgresDialect : IDialect
     /// <summary>The command tag's count is the statement's own, triggers or not (ADR-0040 add.3).</summary>
     public bool ReportsAffectedRowsBySelect => false;
 
+    /// <summary>The provider's <c>DbBatch</c> (<c>NpgsqlBatch</c>) on <c>net10.0</c>; none on <c>netstandard2.0</c>, where planned messages run one statement at a time (ADR-0044).</summary>
+#if NET
+    public bool SupportsStatementBatching => true;
+#else
+    public bool SupportsStatementBatching => false;
+#endif
+
+    /// <inheritdoc />
+    public int? MaxParametersPerMessage => null;
+
     private string KeyPredicate(EntityMap map)
         => string.Join(" and ", map.KeyProperties.Select(k => QuoteIdentifier(k.ColumnName) + " = @" + k.ColumnName));
 

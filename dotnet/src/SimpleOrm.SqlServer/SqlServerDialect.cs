@@ -430,6 +430,16 @@ public sealed class SqlServerDialect : IDialect
     /// </summary>
     public bool ReportsAffectedRowsBySelect => true;
 
+    /// <summary>The provider's <c>DbBatch</c> (<c>SqlBatch</c>) on <c>net10.0</c>; none on <c>netstandard2.0</c>, where planned messages run one statement at a time (ADR-0044).</summary>
+#if NET
+    public bool SupportsStatementBatching => true;
+#else
+    public bool SupportsStatementBatching => false;
+#endif
+
+    /// <inheritdoc />
+    public int? MaxParametersPerMessage => 2098;
+
     private static string ReportingAffectedRows(string statement)
         => "set nocount on; " + statement + "; select @@rowcount; set nocount off";
 

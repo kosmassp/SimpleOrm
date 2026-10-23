@@ -37,6 +37,12 @@ public sealed partial class Db : IAsyncDisposable
 
     public static async Task<Db> OpenAsync(string connectionString, DbOptions options, CancellationToken ct)
     {
+        if (options.MaxStatementsPerMessage < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options), options.MaxStatementsPerMessage, "MaxStatementsPerMessage must be at least 1");
+        }
+
         var connection = options.Dialect.CreateConnection(connectionString);
         try
         {
@@ -469,33 +475,85 @@ public sealed partial class Db : IAsyncDisposable
     /// </summary>
     public async Task InsertAsync<TEntity>(TEntity entity, CancellationToken ct)
         where TEntity : class
+        => await RunAsync(PrepareInsert(Maps.Load<TEntity>(), entity), ct).ConfigureAwait(false);
+
+    /// <summary>
+    /// The insert, prepared (ADR-0044): every check, the hook fill, the client
+    /// GUID, the bound statement — nothing executed. Completing it writes the
+    /// generated key back and tracks the instance; undoing it puts the instance
+    /// back as it was, so a failed write — or a failed batched call — leaves it
+    /// untouched.
+    /// </summary>
+    private PendingWrite PrepareInsert(EntityMap map, object entity)
     {
-        var map = Maps.Load<TEntity>();
         if (map.Kind != RelationKind.Table)
         {
             throw new SimpleOrmException(
-                "CRUD-003", typeof(TEntity).Name, $"is {map.Kind}-backed and read-only; writes need a table");
+                "CRUD-003", map.EntityType.Name, $"is {map.Kind}-backed and read-only; writes need a table");
         }
 
         CheckNavigationConsistency(map, entity);
         CheckIdentity(map, entity);
         var createdBefore = map.CreatedAtProperty?.GetValue(entity);
+        var keyBefore = map.GetKeyValues(entity);
+        void Restore()
+        {
+            for (var i = 0; i < keyBefore.Length; i++)
+            {
+                map.KeyProperties[i].SetValue(entity, keyBefore[i]);
+            }
+
+            map.CreatedAtProperty?.SetValue(entity, createdBefore);
+        }
+
         FillCreatedAt(map, entity);
+        DbCommand command;
         try
         {
-            await InsertRowAsync(map, entity, ct).ConfigureAwait(false);
+            command = InsertCommand(map, entity);
         }
         catch
         {
-            map.CreatedAtProperty?.SetValue(entity, createdBefore);   // a failed write leaves the instance as it was
+            Restore();
             throw;
         }
 
-        TrackWritten(map, entity);
+        var generated = map.KeyStrategy == KeyStrategy.DatabaseGenerated;
+        var completed = false;
+        return new PendingWrite(command, generated ? WriteResult.Scalar : WriteResult.None, entity, generatesKey: generated)
+        {
+            Complete = result =>
+            {
+                if (generated)
+                {
+                    if (result is null or DBNull)
+                    {
+                        throw new InvalidOperationException($"the insert returned no generated key: {command.CommandText}");
+                    }
+
+                    var key = map.KeyProperties[0];
+                    key.SetValue(entity, _converter.FromDatabase(
+                        result, key.ClrType, $"{map.EntityType.Name}.{key.PropertyName}"));
+                }
+
+                completed = true;
+                TrackWritten(map, entity);
+                return 1;
+            },
+            Undo = () =>
+            {
+                if (completed)
+                {
+                    Untrack(map, map.GetKeyValues(entity));
+                }
+
+                Restore();
+            },
+        };
     }
 
-    /// <summary>The insert statement itself: the generated INSERT, every non-generated column bound, the generated key read back.</summary>
-    private async Task InsertRowAsync(EntityMap map, object entity, CancellationToken ct)
+    /// <summary>The insert statement itself: the generated INSERT, every non-generated column bound; an empty client GUID assigned first.</summary>
+    private DbCommand InsertCommand(EntityMap map, object entity)
     {
         if (map.KeyStrategy == KeyStrategy.ClientGuid)
         {
@@ -506,32 +564,21 @@ public sealed partial class Db : IAsyncDisposable
             }
         }
 
-        using var command = _connection.CreateCommand();
-        command.Transaction = _transaction;
-        command.CommandText = Options.Dialect.InsertSql(map);
-        foreach (var property in map.Properties.Where(p => !p.IsGenerated))
+        var command = _connection.CreateCommand();
+        try
         {
-            var parameter = command.CreateParameter();
-            parameter.ParameterName = "@" + property.ColumnName;
-            _converter.BindValue(
-                parameter,
-                property.GetValue(entity),
-                $"{map.EntityType.Name}.{property.PropertyName}",
-                property.EnumAsInt,
-                property.ClrType);
-            command.Parameters.Add(parameter);
-        }
+            command.CommandText = Options.Dialect.InsertSql(map);
+            foreach (var property in map.Properties.Where(p => !p.IsGenerated))
+            {
+                AddEntityParameter(command, property, entity);
+            }
 
-        if (map.KeyStrategy == KeyStrategy.DatabaseGenerated)
-        {
-            var key = map.KeyProperties[0];
-            var generated = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
-            key.SetValue(entity, _converter.FromDatabase(
-                generated, key.ClrType, $"{map.EntityType.Name}.{key.PropertyName}"));
+            return command;
         }
-        else
+        catch
         {
-            await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            command.Dispose();
+            throw;
         }
     }
 
@@ -546,7 +593,15 @@ public sealed partial class Db : IAsyncDisposable
     public async Task UpdateAsync<TEntity>(TEntity entity, CancellationToken ct)
         where TEntity : class
     {
-        var map = RequireWritableKeyed<TEntity>();
+        if (PrepareUpdate(RequireWritableKeyed<TEntity>(), entity) is { } write)
+        {
+            await RunAsync(write, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>The update, prepared; null when a tracked instance is clean — no statement at all.</summary>
+    private PendingWrite? PrepareUpdate(EntityMap map, object entity)
+    {
         CheckNavigationConsistency(map, entity);
 
         if (CheckIdentity(map, entity) is { } tracked)
@@ -562,23 +617,21 @@ public sealed partial class Db : IAsyncDisposable
                 .ToList();
             if (dirty.Count == 0)
             {
-                return;
+                return null;
             }
 
             var set = WithUpdatedAt(map, dirty);
-            await StampedAsync(map, entity, () => ExecuteUpdateAsync(
-                map, entity, Options.Dialect.UpdateOnlySql(map, set),
-                BoundForUpdate(map, set), ct)).ConfigureAwait(false);
-            TrackWrittenColumns(tracked, map, set);
-            return;
+            return PrepareUpdateStatement(
+                map, entity, Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set),
+                () => TrackWrittenColumnsUndoably(tracked, map, set));
         }
 
         // Bind SET values, key values, and the current version for the WHERE;
         // database-generated non-key columns are never written.
-        await StampedAsync(map, entity, () => ExecuteUpdateAsync(
+        return PrepareUpdateStatement(
             map, entity, Options.Dialect.UpdateSql(map),
-            map.Properties.Where(p => p.IsKey || p.IsVersion || !p.IsGenerated), ct)).ConfigureAwait(false);
-        TrackWritten(map, entity);
+            map.Properties.Where(p => p.IsKey || p.IsVersion || !p.IsGenerated),
+            () => TrackWrittenUndoably(map, entity));
     }
 
     /// <summary>The parameters of a column-list update: the SET, the key, and the version when mapped.</summary>
@@ -600,16 +653,18 @@ public sealed partial class Db : IAsyncDisposable
     /// </summary>
     public async Task UpdateOnlyAsync<TEntity>(TEntity entity, IReadOnlyList<string> properties, CancellationToken ct)
         where TEntity : class
+        => await RunAsync(PrepareUpdateOnly(RequireWritableKeyed<TEntity>(), entity, properties), ct).ConfigureAwait(false);
+
+    private PendingWrite PrepareUpdateOnly(EntityMap map, object entity, IReadOnlyList<string> properties)
     {
-        var map = RequireWritableKeyed<TEntity>();
         var set = WithUpdatedAt(map, ResolveUpdateList(map, properties));
         var listed = new HashSet<string>(set.Select(p => p.PropertyName), StringComparer.Ordinal);
         CheckNavigationConsistency(map, entity, listed.Contains);
         var tracked = CheckIdentity(map, entity);
 
-        await StampedAsync(map, entity, () => ExecuteUpdateAsync(
-            map, entity, Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set), ct)).ConfigureAwait(false);
-        TrackWrittenColumns(tracked, map, set);
+        return PrepareUpdateStatement(
+            map, entity, Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set),
+            () => TrackWrittenColumnsUndoably(tracked, map, set));
     }
 
     /// <summary>Validates an update-by-column-list (ADR-0028) and resolves it to property maps, in the caller's order.</summary>
@@ -674,39 +729,77 @@ public sealed partial class Db : IAsyncDisposable
         return resolved;
     }
 
-    /// <summary>The shared tail of both updates (§7.15–16): bind, execute, judge the row count, bump the version.</summary>
-    private async Task ExecuteUpdateAsync<TEntity>(
-        EntityMap map, TEntity entity, string sql, IEnumerable<PropertyMap> bound, CancellationToken ct)
-        where TEntity : class
+    /// <summary>
+    /// The shared shape of every generated UPDATE (§7.15–16) — full row, column
+    /// list, dirty columns, soft delete: the stamp, the bound statement; completing
+    /// it judges the row count, bumps the version, and runs <paramref name="onSuccess"/>
+    /// (tracking, forgetting), whose returned action undoes that effect.
+    /// </summary>
+    private PendingWrite PrepareUpdateStatement(
+        EntityMap map, object entity, string sql, IEnumerable<PropertyMap> bound, Func<Action> onSuccess, Action? restore = null)
     {
-        using var command = _connection.CreateCommand();
-        command.Transaction = _transaction;
-        command.CommandText = sql;
-        foreach (var property in bound)
+        var stampBefore = map.UpdatedAtProperty?.GetValue(entity);
+        StampUpdatedAt(map, entity);
+        DbCommand command;
+        try
         {
-            AddEntityParameter(command, property, entity);
-        }
-
-        var affected = await ExecuteAffectedAsync(command, ct).ConfigureAwait(false);
-        if (affected == 0)
-        {
-            if (map.VersionProperty is { } version)
+            command = _connection.CreateCommand();
+            command.CommandText = sql;
+            foreach (var property in bound)
             {
-                throw new ConcurrencyException(
-                    typeof(TEntity).Name,
-                    $"update affected no rows: version {version.GetValue(entity)} is stale or the row is gone");
+                AddEntityParameter(command, property, entity);
             }
-
-            throw new SimpleOrmException(
-                "CRUD-001", typeof(TEntity).Name, $"update affected no rows: no row with key ({FormatKey(KeyOf(map, entity))})");
         }
-
-        if (map.VersionProperty is { } bump)
+        catch
         {
-            var current = Convert.ToInt64(bump.GetValue(entity), System.Globalization.CultureInfo.InvariantCulture);
-            bump.SetValue(entity, Convert.ChangeType(
-                current + 1, bump.ClrType, System.Globalization.CultureInfo.InvariantCulture));
+            map.UpdatedAtProperty?.SetValue(entity, stampBefore);   // a failed write leaves the instance as it was
+            throw;
         }
+
+        var versionBefore = map.VersionProperty?.GetValue(entity);
+        var completed = false;
+        Action? undoSuccess = null;
+        return new PendingWrite(command, AffectedResult, entity, generatesKey: false)
+        {
+            Complete = result =>
+            {
+                var affected = AffectedCount(result, sql);
+                if (affected == 0)
+                {
+                    if (map.VersionProperty is { } version)
+                    {
+                        throw new ConcurrencyException(
+                            map.EntityType.Name,
+                            $"update affected no rows: version {version.GetValue(entity)} is stale or the row is gone");
+                    }
+
+                    throw new SimpleOrmException(
+                        "CRUD-001", map.EntityType.Name, $"update affected no rows: no row with key ({FormatKey(KeyOf(map, entity))})");
+                }
+
+                completed = true;
+                if (map.VersionProperty is { } bump)
+                {
+                    var current = Convert.ToInt64(bump.GetValue(entity), System.Globalization.CultureInfo.InvariantCulture);
+                    bump.SetValue(entity, Convert.ChangeType(
+                        current + 1, bump.ClrType, System.Globalization.CultureInfo.InvariantCulture));
+                }
+
+                undoSuccess = onSuccess();
+                return affected;
+            },
+            Undo = () =>
+            {
+                if (completed)
+                {
+                    undoSuccess?.Invoke();
+                    map.VersionProperty?.SetValue(entity, versionBefore);
+                }
+
+                map.UpdatedAtProperty?.SetValue(entity, stampBefore);
+                restore?.Invoke();
+            },
+        };
     }
 
     /// <summary>
@@ -717,63 +810,83 @@ public sealed partial class Db : IAsyncDisposable
     /// </summary>
     public async Task DeleteAsync<TEntity>(object keyOrEntity, CancellationToken ct)
         where TEntity : class
+        => await RunAsync(PrepareDelete(RequireWritableKeyed<TEntity>(), keyOrEntity), ct).ConfigureAwait(false);
+
+    private PendingWrite PrepareDelete(EntityMap map, object keyOrEntity)
     {
-        var map = RequireWritableKeyed<TEntity>();
-        var byEntity = keyOrEntity is TEntity;
+        var byEntity = map.EntityType.IsInstanceOfType(keyOrEntity);
         if (map.SoftDeleteProperty is not null)
         {
             // A declared soft delete is an update that sets the flag (Level 3 M3).
-            await SoftDeleteAsync(map, keyOrEntity, byEntity, ct).ConfigureAwait(false);
-            return;
+            return PrepareSoftDelete(map, keyOrEntity, byEntity);
         }
-
-        using var command = _connection.CreateCommand();
-        command.Transaction = _transaction;
 
         var checkVersion = byEntity && map.VersionProperty is not null;
-        command.CommandText = Options.Dialect.DeleteSql(map, checkVersion);
-
-        if (byEntity)
+        var command = _connection.CreateCommand();
+        object?[] key;
+        try
         {
-            var entity = (TEntity)keyOrEntity;
-            CheckIdentity(map, entity);
-            foreach (var key in map.KeyProperties)
+            command.CommandText = Options.Dialect.DeleteSql(map, checkVersion);
+            if (byEntity)
             {
-                AddEntityParameter(command, key, entity);
-            }
+                CheckIdentity(map, keyOrEntity);
+                foreach (var keyProperty in map.KeyProperties)
+                {
+                    AddEntityParameter(command, keyProperty, keyOrEntity);
+                }
 
-            if (checkVersion)
+                if (checkVersion)
+                {
+                    AddEntityParameter(command, map.VersionProperty!, keyOrEntity);
+                }
+
+                key = map.GetKeyValues(keyOrEntity);
+            }
+            else
             {
-                AddEntityParameter(command, map.VersionProperty!, entity);
+                var keyValues = ValidateKey(map, keyOrEntity);
+                for (var i = 0; i < keyValues.Length; i++)
+                {
+                    var parameter = command.CreateParameter();
+                    parameter.ParameterName = "@" + map.KeyProperties[i].ColumnName;
+                    parameter.Value = _converter.ToDatabase(keyValues[i], $"{map.EntityType.Name} key[{i}]");
+                    command.Parameters.Add(parameter);
+                }
+
+                key = keyValues;
             }
         }
-        else
+        catch
         {
-            var keyValues = ValidateKey(map, keyOrEntity);
-            for (var i = 0; i < keyValues.Length; i++)
-            {
-                var parameter = command.CreateParameter();
-                parameter.ParameterName = "@" + map.KeyProperties[i].ColumnName;
-                parameter.Value = _converter.ToDatabase(keyValues[i], $"{typeof(TEntity).Name} key[{i}]");
-                command.Parameters.Add(parameter);
-            }
+            command.Dispose();
+            throw;
         }
 
-        var affected = await ExecuteAffectedAsync(command, ct).ConfigureAwait(false);
-        if (affected == 0)
+        var sql = command.CommandText;
+        Action? undoForget = null;
+        return new PendingWrite(command, AffectedResult, byEntity ? keyOrEntity : null, generatesKey: false)
         {
-            if (checkVersion)
+            Complete = result =>
             {
-                throw new ConcurrencyException(
-                    typeof(TEntity).Name, "delete affected no rows: the version is stale or the row is gone");
-            }
+                var affected = AffectedCount(result, sql);
+                if (affected == 0)
+                {
+                    if (checkVersion)
+                    {
+                        throw new ConcurrencyException(
+                            map.EntityType.Name, "delete affected no rows: the version is stale or the row is gone");
+                    }
 
-            throw new SimpleOrmException(
-                "CRUD-001", typeof(TEntity).Name,
-                $"delete affected no rows: no row with key ({FormatKey(byEntity ? KeyOf(map, keyOrEntity) : keyOrEntity)})");
-        }
+                    throw new SimpleOrmException(
+                        "CRUD-001", map.EntityType.Name,
+                        $"delete affected no rows: no row with key ({FormatKey(byEntity ? KeyOf(map, keyOrEntity) : keyOrEntity)})");
+                }
 
-        Untrack(map, byEntity ? map.GetKeyValues(keyOrEntity) : ValidateKey(map, keyOrEntity));
+                undoForget = Forget(map, key);
+                return affected;
+            },
+            Undo = () => undoForget?.Invoke(),
+        };
     }
 
     private EntityMap RequireWritableKeyed<TEntity>()
@@ -795,30 +908,31 @@ public sealed partial class Db : IAsyncDisposable
     }
 
     /// <summary>
-    /// The affected-row count of a generated UPDATE or DELETE — the one number the
-    /// <c>CRUD-010</c>/<c>CRUD-001</c> rules judge. The driver's count, unless the
-    /// dialect reports it by a trailing select (<see cref="IDialect.ReportsAffectedRowsBySelect"/>,
-    /// ADR-0040 add.3: SQL Server's <c>select @@rowcount</c>, immune to a trigger's
-    /// rows); then the statement's first scalar is the count. Registry commands
-    /// never come through here: their count is the driver's.
+    /// How a generated UPDATE or DELETE reports its affected-row count: the
+    /// driver's, unless the dialect reports it by a trailing select
+    /// (<see cref="IDialect.ReportsAffectedRowsBySelect"/>, ADR-0040 add.3: SQL
+    /// Server's <c>select @@rowcount</c>, immune to a trigger's rows) — then the
+    /// statement's first scalar is the count. Registry commands keep the driver's.
     /// </summary>
-    private async Task<int> ExecuteAffectedAsync(DbCommand command, CancellationToken ct)
+    private WriteResult AffectedResult => Options.Dialect.ReportsAffectedRowsBySelect ? WriteResult.Scalar : WriteResult.Count;
+
+    /// <summary>The count the <c>CRUD-010</c>/<c>CRUD-001</c> rules judge, from a statement's result.</summary>
+    private int AffectedCount(object? result, string sql)
     {
         if (!Options.Dialect.ReportsAffectedRowsBySelect)
         {
-            return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            return (int)result!;
         }
 
         // The absence of the scalar is never zero (spec/dialects.md Clarification
         // 24): a batch that yields no count row is a dialect bug, not a conflict.
-        var reported = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
-        if (reported is null or DBNull)
+        if (result is null or DBNull)
         {
             throw new InvalidOperationException(
-                $"the dialect reports affected rows by select, but the batch returned no count: {command.CommandText}");
+                $"the dialect reports affected rows by select, but the batch returned no count: {sql}");
         }
 
-        return Convert.ToInt32(reported, System.Globalization.CultureInfo.InvariantCulture);
+        return Convert.ToInt32(result, System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private void AddEntityParameter(DbCommand command, PropertyMap property, object entity)

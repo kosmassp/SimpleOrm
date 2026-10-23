@@ -1,5 +1,4 @@
 using System.Collections;
-using System.Reflection;
 
 namespace SimpleOrm;
 
@@ -115,64 +114,42 @@ public sealed partial class Db
             return default;   // nothing to write: no statement, no transaction
         }
 
-        var ownsTransaction = _transaction is null;
-        var scope = ownsTransaction ? await BeginAsync(ct).ConfigureAwait(false) : null;
-        var undo = new List<Action>();
+        var scope = _transaction is null ? await BeginAsync(ct).ConfigureAwait(false) : null;
+        var call = new WriteCall(this, ct);
         try
         {
+            // One call in the sense of the batching plan (ADR-0044): the same
+            // statements in the same order, sent as messages under Auto. An insert
+            // reads its parents' keys — its many-to-one targets and the owners a
+            // cascade recorded — so it waits for a message that generates one.
             foreach (var entity in inserts)
             {
                 var map = Maps.Load(entity.GetType());
-                ApplyReferences(map, entity);
-                var keyBefore = map.KeyProperties.Select(k => k.GetValue(entity)).ToArray();
-                var createdBefore = map.CreatedAtProperty?.GetValue(entity);
-                await InvokeWriteAsync(nameof(InsertAsync), map, entity, ct).ConfigureAwait(false);
-                undo.Add(() =>
-                {
-                    Untrack(map, map.GetKeyValues(entity));
-                    for (var i = 0; i < keyBefore.Length; i++)
+                await call.AddAsync(
+                    entity,
+                    () => ManyToOneTargets(map, entity).Concat(CascadeOwners(entity)).ToList(),
+                    () =>
                     {
-                        map.KeyProperties[i].SetValue(entity, keyBefore[i]);
-                    }
-
-                    map.CreatedAtProperty?.SetValue(entity, createdBefore);   // the hook's fill goes back too
-                });
+                        ApplyReferences(map, entity);
+                        return PrepareInsert(map, entity);
+                    }).ConfigureAwait(false);
             }
 
             foreach (var entity in updates)
             {
                 var map = Maps.Load(entity.GetType());
-                var entry = _trackedByInstance[entity];
-                var snapshotBefore = (object?[])entry.Snapshot.Clone();
-                var versionBefore = map.VersionProperty?.GetValue(entity);
-                var stampBefore = map.UpdatedAtProperty?.GetValue(entity);
-                await InvokeWriteAsync(nameof(UpdateAsync), map, entity, ct).ConfigureAwait(false);
-                undo.Add(() =>
-                {
-                    entry.Snapshot = snapshotBefore;
-                    map.VersionProperty?.SetValue(entity, versionBefore);
-                    map.UpdatedAtProperty?.SetValue(entity, stampBefore);
-                });
+                await call.AddAsync(entity, () => ManyToOneTargets(map, entity), () => PrepareUpdate(RequireWritableKeyed(map.EntityType), entity))
+                    .ConfigureAwait(false);
             }
 
             foreach (var entity in removes)
             {
                 var map = Maps.Load(entity.GetType());
-                var snapshotBefore = _trackedByInstance[entity].Snapshot;
-                var versionBefore = map.VersionProperty?.GetValue(entity);
-                var stampBefore = map.UpdatedAtProperty?.GetValue(entity);
-                var flagBefore = map.SoftDeleteProperty?.GetValue(entity);
-                await InvokeWriteAsync(nameof(DeleteAsync), map, entity, ct).ConfigureAwait(false);
-                undo.Add(() =>
-                {
-                    // A soft delete wrote the flag, the stamp, and the version onto the instance.
-                    map.VersionProperty?.SetValue(entity, versionBefore);
-                    map.UpdatedAtProperty?.SetValue(entity, stampBefore);
-                    map.SoftDeleteProperty?.SetValue(entity, flagBefore);
-                    Register(map, map.GetKeyValues(entity), entity, snapshotBefore);
-                });
+                await call.AddAsync(entity, () => ManyToOneTargets(map, entity), () => PrepareDelete(RequireWritableKeyed(map.EntityType), entity))
+                    .ConfigureAwait(false);
             }
 
+            await call.FinishAsync().ConfigureAwait(false);
             if (scope is not null)
             {
                 await scope.CommitAsync(ct).ConfigureAwait(false);
@@ -183,19 +160,17 @@ public sealed partial class Db
         }
         catch
         {
-            // The in-memory effects of the statements that ran are undone — keys,
-            // snapshots, versions, tracking — so the schedule can flush again as
-            // it was; the database is rolled back below when the flush owns the
-            // transaction, and is the caller's to roll back otherwise.
-            for (var i = undo.Count - 1; i >= 0; i--)
-            {
-                undo[i]();
-            }
-
+            // The in-memory effects of every statement the flush prepared are
+            // undone — keys, snapshots, versions, stamps, tracking — so the
+            // schedule can flush again as it was; the database is rolled back
+            // below when the flush owns the transaction, and is the caller's to
+            // roll back otherwise.
+            call.Undo();
             throw;
         }
         finally
         {
+            call.Dispose();
             if (scope is not null)
             {
                 await scope.DisposeAsync().ConfigureAwait(false);   // rolls back unless committed
@@ -675,21 +650,6 @@ public sealed partial class Db
         return dirty.OrderBy(d => d.Rank).ThenBy(d => d.Sequence).Select(d => d.Entity).ToList();
     }
 
-    private async Task InvokeWriteAsync(string method, EntityMap map, object entity, CancellationToken ct)
-    {
-        try
-        {
-            await ((Task)typeof(Db).GetMethods()
-                .Single(m => m.Name == method && m.GetGenericArguments().Length == 1 && m.GetParameters().Length == 2)
-                .MakeGenericMethod(map.EntityType)
-                .Invoke(this, [entity, ct])!).ConfigureAwait(false);
-        }
-        catch (TargetInvocationException exception) when (exception.InnerException is not null)
-        {
-            throw exception.InnerException;
-        }
-    }
-
     // --- helpers ---------------------------------------------------------------------
 
     private void RequireUnitOfWork()
@@ -743,6 +703,10 @@ public sealed partial class Db
             yield return value;
         }
     }
+
+    /// <summary>The owners a persist cascade recorded for a child — whose keys flow into it before its insert.</summary>
+    private IEnumerable<object> CascadeOwners(object child)
+        => _pendingReferences.Where(r => ReferenceEquals(r.Child, child)).Select(r => r.Parent);
 
     /// <summary>A key a cascaded child takes from its owner at flush: the child's FK properties, in the owner's key order.</summary>
     private sealed record PendingReference(object Child, object Parent, IReadOnlyList<string> ChildForeignKeys);

@@ -31,7 +31,7 @@ public sealed class ConformanceTrackingTests
     }
 
     /// <summary>Builds and seeds the fixture database, opens the session in the case's mode behind a recording dialect, and runs the script.</summary>
-    internal static async Task RunCaseAsync(string folder, string fileName)
+    internal static async Task RunCaseAsync(string folder, string fileName, BatchingMode? batching = null)
     {
         using var document = JsonDocument.Parse(
             File.ReadAllText(Path.Combine(StepScript.ConformanceDirectory(), folder, fileName)));
@@ -42,11 +42,27 @@ public sealed class ConformanceTrackingTests
             await ConformanceDatabase.BuildAsync(path, StepScript.ConformanceDirectory());
             var dialect = new RecordingDialect(new SqliteDialect());
             var mode = root.GetProperty("tracking").GetString() == "tracked" ? TrackingMode.Tracked : TrackingMode.Untracked;
+            // The batching header (ADR-0044); a runner may force a mode: flush-cases run under both.
+            var batchingMode = batching ?? BatchingMode.Off;
+            var maxStatements = 100;
+            if (root.TryGetProperty("batching", out var header))
+            {
+                batchingMode = header.GetProperty("mode").GetString() == "auto" ? BatchingMode.Auto : BatchingMode.Off;
+                if (header.TryGetProperty("maxStatementsPerMessage", out var max))
+                {
+                    maxStatements = max.GetInt32();
+                }
+            }
+
             // No pooling: the file is deleted right after, and a pool shared with the
             // other runners (which clear it) is one more thing to race against.
             await using (var db = await Db.OpenAsync(
                 $"Data Source={path};Pooling=False",
-                new DbOptions { Dialect = dialect, Tracking = mode, Clock = () => ConformanceDatabase.Clock },
+                new DbOptions
+                {
+                    Dialect = dialect, Tracking = mode, Clock = () => ConformanceDatabase.Clock,
+                    Batching = batchingMode, MaxStatementsPerMessage = maxStatements,
+                },
                 CancellationToken.None))
             {
                 await new StepScript(db, dialect, path).RunAsync(root);

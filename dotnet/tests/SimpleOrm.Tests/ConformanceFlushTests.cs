@@ -11,9 +11,24 @@ namespace SimpleOrm.Tests;
 /// </summary>
 public sealed class ConformanceFlushTests
 {
-    public static TheoryData<string> CaseFiles => ConformanceTrackingTests.CaseFilesOf("flush-cases");
+    public static TheoryData<string, BatchingMode> CaseFiles
+    {
+        get
+        {
+            // Every case under both batching modes, with the same expectations (ADR-0044).
+            var data = new TheoryData<string, BatchingMode>();
+            foreach (var file in Directory.GetFiles(Path.Combine(StepScript.ConformanceDirectory(), "flush-cases"), "*.json"))
+            {
+                data.Add(Path.GetFileName(file), BatchingMode.Off);
+                data.Add(Path.GetFileName(file), BatchingMode.Auto);
+            }
+
+            return data;
+        }
+    }
 
     [Theory]
     [MemberData(nameof(CaseFiles))]
-    public Task Case_behaves_as_specified(string fileName) => ConformanceTrackingTests.RunCaseAsync("flush-cases", fileName);
+    public Task Case_behaves_as_specified(string fileName, BatchingMode batching)
+        => ConformanceTrackingTests.RunCaseAsync("flush-cases", fileName, batching);
 }

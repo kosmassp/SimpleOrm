@@ -46,6 +46,17 @@ internal static class SqlPlaceholders
     }
 
     /// <summary>
+    /// Whether the SQL holds more than one statement: a <c>;</c> outside string
+    /// literals and comments with anything but whitespace or more semicolons after
+    /// it (ADR-0044 — a batched registry command of several statements is sent on
+    /// its own).
+    /// </summary>
+    public static bool HoldsSeveralStatements(string sql)
+        => Mask(sql).TrimEnd(TrailingSeparators).IndexOf(';') >= 0;
+
+    private static readonly char[] TrailingSeparators = [';', ' ', '\t', '\r', '\n'];
+
+    /// <summary>
     /// Length-preserving mask: string-literal and comment characters become spaces,
     /// so match positions in the mask are positions in the original SQL.
     /// </summary>

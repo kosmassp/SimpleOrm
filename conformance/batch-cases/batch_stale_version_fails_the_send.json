@@ -1,0 +1,111 @@
+{
+  "name": "batch_stale_version_fails_the_send",
+  "comment": "A stale version in the middle of a send: CRUD-010, the role inserted before it rolled back with the send's own transaction, and every instance as it was - the role without a key, the stale transaction's version and stamp unchanged.",
+  "tracking": "untracked",
+  "batching": {
+    "mode": "auto"
+  },
+  "steps": [
+    {
+      "get": {
+        "entity": "Transaction",
+        "key": 1,
+        "as": "a"
+      }
+    },
+    {
+      "get": {
+        "entity": "Transaction",
+        "key": 1,
+        "as": "b"
+      }
+    },
+    {
+      "set": {
+        "ref": "a",
+        "property": "Note",
+        "value": "first"
+      }
+    },
+    {
+      "updateOnly": {
+        "ref": "a",
+        "properties": [
+          "Note"
+        ]
+      }
+    },
+    {
+      "new": {
+        "entity": "Role",
+        "as": "r",
+        "values": {
+          "Name": "reader",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "set": {
+        "ref": "b",
+        "property": "Note",
+        "value": "second"
+      }
+    },
+    {
+      "batch": {
+        "ops": [
+          {
+            "insert": {
+              "ref": "r"
+            }
+          },
+          {
+            "updateOnly": {
+              "ref": "b",
+              "properties": [
+                "Note"
+              ]
+            }
+          }
+        ]
+      },
+      "expectError": "CRUD-010"
+    },
+    {
+      "expect": {
+        "value": {
+          "ref": "r",
+          "property": "Id",
+          "equals": 0
+        }
+      }
+    },
+    {
+      "expect": {
+        "value": {
+          "ref": "b",
+          "property": "Version",
+          "equals": 0
+        }
+      }
+    },
+    {
+      "expect": {
+        "value": {
+          "ref": "b",
+          "property": "UpdatedAtUtc",
+          "equals": null
+        }
+      }
+    },
+    {
+      "expect": {
+        "count": {
+          "entity": "Role",
+          "equals": 3
+        }
+      }
+    }
+  ]
+}

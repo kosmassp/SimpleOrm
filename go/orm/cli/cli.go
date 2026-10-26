@@ -42,6 +42,10 @@ import (
 // it — there is no shared session across commands (CODING-STANDARD §10).
 func Run(ctx context.Context, registry orm.Registry, args []string, stdout, stderr io.Writer) int {
 	parsed := parseArguments(args)
+	if parsed.flag("log") {
+		// --log (ADR-0045): every statement of the run goes to standard output, one line each, through the built-in sink.
+		ctx = migrations.WithStatementLog(ctx, func(line string) { fmt.Fprintln(stdout, line) }, false)
+	}
 	if len(parsed.positional) == 0 {
 		printUsage(stdout)
 		return 2
@@ -81,7 +85,7 @@ func fail(stderr io.Writer, message string) int {
 // --- argument parsing (mirrors Program.cs's inline parser / Arguments.php) --
 
 // booleanFlags take no value; every other --name consumes the next token.
-var booleanFlags = map[string]bool{"force": true, "allow-delete": true, "allow-remove": true, "amend": true, "draft": true}
+var booleanFlags = map[string]bool{"force": true, "allow-delete": true, "allow-remove": true, "amend": true, "draft": true, "log": true}
 
 type arguments struct {
 	positional []string
@@ -441,7 +445,7 @@ func runValidate(ctx context.Context, registry orm.Registry, a arguments, stdout
 	if err != nil {
 		return fail(stderr, err.Error())
 	}
-	db, err := orm.Open(ctx, connStr, orm.Options{Dialect: dialect})
+	db, err := orm.Open(ctx, connStr, orm.Options{Dialect: dialect, Log: logSink(a, stdout)})
 	if err != nil {
 		return fail(stderr, err.Error())
 	}
@@ -794,6 +798,8 @@ options:
                       the registry's embedded ones
   --package <path>    the migrations package's import path for generated code
                       (default: the first migration version's own package)
+  --log               write every statement the command sends to standard output,
+                      one line each (name: sql [parameter names]); never values
 `
 
 // scanTriggers is the scan rule for triggers (Level 4, ADR-0042, spec/metadata-model.md "Triggers"), run
@@ -811,4 +817,13 @@ func scanTriggers(maps *metadata.Loader, registry orm.Registry) string {
 		lines[i] = conflict.Error()
 	}
 	return strings.Join(lines, "\n")
+}
+
+// logSink is the session's statement-log sink for a command that opens one (ADR-0045): with --log, each line goes to the
+// command's standard output (os.Stdout when main embeds Run as documented); without it nil, so nothing is written.
+func logSink(a arguments, stdout io.Writer) func(string) {
+	if !a.flag("log") {
+		return nil
+	}
+	return func(line string) { fmt.Fprintln(stdout, line) }
 }

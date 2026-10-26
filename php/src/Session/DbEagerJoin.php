@@ -98,7 +98,7 @@ final class DbEagerJoin
 
         $joinedAst = new SelectAst($map, $ast->where, $ast->orderings, $ast->limit, $ast->offset, $ast->projection, $joins);
         $queryName = Db::criteriaQueryName($map);
-        $statement = $this->db->executeAstStatement($joinedAst, $queryName);
+        $statement = $this->db->executeAstStatement($joinedAst, $queryName, 'include');
 
         return $this->readGraph($map, $entityType, $queryName, $navigationsByAlias, $statement);
     }

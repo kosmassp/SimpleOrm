@@ -36,6 +36,8 @@ type Db struct {
 	batcher core.StatementBatcher
 	// maxStatements is the cap on statements per message, resolved at Open.
 	maxStatements int
+	// log is the statement log (Level 4 item 4, ADR-0045): nil when Options.Log is unset.
+	log *core.StatementLog
 }
 
 // executor is the surface *sql.Conn and *sql.Tx share — every statement runs
@@ -93,6 +95,7 @@ func Open(ctx context.Context, connectionString string, options Options) (*Db, e
 		mapper:        mapper,
 		tracker:       identityMap,
 		maxStatements: options.MaxStatementsPerMessage,
+		log:           core.NewStatementLog(options.Log, options.LogParameterValues),
 	}
 	if db.maxStatements == 0 {
 		db.maxStatements = DefaultMaxStatementsPerMessage
@@ -202,11 +205,12 @@ func (t *Tx) Rollback(context.Context) error {
 
 // bindAndQuery binds sqlText's placeholders from args and runs it on the
 // session's current executor.
-func bindAndQuery(ctx context.Context, db *Db, sqlText string, args any, queryName string) (*sql.Rows, error) {
+func bindAndQuery(ctx context.Context, db *Db, sqlText string, args any, queryName, logName string) (*sql.Rows, error) {
 	bound, err := params.Bind(sqlText, args, db.converter, db.options.Dialect, queryName)
 	if err != nil {
 		return nil, err
 	}
+	db.logStatement(logName, bound.SQL, bound.Args)
 	return db.exec().QueryContext(ctx, bound.SQL, bound.Args...)
 }
 
@@ -238,7 +242,18 @@ func renderAndRunSelect(ctx context.Context, db *Db, ast *core.SelectAst, queryN
 	if err != nil {
 		return nil, err
 	}
+	db.logStatement(selectLogName(ast), sqlText, bound)
 	return db.exec().QueryContext(ctx, sqlText, bound...)
+}
+
+// selectLogName is the statement-log name of a rendered SELECT (spec/session.md "Statement log"): the criteria query of the
+// entity it reads -- the queries explicit and batch loading issue included, a many-to-many load being the link entity's
+// criteria then the target's -- or `include` when it carries the joins of a join-mode eager query.
+func selectLogName(ast *core.SelectAst) string {
+	if len(ast.Joins) > 0 {
+		return ast.Map.Type.Name() + ".include"
+	}
+	return ast.Map.Type.Name() + ".criteria"
 }
 
 // materializeRows is the one list-materialization loop (§7.11/ADR-0015's Go

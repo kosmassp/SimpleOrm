@@ -1,6 +1,7 @@
 package sqlserver
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"reflect"
@@ -194,5 +195,50 @@ func TestJoinMessage_ALineCommentEndingAStatementCannotSwallowTheNext(t *testing
 	}
 	if text != "insert into [t] ([a]) values (1) -- trailing;\ninsert into [t] ([a]) values (2)" {
 		t.Errorf("the second statement starts on its own line, got %q", text)
+	}
+}
+
+// The statement log (ADR-0045) of a multi-statement message: one line per statement it holds, in statement order,
+// each the renamed text and renamed parameters this realization sends — written while the message is rendered, before
+// it goes out, so no server is needed to pin them.
+func TestRenderMessage_WritesOneStatementLogLinePerStatementWithTheRenamedPlaceholdersInOrder(t *testing.T) {
+	statements := []core.MessageStatement{
+		{Name: "User.insert", SQL: "insert into [t] ([a]) values (@a); select cast(scope_identity() as bigint)",
+			Args: []any{sql.Named("a", "o'x")}, Result: core.ResultKey},
+		{Name: "User.update", SQL: "set nocount on; update [t] set [a] = @a where [id] = @id; select @@rowcount; set nocount off",
+			Args: []any{sql.Named("a", "y"), sql.Named("id", int64(2))}, Result: core.ResultReportedCount},
+		{Name: "User.insert", SQL: "insert into [u] ([a]) values (@a)", Args: []any{sql.Named("a", nil)}, Result: core.ResultNone},
+	}
+
+	var lines []string
+	ctx := core.WithStatementLog(context.Background(), core.NewStatementLog(func(line string) { lines = append(lines, line) }, true))
+	text, _, err := renderMessage(ctx, statements)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"User.insert: insert into [t] ([a]) values (@p0_a); select cast(scope_identity() as bigint) [@p0_a = 'o''x']",
+		"User.update: set nocount on; update [t] set [a] = @p1_a where [id] = @p1_id; select @@rowcount; set nocount off [@p1_a = 'y', @p1_id = 2]",
+		"User.insert: insert into [u] ([a]) values (@p2_a) [@p2_a = null]",
+	}
+	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
+		t.Errorf("lines:\n%s\nwant:\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
+	}
+	if !strings.Contains(text, "@p1_id") {
+		t.Errorf("the message text carries the renamed placeholders the lines show: %s", text)
+	}
+
+	// Without values the lines carry the names only; without a log nothing is written.
+	lines = nil
+	ctx = core.WithStatementLog(context.Background(), core.NewStatementLog(func(line string) { lines = append(lines, line) }, false))
+	if _, _, err := renderMessage(ctx, statements[:1]); err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || !strings.HasSuffix(lines[0], " [@p0_a]") {
+		t.Errorf("without values: %v", lines)
+	}
+	lines = nil
+	if _, _, err := renderMessage(context.Background(), statements); err != nil || len(lines) != 0 {
+		t.Errorf("no log, no lines: %v %v", lines, err)
 	}
 }

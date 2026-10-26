@@ -39,6 +39,22 @@ public sealed class DbOptions
 
     /// <summary>The most statements one message carries under <see cref="BatchingMode.Auto"/>; 100 by default, at least 1.</summary>
     public int MaxStatementsPerMessage { get; init; } = 100;
+
+    /// <summary>
+    /// The statement log (Level 4 item 4, ADR-0045, spec/session.md "Statement
+    /// log"): called once per statement, as it is sent, with one line of text —
+    /// the operation's name, the SQL exactly as sent, and the parameter names.
+    /// Forward it to the application's logger (<c>line => logger.LogDebug(line)</c>)
+    /// or use <see cref="DbLog.Console"/>; unset (the default), nothing is written.
+    /// </summary>
+    public Action<string>? Log { get; init; }
+
+    /// <summary>
+    /// Whether the logged line carries the parameter values beside their names.
+    /// Off by default: values may be personal data, and a log never receives
+    /// them unless the application asks.
+    /// </summary>
+    public bool LogParameterValues { get; init; }
 }
 
 /// <summary>

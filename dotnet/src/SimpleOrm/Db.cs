@@ -59,19 +59,21 @@ public sealed partial class Db : IAsyncDisposable
 
     public Task<IReadOnlyList<TResult>> QueryAsync<TArgs, TResult>(
         Query<TArgs, TResult> query, TArgs args, CancellationToken ct)
-        => MaterializeAsync<TResult>(CreateCommand(query.Source, args!), query.Source.Description, ct);
+        => MaterializeAsync<TResult>(CreateCommand(query.Source, args!), query.Source.Description, ct, query.Source.LogName("query"));
 
     /// <summary>
     /// The one list-materialization loop (milestone 8): the reader opens async, rows
     /// read synchronously — the SQLite provider is synchronous underneath (ADR-0003)
     /// and per-row async machinery only adds overhead — with cooperative
-    /// cancellation checked periodically.
+    /// cancellation checked periodically. <paramref name="name"/> names the mapping
+    /// plan and its errors; <paramref name="logName"/> the statement log's line.
     /// </summary>
     private async Task<IReadOnlyList<TResult>> MaterializeAsync<TResult>(
-        DbCommand command, string name, CancellationToken ct)
+        DbCommand command, string name, CancellationToken ct, string logName)
     {
         using (command)
         {
+            LogStatement(logName, command);
             var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
             try
             {
@@ -140,6 +142,7 @@ public sealed partial class Db : IAsyncDisposable
         var command = CreateCommand(query.Source, args!);
         try
         {
+            LogStatement(query.Source.LogName("query"), command);
             var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
             try
             {
@@ -174,6 +177,7 @@ public sealed partial class Db : IAsyncDisposable
     public async Task<int> ExecuteAsync<TArgs>(Command<TArgs> command, TArgs args, CancellationToken ct)
     {
         using var dbCommand = CreateCommand(command.Source, args!);
+        LogStatement(command.Source.LogName("command"), dbCommand);
         return await dbCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
@@ -213,7 +217,7 @@ public sealed partial class Db : IAsyncDisposable
             throw;
         }
 
-        return MaterializeAsync<TEntity>(command, typeof(TEntity).Name + " criteria", ct);
+        return MaterializeAsync<TEntity>(command, typeof(TEntity).Name + " criteria", ct, typeof(TEntity).Name + ".criteria");
     }
 
     /// <summary>Read by key (ADR-0006): a missing row throws <c>CRUD-001</c>; composite keys pass a tuple.</summary>
@@ -261,6 +265,7 @@ public sealed partial class Db : IAsyncDisposable
             + " from " + dialect.QuoteIdentifier(map.RelationName!)
             + " where " + string.Join(" and ", predicates);
 
+        LogStatement(typeof(TEntity).Name + ".get", command);
         var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         try
         {
@@ -369,10 +374,10 @@ public sealed partial class Db : IAsyncDisposable
                 "DDL-001", typeof(TEntity).Name, $"is {map.Kind}-backed; only tables can be created from metadata");
         }
 
-        await ExecuteRawAsync(Options.Dialect.CreateTableSql(map), ct).ConfigureAwait(false);
+        await ExecuteRawAsync(typeof(TEntity).Name + ".createTable", Options.Dialect.CreateTableSql(map), ct).ConfigureAwait(false);
         foreach (var indexSql in Options.Dialect.CreateIndexSql(map))
         {
-            await ExecuteRawAsync(indexSql, ct).ConfigureAwait(false);
+            await ExecuteRawAsync(typeof(TEntity).Name + ".createIndex", indexSql, ct).ConfigureAwait(false);
         }
     }
 
@@ -397,10 +402,10 @@ public sealed partial class Db : IAsyncDisposable
                 "DDL-002", typeof(TEntity).Name, "the dialect has no materialized views (SQLite; Level 4 Postgres will)");
         }
 
-        await ExecuteRawAsync(Options.Dialect.CreateViewSql(map), ct).ConfigureAwait(false);
+        await ExecuteRawAsync(typeof(TEntity).Name + ".createView", Options.Dialect.CreateViewSql(map), ct).ConfigureAwait(false);
         foreach (var indexSql in Options.Dialect.CreateIndexSql(map))
         {
-            await ExecuteRawAsync(indexSql, ct).ConfigureAwait(false);
+            await ExecuteRawAsync(typeof(TEntity).Name + ".createIndex", indexSql, ct).ConfigureAwait(false);
         }
     }
 
@@ -430,7 +435,7 @@ public sealed partial class Db : IAsyncDisposable
             .ToArray();
         foreach (var sql in statements)
         {
-            await ExecuteRawAsync(sql, ct).ConfigureAwait(false);
+            await ExecuteRawAsync(typeof(TEntity).Name + ".createTrigger", sql, ct).ConfigureAwait(false);
         }
     }
 
@@ -462,7 +467,7 @@ public sealed partial class Db : IAsyncDisposable
         var command = _connection.CreateCommand();
         command.Transaction = _transaction;
         command.CommandText = sql;
-        return await MaterializeAsync<TEntity>(command, typeof(TEntity).Name + " select-all", ct).ConfigureAwait(false);
+        return await MaterializeAsync<TEntity>(command, typeof(TEntity).Name + " select-all", ct, typeof(TEntity).Name + ".selectAll").ConfigureAwait(false);
     }
 
     /// <summary>
@@ -522,6 +527,7 @@ public sealed partial class Db : IAsyncDisposable
         var completed = false;
         return new PendingWrite(command, generated ? WriteResult.Scalar : WriteResult.None, entity, generatesKey: generated)
         {
+            Name = map.EntityType.Name + ".insert",
             Key = SetKeyOf(map, entity),
             Complete = result =>
             {
@@ -623,14 +629,14 @@ public sealed partial class Db : IAsyncDisposable
 
             var set = WithUpdatedAt(map, dirty);
             return PrepareUpdateStatement(
-                map, entity, Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set),
+                map, entity, "update", Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set),
                 () => TrackWrittenColumnsUndoably(tracked, map, set));
         }
 
         // Bind SET values, key values, and the current version for the WHERE;
         // database-generated non-key columns are never written.
         return PrepareUpdateStatement(
-            map, entity, Options.Dialect.UpdateSql(map),
+            map, entity, "update", Options.Dialect.UpdateSql(map),
             map.Properties.Where(p => p.IsKey || p.IsVersion || !p.IsGenerated),
             () => TrackWrittenUndoably(map, entity));
     }
@@ -664,7 +670,7 @@ public sealed partial class Db : IAsyncDisposable
         var tracked = CheckIdentity(map, entity);
 
         return PrepareUpdateStatement(
-            map, entity, Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set),
+            map, entity, "updateOnly", Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set),
             () => TrackWrittenColumnsUndoably(tracked, map, set));
     }
 
@@ -737,7 +743,7 @@ public sealed partial class Db : IAsyncDisposable
     /// (tracking, forgetting), whose returned action undoes that effect.
     /// </summary>
     private PendingWrite PrepareUpdateStatement(
-        EntityMap map, object entity, string sql, IEnumerable<PropertyMap> bound, Func<Action> onSuccess, Action? restore = null)
+        EntityMap map, object entity, string operation, string sql, IEnumerable<PropertyMap> bound, Func<Action> onSuccess, Action? restore = null)
     {
         var stampBefore = map.UpdatedAtProperty?.GetValue(entity);
         StampUpdatedAt(map, entity);
@@ -762,6 +768,7 @@ public sealed partial class Db : IAsyncDisposable
         Action? undoSuccess = null;
         return new PendingWrite(command, AffectedResult, entity, generatesKey: false)
         {
+            Name = map.EntityType.Name + "." + operation,
             Key = SetKeyOf(map, entity),
             Complete = result =>
             {
@@ -868,6 +875,7 @@ public sealed partial class Db : IAsyncDisposable
         Action? undoForget = null;
         return new PendingWrite(command, AffectedResult, byEntity ? keyOrEntity : null, generatesKey: false)
         {
+            Name = map.EntityType.Name + ".delete",
             Key = new EntityKey(map.EntityType, key),
             Complete = result =>
             {
@@ -998,11 +1006,12 @@ public sealed partial class Db : IAsyncDisposable
         }
     }
 
-    private async Task ExecuteRawAsync(string sql, CancellationToken ct)
+    private async Task ExecuteRawAsync(string name, string sql, CancellationToken ct)
     {
         using var command = _connection.CreateCommand();
         command.Transaction = _transaction;
         command.CommandText = sql;
+        LogStatement(name, command);
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
@@ -1010,7 +1019,7 @@ public sealed partial class Db : IAsyncDisposable
 
     /// <summary>Runs a <c>[Statement]</c>-backed entity's own SQL (ADR-0008/0010); args bind against its declared parameters.</summary>
     public Task<IReadOnlyList<TResult>> QueryAsync<TResult>(object args, CancellationToken ct)
-        => MaterializeAsync<TResult>(CreateStatementCommand<TResult>(args), StatementName<TResult>(), ct);
+        => MaterializeAsync<TResult>(CreateStatementCommand<TResult>(args), StatementName<TResult>(), ct, typeof(TResult).Name + ".statement");
 
     /// <summary>Statement-entity variant of <see cref="QuerySingleAsync{TArgs, TResult}"/> (<c>QRY-001</c>/<c>QRY-002</c>).</summary>
     public async Task<TResult> QuerySingleAsync<TResult>(object args, CancellationToken ct)
@@ -1043,6 +1052,7 @@ public sealed partial class Db : IAsyncDisposable
         var command = CreateStatementCommand<TResult>(args);
         try
         {
+            LogStatement(typeof(TResult).Name + ".statement", command);
             var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
             try
             {

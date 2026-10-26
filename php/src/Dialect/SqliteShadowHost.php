@@ -6,6 +6,7 @@ namespace SimpleOrm\Dialect;
 
 use PDO;
 use SimpleOrm\Migrations\TriggerSchema;
+use SimpleOrm\Session\StatementLog;
 
 /**
  * The SQLite {@see ShadowHost} (ADR-0043): the throwaway database is a temp file — nothing to provision on an admin
@@ -31,9 +32,9 @@ final class SqliteShadowHost implements ShadowHost
         return true;
     }
 
-    public function readTrigger(PDO $connection, string $name, ?string &$note = null): ?TriggerSchema
+    public function readTrigger(PDO $connection, string $name, ?string &$note = null, ?StatementLog $log = null): ?TriggerSchema
     {
-        return SqliteTriggerParser::parse($name, SqliteTriggerParser::definitions($connection, $name), $note);
+        return SqliteTriggerParser::parse($name, SqliteTriggerParser::definitions($connection, $name, $log), $note);
     }
 
     /** Best-effort cleanup of the throwaway shadow database: Windows can briefly hold a delete lock after SQLite closes its handle, so a failure here is not reported (never `@` — the warning is caught and discarded explicitly, scoped to this one call). */

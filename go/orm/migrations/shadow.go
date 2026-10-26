@@ -79,6 +79,7 @@ type ShadowResult struct {
 // create statement, a trigger by the declaration the step's actions leave behind (spec/migrations.md
 // "Dialects"). Where the catalog is lossless the shadow reads it too and notes a disagreement.
 func Shadow(ctx context.Context, options ShadowOptions) (result *ShadowResult, err error) {
+	ctx = core.WithStatementName(ctx, "shadow")
 	result = &ShadowResult{}
 	if options.Set == nil || len(options.Set.Versions()) == 0 {
 		result.Notes = append(result.Notes, "no migration versions found")
@@ -574,6 +575,7 @@ func introspectTable(ctx context.Context, conn queryer, dialect core.Dialect, re
 // ReadViewDefinition is the stored definition of a view through the dialect's ViewDefinitionSQL, as stored
 // (callers normalize), or nil when it is absent.
 func ReadViewDefinition(ctx context.Context, q rowQueryer, dialect core.Dialect, view string) (*string, error) {
+	core.LogStatement(ctx, dialect.ViewDefinitionSQL(), sql.Named("relation", view))
 	row := q.QueryRowContext(ctx, dialect.ViewDefinitionSQL(), sql.Named("relation", view))
 	var definition sql.NullString
 	if err := row.Scan(&definition); err != nil {
@@ -594,6 +596,7 @@ type rowQueryer interface {
 }
 
 func execStatement(ctx context.Context, conn *sql.Conn, statement string) error {
+	core.LogStatement(ctx, statement)
 	_, err := conn.ExecContext(ctx, statement)
 	return err
 }

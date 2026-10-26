@@ -12,6 +12,7 @@ use SimpleOrm\Metadata\PropertyMap;
 use SimpleOrm\Metadata\RelationKind;
 use SimpleOrm\Parameters\PdoBinder;
 use SimpleOrm\Parameters\SqlPlaceholders;
+use SimpleOrm\Session\StatementLog;
 
 /**
  * Force-sync planning (ADR-0013 add.3 / ADR-0017), mirrors `SchemaSync.cs`:
@@ -27,9 +28,13 @@ final class SchemaSync
     {
     }
 
-    /** @param list<class-string> $tableEntities */
-    public static function plan(PDO $connection, Dialect $dialect, EntityMapLoader $maps, array $tableEntities): SyncPlan
+    /**
+     * @param list<class-string> $tableEntities
+     * @param StatementLog|null $log the statement log (ADR-0045): the introspection queries are written as `sync`
+     */
+    public static function plan(PDO $connection, Dialect $dialect, EntityMapLoader $maps, array $tableEntities, ?StatementLog $log = null): SyncPlan
     {
+        $log = ($log ?? StatementLog::off())->named('sync');
         $plan = new SyncPlan();
 
         foreach ($tableEntities as $type) {
@@ -40,7 +45,7 @@ final class SchemaSync
 
             /** @var string $relation table-kind maps always carry a relation name */
             $relation = $map->relationName;
-            $live = self::readColumns($connection, $dialect, $relation);
+            $live = self::readColumns($connection, $dialect, $relation, $log);
             if ($live === []) {
                 $plan->additive[] = $dialect->createTableSql($map);
                 foreach ($dialect->createIndexSql($map) as $indexSql) {
@@ -100,7 +105,7 @@ final class SchemaSync
             // columns (order, direction, uniqueness), never the name — indexes get added
             // directly to the database in urgencies, and one already there under another
             // name counts as implemented.
-            $liveIndexes = self::readIndexes($connection, $dialect, $relation);
+            $liveIndexes = self::readIndexes($connection, $dialect, $relation, $log);
             $liveSignatures = array_map(static fn (array $i): string => $i['signature'], $liveIndexes);
             $modelSignatures = array_map(
                 static fn (EntityIndex $i): string => MigrationGenerator::indexSignature($i),
@@ -123,18 +128,26 @@ final class SchemaSync
         return $plan;
     }
 
-    /** Executes plan statements in order (the CLI's force-sync apply step). @param iterable<string> $statements */
-    public static function apply(PDO $connection, iterable $statements): void
+    /**
+     * Executes plan statements in order (the CLI's force-sync apply step); each is written to the statement log as `sync` as
+     * it is sent (ADR-0045).
+     *
+     * @param iterable<string> $statements
+     */
+    public static function apply(PDO $connection, iterable $statements, ?StatementLog $log = null): void
     {
+        $log = ($log ?? StatementLog::off())->named('sync');
         foreach ($statements as $sql) {
+            $log->write('sync', $sql);
             $connection->exec($sql);
         }
     }
 
     /** @return array<string, array{declaredType: string, notNull: bool}> keyed by column name, as returned */
-    private static function readColumns(PDO $connection, Dialect $dialect, string $relation): array
+    private static function readColumns(PDO $connection, Dialect $dialect, string $relation, StatementLog $log): array
     {
         $statement = $connection->prepare(SqlPlaceholders::toPdo($dialect->columnsInfoSql()));
+        $log->write('sync', $dialect->columnsInfoSql(), ['relation' => $relation]);
         PdoBinder::bindAndExecute($statement, ['relation' => $relation]);
 
         $columns = [];
@@ -159,9 +172,10 @@ final class SchemaSync
     }
 
     /** @return list<array{name: string, signature: string}> */
-    private static function readIndexes(PDO $connection, Dialect $dialect, string $relation): array
+    private static function readIndexes(PDO $connection, Dialect $dialect, string $relation, StatementLog $log): array
     {
         $statement = $connection->prepare(SqlPlaceholders::toPdo($dialect->indexesInfoSql()));
+        $log->write('sync', $dialect->indexesInfoSql(), ['relation' => $relation]);
         PdoBinder::bindAndExecute($statement, ['relation' => $relation]);
 
         /** @var array<string, array{unique: bool, columns: list<array{0: string, 1: bool}>}> $parts */

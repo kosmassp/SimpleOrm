@@ -121,6 +121,7 @@ type queryer interface {
 
 // Migrate applies pending versions in order; returns how many versions were applied.
 func (r *Runner) Migrate(ctx context.Context, options RunOptions) (int, error) {
+	ctx = core.WithDefaultStatementName(ctx, "migrate")
 	plan, err := r.set.Render(r.maps, r.dialect)
 	if err != nil {
 		return 0, err
@@ -189,6 +190,7 @@ func (r *Runner) Migrate(ctx context.Context, options RunOptions) (int, error) {
 // core wins, otherwise DeriveDown from the snapshots; a step with statements
 // to undo but no derivable rollback is MIG-020 (ADR-0018).
 func (r *Runner) MigrateDown(ctx context.Context, targetVersion int64, options RunOptions) (int, error) {
+	ctx = core.WithDefaultStatementName(ctx, "migrate")
 	plan, err := r.set.Render(r.maps, r.dialect)
 	if err != nil {
 		return 0, err
@@ -288,6 +290,7 @@ func (r *Runner) MigrateDown(ctx context.Context, targetVersion int64, options R
 
 // Baseline records every step of versions <= version not yet recorded, without running them (§7.23).
 func (r *Runner) Baseline(ctx context.Context, version int64) error {
+	ctx = core.WithDefaultStatementName(ctx, "migrate")
 	plan, err := r.set.Render(r.maps, r.dialect)
 	if err != nil {
 		return err
@@ -344,6 +347,7 @@ func (r *Runner) Baseline(ctx context.Context, version int64) error {
 // Status reports every planned step's state plus any recorded row the plan
 // does not compose (Unknown); no lock is taken (§7.23).
 func (r *Runner) Status(ctx context.Context) ([]MigrationEntry, error) {
+	ctx = core.WithDefaultStatementName(ctx, "migrate")
 	plan, err := r.set.Render(r.maps, r.dialect)
 	if err != nil {
 		return nil, err
@@ -506,6 +510,7 @@ func computeChecksum(statements []MigrationStatement) string {
 
 func readRecorded(ctx context.Context, q queryer) (*recordedHistory, error) {
 	history := &recordedHistory{rows: map[recordedKey]recordedRow{}, versions: map[int64]bool{}}
+	core.LogStatement(ctx, "select version, object, description, checksum from schema_version")
 	rows, err := q.QueryContext(ctx, "select version, object, description, checksum from schema_version")
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -536,19 +541,23 @@ func (r *Runner) ensureVersionTable(ctx context.Context, tx *sql.Tx) error {
 }
 
 func (r *Runner) record(ctx context.Context, tx *sql.Tx, version int64, step RenderedStep, executionMs int64) error {
-	_, err := tx.ExecContext(ctx,
-		"insert into schema_version (version, object, description, checksum, applied_at, execution_ms) "+
-			"values (@version, @object, @description, @checksum, @applied_at, @execution_ms)",
+	const insert = "insert into schema_version (version, object, description, checksum, applied_at, execution_ms) " +
+		"values (@version, @object, @description, @checksum, @applied_at, @execution_ms)"
+	args := []any{
 		sql.Named("version", version),
 		sql.Named("object", step.ObjectName),
 		sql.Named("description", step.Description),
 		sql.Named("checksum", computeChecksum(step.Up)),
 		sql.Named("applied_at", core.FormatUTC(time.Now())),
-		sql.Named("execution_ms", executionMs))
+		sql.Named("execution_ms", executionMs),
+	}
+	core.LogStatement(ctx, insert, args...)
+	_, err := tx.ExecContext(ctx, insert, args...)
 	return err
 }
 
 func (r *Runner) deleteVersionRecord(ctx context.Context, tx *sql.Tx, version int64) error {
+	core.LogStatement(ctx, "delete from schema_version where version = @version", sql.Named("version", version))
 	if _, err := tx.ExecContext(ctx, "delete from schema_version where version = @version", sql.Named("version", version)); err != nil {
 		return core.Errorf("MIG-021", "migration statement", "%s -- while executing: delete from schema_version where version = %d", err.Error(), version)
 	}
@@ -599,6 +608,7 @@ func (r *Runner) readViewDefinition(ctx context.Context, tx *sql.Tx, view string
 }
 
 func (r *Runner) execute(ctx context.Context, tx *sql.Tx, statement string) error {
+	core.LogStatement(ctx, statement)
 	if _, err := tx.ExecContext(ctx, statement); err != nil {
 		return core.Errorf("MIG-021", "migration statement", "%s -- while executing: %s", err.Error(), statement)
 	}
@@ -644,6 +654,7 @@ func (r *Runner) applyTriggerGuard(
 // ReadTriggerDefinitions is the live statements of a declared trigger through the dialect's
 // TriggerDefinitionSQL, as stored (callers normalize).
 func ReadTriggerDefinitions(ctx context.Context, q queryer, dialect core.Dialect, name string) ([]string, error) {
+	core.LogStatement(ctx, dialect.TriggerDefinitionSQL(), sql.Named("relation", name))
 	rows, err := q.QueryContext(ctx, dialect.TriggerDefinitionSQL(), sql.Named("relation", name))
 	if err != nil {
 		return nil, err
@@ -697,13 +708,17 @@ func (r *Runner) viewMatchesExpectation(ctx context.Context, tx *sql.Tx, stateme
 		_, _ = tx.ExecContext(ctx, "rollback to savepoint "+savepoint)
 		_, _ = tx.ExecContext(ctx, "release savepoint "+savepoint)
 	}
-	if _, err := tx.ExecContext(ctx, r.dialect.CreateViewFromBodySQL(probe, body, false)); err != nil {
+	createProbe := r.dialect.CreateViewFromBodySQL(probe, body, false)
+	core.LogStatement(ctx, createProbe)
+	if _, err := tx.ExecContext(ctx, createProbe); err != nil {
 		rollBack() // the body does not parse against the current schema: drift, not a failed run
 		return live, false, nil
 	}
 	expected, err := r.readViewDefinition(ctx, tx, probe)
 	if err == nil {
-		_, err = tx.ExecContext(ctx, r.dialect.DropViewSQL(probe, false))
+		dropProbe := r.dialect.DropViewSQL(probe, false)
+		core.LogStatement(ctx, dropProbe)
+		_, err = tx.ExecContext(ctx, dropProbe)
 	}
 	if err != nil {
 		rollBack() // any failure inside the probe counts as drift (spec/migrations.md Clarifications, ADR-0043)

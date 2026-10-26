@@ -20,7 +20,7 @@ func Query[TArgs, TResult any](ctx context.Context, db *Db, query QueryEntry[TAr
 	if err != nil {
 		return nil, err
 	}
-	rows, err := bindAndQuery(ctx, db, sqlText, args, query.Source().Description())
+	rows, err := bindAndQuery(ctx, db, sqlText, args, query.Source().Description(), query.Source().logName("query"))
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,7 @@ func Stream[TArgs, TResult any](ctx context.Context, db *Db, query QueryEntry[TA
 			yield(zero, err)
 			return
 		}
-		rows, err := bindAndQuery(ctx, db, sqlText, args, query.Source().Description())
+		rows, err := bindAndQuery(ctx, db, sqlText, args, query.Source().Description(), query.Source().logName("query"))
 		if err != nil {
 			yield(zero, err)
 			return
@@ -90,6 +90,7 @@ func Execute[TArgs any](ctx context.Context, db *Db, command CommandEntry[TArgs]
 	if err != nil {
 		return 0, err
 	}
+	db.logStatement(command.Source().logName("command"), bound.SQL, bound.Args)
 	result, err := db.exec().ExecContext(ctx, bound.SQL, bound.Args...)
 	if err != nil {
 		return 0, err
@@ -115,7 +116,7 @@ func openStatement(ctx context.Context, db *Db, resultType reflect.Type, args an
 	if err := checkStatementParameterTypes(m, args, name); err != nil {
 		return nil, name, err
 	}
-	rows, err := bindAndQuery(ctx, db, m.DefiningSQL, args, name)
+	rows, err := bindAndQuery(ctx, db, m.DefiningSQL, args, name, resultType.Name()+".statement")
 	return rows, name, err
 }
 

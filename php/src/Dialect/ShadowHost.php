@@ -6,6 +6,7 @@ namespace SimpleOrm\Dialect;
 
 use PDO;
 use SimpleOrm\Migrations\TriggerSchema;
+use SimpleOrm\Session\StatementLog;
 
 /**
  * The tooling contract beside the dialect seam that gives `shadow` its throwaway database (ADR-0043; the C#
@@ -31,7 +32,7 @@ interface ShadowHost
     /**
      * The inverse of `Dialect::createTriggerSql()` over the catalog's text: the declaration the stored trigger `$name`
      * renders, or null — with `$note` set when statements exist but do not match the dialect's grammar (hand-written?),
-     * absent: null with no note.
+     * absent: null with no note. The catalog read goes to `$log` (ADR-0045) when given.
      */
-    public function readTrigger(PDO $connection, string $name, ?string &$note = null): ?TriggerSchema;
+    public function readTrigger(PDO $connection, string $name, ?string &$note = null, ?StatementLog $log = null): ?TriggerSchema;
 }

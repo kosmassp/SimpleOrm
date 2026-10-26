@@ -47,6 +47,7 @@ func (d *Dialect) SendMessage(ctx context.Context, _ *sql.Conn, exec core.SQLExe
 			start = end
 			continue
 		}
+		core.StatementLogFrom(ctx).Statement(statements[start].Name, statements[start].SQL, statements[start].Args)
 		result, err := exec.ExecContext(ctx, statements[start].SQL, statements[start].Args...)
 		if err != nil {
 			return nil, err
@@ -61,7 +62,7 @@ func (d *Dialect) SendMessage(ctx context.Context, _ *sql.Conn, exec core.SQLExe
 
 // sendText sends one multi-statement text and reads its scalar results.
 func sendText(ctx context.Context, exec core.SQLExecutor, statements []core.MessageStatement, results []core.MessageResult) error {
-	text, args, err := joinMessage(statements)
+	text, args, err := renderMessage(ctx, statements)
 	if err != nil {
 		return err
 	}
@@ -92,17 +93,48 @@ func returnsScalar(statement core.MessageStatement) bool {
 
 // joinMessage is the message's command text and arguments: the statements renamed apart and joined in order by `;` and a line break.
 func joinMessage(statements []core.MessageStatement) (string, []any, error) {
-	parts := make([]string, len(statements))
+	parts, partArgs, err := renameMessage(statements)
+	if err != nil {
+		return "", nil, err
+	}
 	var args []any
-	for i, statement := range statements {
-		text, renamed, err := renameApart(i, statement.SQL, statement.Args)
-		if err != nil {
-			return "", nil, err
-		}
-		parts[i] = text
+	for _, renamed := range partArgs {
 		args = append(args, renamed...)
 	}
 	return strings.Join(parts, ";\n"), args, nil
+}
+
+// renderMessage is joinMessage plus the statement log (ADR-0045): once every statement has renamed cleanly, one line per
+// statement is written — each the renamed text and renamed parameters this realization sends — before the message goes out.
+func renderMessage(ctx context.Context, statements []core.MessageStatement) (string, []any, error) {
+	parts, partArgs, err := renameMessage(statements)
+	if err != nil {
+		return "", nil, err
+	}
+	var args []any
+	for _, renamed := range partArgs {
+		args = append(args, renamed...)
+	}
+	if log := core.StatementLogFrom(ctx); log != nil {
+		for i, statement := range statements {
+			log.Statement(statement.Name, parts[i], partArgs[i])
+		}
+	}
+	return strings.Join(parts, ";\n"), args, nil
+}
+
+// renameMessage renames each statement of a message apart: its text and its arguments, statement by statement.
+func renameMessage(statements []core.MessageStatement) ([]string, [][]any, error) {
+	parts := make([]string, len(statements))
+	partArgs := make([][]any, len(statements))
+	for i, statement := range statements {
+		text, renamed, err := renameApart(i, statement.SQL, statement.Args)
+		if err != nil {
+			return nil, nil, err
+		}
+		parts[i], partArgs[i] = text, renamed
+	}
+	return parts, partArgs, nil
 }
 
 // renameApart gives the i-th statement of a message its own parameter names: every real `@name` occurrence in the SQL

@@ -38,6 +38,7 @@ func (p *SyncPlan) IsEmpty() bool {
 func PlanSync(
 	ctx context.Context, conn *sql.Conn, dialect core.Dialect, maps *metadata.Loader, tableEntities []reflect.Type,
 ) (*SyncPlan, error) {
+	ctx = core.WithDefaultStatementName(ctx, "sync")
 	plan := &SyncPlan{}
 
 	for _, t := range tableEntities {
@@ -138,7 +139,9 @@ func PlanSync(
 // apply step, and what the conformance suite's "sql" command uses for an
 // outside hotfix (applied without touching migration history).
 func ApplySync(ctx context.Context, conn *sql.Conn, statements []string) error {
+	ctx = core.WithDefaultStatementName(ctx, "sync")
 	for _, statement := range statements {
+		core.LogStatement(ctx, statement)
 		if _, err := conn.ExecContext(ctx, statement); err != nil {
 			return err
 		}
@@ -170,6 +173,7 @@ func (c LiveColumn) EffectivelyNotNull() bool { return c.NotNull || c.PrimaryKey
 // lower-cased name (empty when the relation does not exist).
 func ReadLiveColumns(ctx context.Context, conn queryer, dialect core.Dialect, relation string) (map[string]LiveColumn, error) {
 	columns := map[string]LiveColumn{}
+	core.LogStatement(ctx, dialect.ColumnsInfoSQL(), sql.Named("relation", relation))
 	rows, err := conn.QueryContext(ctx, dialect.ColumnsInfoSQL(), sql.Named("relation", relation))
 	if err != nil {
 		return nil, err
@@ -201,6 +205,7 @@ func ReadLiveIndexes(ctx context.Context, conn queryer, dialect core.Dialect, re
 	order := []string{}
 	byName := map[string]*accumulator{}
 
+	core.LogStatement(ctx, dialect.IndexesInfoSQL(), sql.Named("relation", relation))
 	rows, err := conn.QueryContext(ctx, dialect.IndexesInfoSQL(), sql.Named("relation", relation))
 	if err != nil {
 		return nil, err

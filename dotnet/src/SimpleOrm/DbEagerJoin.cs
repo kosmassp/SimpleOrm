@@ -75,6 +75,7 @@ public sealed partial class Db
         var attachments = plans.Select(p => new Attachment(p, dedupFanOut)).ToArray();
         var markUnloaded = UnloadedNavigations.MarkerFor(typeof(TEntity), Maps);
 
+        LogStatement(typeof(TEntity).Name + ".include", command);
         var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         try
         {

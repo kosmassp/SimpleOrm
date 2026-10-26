@@ -35,6 +35,7 @@ func CreateTriggers[T any](ctx context.Context, db *Db) error {
 	}
 
 	for _, statement := range statements {
+		db.logStatement(entityType.Name()+".createTrigger", statement, nil)
 		if _, err := db.exec().ExecContext(ctx, statement); err != nil {
 			return err
 		}

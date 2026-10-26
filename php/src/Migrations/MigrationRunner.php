@@ -13,6 +13,7 @@ use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Parameters\PdoBinder;
 use SimpleOrm\Parameters\SqlPlaceholders;
+use SimpleOrm\Session\StatementLog;
 use SimpleOrm\Types\Iso8601;
 use Throwable;
 
@@ -31,7 +32,12 @@ final class MigrationRunner
 {
     private readonly SnapshotSet $snapshots;
 
+    private readonly StatementLog $log;
+
     /**
+     * @param StatementLog|null $log the statement log (ADR-0045): every statement the run sends is written as `migrate` — the
+     *        version table, the recorded history, the steps, the guards' definition reads, the rollback; the run lock and
+     *        transaction control are the dialect's housekeeping and are not. A session's runner passes `$db->log()`
      * @param bool $replayDrafts `@internal` — set only by the tooling (`SchemaShadow`): a throwaway database is no one's
      *        history, so `shadow` replays a draft; the application has no way to bypass `MIG-013` (ADR-0038)
      */
@@ -42,7 +48,9 @@ final class MigrationRunner
         private readonly MigrationSet $set,
         ?SnapshotSet $snapshots = null,
         private readonly bool $replayDrafts = false,
+        ?StatementLog $log = null,
     ) {
+        $this->log = $log ?? StatementLog::off();
         $this->snapshots = $snapshots ?? new SnapshotSet();
     }
 
@@ -449,7 +457,9 @@ final class MigrationRunner
      */
     private function readTriggerDefinitions(string $trigger): array
     {
-        $statement = $this->connection->prepare(SqlPlaceholders::toPdo($this->dialect->triggerDefinitionSql()));
+        $sql = $this->dialect->triggerDefinitionSql();
+        $statement = $this->connection->prepare(SqlPlaceholders::toPdo($sql));
+        $this->log->write('migrate', $sql, ['relation' => $trigger]);
         PdoBinder::bindAndExecute($statement, ['relation' => $trigger]);
         $rows = array_map(
             static fn (mixed $definition): string => SchemaSnapshot::normalizeTriggerDdl((string) $definition),
@@ -462,7 +472,9 @@ final class MigrationRunner
 
     private function readViewDefinition(string $view): ?string
     {
-        $statement = $this->connection->prepare(SqlPlaceholders::toPdo($this->dialect->viewDefinitionSql()));
+        $sql = $this->dialect->viewDefinitionSql();
+        $statement = $this->connection->prepare(SqlPlaceholders::toPdo($sql));
+        $this->log->write('migrate', $sql, ['relation' => $view]);
         PdoBinder::bindAndExecute($statement, ['relation' => $view]);
         $value = $statement->fetchColumn();
 
@@ -487,9 +499,9 @@ final class MigrationRunner
         $probe = 'simpleorm_expect_' . bin2hex(random_bytes(6));
         $this->connection->exec('savepoint simpleorm_probe');
         try {
-            $this->connection->exec($this->dialect->createViewSqlFromBody($probe, $parts['body'], $parts['materialized']));
+            $this->execRaw($this->dialect->createViewSqlFromBody($probe, $parts['body'], $parts['materialized']));
             $expected = $this->readViewDefinition($probe);
-            $this->connection->exec($this->dialect->dropViewSql($probe, $parts['materialized']));
+            $this->execRaw($this->dialect->dropViewSql($probe, $parts['materialized']));
             $this->connection->exec('release savepoint simpleorm_probe');
         } catch (PDOException) {
             $this->connection->exec('rollback to savepoint simpleorm_probe');
@@ -501,10 +513,17 @@ final class MigrationRunner
         return $expected !== null && trim($expected) === trim($live);
     }
 
+    /** One statement of the run, logged as it is sent and then executed; the probe's statements use it too. */
+    private function execRaw(string $sql): void
+    {
+        $this->log->write('migrate', $sql);
+        $this->connection->exec($sql);
+    }
+
     private function execute(string $sql): void
     {
         try {
-            $this->connection->exec($sql);
+            $this->execRaw($sql);
         } catch (PDOException $exception) {
             throw new SimpleOrmException('MIG-021', 'migration statement', $exception->getMessage() . ' -- while executing: ' . $sql);
         }
@@ -512,19 +531,19 @@ final class MigrationRunner
 
     private function record(int $version, RenderedStep $step, int $executionMs): void
     {
-        $sql = SqlPlaceholders::toPdo(
-            'insert into schema_version (version, object, description, checksum, applied_at, execution_ms) '
-                . 'values (@version, @object, @description, @checksum, @applied_at, @execution_ms)',
-        );
-        $statement = $this->connection->prepare($sql);
-        PdoBinder::bindAndExecute($statement, [
+        $sql = 'insert into schema_version (version, object, description, checksum, applied_at, execution_ms) '
+            . 'values (@version, @object, @description, @checksum, @applied_at, @execution_ms)';
+        $parameters = [
             'version' => $version,
             'object' => $step->objectName,
             'description' => $step->description,
             'checksum' => $step->checksum,
             'applied_at' => self::isoUtcNow(),
             'execution_ms' => $executionMs,
-        ]);
+        ];
+        $statement = $this->connection->prepare(SqlPlaceholders::toPdo($sql));
+        $this->log->write('migrate', $sql, $parameters);
+        PdoBinder::bindAndExecute($statement, $parameters);
     }
 
     /**
@@ -535,8 +554,10 @@ final class MigrationRunner
      */
     private function readRecorded(): array
     {
+        $sql = 'select version, object, description, checksum from schema_version';
+        $this->log->write('migrate', $sql);
         try {
-            $statement = $this->connection->query('select version, object, description, checksum from schema_version');
+            $statement = $this->connection->query($sql);
         } catch (PDOException) {
             return ['versions' => [], 'rows' => []];
         }

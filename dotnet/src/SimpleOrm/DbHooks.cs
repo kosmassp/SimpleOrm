@@ -89,7 +89,7 @@ public sealed partial class Db
             try
             {
                 return PrepareUpdateStatement(
-                    map, keyOrEntity, Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set),
+                    map, keyOrEntity, "delete", Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set),
                     () => Forget(map, map.GetKeyValues(keyOrEntity)),
                     restore: () => flag.SetValue(keyOrEntity, flagBefore));
             }
@@ -133,6 +133,7 @@ public sealed partial class Db
         Action? undoForget = null;
         return new PendingWrite(command, AffectedResult, null, generatesKey: false)
         {
+            Name = map.EntityType.Name + ".delete",
             Key = new EntityKey(map.EntityType, keyValues),
             Complete = result =>
             {

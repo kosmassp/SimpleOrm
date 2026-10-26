@@ -17,9 +17,13 @@ import (
 type SQLSource struct {
 	description string
 	load        func() (string, error)
-	once        sync.Once
-	sql         string
-	err         error
+	// name is the entry's declared statement-log name (Named), '' when it declares none; embedded marks a file-backed
+	// source, whose path then names it in the log.
+	name     string
+	embedded bool
+	once     sync.Once
+	sql      string
+	err      error
 }
 
 // SQL is the resolved SQL text.
@@ -47,6 +51,7 @@ func inlineSource(sql string) *SQLSource {
 func embeddedSource(files fs.FS, path string) *SQLSource {
 	return &SQLSource{
 		description: path,
+		embedded:    true,
 		load: func() (string, error) {
 			data, err := fs.ReadFile(files, path)
 			if err != nil {
@@ -145,4 +150,23 @@ type Registry struct {
 	// Snapshots holds the V000N.schema.json files rollbacks derive from (ADR-0018) — the
 	// application's embed.FS; nil means none embedded (the CLI's --snapshots reads files instead).
 	Snapshots fs.FS
+}
+
+// named is a copy of the source that answers to name in the statement log (its SQL still loads once per copy).
+func (s *SQLSource) named(name string) *SQLSource {
+	return &SQLSource{description: s.description, load: s.load, name: name, embedded: s.embedded}
+}
+
+// Named returns the entry under a name for the statement log and SchemaGuard's `validate <name>` lines
+// (spec/session.md "Statement log"): Go's explicit registry has no variable names the way C# and PHP learn them, so
+// the application states one — optional, the entry is the same without it:
+//
+//	var UserByEmail = orm.Inline[EmailArgs, User]("select …").Named("Queries.UserByEmail")
+func (q QueryEntry[TArgs, TResult]) Named(name string) QueryEntry[TArgs, TResult] {
+	return QueryEntry[TArgs, TResult]{source: q.source.named(name)}
+}
+
+// Named is [QueryEntry.Named] for a command.
+func (c CommandEntry[TArgs]) Named(name string) CommandEntry[TArgs] {
+	return CommandEntry[TArgs]{source: c.source.named(name)}
 }

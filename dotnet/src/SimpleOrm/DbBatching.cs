@@ -45,6 +45,9 @@ internal sealed class PendingWrite(DbCommand command, WriteResult result, object
     /// <summary>The key the statement was prepared with, when set (plan rule 1a); null for an unset key and a registry command.</summary>
     public EntityKey? Key { get; init; }
 
+    /// <summary>The operation's name in the statement log (<c>User.insert</c>, a registry command's name).</summary>
+    public required string Name { get; init; }
+
     /// <summary>Judges and applies the statement's result; returns the count the batch result reports.</summary>
     public required Func<object?, int> Complete { get; init; }
 
@@ -125,6 +128,7 @@ public sealed partial class Db
         }
 
         command.Transaction = _transaction;
+        LogStatement(write.Name, command);
         switch (write.Result)
         {
             case WriteResult.Scalar:
@@ -171,6 +175,7 @@ public sealed partial class Db
         var command = CreateCommand(source, args);
         return new PendingWrite(command, WriteResult.Count, instance: null, generatesKey: false)
         {
+            Name = source.LogName("command"),
             IsCommand = true,
             Complete = result => (int)result!,
             Undo = static () => { },
@@ -456,6 +461,7 @@ public sealed partial class Db
                 var batchCommand = batch.CreateBatchCommand();
                 batchCommand.CommandText = write.Command.CommandText;
                 MoveParameters(write.Command, batchCommand.Parameters);
+                db.LogStatement(write.Name, batchCommand.CommandText, batchCommand.Parameters);
                 batch.BatchCommands.Add(batchCommand);
             }
 

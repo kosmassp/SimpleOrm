@@ -239,9 +239,9 @@ func (c *batchCall) send(ctx context.Context) error {
 	if c.db.batcher != nil {
 		statements := make([]core.MessageStatement, len(writes))
 		for i, write := range writes {
-			statements[i] = core.MessageStatement{SQL: write.sql, Args: write.args, Result: write.kind}
+			statements[i] = core.MessageStatement{SQL: write.sql, Args: write.args, Result: write.kind, Name: write.name}
 		}
-		results, err := c.db.batcher.SendMessage(ctx, c.db.connection, c.db.exec(), statements)
+		results, err := c.db.batcher.SendMessage(core.WithStatementLog(ctx, c.db.log), c.db.connection, c.db.exec(), statements)
 		if err != nil {
 			return err
 		}
@@ -255,6 +255,7 @@ func (c *batchCall) send(ctx context.Context) error {
 
 	runner := c.statementRunner()
 	for _, write := range writes {
+		c.db.logStatement(write.name, write.sql, write.args)
 		result, err := runWrite(ctx, runner, write)
 		if err != nil {
 			return err

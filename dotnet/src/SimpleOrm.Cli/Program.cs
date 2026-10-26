@@ -130,6 +130,8 @@ int Usage()
           --dialect <name>    sqlite (default), sqlserver, or postgres (ADR-0024/0025/0043):
                               a tree and its snapshots belong to one dialect — a
                               snapshot stamped for another is MIG-014
+          --log               write every statement sent to the database to stdout
+                              (the statement log, ADR-0045; parameter names, no values)
         """);
     return 2;
 }
@@ -180,7 +182,9 @@ async Task<(Db Db, MigrationRunner Runner)> OpenAsync()
 
     var connectionString = db.Contains('=') ? db : $"Data Source={db}";
     var session = await Db.OpenAsync(
-        connectionString, new DbOptions { Dialect = DialectFor() }, CancellationToken.None);
+        connectionString,
+        new DbOptions { Dialect = DialectFor(), Log = Flag("log") ? DbLog.Console : null },   // --log: every statement to stdout (ADR-0045)
+        CancellationToken.None);
 
     // Rollbacks derive from the snapshots (ADR-0018): embedded in the assembly by
     // default, or read from the source Migrations dir via --snapshots.

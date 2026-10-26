@@ -16,7 +16,8 @@ use SimpleOrm\Metadata\MappingOptions;
  * Options fixed at {@see Db::open}: the dialect, metadata configuration, the type-handler registry (§7.17),
  * the tracking mode (ADR-0034 add.1 — `Untracked` by default, the Level 0–2 session exactly), the session
  * clock the declared hooks write (Level 3 M3, spec/hooks.md "The session clock"), and the statement-batching option
- * (Level 4, ADR-0044 — `Off` by default, the Level 0–3 behaviour exactly; spec/session.md "Batching").
+ * (Level 4, ADR-0044 — `Off` by default, the Level 0–3 behaviour exactly; spec/session.md "Batching"), and the statement log
+ * (Level 4 item 4, ADR-0045 — unset by default: nothing is written and nothing is formatted; spec/session.md "Statement log").
  */
 final readonly class DbOptions
 {
@@ -27,6 +28,10 @@ final readonly class DbOptions
      *        explicit batch go out in as few messages as the plan allows)
      * @param int $maxStatementsPerMessage the most statements one message carries, 100 by default; below 1 is an
      *        `InvalidArgumentException` when the session opens
+     * @param (Closure(string): void)|null $log called once per statement sent with its line, synchronously; null (the
+     *        default) writes nothing and formats nothing. {@see DbLog::stdout()} is the built-in sink
+     * @param bool $logParameterValues whether a line carries the parameter values beside their names — off by default:
+     *        values may be personal data
      */
     public function __construct(
         public Dialect $dialect,
@@ -36,6 +41,8 @@ final readonly class DbOptions
         public ?Closure $clock = null,
         public BatchingMode $batching = BatchingMode::Off,
         public int $maxStatementsPerMessage = 100,
+        public ?Closure $log = null,
+        public bool $logParameterValues = false,
     ) {
     }
 

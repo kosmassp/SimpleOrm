@@ -127,7 +127,8 @@ func BatchExecute[TArgs any](b *Batch, command CommandEntry[TArgs], args TArgs) 
 		if err != nil {
 			return nil, err
 		}
-		return &preparedWrite{sql: bound.SQL, args: bound.Args, kind: core.ResultDriverCount, command: true}, nil
+		return &preparedWrite{sql: bound.SQL, args: bound.Args, kind: core.ResultDriverCount, command: true,
+			name: command.Source().logName("command")}, nil
 	}})
 }
 

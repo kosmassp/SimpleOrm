@@ -115,6 +115,7 @@ func readRowByKey(ctx context.Context, db *Db, m *core.EntityMap, entityType ref
 		" from " + dialect.QuoteIdentifier(m.RelationName) +
 		" where " + strings.Join(predicates, " and ")
 
+	db.logStatement(db.logName(entityType, "get"), sqlText, args)
 	rows, err := db.exec().QueryContext(ctx, sqlText, args...)
 	if err != nil {
 		return reflect.Value{}, err
@@ -258,10 +259,13 @@ func CreateTable[T any](ctx context.Context, db *Db) error {
 		return core.Errorf("DDL-001", entityType.Name(), "is %s-backed; only tables can be created from metadata", m.Kind)
 	}
 
-	if _, err := db.exec().ExecContext(ctx, db.options.Dialect.CreateTableSQL(m)); err != nil {
+	createSQL := db.options.Dialect.CreateTableSQL(m)
+	db.logStatement(entityType.Name()+".createTable", createSQL, nil)
+	if _, err := db.exec().ExecContext(ctx, createSQL); err != nil {
 		return err
 	}
 	for _, indexSQL := range db.options.Dialect.CreateIndexSQL(m) {
+		db.logStatement(entityType.Name()+".createIndex", indexSQL, nil)
 		if _, err := db.exec().ExecContext(ctx, indexSQL); err != nil {
 			return err
 		}
@@ -285,10 +289,13 @@ func CreateView[T any](ctx context.Context, db *Db) error {
 		return core.NewError("DDL-002", entityType.Name(), "the dialect has no materialized views (SQLite; Level 4 Postgres will)")
 	}
 
-	if _, err := db.exec().ExecContext(ctx, db.options.Dialect.CreateViewSQL(m)); err != nil {
+	createSQL := db.options.Dialect.CreateViewSQL(m)
+	db.logStatement(entityType.Name()+".createView", createSQL, nil)
+	if _, err := db.exec().ExecContext(ctx, createSQL); err != nil {
 		return err
 	}
 	for _, indexSQL := range db.options.Dialect.CreateIndexSQL(m) {
+		db.logStatement(entityType.Name()+".createIndex", indexSQL, nil)
 		if _, err := db.exec().ExecContext(ctx, indexSQL); err != nil {
 			return err
 		}
@@ -323,6 +330,7 @@ func QueryAll[T any](ctx context.Context, db *Db) ([]T, error) {
 		sqlText += " order by " + strings.Join(keyColumns, ", ")
 	}
 
+	db.logStatement(db.logName(entityType, "selectAll"), sqlText, nil)
 	rows, err := db.exec().QueryContext(ctx, sqlText)
 	if err != nil {
 		return nil, err
@@ -423,6 +431,7 @@ func (db *Db) insertStatement(entityType reflect.Type, m *core.EntityMap, entity
 	generated := m.KeyStrategy == core.KeyDatabaseGenerated
 	write := &preparedWrite{
 		sql:          db.options.Dialect.InsertSQL(m),
+		name:         db.logName(entityType, "insert"),
 		args:         args,
 		kind:         core.ResultNone,
 		instance:     entity,
@@ -520,7 +529,7 @@ func (db *Db) prepareUpdate(entityType reflect.Type, entity any) (*preparedWrite
 			bound = append(bound, p)
 		}
 	}
-	write, err := db.countedWrite(entityType, entity, db.options.Dialect.UpdateSQL(m), bound)
+	write, err := db.countedWrite(entityType, entity, "update", db.options.Dialect.UpdateSQL(m), bound)
 	if err != nil {
 		restoreStamp()
 		return nil, err
@@ -563,7 +572,7 @@ func (db *Db) prepareTrackedUpdate(m *core.EntityMap, entry *trackedEntry, entit
 	if err != nil {
 		return nil, err
 	}
-	write, err := db.countedWrite(m.Type, entity, db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set))
+	write, err := db.countedWrite(m.Type, entity, "update", db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set))
 	if err != nil {
 		restoreStamp()
 		return nil, err
@@ -642,7 +651,7 @@ func (db *Db) prepareUpdateOnly(entityType reflect.Type, entity any, properties 
 	if err != nil {
 		return nil, err
 	}
-	write, err := db.countedWrite(entityType, entity, db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set))
+	write, err := db.countedWrite(entityType, entity, "updateOnly", db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set))
 	if err != nil {
 		restoreStamp()
 		return nil, err
@@ -723,7 +732,7 @@ func ownedNavigation(m *core.EntityMap, name string) *core.OwnedMap {
 // from entity) and shapes the statement's result the way the dialect judges it: the driver's affected-row count,
 // unless the dialect reports it by a select of the statement's own count (ReportsAffectedRowsBySelect, ADR-0040
 // add.3, spec/dialects.md Clarification 23). Registry commands never come through here — they keep the driver's count.
-func (db *Db) countedWrite(entityType reflect.Type, entity any, sqlText string, bound []*core.PropertyMap) (*preparedWrite, error) {
+func (db *Db) countedWrite(entityType reflect.Type, entity any, operation, sqlText string, bound []*core.PropertyMap) (*preparedWrite, error) {
 	args := make([]any, 0, len(bound))
 	for _, p := range bound {
 		converted, err := db.converter.ToParameter(p.Get(entity), p.ColumnType, entityType.Name()+"."+p.PropertyName)
@@ -732,7 +741,7 @@ func (db *Db) countedWrite(entityType reflect.Type, entity any, sqlText string, 
 		}
 		args = append(args, sql.Named(p.ColumnName, converted))
 	}
-	return &preparedWrite{sql: sqlText, args: args, kind: db.countKind(), instance: entity}, nil
+	return &preparedWrite{sql: sqlText, args: args, kind: db.countKind(), instance: entity, name: db.logName(entityType, operation)}, nil
 }
 
 // updateJudge is the update rule of §7.15–16 for a counted update: zero rows is CRUD-010 with a version column
@@ -819,6 +828,7 @@ func (db *Db) prepareDeleteByKey(entityType reflect.Type, key any) (*preparedWri
 	}
 	return &preparedWrite{
 		sql:  db.options.Dialect.DeleteSQL(m, false),
+		name: db.logName(entityType, "delete"),
 		args: args,
 		kind: db.countKind(),
 		finish: func(result writeResult, journal *undoJournal) error {
@@ -882,7 +892,7 @@ func (db *Db) prepareDeleteEntity(entityType reflect.Type, entity any) (*prepare
 	if checkVersion {
 		bound = append(bound, m.VersionProperty)
 	}
-	write, err := db.countedWrite(entityType, entity, db.options.Dialect.DeleteSQL(m, checkVersion), bound)
+	write, err := db.countedWrite(entityType, entity, "delete", db.options.Dialect.DeleteSQL(m, checkVersion), bound)
 	if err != nil {
 		return nil, err
 	}

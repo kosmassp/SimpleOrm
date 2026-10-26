@@ -86,6 +86,9 @@ final class SchemaGuard
         $columnsCache = [];
         try {
             foreach (self::discoverRegistry($classes) as [$source, $sql, $argsType, $resultType]) {
+                // The scan is where the session learns what the registry calls an entry (ADR-0045): later statement-log lines
+                // of this query or command carry `Queries.userByEmail` instead of the bare kind.
+                $db->declareEntryName($resultType === null ? 'command' : 'query', $sql, $source);
                 self::validateStatement($db, $connection, $columnsCache, $source, $sql, $argsType, $resultType, $errors);
             }
 
@@ -285,6 +288,8 @@ final class SchemaGuard
         // command is only prepared (never run); a query additionally executes
         // with every placeholder bound NULL, inside the caller's shield
         // transaction, to obtain its column metadata (see the class docblock).
+        // The describe call is the statement sent for this entry (ADR-0045): logged as it goes, every placeholder bound NULL.
+        $db->log()->write("validate {$source}", $sql, array_fill_keys($placeholders, null));
         try {
             $statement = $connection->prepare(SqlPlaceholders::toPdo($sql));
         } catch (PDOException $exception) {
@@ -383,7 +388,7 @@ final class SchemaGuard
 
             $table = $meta !== false && is_string($meta['table'] ?? null) && $meta['table'] !== '' ? $meta['table'] : null;
             if ($table !== null) {
-                $info = self::getColumnInfo($db, $connection, $columnsCache, $table, $columnName);
+                $info = self::getColumnInfo($db, $connection, $columnsCache, $table, $columnName, $source);
                 if ($info !== null) {
                     [$declaredType, $notNull] = $info;
                     $hasHandler = $phpType !== null && $db->converter()->hasHandler($phpType);
@@ -520,7 +525,7 @@ final class SchemaGuard
             return;
         }
 
-        $columns = self::getRelationColumns($db, $connection, (string) $map->relationName);
+        $columns = self::getRelationColumns($db, $connection, (string) $map->relationName, $entityName);
         if ($columns === []) {
             $errors[] = new ValidationError('VAL-012', $entityName, "relation '{$map->relationName}' does not exist in the database");
 
@@ -572,7 +577,7 @@ final class SchemaGuard
         ?SnapshotSet $snapshots,
         array &$errors,
     ): void {
-        $runner = new MigrationRunner($db->connection(), $db->options()->dialect, $db->maps(), $migrations, $snapshots);
+        $runner = new MigrationRunner($db->connection(), $db->options()->dialect, $db->maps(), $migrations, $snapshots, log: $db->log());
         foreach ($runner->status() as $entry) {
             [$code, $message] = match ($entry->state) {
                 MigrationState::Pending => ['MIG-030', 'pending — apply migrations before starting the application'],
@@ -594,20 +599,26 @@ final class SchemaGuard
      * @param array<string, array<string, array{0: string, 1: bool}>> $cache
      * @return array{0: string, 1: bool}|null [declaredType, notNull]
      */
-    private static function getColumnInfo(Db $db, PDO $connection, array &$cache, string $table, string $column): ?array
+    private static function getColumnInfo(Db $db, PDO $connection, array &$cache, string $table, string $column, string $source): ?array
     {
         if (!isset($cache[$table])) {
-            $cache[$table] = self::getRelationColumns($db, $connection, $table);
+            $cache[$table] = self::getRelationColumns($db, $connection, $table, $source);
         }
 
         return $cache[$table][strtolower($column)] ?? null;
     }
 
-    /** @return array<string, array{0: string, 1: bool}> lowercased column name => [declaredType, notNull] */
-    private static function getRelationColumns(Db $db, PDO $connection, string $relation): array
+    /**
+     * @param string $source what the statement log calls the introspection: `validate <source>` (the registry entry or entity
+     *        being validated)
+     * @return array<string, array{0: string, 1: bool}> lowercased column name => [declaredType, notNull]
+     */
+    private static function getRelationColumns(Db $db, PDO $connection, string $relation, string $source): array
     {
         $columns = [];
-        $statement = $connection->prepare(SqlPlaceholders::toPdo($db->options()->dialect->columnsInfoSql()));
+        $sql = $db->options()->dialect->columnsInfoSql();
+        $statement = $connection->prepare(SqlPlaceholders::toPdo($sql));
+        $db->log()->write("validate {$source}", $sql, ['relation' => $relation]);
         $statement->bindValue(':relation', $relation, PDO::PARAM_STR);
         $statement->execute();
         while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {

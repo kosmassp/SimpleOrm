@@ -134,3 +134,32 @@ func TestLive_ABatchedCallSurfacesACachedPlanErrorAsTX002AndTheRerunWorks(t *tes
 		t.Fatalf("the rerun re-prepares the statement: %v", err)
 	}
 }
+
+// TestLive_APipelineWritesOneStatementLogLinePerStatementInOrder: the realization writes the lines (ADR-0045), the
+// SQL as the session bound it, once each, before the pipeline goes out.
+func TestLive_APipelineWritesOneStatementLogLinePerStatementInOrder(t *testing.T) {
+	var lines []string
+	db, observer := postgresBatchingLeg.Open(t, orm.Options{
+		Tracking: orm.TrackingTracked, Batching: orm.BatchingAuto,
+		Log: func(line string) { lines = append(lines, line) },
+	})
+	for _, email := range []string{"a@example.com", "b@example.com", "c@example.com"} {
+		user := &sample.User{Name: "u", Email: email}
+		user.CreatedAtUtc = testsupport.SeedTime
+		if err := orm.Persist(db, user); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lines, observer.Sizes = nil, nil
+	if _, err := db.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 3 || observer.Sizes[0] != 3 {
+		t.Fatalf("one message of three statements writes three lines, got %d lines, messages %v:\n%s", len(lines), observer.Sizes, strings.Join(lines, "\n"))
+	}
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "User.insert: insert into") || !strings.HasSuffix(line, "]") {
+			t.Errorf("unexpected line: %s", line)
+		}
+	}
+}

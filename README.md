@@ -68,6 +68,12 @@ batch.Insert(order);
 batch.UpdateOnly(user, [nameof(User.Name)]);
 batch.Execute(Commands.MarkShipped, new MarkShippedArgs(Id: 7));
 var result = await batch.SendAsync(ct);              // one transaction; result.Affected per operation, result.Messages
+
+// The statement log (Level 4, ADR-0045): one line per statement as it is sent, to a function you choose;
+// unset (the default) nothing is written. Parameter values stay out unless LogParameterValues is on.
+await using var logged = await Db.OpenAsync(connectionString,
+    new DbOptions { Dialect = new SqliteDialect(), Log = DbLog.Console /* or line => logger.LogDebug(line) */ }, ct);
+// User.get: select "id", "name", ... from "users" where "id" = @k0 [@k0]
 // batched.BatchingInEffect: one round trip per message (SqlBatch / NpgsqlBatch on net10.0); SQLite runs the plan
 // statement by statement, reusing prepared commands. TX-003: a batch used after it was sent or disposed
 // (nothing loads implicitly); UOW-006: Persist of an instance scheduled for removal
@@ -447,6 +453,18 @@ nullability per column (`VAL-010`/`011`), `SELECT *` and non-UTC-timestamp lints
 (`VAL-012`/`013`), and migrations must be applied, matching, and known
 (`MIG-030`/`010`/`011`). Expression columns require nullable members unless the
 SQL carries `-- notnull: col`. One exception carries the complete report.
+
+### Statement log (ADR-0045)
+
+`DbOptions.Log` is an `Action<string>` called once per statement, as it is sent,
+with `<name>: <sql> [@a, @b]` — the registry entry's name (`Queries.UserByEmail`,
+learned when SchemaGuard enumerates the registry), or `User.insert`,
+`Transaction.update`, `User.get`, `User.criteria`, `migrate`, `validate …` — and
+the SQL exactly as the driver receives it. `DbLog.Console` writes to stdout;
+forwarding to `ILogger` is one lambda; unset, nothing is formatted. Values appear
+only with `LogParameterValues = true`. The CLI takes `--log`. The guide:
+[docs/guide/16-observability.md](docs/guide/16-observability.md); the rule:
+[spec/session.md "Statement log"](spec/session.md).
 
 ## SQL Server dialect (ADR-0024)
 

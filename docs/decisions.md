@@ -4097,3 +4097,103 @@ go test -C go -count=1 -p 2 ./orm/sqlserver/ -run Live
 
 Next: batched reads (3b) and multi-row inserts for keys the database does not
 generate, when the owner says so; the other Level 4 candidates wait.
+
+## ADR-0045 — Level 4 item 4: observability, the statement log, in three implementations (2026-10-26)
+
+**The request (owner, 2026-10-26).** "Add a simple observability — at least we
+can check what query is being sent to the database so we can debug if there
+are problems."
+
+**The design put to the owner, and declined.** A statement observer on the
+options (`IStatementObserver.OnStatement(StatementEvent)`) with the event
+carrying the name, the SQL, redacted parameters, the ADR-0044 message index and
+size, the duration, the row or affected count, the error code; six options —
+one event vs a before/after pair, an opt-in tagged SQL comment at execution
+time, a built-in console writer, a slow-statement threshold, the port idioms,
+and where a registry entry's name comes from. The owner: "too complicated, we
+want to keep it simple, at least for now. Just add a way so when firing to
+database write it to log. However, since this is a library, the log should be
+able to be forwarded like the log that is used by the application. If not,
+then write to sysout. But, we can choose to not write it."
+
+**Decision.** The smallest thing that does that:
+
+- **`DbOptions.Log`**, an `Action<string>` (PHP `log: ?Closure`, Go `Log
+  func(string)`), called **once per statement, as it is sent** — after binding,
+  before execution — with one line: `<name>: <sql> [@a, @b]`. Unset (the
+  default), nothing is written and nothing is formatted. No logging package
+  enters any implementation: forwarding to `ILogger`, a PSR logger, or `slog`
+  is the application's one lambda; one built-in sink writes to standard output
+  (`DbLog.Console`, `DbLog::stdout()`, `orm.ConsoleLog`).
+- **`LogParameterValues`**, off by default: the line names the parameters and
+  shows their values only when asked — values are where personal data lives.
+- **The SQL exactly as the library hands it to the driver** (after IN-list
+  expansion and the dialect's rendering; the driver's own `:name`/`$n` rewrite
+  is invisible; the library's multi-statement renaming on SQL Server is not).
+- **The name**: the registry entry's declared name (`Queries.UserByEmail` —
+  stamped on `SqlSource.Name` when SchemaGuard enumerates the registry in C#,
+  learned by (kind, SQL text) in PHP, declared with `Named(...)` in Go), else
+  `query`/`command` or the embedded path; `<Entity>.insert`, `.update`,
+  `.updateOnly`, `.delete` (the soft delete too), `.get`, `.criteria`,
+  `.include`, `.selectAll`, `.statement`, `.createTable`, `.createIndex`,
+  `.createView`, `.createTrigger`; `migrate`; `validate <source>`; `shadow`;
+  `sync`.
+- **One funnel per implementation** on every path that sends SQL — registry
+  queries, streams, commands; every generated write through the one prepared
+  shape of ADR-0044 (immediate, flush, explicit batch; sequential, `DbBatch`,
+  pgx `SendBatch`, the SQL Server text — one line per statement a message
+  holds); key reads, criteria, explicit and batch loading, join-mode includes,
+  select-all, statement entities; metadata DDL; the migration runner;
+  SchemaGuard's describe and introspection; shadow and sync. The internal
+  `MessageObserver` test seam stays; the recorder contract of the step scripts
+  is untouched.
+- **Not logged**: the run lock, the connection open, the shadow host's
+  provisioning, transaction control including the library's own savepoints.
+  A statement refused before it is sent writes nothing. The line says nothing
+  about the outcome — no duration, no count, no error; a second line after the
+  statement is a possible later addition.
+- **The CLI** takes `--log`.
+
+**Spec.** `spec/session.md` "Statement log": the option, the line, the names
+table, when it is written, what is never logged, the per-language shapes, and
+16 Clarifications; `spec/README.md`. No conformance folder: the line's text is
+per language; each implementation proves in its own tests that every path
+writes exactly one named line, the flush and the batch one per statement under
+`Off` and `Auto`, values only when asked, and the sink writes to stdout.
+
+**The ports, by the ADR-0031 method** (one Sonnet agent each, forbidden to open
+another implementation), then a review. PHP's 17 and Go's 22 gap questions
+became the Clarifications. Findings and alignments:
+
+- **Where a registry entry's name comes from** — the one real question. PHP's
+  registry methods build a fresh entry per call, so nothing can be stamped: it
+  keys the learned names by (kind, SQL text). Go cannot see a package
+  variable's name: the optional `Named("Queries.UserByEmail")`. Both became
+  the rule (Clarification 1).
+- **"Exactly as sent"** read two ways: PHP logged the `@name` text (PDO
+  rewrites to `:name`), Go the `$n`-free text too but the SQL Server message's
+  renamed `@p<i>_name` statements. The rule: the driver's rewrite is
+  invisible, the library's is not; PHP now logs the renamed statements.
+- **Three places the reference diverged from both ports**, fixed in C#: the
+  PostgreSQL view probe's `savepoint`/`release`/`rollback to` were logged
+  (transaction control: not logged); a shadow's replayed steps logged as
+  `migrate` (the shadow names its run); the introspection line named the
+  relation, both ports the entry or entity being validated. Also found in the
+  reference: the prepare-only describe of a registry **command** logged nothing.
+- **Pinned by the review**: the bytes form (`0x` + the first 16 as hex, `…`
+  when longer, always ` (N bytes)`), values "as bound" (a PHP bool is its
+  `0`/`1`), the sequential realization's line right before each statement, a
+  stream's line at the first iteration, SchemaGuard's describe line before the
+  prepare that is the call, the tooling's sink carrier where it takes no
+  session (Go: the context).
+
+**Verification.** PostgreSQL live on this machine, SQLite as always, SQL Server
+skip-gated: C# 543 passed / 21 skipped (was 535 / 21), both TFMs built; PHP
+1102 tests (33 skipped; was 1075 / 33), `composer test` and `test-live`; Go
+every package ok, `gofmt` and `go vet` clean.
+
+**Status.** Accepted. Level 4 item 4 is built in C#, PHP, and Go. Nothing is
+pending from it; the SQL Server live verifications of ADR-0040 add.3,
+ADR-0042, ADR-0043, and ADR-0044 still await the owner's engine. The other
+Level 4 candidates (CI matrix, performance, packaging, tracing and timing,
+resilience) wait for the owner.

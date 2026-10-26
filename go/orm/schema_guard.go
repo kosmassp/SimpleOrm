@@ -60,6 +60,7 @@ func ValidateTypes(ctx context.Context, db *Db, entries []Entry, entities []refl
 
 func validateAll(ctx context.Context, db *Db, registry Registry) error {
 	var errs []*core.ValidationError
+	ctx = core.WithStatementLog(ctx, db.log) // the tooling reads (the migration history, the introspection) reach the log through the context
 
 	if registry.Migrations != nil {
 		if err := checkMigrations(ctx, db, registry, &errs); err != nil {
@@ -82,8 +83,9 @@ func validateAll(ctx context.Context, db *Db, registry Registry) error {
 			errs = append(errs, &core.ValidationError{Code: core.CodeOf(err), Source: source, Message: err.Error()})
 			continue
 		}
+		entryCtx := core.WithStatementName(ctx, "validate "+entry.Source().logName(entryKind(entry)))
 		if err := validateStatement(
-			ctx, db, tableColumns, source, sqlText, entry.ArgsType(), entry.ResultType(), &errs,
+			entryCtx, db, tableColumns, source, sqlText, entry.ArgsType(), entry.ResultType(), &errs,
 		); err != nil {
 			return err
 		}
@@ -93,7 +95,7 @@ func validateAll(ctx context.Context, db *Db, registry Registry) error {
 		if core.IsTriggerType(entityType) {
 			continue // a trigger class is a declaration object, no entity: scans skip it (ADR-0042)
 		}
-		if err := validateEntity(ctx, db, tableColumns, entityType, &errs); err != nil {
+		if err := validateEntity(core.WithStatementName(ctx, "validate "+entityType.Name()), db, tableColumns, entityType, &errs); err != nil {
 			return err
 		}
 	}
@@ -148,6 +150,7 @@ func validateStatement(
 		return nil
 	}
 
+	core.LogStatement(ctx, sqlText) // the describe call: one line, the entry's SQL (nothing is bound -- a described statement has no values)
 	columns, err := describer.DescribeStatement(ctx, db.connection, sqlText)
 	if err != nil {
 		*errs = append(*errs, &core.ValidationError{Code: "VAL-001", Source: source, Message: err.Error()})
@@ -508,4 +511,12 @@ func parseNotNullOverrides(sqlText string) map[string]bool {
 		}
 	}
 	return overrides
+}
+
+// entryKind is the kind of a registry entry for the statement log's fallback name: a command has no result type.
+func entryKind(entry Entry) string {
+	if entry.ResultType() == nil {
+		return "command"
+	}
+	return "query"
 }

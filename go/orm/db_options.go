@@ -35,6 +35,14 @@ type Options struct {
 	// default, 100; a negative value is refused at Open (CODING-STANDARD §10: Go's zero value cannot tell "unset"
 	// from "0", and the spec's "below 1 is the argument error" is read as "below 0 here").
 	MaxStatementsPerMessage int
+	// Log receives one line per statement the session sends -- after it is prepared and bound, before it executes, in the
+	// order sent (Level 4 item 4, ADR-0045, spec/session.md "Statement log"). nil, the default, writes nothing and
+	// formats nothing. ConsoleLog writes each line to standard output; forwarding to an application logger is a one-line
+	// adapter. It runs on the calling goroutine; a panic in it is the application's.
+	Log func(line string)
+	// LogParameterValues adds the parameter values beside their names in each line. Off by default: values may be
+	// personal data, and a log never receives them unless the application asks.
+	LogParameterValues bool
 }
 
 // DefaultMaxStatementsPerMessage is the cap on statements per message when Options leaves it unset (spec/session.md "Batching").

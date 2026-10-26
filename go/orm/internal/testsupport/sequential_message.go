@@ -14,6 +14,10 @@ import (
 // behave as a batching dialect, and the conformance runners then replay the batch and flush cases through it.
 func SequentialMessage(ctx context.Context, exec core.SQLExecutor, statements []core.MessageStatement) ([]core.MessageResult, error) {
 	results := make([]core.MessageResult, len(statements))
+	log := core.StatementLogFrom(ctx) // the realization writes the lines, one per statement, before the message goes out
+	for _, statement := range statements {
+		log.Statement(statement.Name, statement.SQL, statement.Args)
+	}
 	for i, statement := range statements {
 		switch statement.Result {
 		case core.ResultKey, core.ResultReportedCount:

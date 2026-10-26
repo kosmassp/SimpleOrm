@@ -43,6 +43,8 @@ type MessageStatement struct {
 	SQL    string
 	Args   []any
 	Result StatementResult
+	// Name is the statement's statement-log name (`User.insert`, `command`; spec/session.md "Statement log").
+	Name string
 }
 
 // MessageResult is one statement's result. Key holds the scalar of a ResultKey statement (an integer, widened to
@@ -64,6 +66,11 @@ type MessageResult struct {
 // pipelined or multi-statement message does not stop at a statement that merely affects no rows, and a failing one
 // may leave its neighbours run or skipped by the engine) and the session fails the call, which is atomic through the
 // transaction.
+//
+// The statement log (ADR-0045) is the realization's to write: the session cannot know the text a dialect finally
+// sends (SQL Server renames each statement's placeholders apart). A realization therefore writes one line per
+// statement, in statement order, to StatementLogFrom(ctx) — each with its statement's Name, its SQL and its parameters
+// exactly as that realization sends them — before the message goes out; with no log on ctx it writes nothing.
 type StatementBatcher interface {
 	SendMessage(ctx context.Context, conn *sql.Conn, exec SQLExecutor, statements []MessageStatement) ([]MessageResult, error)
 }

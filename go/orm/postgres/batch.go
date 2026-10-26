@@ -46,6 +46,7 @@ func (d *Dialect) SendMessage(ctx context.Context, connection *sql.Conn, exec co
 			start = end
 			continue
 		}
+		core.StatementLogFrom(ctx).Statement(statements[start].Name, statements[start].SQL, statements[start].Args)
 		result, err := sendAlone(ctx, exec, statements[start])
 		if err != nil {
 			return nil, err
@@ -83,6 +84,10 @@ func sendPipeline(ctx context.Context, connection *sql.Conn, statements []core.M
 			batch.Queue(rewritten.sql, values...)
 		}
 
+		log := core.StatementLogFrom(ctx) // one line per statement, the SQL as the session bound it, before the pipeline goes out
+		for _, statement := range statements {
+			log.Statement(statement.Name, statement.SQL, statement.Args)
+		}
 		pending := c.inner.Conn().SendBatch(ctx, batch)
 		for i, statement := range statements {
 			if err := readResult(pending, statement, &results[i]); err != nil {

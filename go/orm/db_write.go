@@ -35,6 +35,8 @@ type preparedWrite struct {
 	sql  string
 	args []any
 	kind core.StatementResult
+	// name is the statement-log name (`User.update`); empty when no log is set.
+	name string
 	// instance is the *E the statement writes, or nil (a registry command, a delete by key): the plan's rule 1a keeps
 	// a second statement on the same instance out of the message that holds the first.
 	instance any
@@ -227,6 +229,7 @@ func (db *Db) runImmediate(ctx context.Context, write *preparedWrite) error {
 	if write == nil {
 		return nil
 	}
+	db.logStatement(write.name, write.sql, write.args)
 	result, err := runWrite(ctx, directRunner{db.exec()}, write)
 	if err == nil && write.finish != nil {
 		err = write.finish(result, nil)

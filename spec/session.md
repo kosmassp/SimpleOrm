@@ -353,6 +353,91 @@ questions, consolidated; each the answer the three implementations now embody):
     filled it, so two inserts that both arrived with an empty GUID never cut each
     other.
 
+## Statement log (Level 4 item 4, ADR-0045)
+
+The smallest observability there is: the session can tell the application
+**what it sends to the database**, one line of text per statement, as the
+statement is sent. The library brings no logging dependency; the application
+forwards the line to its own logger, or to standard output, or asks for
+nothing.
+
+**The option**, fixed at open like the others:
+
+- `Log`: a function of one string, called once per statement with the line
+  below. Unset (the default), nothing is written and nothing is formatted —
+  the Level 0–3 behaviour exactly. Every implementation ships one built-in
+  sink that writes each line to standard output (C# `DbLog.Console`), so a
+  trial switches the log on with one assignment; forwarding to the
+  application's logger is the application's own one-line adapter
+  (`line => logger.LogDebug(line)`), never a library concern.
+- `LogParameterValues`: whether the line carries the parameter **values**
+  beside their names. **Off by default**: values may be personal data, and a
+  log never receives them unless the application asks (§2 "strict by
+  default", applied to what leaves the process).
+
+**The line.** `<name>: <sql>`, followed, when the statement has parameters,
+by a space and the parameter names in bind order in square brackets —
+`[@k0]`, `[@Name, @Id]` — or, with values on, `[@Name = 'Ada', @Id = 7]`.
+The SQL is the text **exactly as sent**: after IN-list expansion
+("Parameters"), the dialect's rendering (`set nocount on; …` on SQL Server,
+`returning`), and whatever the realization sent (a multi-statement text is
+one line per statement it holds, as the plan counts them). Nothing is
+reformatted or truncated. A value is written in a fixed, culture-neutral
+form: a string single-quoted with `'` doubled, a null as `null`, a bool as
+`true`/`false`, bytes as `0x` + hex (the first 16, then the length), an
+instant as the dialect binds it (ISO-8601 text on SQLite), an array
+parameter in square brackets; numbers and the rest in their invariant form.
+
+**The name** says what issued the statement:
+
+| statement | name |
+|---|---|
+| a registry query or command | the name the registry declares — `Queries.UserByEmail` — where the implementation knows it (C# and PHP learn it when SchemaGuard enumerates the registry, which an application does at startup, §7.18; Go's explicit registry has no variable names); otherwise the resource path of an embedded entry; otherwise the kind of entry, `query` or `command` (an inline entry's description would only repeat the SQL) |
+| a generated write | `<Entity>.insert`, `<Entity>.update` (the full-row and the tracked dirty update alike), `<Entity>.updateOnly`, `<Entity>.delete` (the key form, the entity form, and the soft delete's flag-setting update alike — the name is the operation asked for) |
+| a generated read | `<Entity>.get` (the key read, `Refresh` included), `<Entity>.criteria` (criteria queries, and the queries explicit and batch loading issue — a many-to-many load is the link entity's criteria, then the target's), `<Entity>.include` (a join-mode eager query), `<Entity>.selectAll`, `<Entity>.statement` (a statement-backed entity) |
+| metadata DDL | `<Entity>.createTable`, `<Entity>.createIndex`, `<Entity>.createView`, `<Entity>.createTrigger` (its drop statements too) |
+| the migration runner | `migrate` — every statement it runs: the version table, the recorded history, the steps, the guards' definition reads, the rollback |
+| SchemaGuard | `validate <source>` — the describe call of a registry entry (its name as the registry declares it) and the column introspection of a relation |
+| the schema tooling | `shadow` (the replay, its introspection, the view and trigger read-back), `sync` (the force-sync introspection and the plan's statements) |
+
+`<Entity>` is the class name as the fixture spells it (the step scripts'
+names). Where a language spells a generated operation differently
+(`updateOnly`, `BatchUpdateOnly`), the log keeps the reference's
+spelling: the line is for reading across implementations.
+
+**When.** The line is written **as the statement is sent**: after it is
+prepared and bound — so what the application reads is what the database
+receives — and before it executes. Exactly one line per statement sent, in
+the order sent; a message of several statements (ADR-0044) writes one line
+per statement, in statement order, before the message goes out. A statement
+refused before it is sent (`CRUD-004`, `UOW-002`, `PRM-001`, a converter's
+code, a `MAP-028` type) writes nothing: no SQL left the session. The line
+says nothing about the outcome — not the duration, not the count, not the
+error — the error reaches the caller as it always did; a second, after-the-
+fact line is a possible later addition, not part of this. The log function
+runs on the calling thread, synchronously; an exception it throws fails the
+call like any other exception — the library never swallows it.
+
+**What is not a statement of the application's**: the dialect's own
+housekeeping inside the seam — the migration run lock (`begin immediate`,
+`sp_getapplock`, `pg_advisory_xact_lock`), the connection open — and
+transaction control (`begin`, `commit`, `rollback`), which the provider
+issues. They are not logged.
+
+**The CLI** takes `--log`: every statement of a `migrate`, `migrate down`,
+`shadow`, `diff --amend --db`, `validate`, or force-sync run goes to standard
+output through the built-in sink.
+
+**Per language.** PHP and Go keep the option's meaning and the line's
+content; the shape of the function and the sink are theirs and recorded in
+their §10 (a PHP closure and a `DbLog::stdout()`; a Go `func(string)` and
+`orm.ConsoleLog`, say). The line's text is per language and is **not**
+pinned by a conformance file: each implementation proves in its own tests
+that every execution path writes exactly one line with its name, that the
+flush and the batch write one per statement under `Off` and `Auto`, that
+values appear only when asked, and that the built-in sink writes to standard
+output.
+
 ## The rest of the session
 
 Key reads, generated CRUD, criteria queries, and metadata DDL live on the same

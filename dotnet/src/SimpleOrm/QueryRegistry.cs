@@ -23,10 +23,12 @@ public sealed class SqlSource
 {
     private readonly Lazy<string> _sql;
     private readonly string _description;
+    private readonly bool _embedded;
 
-    private SqlSource(string description, Func<string> factory)
+    private SqlSource(string description, bool embedded, Func<string> factory)
     {
         _description = description;
+        _embedded = embedded;
         _sql = new Lazy<string>(factory);
     }
 
@@ -36,8 +38,17 @@ public sealed class SqlSource
     /// <summary>The query's name in error messages: the resource path, or a SQL prefix for inline sources.</summary>
     public string Description => _description;
 
+    /// <summary>
+    /// The entry's name as the registry declares it (<c>Queries.UserByEmail</c>),
+    /// stamped by SchemaGuard when it enumerates the registry; null until then.
+    /// </summary>
+    internal string? Name { get; set; }
+
+    /// <summary>The entry's name in the statement log: the declared name, else the resource path, else the kind of entry (an inline description repeats the SQL).</summary>
+    internal string LogName(string kind) => Name ?? (_embedded ? _description : kind);
+
     internal static SqlSource Embedded(string path, Assembly assembly)
-        => new(path, () =>
+        => new(path, embedded: true, () =>
         {
             var suffix = "." + path.Replace('/', '.').Replace('\\', '.');
             var resource = assembly.GetManifestResourceNames()
@@ -56,7 +67,7 @@ public sealed class SqlSource
     internal static SqlSource Inline(string sql)
     {
         var head = sql.Length <= 60 ? sql : sql.Substring(0, 60) + "…";
-        return new SqlSource("inline: " + string.Join(" ", head.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)), () => sql);
+        return new SqlSource("inline: " + string.Join(" ", head.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)), embedded: false, () => sql);
     }
 }
 

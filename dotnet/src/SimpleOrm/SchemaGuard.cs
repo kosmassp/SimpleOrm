@@ -106,19 +106,19 @@ public static class SchemaGuard
                 }
 
                 var arguments = field.FieldType.GetGenericArguments();
-                if (definition == typeof(Query<,>))
+                if (definition != typeof(Query<,>) && definition != typeof(Command<>))
                 {
-                    yield return (source, SqlOf(value), arguments[0], arguments[1]);
+                    continue;
                 }
-                else if (definition == typeof(Command<>))
-                {
-                    yield return (source, SqlOf(value), arguments[0], null);
-                }
+
+                var sqlSource = SourceOf(value);
+                sqlSource.Name ??= source;   // the statement log names the entry as the registry declares it (ADR-0045)
+                yield return (source, sqlSource.Sql, arguments[0], definition == typeof(Query<,>) ? arguments[1] : null);
             }
         }
 
-        static string SqlOf(object entry)
-            => ((SqlSource)entry.GetType().GetProperty("Source")!.GetValue(entry)!).Sql;
+        static SqlSource SourceOf(object entry)
+            => (SqlSource)entry.GetType().GetProperty("Source")!.GetValue(entry)!;
     }
 
     private static async Task ValidateStatementAsync(
@@ -191,6 +191,7 @@ public static class SchemaGuard
         DbDataReader reader;
         try
         {
+            db.LogStatement("validate " + source, command);
             reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         }
         catch (DbException exception)
@@ -407,6 +408,7 @@ public static class SchemaGuard
         parameter.Value = relation;
         command.Parameters.Add(parameter);
 
+        db.LogStatement("validate " + relation, command);
         var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         try
         {

@@ -120,6 +120,7 @@ public static class SchemaSync
         parameter.Value = relation;
         command.Parameters.Add(parameter);
 
+        db.LogStatement("sync", command);
         DbDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         try
         {
@@ -153,6 +154,7 @@ public static class SchemaSync
         {
             using var command = db.Connection.CreateCommand();
             command.CommandText = sql;
+            db.LogStatement("sync", command);
             await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
     }
@@ -169,6 +171,7 @@ public static class SchemaSync
         parameter.Value = relation;
         command.Parameters.Add(parameter);
 
+        db.LogStatement("sync", command);
         DbDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         try
         {

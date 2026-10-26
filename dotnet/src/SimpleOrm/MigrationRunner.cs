@@ -447,6 +447,7 @@ public sealed class MigrationRunner
         using var command = _db.Connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = "select version, object, description, checksum from schema_version";
+        _db.LogStatement("migrate", command);
         try
         {
             var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
@@ -484,6 +485,7 @@ public sealed class MigrationRunner
         AddParameter(command, "@checksum", step.Checksum);
         AddParameter(command, "@applied_at", DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
         AddParameter(command, "@execution_ms", executionMs);
+        _db.LogStatement("migrate", command);
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
@@ -571,6 +573,7 @@ public sealed class MigrationRunner
         parameter.Value = trigger;
         command.Parameters.Add(parameter);
         var definitions = new List<string>();
+        _db.LogStatement("migrate", command);
         var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         try
         {
@@ -659,6 +662,7 @@ public sealed class MigrationRunner
         parameter.ParameterName = "@relation";
         parameter.Value = view;
         command.Parameters.Add(parameter);
+        _db.LogStatement("migrate", command);
         return await command.ExecuteScalarAsync(ct).ConfigureAwait(false) as string;
     }
 
@@ -667,6 +671,7 @@ public sealed class MigrationRunner
         using var command = _db.Connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = sql;
+        _db.LogStatement("migrate", command);
         try
         {
             await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);

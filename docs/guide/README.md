@@ -42,7 +42,8 @@ C# form first and then the PHP and Go equivalents where the shape differs.
 6. [Migrations](09-migrations.md): the everyday loop with `diff`, `migrate`, and `snapshot`.
 
 Then pick what your application needs: criteria queries, relationships,
-tracking and the unit of work, hooks, triggers, or another dialect.
+tracking and the unit of work, hooks, triggers, another dialect, or the
+[statement log](16-observability.md) when you want to see the SQL going out.
 
 ## Table of contents
 
@@ -63,6 +64,7 @@ tracking and the unit of work, hooks, triggers, or another dialect.
 | [13 Errors](13-errors.md) | How errors are shaped, the prefixes, the common codes and their fixes |
 | [14 Testing your app](14-testing-your-app.md) | Temp-file databases per language, SchemaGuard in a test, live legs, a fixed clock |
 | [15 PHP and Go](15-php-and-go.md) | The port-specific shapes in one place |
+| [16 Observability](16-observability.md) | The statement log: see every statement as it is sent, forward it to your logger, parameter values off by default, the CLI's `--log` |
 
 ## Conventions in this guide
 

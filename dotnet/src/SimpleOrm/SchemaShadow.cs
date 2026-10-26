@@ -239,6 +239,7 @@ public static class SchemaShadow
         using var command = db.Connection.CreateCommand();
         command.CommandText = db.Options.Dialect.ViewDefinitionSql;
         AddParameter(command, relation);
+        db.LogStatement("shadow", command);
         return await command.ExecuteScalarAsync(ct).ConfigureAwait(false) as string;
     }
 
@@ -360,6 +361,7 @@ public static class SchemaShadow
         {
             command.CommandText = dialect.ColumnsInfoSql;
             AddParameter(command, relation);
+            db.LogStatement("shadow", command);
             using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
             {
@@ -380,6 +382,7 @@ public static class SchemaShadow
         {
             command.CommandText = dialect.IndexesInfoSql;
             AddParameter(command, relation);
+            db.LogStatement("shadow", command);
             using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
             var parts = new Dictionary<string, (bool Unique, List<TableSchema.Index.Part> Columns)>(StringComparer.Ordinal);
             var order = new List<string>();
@@ -465,6 +468,7 @@ public static class SchemaShadow
     {
         using var command = db.Connection.CreateCommand();
         command.CommandText = sql;
+        db.LogStatement("shadow", command);
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 

@@ -57,9 +57,10 @@ new DbOptions { Dialect = ..., Log = DbLog.Console, LogParameterValues = true }
 // User.insert: insert into "users" (...) values (@name, @email, ...) returning "id" [@name = 'Ada', @email = 'ada@example.com', @display_name = null, @created_at = '2026-08-28T09:30:00.0000000Z', @updated_at = null]
 ```
 
-Strings are single-quoted, a null is `null`, bytes are `0x…` (the first 16,
-then the length), an array parameter is `[1, 2, 3]`, numbers are in their
-invariant form.
+Values show as they were bound, after conversion: strings single-quoted, a
+null as `null`, bytes as `0x0102 (2 bytes)` (the first 16, an ellipsis when
+there are more, always the length), an array parameter as `[1, 2, 3]`,
+numbers in their invariant form.
 
 ## What the name tells you
 
@@ -70,8 +71,8 @@ invariant form.
 | `GetAsync`, a criteria query, `LoadAsync`, `Include(...)` in join mode | `User.get`, `User.criteria`, `Role.criteria` (a many-to-many load logs the link entity first), `User.include` |
 | `FlushAsync`, `batch.SendAsync` | one line per statement, named as above, in statement order, under `Off` and `Auto` alike |
 | `CreateTableAsync` and friends | `User.createTable`, `User.createIndex`, `User.createView`, `User.createTrigger` |
-| the migration runner | `migrate` |
-| `SchemaGuard.ValidateAsync` | `validate Queries.UserByEmail`, `validate users` |
+| the migration runner | `migrate` (a shadow run names its replay `shadow`; force-sync's own statements `sync`) |
+| `SchemaGuard.ValidateAsync` | `validate Queries.UserByEmail`, `validate User` — the describe call and the introspection it causes |
 
 A statement refused before it is sent (`CRUD-004`, `UOW-002`, `PRM-001`) logs
 nothing: no SQL left the session. The line says nothing about the outcome
@@ -99,6 +100,7 @@ $db = Db::open($dsn, new DbOptions(new SqliteDialect(), log: fn (string $line) =
 ```go
 db, err := orm.Open(ctx, "app.db", orm.Options{Dialect: sqlite.New(), Log: orm.ConsoleLog})
 db, err := orm.Open(ctx, "app.db", orm.Options{Dialect: sqlite.New(), Log: func(line string) { slog.Debug(line) }})
+var UserByEmail = orm.Inline[EmailArgs, User]("select …").Named("Queries.UserByEmail")   // Go cannot see the variable's name
 ```
 
 The exact rule — what the line carries, when it is written, what is never

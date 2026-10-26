@@ -120,6 +120,6 @@ final readonly class StatementLog
 
     private static function bytes(string $bytes): string
     {
-        return '0x' . bin2hex(substr($bytes, 0, 16)) . ' (' . strlen($bytes) . ' bytes)';
+        return '0x' . bin2hex(substr($bytes, 0, 16)) . (strlen($bytes) > 16 ? '…' : '') . ' (' . strlen($bytes) . ' bytes)';
     }
 }

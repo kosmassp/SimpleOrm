@@ -257,6 +257,35 @@ placeholders are rewritten to `$n` for pgx by the dialect's connector.
 **Tests**: `cd go && go vet ./... && go test -p 2 ./...`; the live legs are
 `orm/sqlserver/live_test.go` and `orm/postgres/live_test.go`.
 
+## Statement log
+
+The option means the same in all three implementations ([Observability](16-observability.md));
+the function and the sink take each language's shape.
+
+```php
+// PHP: a closure, or the built-in sink writing to php://stdout; values off unless asked
+$db = Db::open($dsn, new DbOptions(new SqliteDialect(), log: DbLog::stdout()));
+$db = Db::open($dsn, new DbOptions(new SqliteDialect(), log: fn (string $line) => $logger->debug($line), logParameterValues: true));
+```
+
+PHP learns a registry entry's name (`Queries.userByEmail`) from the SchemaGuard
+scan, keyed by the entry's SQL text, since a registry method builds a fresh
+`Query` on every call. `bin/simpleorm migrate --log` prints the run's statements.
+
+```go
+// Go: a func, or orm.ConsoleLog writing to os.Stdout
+db, err := orm.Open(ctx, "app.db", orm.Options{Dialect: sqlite.New(), Log: orm.ConsoleLog})
+db, err := orm.Open(ctx, "app.db", orm.Options{Dialect: sqlite.New(), Log: func(line string) { slog.Debug(line) }, LogParameterValues: true})
+
+// a registry entry has no variable name Go can see: declare one (optional)
+var UserByEmail = orm.Inline[EmailArgs, User]("select …").Named("Queries.UserByEmail")
+
+// the tooling takes a pool, not a session: hand it the sink through the context
+ctx = migrations.WithStatementLog(ctx, orm.ConsoleLog, false)
+```
+
+The CLI's `--log` flag is the same in all three.
+
 ## Pitfalls
 
 - PHP: a plainly `public` navigation is `MAP-011`; `private(set)` is the shape.

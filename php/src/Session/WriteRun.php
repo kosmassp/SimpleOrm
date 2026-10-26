@@ -233,10 +233,16 @@ final class WriteRun
     {
         [$sql, $parameters] = MessageText::render(array_map(static fn (array $entry): PreparedWrite => $entry[1], $group));
         $statement = $this->connection->prepare($sql);
-        // One line per statement the text holds, in statement order, before the message goes out (ADR-0045): each with its own
-        // text and parameter names, not the renamed-apart `@p<i>_name` form the single command text carries.
-        foreach ($group as [, $write]) {
-            $this->log->write($write->name, $write->sql, $write->parameters);
+        // One line per statement the text holds, in statement order, before the message goes out (ADR-0045): each as the
+        // text sends it — its placeholders renamed apart to `@p<i>_name` (spec/session.md "Statement log", Clarification 3).
+        foreach ($group as $position => [, $write]) {
+            $prefix = "p{$position}_";
+            $renamed = [];
+            foreach ($write->parameters as $name => $value) {
+                $renamed[$prefix . $name] = $value;
+            }
+
+            $this->log->write($write->name, SqlPlaceholders::prefixed($write->sql, $prefix), $renamed);
         }
 
         PdoBinder::bindAndExecute($statement, $parameters);

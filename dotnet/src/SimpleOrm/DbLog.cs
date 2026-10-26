@@ -53,10 +53,9 @@ public static class DbLog
                 return "'" + text.Replace("'", "''") + "'";
             case bool flag:
                 return flag ? "true" : "false";
-            case byte[] bytes:
-                return bytes.Length <= 16
-                    ? "0x" + ToHex(bytes)
-                    : "0x" + ToHex(bytes.Take(16).ToArray()) + "… (" + bytes.Length.ToString(CultureInfo.InvariantCulture) + " bytes)";
+            case byte[] bytes:   // the first 16 as hex, an ellipsis when there are more, always the length (spec/session.md "Statement log")
+                return "0x" + ToHex(bytes.Length <= 16 ? bytes : bytes.Take(16).ToArray()) + (bytes.Length > 16 ? "…" : "")
+                    + " (" + bytes.Length.ToString(CultureInfo.InvariantCulture) + " bytes)";
             case DateTime instant:
                 return instant.ToString("o", CultureInfo.InvariantCulture);
             case DateTimeOffset instant:

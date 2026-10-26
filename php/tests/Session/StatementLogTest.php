@@ -358,7 +358,7 @@ final class StatementLogTest extends TestCase
         self::assertSame("['a', null]", StatementLog::value(['a', null]));
         self::assertSame('0x0102 (2 bytes)', StatementLog::value(new BinaryParameter("\x01\x02")));
         self::assertSame(
-            '0x' . str_repeat('ab', 16) . ' (20 bytes)',
+            '0x' . str_repeat('ab', 16) . '… (20 bytes)',
             StatementLog::value(new BinaryParameter(str_repeat("\xab", 20))),
         );
         self::assertSame('2026-08-28T09:30:00.0000000Z', StatementLog::value(SampleDatabase::seedTime()));
@@ -465,6 +465,9 @@ final class StatementLogTest extends TestCase
             // the engine behind the test cannot take a multi-statement text; what the log said is the point
         }
 
+        // Each line is the statement as the text sends it: its placeholders renamed apart (Clarification 3).
+        self::assertStringContainsString('@p1_', $this->lines[1]);
+        self::assertStringNotContainsString('@p0_', $this->lines[1]);
         $names = $this->names();
         self::assertSame(['Role.insert', 'Role.insert', 'Role.insert'], array_slice($names, 0, 3));
     }

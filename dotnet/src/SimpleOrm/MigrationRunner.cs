@@ -344,6 +344,12 @@ public sealed class MigrationRunner
     /// </summary>
     public bool ReplayDrafts { get; init; }
 
+    /// <summary>
+    /// What the statement log calls this runner's statements (spec/session.md "Statement
+    /// log"): <c>migrate</c>, or <c>shadow</c> when the shadow replays history.
+    /// </summary>
+    internal string LogName { get; init; } = "migrate";
+
     /// <summary>A pending draft never applies or baselines (<c>MIG-013</c>, Level 3 M5): the whole plan refuses before anything executes.</summary>
     private void RefuseDrafts(IReadOnlyList<RenderedVersion> plan, RecordedHistory recorded)
     {
@@ -447,7 +453,7 @@ public sealed class MigrationRunner
         using var command = _db.Connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = "select version, object, description, checksum from schema_version";
-        _db.LogStatement("migrate", command);
+        _db.LogStatement(LogName, command);
         try
         {
             var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
@@ -485,7 +491,7 @@ public sealed class MigrationRunner
         AddParameter(command, "@checksum", step.Checksum);
         AddParameter(command, "@applied_at", DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture));
         AddParameter(command, "@execution_ms", executionMs);
-        _db.LogStatement("migrate", command);
+        _db.LogStatement(LogName, command);
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
@@ -573,7 +579,7 @@ public sealed class MigrationRunner
         parameter.Value = trigger;
         command.Parameters.Add(parameter);
         var definitions = new List<string>();
-        _db.LogStatement("migrate", command);
+        _db.LogStatement(LogName, command);
         var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         try
         {
@@ -611,21 +617,21 @@ public sealed class MigrationRunner
         }
 
         var probe = "simpleorm_expect_" + Guid.NewGuid().ToString("n").Substring(0, 12);
-        await ExecuteAsync(transaction, "savepoint simpleorm_probe", ct).ConfigureAwait(false);
+        await ExecuteAsync(transaction, "savepoint simpleorm_probe", ct, log: false).ConfigureAwait(false);   // transaction control: not logged
         try
         {
             await ExecuteAsync(transaction, dialect.CreateViewSql(probe, body, materialized: false), ct).ConfigureAwait(false);
             var canonical = await ReadViewDefinitionAsync(transaction, probe, ct).ConfigureAwait(false);
             await ExecuteAsync(transaction, dialect.DropViewSql(probe, materialized: false), ct).ConfigureAwait(false);
-            await ExecuteAsync(transaction, "release savepoint simpleorm_probe", ct).ConfigureAwait(false);
+            await ExecuteAsync(transaction, "release savepoint simpleorm_probe", ct, log: false).ConfigureAwait(false);   // transaction control: not logged
             return canonical is not null && canonical.Trim() == live.Trim();
         }
         catch (SimpleOrmException)
         {
             // Any failure inside the probe is drift (the body does not parse against the current
             // schema, most likely); the savepoint is released after the rollback so its name is free.
-            await ExecuteAsync(transaction, "rollback to savepoint simpleorm_probe", ct).ConfigureAwait(false);
-            await ExecuteAsync(transaction, "release savepoint simpleorm_probe", ct).ConfigureAwait(false);
+            await ExecuteAsync(transaction, "rollback to savepoint simpleorm_probe", ct, log: false).ConfigureAwait(false);   // transaction control: not logged
+            await ExecuteAsync(transaction, "release savepoint simpleorm_probe", ct, log: false).ConfigureAwait(false);   // transaction control: not logged
             return false;
         }
     }
@@ -662,16 +668,20 @@ public sealed class MigrationRunner
         parameter.ParameterName = "@relation";
         parameter.Value = view;
         command.Parameters.Add(parameter);
-        _db.LogStatement("migrate", command);
+        _db.LogStatement(LogName, command);
         return await command.ExecuteScalarAsync(ct).ConfigureAwait(false) as string;
     }
 
-    private async Task ExecuteAsync(DbTransaction transaction, string sql, CancellationToken ct)
+    private async Task ExecuteAsync(DbTransaction transaction, string sql, CancellationToken ct, bool log = true)
     {
         using var command = _db.Connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = sql;
-        _db.LogStatement("migrate", command);
+        if (log)
+        {
+            _db.LogStatement(LogName, command);
+        }
+
         try
         {
             await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);

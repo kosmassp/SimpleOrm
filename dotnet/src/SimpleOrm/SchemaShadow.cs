@@ -76,12 +76,12 @@ public static class SchemaShadow
                 {
                     // Trust: rebuild the state at N from the committed snapshots, verify nothing below.
                     await RestoreBaselineAsync(db, migrationsDir, fromVersion, result, ct).ConfigureAwait(false);
-                    await new MigrationRunner(db, versions) { ReplayDrafts = true }.BaselineAsync(fromVersion, ct).ConfigureAwait(false);
+                    await new MigrationRunner(db, versions) { ReplayDrafts = true, LogName = "shadow" }.BaselineAsync(fromVersion, ct).ConfigureAwait(false);
                 }
 
                 foreach (var version in versions.Where(v => v.Version > fromVersion && v.Version <= toVersion))
                 {
-                    var runner = new MigrationRunner(db, versions.Where(v => v.Version <= version.Version)) { ReplayDrafts = true };   // a draft replays here (Level 3 M5)
+                    var runner = new MigrationRunner(db, versions.Where(v => v.Version <= version.Version)) { ReplayDrafts = true, LogName = "shadow" };   // a draft replays here (Level 3 M5)
                     var shapes = runner.ReplayShapes().Where(s => s.Version == version.Version).ToArray();
                     await runner.MigrateAsync(ct).ConfigureAwait(false);
 

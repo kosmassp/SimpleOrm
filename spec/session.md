@@ -382,11 +382,15 @@ The SQL is the text **exactly as sent**: after IN-list expansion
 ("Parameters"), the dialect's rendering (`set nocount on; …` on SQL Server,
 `returning`), and whatever the realization sent (a multi-statement text is
 one line per statement it holds, as the plan counts them). Nothing is
-reformatted or truncated. A value is written in a fixed, culture-neutral
-form: a string single-quoted with `'` doubled, a null as `null`, a bool as
-`true`/`false`, bytes as `0x` + hex (the first 16, then the length), an
-instant as the dialect binds it (ISO-8601 text on SQLite), an array
-parameter in square brackets; numbers and the rest in their invariant form.
+reformatted or truncated. A value is written **as it was bound** — after
+the converter, so what the driver receives (a PHP bool is the `0`/`1` it
+binds; a decimal the text it binds) — in a fixed, culture-neutral form: a
+string single-quoted with `'` doubled, a null as `null`, a bool as
+`true`/`false`, bytes as `0x` + the hex of the first 16, an ellipsis `…`
+when there are more, and always ` (N bytes)` — `0x0102 (2 bytes)`,
+`0xabab…abab… (20 bytes)` —, an instant as the dialect binds it (ISO-8601
+text on SQLite), an array parameter in square brackets; numbers and the rest
+in their invariant form.
 
 **The name** says what issued the statement:
 
@@ -397,8 +401,8 @@ parameter in square brackets; numbers and the rest in their invariant form.
 | a generated read | `<Entity>.get` (the key read, `Refresh` included), `<Entity>.criteria` (criteria queries, and the queries explicit and batch loading issue — a many-to-many load is the link entity's criteria, then the target's), `<Entity>.include` (a join-mode eager query), `<Entity>.selectAll`, `<Entity>.statement` (a statement-backed entity) |
 | metadata DDL | `<Entity>.createTable`, `<Entity>.createIndex`, `<Entity>.createView`, `<Entity>.createTrigger` (its drop statements too) |
 | the migration runner | `migrate` — every statement it runs: the version table, the recorded history, the steps, the guards' definition reads, the rollback |
-| SchemaGuard | `validate <source>` — the describe call of a registry entry (its name as the registry declares it) and the column introspection of a relation |
-| the schema tooling | `shadow` (the replay, its introspection, the view and trigger read-back), `sync` (the force-sync introspection and the plan's statements) |
+| SchemaGuard | `validate <source>` — the describe call of a registry entry (its name as the registry declares it, else the fallback of the first row) or of a statement-backed entity, and the column introspection it causes, under the same source; `<source>` for an entity's own check is the class name. SchemaGuard's `MIG-030` check reads the history through the runner: `migrate` |
+| the schema tooling | `shadow` (everything a shadow run sends: the replayed steps, its introspection, the view and trigger read-back — the runner's statements take the shadow's name there), `sync` (the force-sync introspection and the plan's statements; the `migrate --force` run before it stays `migrate`) |
 
 `<Entity>` is the class name as the fixture spells it (the step scripts'
 names). Where a language spells a generated operation differently
@@ -420,9 +424,12 @@ call like any other exception — the library never swallows it.
 
 **What is not a statement of the application's**: the dialect's own
 housekeeping inside the seam — the migration run lock (`begin immediate`,
-`sp_getapplock`, `pg_advisory_xact_lock`), the connection open — and
-transaction control (`begin`, `commit`, `rollback`), which the provider
-issues. They are not logged.
+`sp_getapplock`, `pg_advisory_xact_lock`), the connection open, the shadow
+host's `create database`/`drop database` on the admin connection — and
+transaction control (`begin`, `commit`, `rollback`, and the savepoints the
+library itself issues around SchemaGuard's shield and the PostgreSQL view
+probe: `savepoint`, `release`, `rollback to`), whether the provider or the
+library issues it. They are not logged.
 
 **The CLI** takes `--log`: every statement of a `migrate`, `migrate down`,
 `shadow`, `diff --amend --db`, `validate`, or force-sync run goes to standard
@@ -430,13 +437,95 @@ output through the built-in sink.
 
 **Per language.** PHP and Go keep the option's meaning and the line's
 content; the shape of the function and the sink are theirs and recorded in
-their §10 (a PHP closure and a `DbLog::stdout()`; a Go `func(string)` and
-`orm.ConsoleLog`, say). The line's text is per language and is **not**
+their §10 (PHP: `new DbOptions(..., log: ?Closure, logParameterValues: bool)`
+and `DbLog::stdout()`; Go: `orm.Options{Log func(string), LogParameterValues
+bool}` and `orm.ConsoleLog`, with `Named(...)` on an entry and
+`migrations.WithStatementLog` for the tooling, Clarifications 1 and 9). The
+line's text is per language and is **not**
 pinned by a conformance file: each implementation proves in its own tests
 that every execution path writes exactly one line with its name, that the
 flush and the batch write one per statement under `Off` and `Auto`, that
 values appear only when asked, and that the built-in sink writes to standard
 output.
+
+**Clarifications** (the PHP and Go port gap lists of ADR-0045, 17 + 22
+questions, consolidated; each the answer the three implementations now
+embody):
+
+1. **A registry entry's name, where the implementation can learn it.** The
+   reference stamps the name onto the entry object when SchemaGuard
+   enumerates the registry. Where entries are values built per call (PHP's
+   registry methods return a fresh `Query` each time), the session may key
+   the learned names by (kind, SQL text) — two entries with one SQL text
+   keep the first name. Where nothing can be learned (Go's explicit registry
+   of package variables), the entry may **declare** its name
+   (`orm.Inline[...](sql).Named("Queries.UserByEmail")`), optional, and the
+   declared name wins everywhere, SchemaGuard's `validate <name>` lines
+   included. The spelling is `<Class>.<member>` as the registry writes them
+   (`Queries.UserByEmail`, `Queries.userByEmail`), never normalized.
+2. **The fallback name is the kind.** An entry whose name the implementation
+   does not know logs as `query` or `command` — in SchemaGuard's lines too
+   (`validate query`) — or as its resource path when it is embedded (the
+   `embed.FS` path in Go). An inline entry's description is never used: it
+   repeats the SQL.
+3. **"Exactly as sent" means as the library hands it to the driver.** A
+   driver's own rewrite is invisible — PDO's `:name`, pgx's `$n` — so the
+   line shows the `@name` text and the lines read the same across languages.
+   A rewrite the **library** makes is visible: the SQL Server multi-statement
+   realization (spec/dialects.md) logs each statement with its placeholders
+   renamed apart (`@p0_name`, `@p1_name`), one line per statement, because
+   that is the text it sends.
+4. **"Before the message goes out" is for a message sent as one round trip**
+   (`DbBatch`, pgx `SendBatch`, the multi-statement text): its lines are
+   written together, in statement order, after the message is rendered and
+   before it is sent. The **sequential realization** writes each line right
+   before its statement runs, so after a failure the statements that never
+   ran have no line — "exactly one line per statement *sent*".
+5. **Where preparing is itself a round trip** (PDO on PostgreSQL and SQL
+   Server, prepared statements generally), the line is written after the
+   library's binding and before the execute call; a statement whose prepare
+   fails wrote nothing. The one exception is SchemaGuard's describe, where
+   the prepare *is* the call: its line precedes it, so an unparseable entry
+   (`VAL-001`) still shows what was described. A registry command is
+   described too (prepared, never run) and logs the same way; the describe
+   line lists the parameter names the implementation binds for it (none
+   where it describes unbound).
+6. **A stream's line is written when iteration starts**, not when the
+   stream object is created: that is when the statement is sent.
+7. **Eager loading's queries are criteria queries.** `MultiQuery` logs the
+   root as `<Root>.criteria` and each navigation's query as
+   `<Target>.criteria` (a many-to-many: the link entity's, then the
+   target's); `SubSelect` is one statement per navigation, logged the same
+   way; only join mode has its own name, `<Root>.include`, one line.
+8. **`Refresh` logs as `<Entity>.get`**: it is the key read.
+9. **Tooling without a session may carry its sink another way.** Where the
+   migration runner, the shadow, or force-sync take a connection rather than
+   a session (Go), the sink reaches them through the language's own carrier
+   (Go: the context, `migrations.WithStatementLog`); the reference and PHP
+   read it off the session. The lines are the same.
+10. **Names are a precedence, outermost first.** A shadow run names the
+    runner it drives (`shadow`); SchemaGuard's `MIG-030` read through the
+    runner is `migrate` (it *is* the runner's status read); an implementation
+    whose names travel by context lets the outer name win.
+11. **A one-round-trip realization owns its lines** (Go's `StatementBatcher`,
+    PHP's `WriteRun`): only it knows the text it finally sends. A third-party
+    realization that does not write them drops them; the contract says it
+    must (Go records this in its §10).
+12. **Numbers**: a float prints in its shortest round-trip decimal form,
+    never with an exponent; an integer as digits; a value type without a
+    fixed form (a GUID, a decimal) as its bound form.
+13. **A null inside an array parameter is `null`**; a nil byte slice is
+    `null`.
+14. **The stdout sink writes to the process's standard output stream**, not
+    through the language's output buffering (`php://stdout`, not `echo`;
+    Go `os.Stdout`); the CLI's `--log` writes to the output the CLI was given,
+    which is standard output when the CLI runs as documented.
+15. **A failing sink fails the call** in every language; a Go panic in the
+    sink is not recovered.
+16. **Multi-line SQL is logged on several lines.** The line is "one line per
+    statement" by count, not by newline: a trigger body or a `create table`
+    keeps its line breaks. A consumer that needs one physical line per
+    statement replaces them itself.
 
 ## The rest of the session
 

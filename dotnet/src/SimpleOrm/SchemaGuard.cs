@@ -178,6 +178,7 @@ public static class SchemaGuard
         {
             try
             {
+                db.LogStatement("validate " + source, command);   // the describe call: prepared, never run
                 command.Prepare();
             }
             catch (DbException exception)
@@ -258,7 +259,7 @@ public static class SchemaGuard
             var origin = OriginOf(schema, i);
             if (origin is { } o)
             {
-                var info = await GetColumnInfoAsync(db, shield, cache, o.Table, o.Column, ct).ConfigureAwait(false);
+                var info = await GetColumnInfoAsync(db, shield, cache, o.Table, o.Column, source, ct).ConfigureAwait(false);
                 if (info is { } columnInfo)
                 {
                     var enumAsInt = entityMap?.Properties
@@ -321,7 +322,7 @@ public static class SchemaGuard
                 return;
         }
 
-        var columns = await GetRelationColumnsAsync(db, shield, map.RelationName!, ct).ConfigureAwait(false);
+        var columns = await GetRelationColumnsAsync(db, shield, map.RelationName!, entityType.Name, ct).ConfigureAwait(false);
         if (columns.Count == 0)
         {
             errors.Add(new ValidationError(
@@ -396,8 +397,9 @@ public static class SchemaGuard
 
     private sealed record ColumnInfo(string DeclaredType, bool NotNull);
 
+    /// <param name="source">what the statement log calls the introspection — <c>validate &lt;source&gt;</c>, the entry or entity being validated.</param>
     private static async Task<Dictionary<string, ColumnInfo>> GetRelationColumnsAsync(
-        Db db, DbTransaction shield, string relation, CancellationToken ct)
+        Db db, DbTransaction shield, string relation, string source, CancellationToken ct)
     {
         var columns = new Dictionary<string, ColumnInfo>(StringComparer.OrdinalIgnoreCase);
         using var command = db.Connection.CreateCommand();
@@ -408,7 +410,7 @@ public static class SchemaGuard
         parameter.Value = relation;
         command.Parameters.Add(parameter);
 
-        db.LogStatement("validate " + relation, command);
+        db.LogStatement("validate " + source, command);
         var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         try
         {
@@ -429,11 +431,11 @@ public static class SchemaGuard
 
     private static async Task<ColumnInfo?> GetColumnInfoAsync(
         Db db, DbTransaction shield, Dictionary<string, Dictionary<string, ColumnInfo>> cache,
-        string table, string column, CancellationToken ct)
+        string table, string column, string source, CancellationToken ct)
     {
         if (!cache.TryGetValue(table, out var columns))
         {
-            columns = await GetRelationColumnsAsync(db, shield, table, ct).ConfigureAwait(false);
+            columns = await GetRelationColumnsAsync(db, shield, table, source, ct).ConfigureAwait(false);
             cache[table] = columns;
         }
 

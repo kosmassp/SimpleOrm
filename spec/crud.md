@@ -192,3 +192,6 @@ statement that was issued (session.md "Tracking"); `[CreatedAt]` fills on
 insert, `[UpdatedAt]` joins every row-changing SET, and `[SoftDelete]` turns
 every delete into the flag-setting update (hooks.md); `Persist`/`Remove`/
 `Flush` defer the same generated CRUD to one ordered flush (unit-of-work.md).
+At Level 4, `Batching = Auto` sends the statements of one flush or one explicit
+batch in fewer messages (session.md "Batching") — the same statements, in the
+same order, each judged by the rules above; only the round trips change.

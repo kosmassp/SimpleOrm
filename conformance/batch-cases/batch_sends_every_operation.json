@@ -1,0 +1,148 @@
+{
+  "name": "batch_sends_every_operation",
+  "comment": "An explicit batch carrying every operation in an untracked session: an insert, a column-list update, a registry command, a delete by key (Role's soft delete - the flag-setting update). Nothing depends on anything and no result is read after the command, so one message carries all four; each counts as its immediate call would.",
+  "tracking": "untracked",
+  "batching": {
+    "mode": "auto"
+  },
+  "steps": [
+    {
+      "new": {
+        "entity": "Role",
+        "as": "r",
+        "values": {
+          "Name": "reader",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "get": {
+        "entity": "User",
+        "key": 1,
+        "as": "u"
+      }
+    },
+    {
+      "set": {
+        "ref": "u",
+        "property": "DisplayName",
+        "value": "Ada"
+      }
+    },
+    {
+      "batch": {
+        "ops": [
+          {
+            "insert": {
+              "ref": "r"
+            }
+          },
+          {
+            "updateOnly": {
+              "ref": "u",
+              "properties": [
+                "DisplayName"
+              ]
+            }
+          },
+          {
+            "execute": {
+              "command": "SetDisplayName",
+              "args": {
+                "Id": 2,
+                "DisplayName": "Grace"
+              }
+            }
+          },
+          {
+            "delete": {
+              "entity": "Role",
+              "key": 2
+            }
+          }
+        ],
+        "expectStatements": [
+          {
+            "op": "insert",
+            "entity": "Role"
+          },
+          {
+            "op": "update",
+            "entity": "User",
+            "columns": [
+              "DisplayName",
+              "UpdatedAtUtc"
+            ]
+          },
+          {
+            "op": "update",
+            "entity": "Role",
+            "columns": [
+              "IsDeleted",
+              "UpdatedAtUtc"
+            ]
+          }
+        ],
+        "expectMessages": [
+          4
+        ],
+        "expectAffected": [
+          1,
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "get": {
+        "entity": "User",
+        "key": 2,
+        "as": "grace"
+      }
+    },
+    {
+      "expect": {
+        "value": {
+          "ref": "grace",
+          "property": "DisplayName",
+          "equals": "Grace"
+        }
+      }
+    },
+    {
+      "get": {
+        "entity": "Role",
+        "key": 2,
+        "as": "deleted"
+      }
+    },
+    {
+      "expect": {
+        "value": {
+          "ref": "deleted",
+          "property": "IsDeleted",
+          "equals": true
+        }
+      }
+    },
+    {
+      "expect": {
+        "value": {
+          "ref": "u",
+          "property": "UpdatedAtUtc",
+          "equals": "2026-08-29T00:00:00.0000000Z"
+        }
+      }
+    },
+    {
+      "expect": {
+        "count": {
+          "entity": "Role",
+          "equals": 4
+        }
+      }
+    }
+  ]
+}

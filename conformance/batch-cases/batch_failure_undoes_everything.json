@@ -1,0 +1,77 @@
+{
+  "name": "batch_failure_undoes_everything",
+  "comment": "Keys never flow between queued operations: the transaction's navigation points at the user inserted just before it, so it waits for that message (rule 1b), and then refuses CRUD-004 - its UserId was never set - exactly as the two immediate inserts would. The send's own transaction rolls back and the user's generated key is undone in memory.",
+  "tracking": "untracked",
+  "batching": {
+    "mode": "auto"
+  },
+  "steps": [
+    {
+      "new": {
+        "entity": "User",
+        "as": "u",
+        "values": {
+          "Name": "Linus",
+          "Email": "linus@example.com",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "new": {
+        "entity": "Transaction",
+        "as": "t",
+        "values": {
+          "Status": "Pending",
+          "Amount": "5",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        },
+        "navigations": {
+          "User": "u"
+        }
+      }
+    },
+    {
+      "batch": {
+        "ops": [
+          {
+            "insert": {
+              "ref": "u"
+            }
+          },
+          {
+            "insert": {
+              "ref": "t"
+            }
+          }
+        ]
+      },
+      "expectError": "CRUD-004"
+    },
+    {
+      "expect": {
+        "value": {
+          "ref": "u",
+          "property": "Id",
+          "equals": 0
+        }
+      }
+    },
+    {
+      "expect": {
+        "count": {
+          "entity": "User",
+          "equals": 2
+        }
+      }
+    },
+    {
+      "expect": {
+        "count": {
+          "entity": "Transaction",
+          "equals": 1
+        }
+      }
+    }
+  ]
+}

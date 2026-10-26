@@ -143,6 +143,104 @@ Assert.True(db.HasPendingWork);   // the schedule is kept
 
 Inside a caller's transaction the rows that ran are the caller's to roll back.
 
+## Batching
+
+A flush is one call, so under `Batching = Auto` its statements go out in as few
+messages as the plan allows (Level 4, ADR-0044). The statements, their order,
+the generated keys, and the per-row version checks are exactly what `Off`
+issues; only the round trips change. Batching is off by default.
+
+```csharp
+await using var db = await Db.OpenAsync(connectionString, new DbOptions
+{
+    Dialect = new PostgresDialect(),
+    Tracking = TrackingMode.Tracked,
+    Batching = BatchingMode.Auto,          // Off by default
+    MaxStatementsPerMessage = 100,         // the default
+}, ct);
+
+foreach (var user in users) db.Persist(user);
+foreach (var order in orders) db.Persist(order);   // cascades its details
+await db.FlushAsync(ct);   // users | orders | details: three messages, not one round trip per row
+```
+
+**How the flush is grouped.** Walking the statements in order, a statement
+starts a new message when it needs something the current message produces: the
+same instance is already in it, or its many-to-one navigation (or the cascade
+owner it takes its key from) points at an instance inserted in it whose key the
+database generates. So a graph with generated keys flushes in as many messages
+as it has levels: parents, then children (the children's message also carries
+the updates and deletes), each level's keys flowing into the next. The cap
+`MaxStatementsPerMessage`, and on SQL Server 2098 bound parameters, also cut.
+
+**Nothing waits.** There is no timer and no background queue: `Auto` groups only
+what one call already holds (a flush, a batch send). A lone `InsertAsync` runs
+exactly as before.
+
+**Failure.** The first statement that fails its check fails the flush, as
+before, and everything the flush did in memory is undone. Because a zero-row
+update is no error to the database, the statements after it in the same message
+may already have run: the flush's own transaction rolls them back; inside your
+transaction, roll it back yourself (you must anyway after a failed flush).
+
+`db.BatchingInEffect` says whether a message really goes out as one round trip:
+true on SQL Server and PostgreSQL with C# on `net10.0` (`SqlBatch`,
+`NpgsqlBatch`), false on SQLite (no network round trip exists; `Auto` instead
+reuses one prepared command per statement text) and on `netstandard2.0`. The
+per-dialect table is on [Dialects](12-dialects.md#statement-batching).
+
+In PHP: `new DbOptions(..., batching: BatchingMode::Auto)`. In Go:
+`orm.Options{..., Batching: orm.BatchingAuto}`.
+
+## The explicit batch
+
+For immediate writes and registry commands, a batch queues the work and one
+visible call sends it:
+
+```csharp
+await using var batch = db.Batch();                 // queuing does no I/O
+batch.Insert(order);
+batch.UpdateOnly(user, [nameof(User.DisplayName)]);
+batch.Execute(Commands.MarkShipped, new MarkShippedArgs(Id: 7));
+batch.Delete<Role>(3);
+var result = await batch.SendAsync(ct);             // result.Affected: one count per operation; result.Messages
+```
+
+- Each operation behaves exactly as its immediate call would at that point:
+  the same checks, the same statement, the same effects on the instance
+  (tracking, hooks, versions). Keys do not flow between queued operations, as
+  they do not between immediate calls; use the unit of work for that.
+- The send always runs in a transaction (yours, or one it begins and commits),
+  so a failure applies nothing and undoes every in-memory effect.
+- A sent or disposed batch refuses more work (`TX-003`); disposing an unsent
+  batch drops it silently.
+- Under `Off` the batch still works, one statement per message, so switching
+  the option never needs a code change.
+- Reads are not batched (deferred).
+
+In PHP:
+
+```php
+$batch = $db->batch();
+$batch->insert($order);
+$batch->updateOnly($user, ['displayName']);
+$batch->execute(Commands::markShipped(), new MarkShippedArgs(7));
+$batch->delete(Role::class, 3);
+$result = $batch->send();          // $batch->dispose() drops an unsent batch
+```
+
+In Go, the queue operations are package functions (generic operations cannot be
+methods), and `Discard` is the analog of disposal:
+
+```go
+b := db.Batch()
+_ = orm.BatchInsert(b, &order)
+_ = orm.BatchUpdateOnly(b, &user, "DisplayName")
+_ = orm.BatchExecute(b, MarkShipped, MarkShippedArgs{ID: 7})
+_ = orm.BatchDelete[Role](b, int64(3))
+result, err := b.Send(ctx)         // result.Affected, result.Messages
+```
+
 ## Cascades are declared
 
 `[Cascade(CascadeOperations.Persist | CascadeOperations.Remove)]` (or `All`)
@@ -224,3 +322,6 @@ drops it silently: nothing is ever flushed implicitly.
   `VAL-020`) still fire; only the values are not applied.
 - Setting a navigation in user code does not set the FK outside a flush: an
   immediate `UpdateAsync` with a disagreeing navigation is `CRUD-004`.
+- Under `Batching = Auto`, a flush that fails inside your transaction may have
+  run statements after the failing one: roll the transaction back rather than
+  committing what is left.

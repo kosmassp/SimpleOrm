@@ -10,6 +10,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\SimpleOrm\SimpleOrm.csproj" />
     <ProjectReference Include="..\..\src\SimpleOrm.Sqlite\SimpleOrm.Sqlite.csproj" />
+    <!-- ADR-0044: BatchBenchmarks measures NpgsqlBatch on the local server. -->
+    <ProjectReference Include="..\..\src\SimpleOrm.Postgres\SimpleOrm.Postgres.csproj" />
   </ItemGroup>
 
   <!-- Milestone 8 only (CLAUDE.md §4): the benchmark baseline dependencies. -->

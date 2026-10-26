@@ -14,10 +14,27 @@ namespace SimpleOrm.Tests;
 /// expectations, and <c>expectError</c> on any step. What the session wrote is
 /// observed through the dialect seam by <see cref="RecordingDialect"/>.
 /// </summary>
-internal sealed class StepScript(Db db, RecordingDialect dialect, string databasePath)
+internal sealed class StepScript
 {
+    /// <summary>The fixture command of the <c>execute</c> op (spec/session.md "The step scripts").</summary>
+    private static readonly Command<SetDisplayNameArgs> SetDisplayName =
+        Query.Inline("update users set display_name = @DisplayName where id = @Id");
+
+    private readonly Db db;
+    private readonly RecordingDialect dialect;
+    private readonly string databasePath;
     private readonly Dictionary<string, object> _refs = [];
+    private readonly Dictionary<string, StatementBatch> _batches = [];
+    private readonly List<int> _messages = [];
     private DbTransactionScope? _scope;
+
+    public StepScript(Db db, RecordingDialect dialect, string databasePath)
+    {
+        this.db = db;
+        this.dialect = dialect;
+        this.databasePath = databasePath;
+        db.MessageObserver = _messages.Add;   // the plan's message boundary (ADR-0044)
+    }
 
     public static string ConformanceDirectory()
     {
@@ -39,6 +56,7 @@ internal sealed class StepScript(Db db, RecordingDialect dialect, string databas
             var expectedError = step.TryGetProperty("expectError", out var code) ? code.GetString() : null;
             string? actualError = null;
             dialect.Statements.Clear();
+            _messages.Clear();
             try
             {
                 await RunStepAsync(step);
@@ -63,7 +81,7 @@ internal sealed class StepScript(Db db, RecordingDialect dialect, string databas
             var type = ConformanceDatabase.EntityTypes[get.GetProperty("entity").GetString()!];
             object key = get.TryGetProperty("keyOf", out var keyOf)
                 ? db.Maps.Load(type).GetKeyValues(_refs[keyOf.GetString()!])[0]!
-                : get.GetProperty("key").GetInt64();
+                : KeyOf(get.GetProperty("key"));
             _refs[get.GetProperty("as").GetString()!] = await InvokeWithResultAsync(nameof(Db.GetAsync), type, key);
         }
         else if (step.TryGetProperty("new", out var @new))
@@ -132,7 +150,7 @@ internal sealed class StepScript(Db db, RecordingDialect dialect, string databas
             else
             {
                 var type = ConformanceDatabase.EntityTypes[delete.GetProperty("entity").GetString()!];
-                await InvokeAsync(nameof(Db.DeleteAsync), type, delete.GetProperty("key").GetInt64());
+                await InvokeAsync(nameof(Db.DeleteAsync), type, KeyOf(delete.GetProperty("key")));
             }
         }
         else if (step.TryGetProperty("refresh", out var refresh))
@@ -178,6 +196,7 @@ internal sealed class StepScript(Db db, RecordingDialect dialect, string databas
                 Assert.Equal(expected.Select(Describe), dialect.Statements.Select(Describe));
             }
 
+            ExpectMessages(flush);
             if (flush.TryGetProperty("expectSummary", out var expectedSummary))
             {
                 Assert.Equal(
@@ -186,6 +205,44 @@ internal sealed class StepScript(Db db, RecordingDialect dialect, string databas
                         expectedSummary.GetProperty("updated").GetInt32(),
                         expectedSummary.GetProperty("deleted").GetInt32()),
                     summary);
+            }
+        }
+        else if (step.TryGetProperty("batch", out var batchStep))
+        {
+            await using var batch = db.Batch();
+            if (batchStep.TryGetProperty("as", out var keep))
+            {
+                _batches[keep.GetString()!] = batch;
+            }
+
+            foreach (var op in batchStep.GetProperty("ops").EnumerateArray())
+            {
+                Queue(batch, op);
+            }
+
+            var result = await batch.SendAsync(CancellationToken.None);
+            if (batchStep.TryGetProperty("expectStatements", out var statements))
+            {
+                Assert.Equal(ExpectedStatements(statements).Select(Describe), dialect.Statements.Select(Describe));
+            }
+
+            ExpectMessages(batchStep);
+            Assert.Equal(result.Messages, _messages.Count);
+            if (batchStep.TryGetProperty("expectAffected", out var affected))
+            {
+                Assert.Equal(affected.EnumerateArray().Select(a => a.GetInt32()).ToArray(), result.Affected.ToArray());
+            }
+        }
+        else if (step.TryGetProperty("batchAgain", out var again))
+        {
+            var batch = _batches[again.GetProperty("ref").GetString()!];
+            if (again.TryGetProperty("op", out var op))
+            {
+                Queue(batch, op);
+            }
+            else
+            {
+                await batch.SendAsync(CancellationToken.None);
             }
         }
         else if (step.TryGetProperty("begin", out _))
@@ -211,6 +268,85 @@ internal sealed class StepScript(Db db, RecordingDialect dialect, string databas
             throw new InvalidOperationException("unknown step: " + step.GetRawText());
         }
     }
+
+    /// <summary>One op of a <c>batch</c> step, queued on the batch (spec/session.md "The step scripts").</summary>
+    private void Queue(StatementBatch batch, JsonElement op)
+    {
+        if (op.TryGetProperty("execute", out var execute))
+        {
+            Assert.Equal("SetDisplayName", execute.GetProperty("command").GetString());
+            var args = execute.GetProperty("args");
+            var name = args.GetProperty("DisplayName");
+            batch.Execute(SetDisplayName, new SetDisplayNameArgs(
+                args.GetProperty("Id").GetInt64(), name.ValueKind == JsonValueKind.Null ? null : name.GetString()));
+            return;
+        }
+
+        var (verb, fields) = op.EnumerateObject().Select(p => (p.Name, p.Value)).Single();
+        if (verb == "delete" && !fields.TryGetProperty("ref", out _))
+        {
+            var type = ConformanceDatabase.EntityTypes[fields.GetProperty("entity").GetString()!];
+            QueueGeneric(batch, nameof(StatementBatch.Delete), type, KeyOf(fields.GetProperty("key")));
+            return;
+        }
+
+        var entity = Resolve(fields.GetProperty("ref").GetString()!);
+        switch (verb)
+        {
+            case "insert":
+                QueueGeneric(batch, nameof(StatementBatch.Insert), entity.GetType(), entity);
+                break;
+            case "update":
+                QueueGeneric(batch, nameof(StatementBatch.Update), entity.GetType(), entity);
+                break;
+            case "delete":
+                QueueGeneric(batch, nameof(StatementBatch.Delete), entity.GetType(), entity);
+                break;
+            case "updateOnly":
+                var properties = fields.GetProperty("properties").EnumerateArray().Select(p => p.GetString()!).ToList();
+                Unwrap(() => typeof(StatementBatch).GetMethod(nameof(StatementBatch.UpdateOnly))!
+                    .MakeGenericMethod(entity.GetType())
+                    .Invoke(batch, [entity, properties]) ?? 0);
+                break;
+            default:
+                throw new InvalidOperationException("unknown batch op: " + op.GetRawText());
+        }
+    }
+
+    private static void QueueGeneric(StatementBatch batch, string method, Type entityType, object argument)
+        => Unwrap(() => typeof(StatementBatch).GetMethod(method)!
+            .MakeGenericMethod(entityType)
+            .Invoke(batch, [argument]) ?? 0);
+
+    /// <summary>A key as the scripts spell it: a bare scalar, or the parts of a composite key in key order (a tuple).</summary>
+    private static object KeyOf(JsonElement key)
+    {
+        if (key.ValueKind != JsonValueKind.Array)
+        {
+            return key.GetInt64();
+        }
+
+        var parts = key.EnumerateArray().Select(p => p.GetInt64()).ToArray();
+        return parts.Length == 2
+            ? (parts[0], parts[1])
+            : throw new InvalidOperationException("the fixture's composite keys have two parts: " + key.GetRawText());
+    }
+
+    private void ExpectMessages(JsonElement step)
+    {
+        if (step.TryGetProperty("expectMessages", out var messages))
+        {
+            Assert.Equal(messages.EnumerateArray().Select(m => m.GetInt32()).ToArray(), _messages.ToArray());
+        }
+    }
+
+    private static List<Statement> ExpectedStatements(JsonElement statements)
+        => statements.EnumerateArray().Select(s => new Statement(
+            s.GetProperty("op").GetString()!,
+            s.GetProperty("entity").GetString()!,
+            s.TryGetProperty("columns", out var columns)
+                ? columns.ValueKind == JsonValueKind.String ? [columns.GetString()!] : columns.EnumerateArray().Select(c => c.GetString()!).ToArray()
+                : null)).ToList();
 
     private void Expect(JsonElement expect)
     {
@@ -370,6 +506,9 @@ internal sealed class StepScript(Db db, RecordingDialect dialect, string databas
     }
 }
 
+/// <summary>The args of the fixture command <c>SetDisplayName</c>.</summary>
+internal sealed record SetDisplayNameArgs(long Id, string? DisplayName);
+
 /// <summary>One statement the session asked the dialect to render: the op, the entity, and for updates the property list (or <c>all</c>).</summary>
 internal sealed record Statement(string Op, string Entity, string[]? Columns);
 
@@ -412,6 +551,8 @@ internal sealed class RecordingDialect(IDialect inner) : IDialect
     public bool SupportsRowValueIn => inner.SupportsRowValueIn;
 
     public bool ReportsAffectedRowsBySelect => inner.ReportsAffectedRowsBySelect;
+    public bool SupportsStatementBatching => inner.SupportsStatementBatching;
+    public int? MaxParametersPerMessage => inner.MaxParametersPerMessage;
     public string SelectSql(SelectAst select, BindCriteriaParameter bindParameter) => inner.SelectSql(select, bindParameter);
     public bool SupportsArrayParameters => inner.SupportsArrayParameters;
     public bool BindsTemporalsNatively => inner.BindsTemporalsNatively;

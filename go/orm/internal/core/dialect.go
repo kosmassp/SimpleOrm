@@ -86,6 +86,16 @@ type Dialect interface {
 	// driver adds an AFTER trigger's rows to the statement's). Never consulted by a registry command.
 	ReportsAffectedRowsBySelect() bool
 
+	// SupportsStatementBatching: true → this implementation's driver for the dialect can send a planned message as one
+	// round trip with a result per statement (ADR-0044, spec/dialects.md "Statement batching"; PostgreSQL through pgx's
+	// Batch, SQL Server as one multi-statement text; false on SQLite, whose messages run one statement at a time reusing
+	// prepared commands). The session also needs the dialect to implement StatementBatcher.
+	SupportsStatementBatching() bool
+
+	// MaxParametersPerMessage: the most bound parameters one message may carry, or 0 for no cap (SQL Server 2098; ADR-0044,
+	// the batching plan's rule 3). Applied by every implementation so the plan stays the same.
+	MaxParametersPerMessage() int
+
 	// --- criteria rendering (§10.4, ADR-0020) ---
 
 	// LimitOffsetClause renders the paging clause from pre-bound placeholder names; either may be "".

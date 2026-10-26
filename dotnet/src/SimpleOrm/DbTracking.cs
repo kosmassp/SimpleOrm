@@ -230,16 +230,53 @@ public sealed partial class Db
         }
     }
 
-    /// <summary>After a successful delete: the key is forgotten; the deleted instance is no longer tracked.</summary>
-    private void Untrack(EntityMap map, object?[] key)
+    /// <summary>After a successful delete: the key is forgotten; the deleted instance is no longer tracked. Returns the forgotten entry, if any.</summary>
+    private TrackedEntry? Untrack(EntityMap map, object?[] key)
     {
         if (!IsTracking || !TrackedOf(map.EntityType).TryGetValue(key, out var entry))
         {
-            return;
+            return null;
         }
 
         TrackedOf(map.EntityType).Remove(key);
         _trackedByInstance.Remove(entry.Entity);
+        return entry;
+    }
+
+    // --- undoable forms (ADR-0044): a failed call — a flush, a batch send — puts
+    // the identity map back as it was before every statement it prepared.
+
+    /// <summary><see cref="TrackWritten"/>, returning what undoes it: the previous snapshot back, or the registration dropped.</summary>
+    private Action TrackWrittenUndoably(EntityMap map, object entity)
+    {
+        var entry = _trackedByInstance.TryGetValue(entity, out var known) ? known : null;
+        var snapshotBefore = entry?.Snapshot;
+        TrackWritten(map, entity);
+        return entry is not null
+            ? () => entry.Snapshot = snapshotBefore!
+            : () => Untrack(map, map.GetKeyValues(entity));
+    }
+
+    /// <summary><see cref="TrackWrittenColumns"/>, returning what undoes it: the snapshot as it was.</summary>
+    private Action TrackWrittenColumnsUndoably(TrackedEntry? entry, EntityMap map, IEnumerable<PropertyMap> written)
+    {
+        if (entry is null)
+        {
+            return static () => { };
+        }
+
+        var snapshotBefore = (object?[])entry.Snapshot.Clone();
+        TrackWrittenColumns(entry, map, written);
+        return () => entry.Snapshot = snapshotBefore;
+    }
+
+    /// <summary><see cref="Untrack"/> after a delete, returning what undoes it: the instance registered again with its snapshot.</summary>
+    private Action Forget(EntityMap map, object?[] key)
+    {
+        var forgotten = Untrack(map, key);
+        return forgotten is null
+            ? static () => { }
+            : () => Register(map, key, forgotten.Entity, forgotten.Snapshot);
     }
 
     // --- snapshots ---------------------------------------------------------------------

@@ -307,3 +307,13 @@ func TestBind_ANilArgumentBindsATypedNull(t *testing.T) {
 		}
 	}
 }
+
+func TestBind_ASystemFunctionIsNotAPlaceholderSoARegistryCommandUsingOneIsNotPRM001(t *testing.T) {
+	bound, err := params.Bind("update users set name = name where id = @ID; select @@rowcount", probeArgs{ID: 3}, newConverter(), sqlite.New(), "q")
+	if err != nil {
+		t.Fatalf("expected no PRM-001 for @@rowcount, got %v", err)
+	}
+	if bound.SQL != "update users set name = name where id = @ID; select @@rowcount" || len(bound.Args) != 1 {
+		t.Errorf("the SQL is untouched and one argument is bound, got %q with %d args", bound.SQL, len(bound.Args))
+	}
+}

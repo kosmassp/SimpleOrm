@@ -89,6 +89,15 @@ func (*Dialect) SupportsProcedures() bool { return true }
 
 func (*Dialect) SupportsTransactionalDDL() bool { return true }
 
+// SupportsStatementBatching is true: a planned message goes out as one multi-statement text with its placeholders
+// renamed apart and its results read with NextResultSet (SendMessage, batch.go; ADR-0044, spec/dialects.md
+// "Statement batching").
+func (*Dialect) SupportsStatementBatching() bool { return true }
+
+// MaxParametersPerMessage is 2098: one sp_executesql carries at most 2100 parameters, two of them its own
+// (spec/dialects.md "Statement batching"). Applied by every implementation so the plan stays the same.
+func (*Dialect) MaxParametersPerMessage() int { return 2098 }
+
 // --- introspection (spec/dialects.md "Introspection result shapes") ---------------
 //
 // The result columns carry the spec's names (`name, type, notnull, pk`;

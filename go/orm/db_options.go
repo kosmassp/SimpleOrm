@@ -26,7 +26,29 @@ type Options struct {
 	// an instant whose zone offset is not zero is VAL-020 when a hook reads it. nil means the wall clock
 	// (time.Now().UTC()); tests and the conformance runners fix it at 2026-08-29T00:00:00Z.
 	Clock func() time.Time
+	// Batching chooses how a flush and an explicit batch send their statements (Level 4 item 3, ADR-0044,
+	// spec/session.md "Batching"): the zero value BatchingOff is the Level 0–3 behaviour exactly, one message per
+	// statement; BatchingAuto forms messages by the plan — as few as the driver allows — and runs them as one round
+	// trip where the dialect can (db.BatchingInEffect), one statement at a time otherwise.
+	Batching BatchingMode
+	// MaxStatementsPerMessage is the most statements one message carries under BatchingAuto. The zero value is the
+	// default, 100; a negative value is refused at Open (CODING-STANDARD §10: Go's zero value cannot tell "unset"
+	// from "0", and the spec's "below 1 is the argument error" is read as "below 0 here").
+	MaxStatementsPerMessage int
 }
+
+// DefaultMaxStatementsPerMessage is the cap on statements per message when Options leaves it unset (spec/session.md "Batching").
+const DefaultMaxStatementsPerMessage = 100
+
+// BatchingMode is the session's batching option, fixed at open like the tracking mode (ADR-0044).
+type BatchingMode int
+
+const (
+	// BatchingOff is the default: every statement is a message of its own.
+	BatchingOff BatchingMode = iota
+	// BatchingAuto forms the statements of one call (a Flush, the Send of an explicit batch) into messages by the plan.
+	BatchingAuto
+)
 
 // TrackingMode is the session's tracking mode, fixed at open (ADR-0034 add.1
 // ruling 1: tracking is configured, never implicit). The default is untracked

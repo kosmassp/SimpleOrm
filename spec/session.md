@@ -90,6 +90,12 @@ every execution:
 Values cross the boundary through the conversion pipeline (mapping-rules.md);
 a conversion error names the query and the placeholder.
 
+**System functions are not placeholders.** `@@name` (SQL Server's
+`@@rowcount`, `@@identity`) is never a placeholder: a placeholder is an `@`
+not preceded by another `@`. (Found by both ADR-0044 ports: the second `@` of a
+generated `select @@rowcount` read as the placeholder `@rowcount`, and a
+registry command using a system function was `PRM-001` in the reference.)
+
 **Collections (IN lists).** A collection-typed property (strings and byte
 arrays are values, not collections) expands its placeholder into one generated
 placeholder per element — `IN (@Ids)` becomes `IN (@Ids_0, …, @Ids_N)` — each
@@ -138,6 +144,214 @@ is what keeps one shape across ports and future dialects).
   between rows during materialization, and per row on streams.
 - Cancellation surfaces as the platform's cancellation signal, never as a
   SimpleOrm error code.
+
+## Batching — messages, the option, the explicit batch (Level 4, ADR-0044)
+
+A **message** is what one round trip sends to the database. Without batching
+every statement is a message of its own. With batching, the statements of
+**one call** — a `Flush` (unit-of-work.md "Batching") or the `Send` of an
+explicit batch (below) — go out in as few messages as the driver allows.
+Nothing waits and nothing is deferred past the call that holds the statements:
+there is no timer and no implicit queue, a lone statement runs exactly as it
+always did, and every round trip stays a visible call in user code (§2).
+
+**The option**, fixed at open like tracking:
+
+- `Batching`: `Off` (the default) or `Auto`. `Off` is the Level 0–3 behaviour
+  exactly — one message per statement. `Auto` forms messages by the plan below.
+- `MaxStatementsPerMessage`: the most statements one message carries; 100 by
+  default. A value below 1 is the language's argument error at open.
+- `BatchingInEffect`, a read-only question on the session: true when the option
+  is `Auto` and this implementation's driver for the dialect sends a planned
+  message as **one** round trip with a result per statement
+  (`SupportsStatementBatching`, spec/dialects.md "Statement batching"). Where it
+  is false under `Auto` — SQLite in every implementation, PostgreSQL in PHP, the
+  C# `netstandard2.0` build — the plan is formed all the same and each message's
+  statements run one at a time, in order, **reusing one prepared command per
+  distinct statement text** within the call (on SQLite, where no network round
+  trip exists, that reuse is the gain: ADR-0044 measures it). Nothing refuses:
+  one configuration serves every database, and the question says which
+  realization is in force.
+
+**The plan** — how a call's statements become messages. The statements are the
+ones the call issues without batching, in the same order: batching never
+reorders, adds, or drops a statement and never changes its SQL text. Walking
+them in order, a statement **starts a new message** when the current message is
+not empty and
+
+1. **it depends on the current message** — decided *before* the statement is
+   prepared, because preparing reads what the earlier statements produce:
+   a. the current message holds a statement on the **same instance**, or on an
+      instance of the **same entity type with the same key** — when that key is
+      set (not null, not a database-generated key at its default, not an empty
+      client GUID — the "unset key" of unit-of-work.md "Detach and merge"); the
+      new statement's key is taken as it stands before its preparation (a key
+      the flush is about to flow in is not there yet), the message's as its
+      statements were prepared; a delete by key compares its key argument; or
+   b. the statement's instance has a non-null **many-to-one navigation** — or,
+      in a flush, a **cascade owner** it takes its key from (unit-of-work.md
+      "Keys flow before each insert") — pointing at an instance whose insert is
+      in the current message and **whose key the database generates**;
+2. **it reads a result after a registry command** — the statement returns a
+   result the session reads (an insert whose key the database generates; where
+   the dialect reports affected rows by select, `ReportsAffectedRowsBySelect`, a
+   generated update or delete) and the current message holds a registry
+   command, whose own result sets, should its SQL return rows, would otherwise
+   come first;
+3. **it would overflow the message** — the message already holds
+   `MaxStatementsPerMessage` statements, or the dialect caps the parameters of a
+   message (`MaxParametersPerMessage`; SQL Server 2098) and the statement's bound
+   parameters would take the message over the cap. A statement alone over the
+   cap is a message of its own.
+
+A message that holds `MaxStatementsPerMessage` statements goes out **as soon as
+it is full** — before the next statement is prepared, like a rule-1 cut; rule 2
+and the parameter cap are decided after the statement is prepared. An operation
+that turns out to issue no statement (an explicit batch's clean tracked update)
+adds nothing to the message, but still ended the current one if rule 1 said so.
+Under `Off` the cap is one: every statement is prepared and run before the next
+is prepared, exactly as the immediate operations.
+
+The plan is a property of the session, not of the driver: it reads the
+statements and two facts of the dialect — whether a generated update or delete
+returns its count as a result (`ReportsAffectedRowsBySelect`, rule 2) and the
+parameter cap (rule 3) — so every implementation forms the same messages from
+the same statements on the same dialect, whatever its driver can do;
+`batch-cases/` pins them under the SQLite dialect's facts (no reported counts,
+no cap). A realization may use **more** round trips than the
+plan's messages — the sequential one does, and a driver that cannot carry a
+particular statement in a message (spec/dialects.md) sends that statement on its
+own — never fewer.
+
+**Results and checks inside a message.** Each statement's result is read per
+statement, in order — the generated key of an insert, the affected-row count of
+a generated update or delete (the driver's, or the dialect's reported count,
+spec/crud.md), the driver's count of a registry command. The statements are then
+judged and applied in order exactly as their immediate operations would be: keys
+written onto the entities, zero rows `CRUD-010`/`CRUD-001`, versions bumped,
+hooks, the identity map and the snapshots updated. The first statement that
+fails its check fails the call.
+
+**Failure.** A zero-row update is no error to the database, so the statements
+after a failing check in the same message **may have run** (they did wherever
+batching is in effect; the sequential realization stops at the failure). The call
+fails as a whole:
+
+- every in-memory effect of every statement the call prepared is undone — keys,
+  versions, stamps, flags, tracking — so the instances are as they were before
+  the call;
+- the call's own transaction rolls back: nothing applied;
+- inside the caller's transaction, the rows of the statements that ran — before
+  the failure and possibly after it in its message — are the caller's to roll
+  back, and the caller must: a commit would keep rows the session does not know.
+  (Without batching, only the statements before the failure had run.)
+
+A provider error (a constraint, a deadlock) fails the call the same way and
+propagates unchanged; cancellation stays the platform's signal.
+
+### The explicit batch
+
+```csharp
+await using var batch = db.Batch();              // queuing does no I/O
+batch.Insert(order);
+batch.UpdateOnly(user, [nameof(User.Name)]);
+batch.Execute(Commands.MarkShipped, new MarkShippedArgs(Id: 7));
+batch.Delete<Role>(3);
+BatchResult result = await batch.SendAsync(ct);  // the visible round trip(s)
+```
+
+- `Batch()` returns a queue bound to the session. `Insert`, `Update`,
+  `UpdateOnly`, `Delete` (the key or the entity form, dispatched as the immediate
+  `Delete` is), and `Execute` (a registry command and its args) queue one
+  operation each. Queuing does no I/O, binds no value, and checks nothing but the
+  batch's own state: whatever the immediate call would refuse, `Send` refuses.
+- `Send` runs the queued operations in queue order, as messages by the plan.
+  **Each behaves exactly as its immediate call would at that point of the
+  sequence** — the same checks when it is prepared (`CRUD-002` to `CRUD-007`,
+  `UOW-002`, `CRUD-004`, `PRM-001`/`PRM-002`, the converter's codes), the same
+  statement, the same effects on the instance and the session (tracking, hooks,
+  versions). Keys do not flow between queued operations — the immediate calls
+  never flow them; the foreign-key property is what is written — the unit of
+  work is the form that flows keys.
+- `Send` always runs in a transaction: the session's when one is active, else one
+  it begins and commits after the last message (a SQL Server batch outside a
+  transaction would commit statement by statement). It fails as the plan fails.
+  The queue is spent either way.
+- The result carries `Affected` — one count per queued operation, in queue
+  order: an insert 1; a generated update or delete its judged count; a registry
+  command the driver's count; an operation that issued no statement (a clean
+  tracked update) 0 — and `Messages`, the number of messages the plan formed.
+- A batch that was sent, or disposed, takes nothing more: queuing on it or
+  sending it again is `TX-003`. A batch disposed unsent is dropped silently —
+  nothing is ever sent implicitly, as with scheduled work. An empty send returns
+  an empty result and begins no transaction.
+- Under `Off` the batch exists and behaves the same, one statement per message:
+  switching the option never requires a code change.
+- **Reads are not batched.** A batch queues writes and registry commands only;
+  batched reads (a handle filled at send, each result through the one mapping
+  pipeline) are deferred (ADR-0044).
+
+Where a language has no overloading the operations keep these names as the
+immediate calls do: PHP `$db->batch()`, `insert`, `update`, `updateOnly`,
+`delete`, `execute`, `send`, and `dispose()` for disposal; Go `db.Batch()` with
+the package functions `orm.BatchInsert`, `BatchUpdate`, `BatchUpdateOnly`,
+`BatchDelete[T]`, `BatchDeleteEntity`, `BatchExecute` (generic operations cannot
+be methods in Go, as for the immediate calls), `b.Send(ctx)`, and `b.Discard()`
+as the analog of disposal.
+
+**Clarifications** (the PHP and Go port gap lists of ADR-0044, 14 + 16
+questions, consolidated; each the answer the three implementations now embody):
+
+1. **A message's statements are all prepared before it is sent.** A refusal at
+   preparation (`CRUD-004`, `UOW-002`, a converter's code) therefore fails the
+   call before the message holding the earlier statements runs. When two
+   statements of one call would both fail — an earlier one at execution
+   (`CRUD-010`), a later one at preparation in the same message — `Auto` reports
+   the preparation's code where `Off` reports the execution's. Either way the
+   call fails and nothing applies.
+2. **Prepared-command reuse is `Auto`'s.** Under `Off` every statement is
+   prepared fresh — the Level 0–3 path exactly.
+3. **Rule 3 counts bound parameters**: the values bound to the prepared
+   statement, after IN-list expansion — for a generated statement the same as
+   its placeholders.
+4. **Rule 1a and the key.** The same-key clause keeps a planned call equal to
+   its immediate calls where two instances share a key: a delete of A followed by
+   an insert of B with A's key (`Off` succeeds — A is forgotten before B's
+   identity gate), two new instances with one natural key (`Off` refuses the
+   second with `UOW-002`, not the database's key violation). Without it the
+   identity gate would read a map the current message has not yet updated.
+5. **Rule 1b for every statement.** It applies to a statement on any instance
+   with such a navigation — inserts, updates (their `CRUD-004` check reads the
+   target's key), and deletes alike. The cascade owner is the one a persist
+   cascade recorded through a one-to-many or one-to-one navigation, whose key the
+   child takes.
+6. **The message hook and `Messages`** count the plan's messages, not round
+   trips: a realization that splits a message adds none. The hook is told a
+   message's size as it is sent, before its outcome is known, so a message that
+   fails is counted; a call with nothing to send tells it nothing. Under `Off`
+   `Messages` equals the number of statements.
+7. **A send whose operations all issue no statement** (clean tracked updates)
+   still begins and commits a transaction; only an empty queue begins none. It is
+   unobservable outside the transaction.
+8. **The option is validated at open**, before the connection opens, so a refused
+   open leaves nothing behind. Where the language's zero value cannot tell
+   "unset" from 0 (Go), 0 means the default of 100 and a negative value is
+   refused; the port records it in its §10.
+9. **A key flowed into a foreign-key property stays after a failed flush** (as
+   before batching): the flush copies parents' keys into children before each
+   insert's preparation, and the undo restores what the statements did — keys,
+   versions, stamps, flags, tracking — not the copied foreign keys.
+10. **In the step scripts an unset integer key reads as 0** (`"equals": 0`),
+    whatever the language's own representation of "unset" (a PHP typed property
+    with no value, a Go zero value).
+11. **The keys rule 1a compares** (the review round). Every statement that has an
+    instance or a key argument carries its key — inserts, updates, deletes by
+    entity and by key alike. A delete by key's argument is compared after the
+    same validation and coercion the delete applies (an `int` matches an `int64`
+    key); an argument that does not validate carries no key and is refused when
+    it is prepared. A client-GUID insert's key counts once its preparation has
+    filled it, so two inserts that both arrived with an empty GUID never cut each
+    other.
 
 ## The rest of the session
 
@@ -332,18 +546,20 @@ convention in the runner, as the other runners do.
 ### The step scripts — grammar, values, the fixture, the seam (Level 3 exit, ADR-0039)
 
 The four Level 3 folders — `tracking-cases/`, `flush-cases/`, `hook-cases/`,
-`merge-cases/` — share one step-script form. This section is normative for
-all of them; the examples above and in unit-of-work.md illustrate it. (The
+`merge-cases/` — and Level 4's `batch-cases/` (ADR-0044) share one step-script
+form. This section is normative for all of them; the examples above and in unit-of-work.md illustrate it. (The
 Level 3 exit audit — a design for a Python port written from `spec/` and
 `conformance/` alone — found the form defined only by example.)
 
 **Grammar.** A case is `{ "name", "comment", "tracking": "tracked" |
-"untracked", "steps": [ … ] }`. Every step is an object with exactly one verb
+"untracked", "batching"?, "steps": [ … ] }`. `batching` opens the session
+with the batching option ("Batching" above): `{ "mode": "auto" | "off",
+"maxStatementsPerMessage"? }`; absent, the session is `Off`. Every step is an object with exactly one verb
 key and, optionally, `"expectError": "<code>"`. The verbs and their fields:
 
 | verb | fields | meaning |
 |---|---|---|
-| `get` | `entity`, `key`, `as` | read by key; binds the ref |
+| `get` | `entity`, `key`, `as` | read by key; binds the ref (a composite key is an array of its parts in key order, ADR-0044) |
 | `new` | `entity`, `as`, `values`?, `navigations`? | construct in user code — `values` sets properties, `navigations` sets a navigation to a ref or a collection to a list of refs; the database is not touched |
 | `set` | `ref`, `property`, `value` | assign a property |
 | `insert`, `refresh`, `persist`, `remove`, `detach` | `ref` | the operation of that name on the instance |
@@ -351,7 +567,9 @@ key and, optionally, `"expectError": "<code>"`. The verbs and their fields:
 | `updateOnly` | `ref`, `properties`, `expectWritten`? | the column-list update |
 | `delete` | `ref` (the entity form) or `entity` + `key` (the key form) | |
 | `load` | `ref`, `navigation` | explicit loading of one navigation |
-| `flush` | `expectStatements`?, `expectSummary`? | unit-of-work.md "Conformance" |
+| `flush` | `expectStatements`?, `expectSummary`?, `expectMessages`? | unit-of-work.md "Conformance" |
+| `batch` | `ops`, `as`?, `expectStatements`?, `expectMessages`?, `expectAffected`? | queue every op on one explicit batch, then send it ("The explicit batch"); each op is an object with one key — `insert`, `update`, `updateOnly`, `delete` (fields as the steps of those names), or `execute` (`command` — a fixture command by name — and `args`); `expectAffected` is the result's per-operation counts; `as` keeps the spent batch under a name |
+| `batchAgain` | `ref`, `op`? | use a kept batch again: queue `op` on it, or, without `op`, send it — both `TX-003` |
 | `merge` | `ref`, `as` | binds the instance merge returns |
 | `begin`, `commit`, `rollback` | `{}` | the session transaction |
 | `expect` | one expectation kind | below |
@@ -378,6 +596,18 @@ language's own formatting. Property lists (`dirty.properties`,
 `expectWritten`, a statement's `columns`) may be compared as sets. A `value` expectation may name an owned navigation (`Address`) instead of a
 member: `equals` is then `null` (the navigation is null) or `{}` (an owned object
 exists; members are checked one by one).
+
+**Messages.** `expectMessages` is the plan's grouping of the step's
+statements ("Batching" above): one entry per message, in order, each the
+number of statements it carried — registry commands included, although the
+recorder below lists generated writes only. It is the plan — formed under the
+runner's dialect, SQLite — whether or not the realization sent each message as
+one round trip.
+
+**The fixture command** for `execute`: `SetDisplayName`, the registry command
+`update users set display_name = @DisplayName where id = @Id`, args `Id`
+(int64) and `DisplayName` (string, nullable), declared natively in every
+runner.
 
 **The clock** is fixed at `2026-08-29T00:00:00Z` for every Level 3 runner,
 not only `hook-cases` — the audit columns appear in every folder's write
@@ -417,4 +647,11 @@ column-list update the property list it was asked to write, in list order. A
 soft delete is the column-list update it is. Reads, statement execution, and
 failures are not recorded; the buffer is cleared before each step; a step's
 `expectWritten` is the columns of its last recorded update (`[]` when the step
-recorded none).
+recorded none). **The message boundary** is the session's, not the dialect's
+(no seam member sees a message): each implementation gives its runner a way to
+observe the size of every message a flush or a batch send formed — a test hook,
+never public API — and `expectMessages` compares those sizes in order. Every
+runner runs every `flush-cases` file **twice**, `Off` and `Auto` (with the
+default `MaxStatementsPerMessage`): the statements, the summary, and every
+expectation must come out the same in both modes. `flush-cases` therefore carry
+neither `batching` nor `expectMessages`; the grouping is `batch-cases`'.

@@ -6,7 +6,8 @@ namespace SimpleOrm;
 /// <summary>Finds <c>@name</c> placeholders in SQL, ignoring string literals and comments.</summary>
 internal static class SqlPlaceholders
 {
-    private static readonly Regex Placeholder = new(@"@([A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled);
+    // Not after another @: SQL Server's system functions (@@rowcount, @@identity) are never placeholders.
+    private static readonly Regex Placeholder = new(@"(?<!@)@([A-Za-z_][A-Za-z0-9_]*)", RegexOptions.Compiled);
 
     public static IReadOnlyList<string> Find(string sql)
     {
@@ -44,6 +45,17 @@ internal static class SqlPlaceholders
 
         return spans;
     }
+
+    /// <summary>
+    /// Whether the SQL holds more than one statement: a <c>;</c> outside string
+    /// literals and comments with anything but whitespace or more semicolons after
+    /// it (ADR-0044 — a batched registry command of several statements is sent on
+    /// its own).
+    /// </summary>
+    public static bool HoldsSeveralStatements(string sql)
+        => Mask(sql).TrimEnd(TrailingSeparators).IndexOf(';') >= 0;
+
+    private static readonly char[] TrailingSeparators = [';', ' ', '\t', '\r', '\n'];
 
     /// <summary>
     /// Length-preserving mask: string-literal and comment characters become spaces,

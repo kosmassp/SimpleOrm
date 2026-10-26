@@ -1,0 +1,137 @@
+{
+  "name": "batch_same_key_starts_a_new_message",
+  "comment": "Rule 1a's key clause: a statement on another instance of the same type with the same set key waits for the message holding the first, so the identity gate reads the map as the immediate calls would. A delete of the tracked link followed by an insert of a new instance with its key succeeds (the delete forgot the key first); two new instances with one natural key refuse the second with UOW-002, not the database's key violation, and the send applies nothing.",
+  "tracking": "tracked",
+  "batching": {
+    "mode": "auto"
+  },
+  "steps": [
+    {
+      "get": {
+        "entity": "UserRole",
+        "key": [
+          1,
+          1
+        ],
+        "as": "old"
+      }
+    },
+    {
+      "new": {
+        "entity": "UserRole",
+        "as": "renewed",
+        "values": {
+          "UserId": 1,
+          "RoleId": 1,
+          "GrantedBy": "audit",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "batch": {
+        "ops": [
+          {
+            "delete": {
+              "ref": "old"
+            }
+          },
+          {
+            "insert": {
+              "ref": "renewed"
+            }
+          }
+        ],
+        "expectStatements": [
+          {
+            "op": "delete",
+            "entity": "UserRole"
+          },
+          {
+            "op": "insert",
+            "entity": "UserRole"
+          }
+        ],
+        "expectMessages": [
+          1,
+          1
+        ],
+        "expectAffected": [
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "expect": {
+        "tracked": {
+          "ref": "old",
+          "is": false
+        }
+      }
+    },
+    {
+      "expect": {
+        "tracked": {
+          "ref": "renewed",
+          "is": true
+        }
+      }
+    },
+    {
+      "new": {
+        "entity": "UserRole",
+        "as": "a",
+        "values": {
+          "UserId": 2,
+          "RoleId": 1,
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "new": {
+        "entity": "UserRole",
+        "as": "b",
+        "values": {
+          "UserId": 2,
+          "RoleId": 1,
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "batch": {
+        "ops": [
+          {
+            "insert": {
+              "ref": "a"
+            }
+          },
+          {
+            "insert": {
+              "ref": "b"
+            }
+          }
+        ]
+      },
+      "expectError": "UOW-002"
+    },
+    {
+      "expect": {
+        "tracked": {
+          "ref": "a",
+          "is": false
+        }
+      }
+    },
+    {
+      "expect": {
+        "count": {
+          "entity": "UserRole",
+          "equals": 3
+        }
+      }
+    }
+  ]
+}

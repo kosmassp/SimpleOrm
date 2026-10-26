@@ -30,16 +30,18 @@ type Db struct {
 	tracker *tracker
 	// uow is the unit of work's schedule (Level 3 M2), created on first Persist/Remove.
 	uow *unitOfWork
+	// batcher is the dialect's one-round-trip realization of a planned message (Level 4 item 3, ADR-0044), set only
+	// when the option is Auto and the dialect both reports SupportsStatementBatching and implements the capability;
+	// nil means the plan's messages run one statement at a time.
+	batcher core.StatementBatcher
+	// maxStatements is the cap on statements per message, resolved at Open.
+	maxStatements int
 }
 
 // executor is the surface *sql.Conn and *sql.Tx share — every statement runs
 // on it, so it automatically runs inside the current transaction when one is
 // active (§7.17).
-type executor interface {
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
+type executor = core.SQLExecutor
 
 // Open opens the session against connectionString (§7.17): the dialect
 // creates the connection, one *sql.Conn is pinned from its pool, and a failed
@@ -47,6 +49,13 @@ type executor interface {
 func Open(ctx context.Context, connectionString string, options Options) (*Db, error) {
 	if options.Dialect == nil {
 		return nil, fmt.Errorf("orm.Open: Options.Dialect is required")
+	}
+	if options.MaxStatementsPerMessage < 0 {
+		return nil, fmt.Errorf("orm.Open: Options.MaxStatementsPerMessage must be at least 1 (0 means the default, %d), got %d",
+			DefaultMaxStatementsPerMessage, options.MaxStatementsPerMessage)
+	}
+	if options.Batching != BatchingOff && options.Batching != BatchingAuto {
+		return nil, fmt.Errorf("orm.Open: Options.Batching is not a known mode: %d", options.Batching)
 	}
 
 	pool, err := options.Dialect.CreateConnection(connectionString)
@@ -75,16 +84,33 @@ func Open(ctx context.Context, connectionString string, options Options) (*Db, e
 	if judge, ok := options.Dialect.(core.TemporalMarkers); ok {
 		mapper.UseTemporalMarkers(judge) // the VAL-020 read rule by column type (spec/dialects.md "Temporals")
 	}
-	return &Db{
-		pool:       pool,
-		connection: connection,
-		options:    options,
-		maps:       loader,
-		converter:  converter,
-		mapper:     mapper,
-		tracker:    identityMap,
-	}, nil
+	db := &Db{
+		pool:          pool,
+		connection:    connection,
+		options:       options,
+		maps:          loader,
+		converter:     converter,
+		mapper:        mapper,
+		tracker:       identityMap,
+		maxStatements: options.MaxStatementsPerMessage,
+	}
+	if db.maxStatements == 0 {
+		db.maxStatements = DefaultMaxStatementsPerMessage
+	}
+	// The one-round-trip realization needs the dialect to say so and to be able to (a decorator that embeds the Dialect
+	// interface promotes the flag but not the capability, so it runs the plan sequentially).
+	if batcher, ok := options.Dialect.(core.StatementBatcher); ok && options.Batching == BatchingAuto && options.Dialect.SupportsStatementBatching() {
+		db.batcher = batcher
+	}
+	return db, nil
 }
+
+// BatchingInEffect reports whether a flush or an explicit batch sends each planned message as one round trip with a
+// result per statement (spec/session.md "Batching"): the option is Auto and this implementation's driver for the
+// dialect can (SupportsStatementBatching). False under Auto means the plan is formed all the same and each message's
+// statements run one at a time, reusing one prepared command per distinct statement text within the call (SQLite);
+// nothing refuses — one configuration serves every database, and this says which realization is in force.
+func (db *Db) BatchingInEffect() bool { return db.batcher != nil }
 
 // Close rolls back an active transaction, then releases the connection and
 // the pool. Disposal is the only teardown; there is no close-and-reopen.

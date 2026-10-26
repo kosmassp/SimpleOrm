@@ -11,7 +11,10 @@ use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\OwnedMap;
 use SimpleOrm\Metadata\PropertyMap;
+use SimpleOrm\Session\BatchingMode;
+use SimpleOrm\Session\Command;
 use SimpleOrm\Session\Db;
+use SimpleOrm\Session\DbBatch;
 use SimpleOrm\Session\DbOptions;
 use SimpleOrm\Session\DbTransactionScope;
 use SimpleOrm\Session\TrackingMode;
@@ -37,6 +40,12 @@ use SimpleOrm\Tests\Sample\Models\UserRole;
  * Property lists (`dirty.properties`, `expectWritten`, an update's `columns`) compare as sets: the
  * spec fixes no order for them. A `count` expectation reads the relation through a **separate**
  * connection to the same file, so a rolled-back flush is visible.
+ *
+ * Level 4 (ADR-0044) adds the `batching` header (the session opens with that option), the `batch` and `batchAgain` verbs
+ * over the explicit batch, the fixture registry command `SetDisplayName`, and `expectMessages` — the sizes the session's
+ * test hook ({@see Db::observeMessages()}) reported for a flush or a send — and `expectAffected`. `flush-cases` run twice,
+ * `Off` and `Auto` (`$batching`), with the same expectations. An expectation of `0` for a never-initialized integer key
+ * reads the unset key as `0` (CODING-STANDARD §10: a typed PHP property has no zero value to fall back to).
  */
 final class StepScriptRunner
 {
@@ -55,6 +64,12 @@ final class StepScriptRunner
 
     private ?DbTransactionScope $scope = null;
 
+    /** @var array<string, DbBatch> explicit batches kept by `as`, for `batchAgain` */
+    private array $batches = [];
+
+    /** @var list<int> the sizes of the messages the last flush or batch send formed (the test hook) */
+    private array $messages = [];
+
     private function __construct(
         private readonly Db $db,
         private readonly RecordingUpdateDialect $recorder,
@@ -62,8 +77,12 @@ final class StepScriptRunner
     ) {
     }
 
-    /** Replays `conformance/<folder>/<fileName>` and asserts every expectation and `expectError` of its steps. */
-    public static function replay(string $folder, string $fileName): void
+    /**
+     * Replays `conformance/<folder>/<fileName>` and asserts every expectation and `expectError` of its steps. `$batching`,
+     * when given, opens the session with that mode instead of the case's `batching` header (the flush-cases run once per
+     * mode, spec/session.md "The step scripts"); with neither, the session is `Off`.
+     */
+    public static function replay(string $folder, string $fileName, ?BatchingMode $batching = null): void
     {
         $spec = json_decode(
             (string) file_get_contents(ConformancePaths::dir($folder) . DIRECTORY_SEPARATOR . $fileName),
@@ -78,10 +97,20 @@ final class StepScriptRunner
             default => throw new RuntimeException("{$fileName}: unknown tracking mode '{$spec['tracking']}'"),
         };
 
+        $header = $spec['batching'] ?? [];
         $fixture = TempDatabase::create();
-        $db = SampleDatabase::open($fixture, new DbOptions($recorder, tracking: $mode, clock: ConformanceClock::fixed()));
+        $db = SampleDatabase::open($fixture, new DbOptions(
+            $recorder,
+            tracking: $mode,
+            clock: ConformanceClock::fixed(),
+            batching: $batching ?? BatchingMode::from($header['mode'] ?? 'off'),
+            maxStatementsPerMessage: $header['maxStatementsPerMessage'] ?? 100,
+        ));
         ConformanceSeed::insert($fixture);
         $runner = new self($db, $recorder, $fixture);
+        $db->observeMessages(static function (int $size) use ($runner): void {
+            $runner->messages[] = $size;
+        });
 
         try {
             foreach ($spec['steps'] as $index => $step) {
@@ -153,6 +182,10 @@ final class StepScriptRunner
             $this->db->remove($this->resolve($step['remove']['ref']));
         } elseif (isset($step['flush'])) {
             $this->flush($step['flush'], $context);
+        } elseif (isset($step['batch'])) {
+            $this->batch($step['batch'], $context);
+        } elseif (isset($step['batchAgain'])) {
+            $this->batchAgain($step['batchAgain'], $context);
         } elseif (isset($step['begin'])) {
             $this->scope = $this->db->begin();
         } elseif (isset($step['commit'])) {
@@ -168,14 +201,19 @@ final class StepScriptRunner
         }
     }
 
-    /** `flush` with `expectStatements` (the ordered `{op, entity, columns?}` list the dialect was asked to render) and `expectSummary`. */
+    /** `flush` with `expectStatements` (the ordered `{op, entity, columns?}` list the dialect was asked to render), `expectMessages`, and `expectSummary`. */
     private function flush(array $flush, string $context): void
     {
         $this->recorder->statements = [];
+        $this->messages = [];
         $summary = $this->db->flush();
 
         if (array_key_exists('expectStatements', $flush)) {
             self::assertStatements($this->recorder->statements, $flush['expectStatements'], $context);
+        }
+
+        if (array_key_exists('expectMessages', $flush)) {
+            Assert::assertSame($flush['expectMessages'], $this->messages, $context);
         }
 
         if (array_key_exists('expectSummary', $flush)) {
@@ -189,6 +227,105 @@ final class StepScriptRunner
                 $context,
             );
         }
+    }
+
+    /**
+     * `batch`: queue every op on one explicit batch, then send it ("The explicit batch"). `as` keeps the spent batch —
+     * before the send, so a failed send's batch is still there for `batchAgain`.
+     */
+    private function batch(array $batch, string $context): void
+    {
+        $this->recorder->statements = [];
+        $this->messages = [];
+        $queue = $this->db->batch();
+        if (isset($batch['as'])) {
+            $this->batches[$batch['as']] = $queue;
+        }
+
+        foreach ($batch['ops'] as $op) {
+            $this->queue($queue, $op, $context);
+        }
+
+        $result = $queue->send();
+
+        if (array_key_exists('expectStatements', $batch)) {
+            self::assertStatements($this->recorder->statements, $batch['expectStatements'], $context);
+        }
+
+        if (array_key_exists('expectMessages', $batch)) {
+            Assert::assertSame($batch['expectMessages'], $this->messages, $context);
+            Assert::assertSame(count($batch['expectMessages']), $result->messages, $context);
+        }
+
+        if (array_key_exists('expectAffected', $batch)) {
+            Assert::assertSame($batch['expectAffected'], $result->affected, $context);
+        }
+    }
+
+    /** `batchAgain`: a kept batch used again — queue `op` on it, or send it; both are `TX-003` once it is spent. */
+    private function batchAgain(array $again, string $context): void
+    {
+        $batch = $this->batches[$again['ref']] ?? throw new RuntimeException("no kept batch named '{$again['ref']}': {$context}");
+        if (isset($again['op'])) {
+            $this->queue($batch, $again['op'], $context);
+
+            return;
+        }
+
+        $batch->send();
+    }
+
+    /** One op object (one key) queued on a batch. */
+    private function queue(DbBatch $batch, array $op, string $context): void
+    {
+        if (isset($op['insert'])) {
+            $batch->insert($this->resolve($op['insert']['ref']));
+        } elseif (isset($op['update'])) {
+            $batch->update($this->resolve($op['update']['ref']));
+        } elseif (isset($op['updateOnly'])) {
+            $batch->updateOnly(
+                $this->resolve($op['updateOnly']['ref']),
+                array_map(self::propertyName(...), $op['updateOnly']['properties']),
+            );
+        } elseif (isset($op['delete'])) {
+            if (isset($op['delete']['ref'])) {
+                $entity = $this->resolve($op['delete']['ref']);
+                $batch->delete($entity::class, $entity);
+            } else {
+                $batch->delete(self::entityType($op['delete']['entity']), $op['delete']['key']);
+            }
+        } elseif (isset($op['execute'])) {
+            $name = $op['execute']['command'];
+            $batch->execute(self::command($name, $context), self::commandArgs($name, $op['execute']['args']));
+        } else {
+            throw new RuntimeException("unknown batch op: {$context}");
+        }
+    }
+
+    /** The fixture registry commands the `execute` op names (spec/session.md "The step scripts": `SetDisplayName`). */
+    private static function command(string $name, string $context): Command
+    {
+        return match ($name) {
+            'SetDisplayName' => SetDisplayNameArgs::command(),
+            default => throw new RuntimeException("unknown fixture command '{$name}': {$context}"),
+        };
+    }
+
+    /**
+     * The command's args from the case's JSON (`{"Id": 1, "DisplayName": null}`) in this port's property spelling.
+     *
+     * @param array<string, mixed> $args
+     */
+    private static function commandArgs(string $name, array $args): object
+    {
+        $named = [];
+        foreach ($args as $property => $value) {
+            $named[lcfirst($property)] = $value;
+        }
+
+        return match ($name) {
+            'SetDisplayName' => new SetDisplayNameArgs(...$named),
+        };
     }
 
     private function requireScope(string $context): DbTransactionScope
@@ -221,9 +358,14 @@ final class StepScriptRunner
                 Assert::assertSame($equals === null ? null : '{}', $owned === null ? null : '{}', $context);
             } else {
                 $property = self::property($map, $name);
+                $actual = $property->getValue($entity);
+                if ($actual === null && $equals === 0 && $property->key && !$property->nullable) {
+                    $actual = 0;   // an unset generated key reads as 0 (a typed property has no zero value)
+                }
+
                 Assert::assertSame(
                     ConformanceValues::expectedText($equals),
-                    ConformanceValues::encodeForCompare($property->getValue($entity), $property),
+                    ConformanceValues::encodeForCompare($actual, $property),
                     $context,
                 );
             }

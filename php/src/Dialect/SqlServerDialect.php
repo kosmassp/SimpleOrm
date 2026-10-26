@@ -49,6 +49,9 @@ final class SqlServerDialect implements Dialect, PdoConventions
     /** The indexable `nvarchar`/`varbinary` length of a key column (SQL Server's 900-byte index key limit, spec/dialects.md). */
     private const KEY_LENGTH = '450';
 
+    /** One `sp_executesql` takes 2100 parameters, two of them its own (spec/dialects.md "Statement batching"). */
+    private const MAX_PARAMETERS_PER_MESSAGE = 2098;
+
     public function name(): string
     {
         return Dialects::SQLSERVER;
@@ -267,6 +270,21 @@ final class SqlServerDialect implements Dialect, PdoConventions
     public function reportsAffectedRowsBySelect(): bool
     {
         return true;
+    }
+
+    /**
+     * True in PHP (ADR-0044, spec/dialects.md "Statement batching"): a planned message is one multi-statement text,
+     * placeholders renamed apart, its results read with `nextRowset()` in statement order (`Session\MessageText`).
+     */
+    public function supportsStatementBatching(): bool
+    {
+        return true;
+    }
+
+    /** `sp_executesql` takes 2100 parameters, two of them its own. */
+    public function maxParametersPerMessage(): ?int
+    {
+        return self::MAX_PARAMETERS_PER_MESSAGE;
     }
 
     /**

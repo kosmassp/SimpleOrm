@@ -168,6 +168,31 @@ prepares each statement per call.
   the dialect's connector).
 - Run the tests with `-p 2` on a machine where the SQLite file locks contend.
 
+## Statement batching
+
+`Batching = Auto` (ADR-0044; [Tracking and the unit of work](07-tracking-and-unit-of-work.md#batching))
+plans the same messages on every dialect; the driver decides how a message
+travels. `db.BatchingInEffect` tells you which realization you got.
+
+| | SQLite | SQL Server | PostgreSQL |
+|---|---|---|---|
+| C# (`net10.0`) | one by one, one prepared command per statement text | `SqlBatch`: one TDS message, one RPC per statement | `NpgsqlBatch`: pipelined, one `Sync` |
+| C# (`netstandard2.0`) | one by one | one by one | one by one |
+| Go | one by one | one multi-statement text, placeholders renamed apart | pgx `SendBatch` |
+| PHP | one by one | one multi-statement text with `nextRowset()` | one by one (`pdo_pgsql` cannot) |
+
+- **SQLite** has no network round trip to save; `Auto` reuses prepared
+  commands within the call instead, which measures faster than a new command
+  per row.
+- **SQL Server** caps one message at 2098 bound parameters (`sp_executesql`
+  takes 2100, two of them its own). Every generated update and delete reads
+  its count with `select @@rowcount`, so after a registry command in a message
+  the next such statement starts a new one. The SQL Server batching legs are
+  written and skip until an engine is reachable.
+- **PostgreSQL** in C# sends a registry command of several statements on its
+  own (Npgsql refuses several statements in one batch command); the plan is
+  unchanged.
+
 ## Typed nulls
 
 A NULL parameter carries the SQL type its property's metadata token names,
@@ -187,7 +212,8 @@ SQL Server refuses to convert an untyped (character) NULL into `varbinary`.
 | `InsteadOf` on a table | no (`DDL-005`) | yes | no (`DDL-005`) |
 | `snapshot`/`shadow`/`diff`/force sync | yes | yes (ADR-0043; `shadow --db` is the admin connection; pinned, live run pending an engine) | yes (ADR-0043, live) |
 | Derived `migrate down` | yes | yes (ADR-0043) | yes (ADR-0043) |
-| `REFRESH MATERIALIZED VIEW`, `jsonb`, array columns, batching | no | no | not yet |
+| Statement batching that saves a round trip (`BatchingInEffect`) | no (no round trip to save; prepared-command reuse) | yes (C# `net10.0`, Go, PHP; live run pending an engine) | yes (C# `net10.0`, Go; not PHP) |
+| `REFRESH MATERIALIZED VIEW`, `jsonb`, array columns, batched reads, multi-row inserts | no | no | not yet |
 
 ## Pitfalls
 

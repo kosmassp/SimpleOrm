@@ -1,0 +1,113 @@
+{
+  "name": "flush_respects_max_statements_per_message",
+  "comment": "Rule 3: three independent role inserts and a dirty user under a cap of two statements per message - nothing depends on anything, so the cap alone cuts.",
+  "tracking": "tracked",
+  "batching": {
+    "mode": "auto",
+    "maxStatementsPerMessage": 2
+  },
+  "steps": [
+    {
+      "new": {
+        "entity": "Role",
+        "as": "r1",
+        "values": {
+          "Name": "reader",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "new": {
+        "entity": "Role",
+        "as": "r2",
+        "values": {
+          "Name": "writer",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "new": {
+        "entity": "Role",
+        "as": "r3",
+        "values": {
+          "Name": "owner",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "get": {
+        "entity": "User",
+        "key": 1,
+        "as": "u"
+      }
+    },
+    {
+      "set": {
+        "ref": "u",
+        "property": "DisplayName",
+        "value": "Ada"
+      }
+    },
+    {
+      "persist": {
+        "ref": "r1"
+      }
+    },
+    {
+      "persist": {
+        "ref": "r2"
+      }
+    },
+    {
+      "persist": {
+        "ref": "r3"
+      }
+    },
+    {
+      "flush": {
+        "expectStatements": [
+          {
+            "op": "insert",
+            "entity": "Role"
+          },
+          {
+            "op": "insert",
+            "entity": "Role"
+          },
+          {
+            "op": "insert",
+            "entity": "Role"
+          },
+          {
+            "op": "update",
+            "entity": "User",
+            "columns": [
+              "DisplayName",
+              "UpdatedAtUtc"
+            ]
+          }
+        ],
+        "expectMessages": [
+          2,
+          2
+        ],
+        "expectSummary": {
+          "inserted": 3,
+          "updated": 1,
+          "deleted": 0
+        }
+      }
+    },
+    {
+      "expect": {
+        "count": {
+          "entity": "Role",
+          "equals": 6
+        }
+      }
+    }
+  ]
+}

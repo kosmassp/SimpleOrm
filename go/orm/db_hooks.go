@@ -1,7 +1,6 @@
 package orm
 
 import (
-	"context"
 	"reflect"
 	"time"
 
@@ -103,47 +102,61 @@ func isWritableChange(p *core.PropertyMap) bool {
 	return !p.IsKey && !p.IsVersion && !p.IsGenerated && p.Audit != core.AuditUpdatedAt
 }
 
-// softDeleteEntity is the entity form of a delete on a [SoftDelete] entity (spec/hooks.md): the
+// prepareSoftDeleteEntity is the entity form of a delete on a [SoftDelete] entity (spec/hooks.md): the
 // column-list update that sets the flag true with the [UpdatedAt] stamp and the version rules of an
 // update — CRUD-010 on a stale version (the version bumps on success), CRUD-001 on zero rows without
 // one. The flag and the stamp are set on the instance; a failed statement puts them back.
-func softDeleteEntity(ctx context.Context, db *Db, entityType reflect.Type, m *core.EntityMap, entity any) error {
+func (db *Db) prepareSoftDeleteEntity(entityType reflect.Type, m *core.EntityMap, entity any) (*preparedWrite, error) {
 	flag := m.SoftDeleteProperty
 	priorFlag := flag.Get(entity)
 	if err := flag.Set(entity, true); err != nil {
-		return err
+		return nil, err
 	}
 	set, restoreStamp, err := db.stampSet(m, entity, []*core.PropertyMap{flag})
 	if err != nil {
 		_ = flag.Set(entity, priorFlag) // the value came from Get, so it always assigns back
-		return err
+		return nil, err
 	}
-	if err := executeUpdate(ctx, db, entityType, m, entity, db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set)); err != nil {
+	write, err := db.countedWrite(entityType, entity, db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set))
+	if err != nil {
 		_ = flag.Set(entity, priorFlag)
 		restoreStamp()
-		return err
+		return nil, err
 	}
-	return nil
+	write.undoPrepare = func() {
+		_ = flag.Set(entity, priorFlag)
+		restoreStamp()
+	}
+	judge := db.updateJudge(entityType, m, entity)
+	write.finish = func(result writeResult, _ *undoJournal) error { return judge(result.affected) }
+	return write, nil
 }
 
-// softDeleteByKey is the by-key form (spec/hooks.md): the same column-list update, keyed. Delete has
+// prepareSoftDeleteByKey is the by-key form (spec/hooks.md): the same column-list update, keyed. Delete has
 // already refused a versioned entity (CRUD-012) — the version it does not know cannot be bumped
 // blindly. There is no instance to carry the values, so a scratch one holds the key, the flag, and the
 // stamp for the one update path to bind; zero rows is CRUD-001.
-func softDeleteByKey(ctx context.Context, db *Db, entityType reflect.Type, m *core.EntityMap, keyValues []any) error {
+func (db *Db) prepareSoftDeleteByKey(entityType reflect.Type, m *core.EntityMap, keyValues []any) (*preparedWrite, error) {
 	scratch := reflect.New(entityType).Interface()
 	for i, key := range m.KeyProperties {
 		if err := key.Set(scratch, keyValues[i]); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	flag := m.SoftDeleteProperty
 	if err := flag.Set(scratch, true); err != nil {
-		return err
+		return nil, err
 	}
 	set, _, err := db.stampSet(m, scratch, []*core.PropertyMap{flag})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return executeUpdate(ctx, db, entityType, m, scratch, db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set))
+	write, err := db.countedWrite(entityType, scratch, db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set))
+	if err != nil {
+		return nil, err
+	}
+	write.instance = nil // the scratch instance is the session's, not the caller's: rule 1a has no instance to keep apart
+	judge := db.updateJudge(entityType, m, scratch)
+	write.finish = func(result writeResult, _ *undoJournal) error { return judge(result.affected) }
+	return write, nil
 }

@@ -26,6 +26,31 @@ public sealed class DbOptions
     /// conformance runners.
     /// </summary>
     public Func<DateTime> Clock { get; init; } = () => DateTime.UtcNow;
+
+    /// <summary>
+    /// Statement batching (Level 4, ADR-0044, spec/session.md "Batching"):
+    /// <see cref="BatchingMode.Off"/> by default — one round trip per statement,
+    /// the Level 0–3 behaviour. <see cref="BatchingMode.Auto"/> sends the
+    /// statements of one call (<see cref="Db.FlushAsync"/>, <see cref="StatementBatch.SendAsync"/>)
+    /// in as few messages as the plan allows; nothing waits and nothing is
+    /// deferred past the call.
+    /// </summary>
+    public BatchingMode Batching { get; init; } = BatchingMode.Off;
+
+    /// <summary>The most statements one message carries under <see cref="BatchingMode.Auto"/>; 100 by default, at least 1.</summary>
+    public int MaxStatementsPerMessage { get; init; } = 100;
+}
+
+/// <summary>
+/// The session's batching mode (ADR-0044): <see cref="Off"/> sends every
+/// statement as its own message; <see cref="Auto"/> groups the statements one
+/// call already holds — a flush, a batch send — by the plan of spec/session.md
+/// "Batching". No timer, no implicit queue: a lone statement runs as always.
+/// </summary>
+public enum BatchingMode
+{
+    Off,
+    Auto,
 }
 
 /// <summary>

@@ -39,22 +39,6 @@ public sealed partial class Db
         }
     }
 
-    /// <summary>Stamps, runs the write, and on failure puts the previous stamp back: a failed write leaves the instance as it was.</summary>
-    private async Task StampedAsync(EntityMap map, object entity, Func<Task> write)
-    {
-        var before = map.UpdatedAtProperty?.GetValue(entity);
-        StampUpdatedAt(map, entity);
-        try
-        {
-            await write().ConfigureAwait(false);
-        }
-        catch
-        {
-            map.UpdatedAtProperty?.SetValue(entity, before);
-            throw;
-        }
-    }
-
     /// <summary>The SET of a column-list update gains the stamp column when it is mapped and not already listed.</summary>
     private static IReadOnlyList<PropertyMap> WithUpdatedAt(EntityMap map, IReadOnlyList<PropertyMap> set)
     {
@@ -93,7 +77,7 @@ public sealed partial class Db
     /// blindly — pass the entity. The instance is forgotten afterwards like any
     /// deleted row.
     /// </summary>
-    private async Task SoftDeleteAsync(EntityMap map, object keyOrEntity, bool byEntity, CancellationToken ct)
+    private PendingWrite PrepareSoftDelete(EntityMap map, object keyOrEntity, bool byEntity)
     {
         var flag = map.SoftDeleteProperty!;
         var set = WithUpdatedAt(map, [flag]);
@@ -104,17 +88,16 @@ public sealed partial class Db
             flag.SetValue(keyOrEntity, true);
             try
             {
-                await StampedAsync(map, keyOrEntity, () => ExecuteUpdateAsync(
-                    map, keyOrEntity, Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set), ct)).ConfigureAwait(false);
+                return PrepareUpdateStatement(
+                    map, keyOrEntity, Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set),
+                    () => Forget(map, map.GetKeyValues(keyOrEntity)),
+                    restore: () => flag.SetValue(keyOrEntity, flagBefore));
             }
             catch
             {
-                flag.SetValue(keyOrEntity, flagBefore);
+                flag.SetValue(keyOrEntity, flagBefore);   // a failed write leaves the instance as it was
                 throw;
             }
-
-            Untrack(map, map.GetKeyValues(keyOrEntity));
-            return;
         }
 
         if (map.VersionProperty is not null)
@@ -125,28 +108,45 @@ public sealed partial class Db
         }
 
         var keyValues = ValidateKey(map, keyOrEntity);
-        using var command = _connection.CreateCommand();
-        command.Transaction = _transaction;
-        command.CommandText = Options.Dialect.UpdateOnlySql(map, set);
-        AddParameter(command, flag, true);
-        if (map.UpdatedAtProperty is { } updated)
+        var command = _connection.CreateCommand();
+        try
         {
-            AddParameter(command, updated, ClockValue(updated));
+            command.CommandText = Options.Dialect.UpdateOnlySql(map, set);
+            AddParameter(command, flag, true);
+            if (map.UpdatedAtProperty is { } updated)
+            {
+                AddParameter(command, updated, ClockValue(updated));
+            }
+
+            for (var i = 0; i < keyValues.Length; i++)
+            {
+                AddParameter(command, map.KeyProperties[i], keyValues[i]);
+            }
+        }
+        catch
+        {
+            command.Dispose();
+            throw;
         }
 
-        for (var i = 0; i < keyValues.Length; i++)
+        var sql = command.CommandText;
+        Action? undoForget = null;
+        return new PendingWrite(command, AffectedResult, null, generatesKey: false)
         {
-            AddParameter(command, map.KeyProperties[i], keyValues[i]);
-        }
+            Key = new EntityKey(map.EntityType, keyValues),
+            Complete = result =>
+            {
+                if (AffectedCount(result, sql) == 0)
+                {
+                    throw new SimpleOrmException(
+                        "CRUD-001", map.EntityType.Name, $"delete affected no rows: no row with key ({FormatKey(keyOrEntity)})");
+                }
 
-        var affected = await ExecuteAffectedAsync(command, ct).ConfigureAwait(false);
-        if (affected == 0)
-        {
-            throw new SimpleOrmException(
-                "CRUD-001", map.EntityType.Name, $"delete affected no rows: no row with key ({FormatKey(keyOrEntity)})");
-        }
-
-        Untrack(map, keyValues);
+                undoForget = Forget(map, keyValues);
+                return 1;
+            },
+            Undo = () => undoForget?.Invoke(),
+        };
     }
 
     private void AddParameter(DbCommand command, PropertyMap property, object? value)

@@ -1,0 +1,73 @@
+{
+  "name": "batch_off_sends_one_statement_per_message",
+  "comment": "Under Off the explicit batch exists and behaves the same - one statement per message, in one transaction: switching the option never requires a code change.",
+  "tracking": "untracked",
+  "batching": {
+    "mode": "off"
+  },
+  "steps": [
+    {
+      "new": {
+        "entity": "Role",
+        "as": "r1",
+        "values": {
+          "Name": "reader",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "new": {
+        "entity": "Role",
+        "as": "r2",
+        "values": {
+          "Name": "writer",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "batch": {
+        "ops": [
+          {
+            "insert": {
+              "ref": "r1"
+            }
+          },
+          {
+            "insert": {
+              "ref": "r2"
+            }
+          },
+          {
+            "execute": {
+              "command": "SetDisplayName",
+              "args": {
+                "Id": 1,
+                "DisplayName": null
+              }
+            }
+          }
+        ],
+        "expectMessages": [
+          1,
+          1,
+          1
+        ],
+        "expectAffected": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "expect": {
+        "count": {
+          "entity": "Role",
+          "equals": 5
+        }
+      }
+    }
+  ]
+}

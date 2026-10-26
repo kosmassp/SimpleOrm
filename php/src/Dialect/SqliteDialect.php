@@ -242,6 +242,17 @@ final class SqliteDialect implements Dialect
         return false;   // the driver's count is the statement's own (ADR-0040 add.3)
     }
 
+    /** `pdo_sqlite` prepares one statement: the planned messages run one at a time, reusing a prepared statement per text (ADR-0044). */
+    public function supportsStatementBatching(): bool
+    {
+        return false;
+    }
+
+    public function maxParametersPerMessage(): ?int
+    {
+        return null;
+    }
+
     private static function keyPredicate(EntityMap $map): string
     {
         return implode(' and ', array_map(

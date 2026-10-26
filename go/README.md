@@ -205,6 +205,41 @@ managed, err := orm.Merge(ctx, db, &copy)   // the session's instance for the co
 
 Both need a tracked session (`UOW-003` otherwise).
 
+### Statement batching (Level 4, ADR-0044)
+
+A *message* is what one round trip sends. By default (`Batching: orm.BatchingOff`) every statement is a message of
+its own — the Level 0–3 session exactly. Opt in per session, and the statements of **one call** (a `Flush`, the
+`Send` of an explicit batch) go out in as few messages as the plan allows; nothing waits and nothing is deferred
+past the call that holds the statements — no timer, no implicit queue:
+
+```go
+db, err := orm.Open(ctx, conn, orm.Options{Dialect: postgres.New(), Tracking: orm.TrackingTracked,
+    Batching: orm.BatchingAuto, MaxStatementsPerMessage: 100}) // 0 means the default, 100; negative is refused at Open
+db.BatchingInEffect()   // true on PostgreSQL (pgx Batch) and SQL Server (one multi-statement text); false on SQLite
+
+b := db.Batch()                                   // queuing does no I/O
+err = orm.BatchInsert(b, &order)                  // generic package functions beside the immediate calls
+err = orm.BatchUpdate(b, &customer)
+err = orm.BatchUpdateOnly(b, &user, "Name")
+err = orm.BatchDelete[Role](b, 3)                 // by key; orm.BatchDeleteEntity(b, &x) is the version-checked form
+err = orm.BatchExecute(b, MarkShipped, MarkShippedArgs{ID: 7})   // a registry command
+result, err := b.Send(ctx)                        // result.Affected: one count per queued operation; result.Messages
+b.Discard()                                       // the dispose analog: drop an unsent batch (TX-003 on any further use)
+```
+
+The plan never reorders, adds, or drops a statement. A statement starts a new message when it **depends on the
+message in progress** (it writes an instance the message already writes — or another instance of the same type with the same set key, which the identity gate would otherwise read before the message updated it — or its many-to-one navigation — or, in a
+flush, its cascade owner — points at an instance inserted in the message with a database-generated key: the keys must
+come back before the statement is prepared), when it **reads a result after a registry command**, or when it would
+**overflow** the parameter cap (SQL Server's 2098). A message that holds `MaxStatementsPerMessage` statements goes out as soon as it is full, before the next statement is prepared. So a graph of parents and
+children flushes in as many messages as it has levels. Each queued operation behaves exactly as its immediate call
+would at that point of the sequence; keys do not flow between queued operations (the unit of work is the form that
+flows keys). `Send` always runs in a transaction — yours, left open, or one it owns. A failed call undoes every
+in-memory effect of every statement it prepared and rolls its own transaction back; inside your transaction the
+rows of the statements that ran — under batching, possibly some after the failing one in its message — are yours to
+roll back. SQLite has no round trip to save: its messages run one statement at a time, reusing one prepared command
+per distinct statement text within the call.
+
 Errors are values with a stable code: `errors.As(err, &e)` on an `*orm.Error`,
 or `orm.CodeOf(err)`. Every I/O function takes a `context.Context`.
 

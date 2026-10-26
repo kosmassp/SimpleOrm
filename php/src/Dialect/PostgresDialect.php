@@ -243,6 +243,20 @@ final class PostgresDialect implements Dialect
         return false;   // the driver's count is the statement's own (ADR-0040 add.3)
     }
 
+    /**
+     * Sequential in PHP (ADR-0044, spec/dialects.md "Statement batching"): `pdo_pgsql` refuses several commands in one
+     * prepared statement (SQLSTATE 42601) and its emulated form returns only the last result (`nextRowset()` is IM001).
+     */
+    public function supportsStatementBatching(): bool
+    {
+        return false;
+    }
+
+    public function maxParametersPerMessage(): ?int
+    {
+        return null;
+    }
+
     private function keyPredicate(EntityMap $map): string
     {
         return implode(' and ', array_map(

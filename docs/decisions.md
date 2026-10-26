@@ -3917,3 +3917,183 @@ go test -C go -count=1 -p 2 ./orm/sqlserver/ ./orm/internal/conformance/ -run "L
 Server live verification is pending the engine. Next: nothing is pending;
 the remaining Level 4 candidates (CI conformance matrix, performance,
 packaging, observability) wait for the owner.
+
+## ADR-0044 — Level 4 item 3: statement batching, configurable, in three implementations (2026-10-23)
+
+**The request (owner, 2026-10-22/23).** "Pulling the queries and sending them to
+the database in one message" — and it must be configurable. Until now nothing
+batched: ADR-0039 recorded that the reference does not (its SQLite provider has
+no batch, and the 100-row flush measured within the cost of the same inserts
+issued one by one), and left `DbBatch` to "the Level 4 performance pass, measured
+there".
+
+**Measured before the design** (this machine, the installed packages):
+`CanCreateBatch` is true for `Microsoft.Data.SqlClient` 6.1.1 and Npgsql 9.0.3,
+false for `Microsoft.Data.Sqlite` 10.0.0; on the `netstandard2.0` legs
+(SqlClient 5.1.6, Npgsql 4.1.14) there is no `DbBatch` type. An `NpgsqlBatch`
+against PostgreSQL 16.4 binds `@name` parameters per batch command, returns one
+result set per `RETURNING`, reports `RecordsAffected` per command (0 for a stale
+update), and on a failing command names it and skips the rest. PHP 8.4's
+`pdo_pgsql` refuses several commands in a native prepared statement (42601) and
+in its emulated form returns only the last result (`nextRowset()` is IM001); its
+`ext/pgsql` has no pipeline functions. The Go PostgreSQL dialect already reaches
+pgx through `conn.Raw`. On SQLite, 100 inserts in one transaction: a new command
+per row 1147 µs, one prepared command reused 618 µs, one multi-statement command
+text 3417 µs (Microsoft.Data.Sqlite binds every parameter to every statement),
+one multi-row `values (…), (…)` 319 µs — and SQLite's documentation states that
+`RETURNING` rows come back in an arbitrary order.
+
+**Rulings (owner, 2026-10-23).** The design's nine points, with one change by the
+owner:
+
+1. **Scope**: the flush and an explicit batch scope for writes and registry
+   commands now; **batched reads later** (3b).
+2. **The option**: `Batching = Off | Auto` plus `MaxStatementsPerMessage`.
+   The owner asked for an **"Auto" that waits a time window or a statement count**
+   (e.g. 100 ms or 5 statements) as implicit tuning for new users, not under
+   transactions the user separates. The design's answer, accepted: inside one
+   session statements are awaited one after another, so a timer either adds its
+   wait to every lone write or defers the write past its call (the key not on the
+   entity, an error surfacing at an unrelated call, reads flushing first — hidden
+   round trips, §2); across sessions it is connection multiplexing, a driver
+   feature (Npgsql's `Multiplexing=true`), and connections are reduced by pooling,
+   which every provider already does. **`Auto` batches whatever one call already
+   holds — no timer, nothing deferred.**
+3. **Default `Off`** for now (every pin byte-identical); `Auto` may become the
+   default after measurement. `MaxStatementsPerMessage` 100.
+4. **A dialect that cannot batch runs the plan sequentially** and the session says
+   so (`BatchingInEffect`); nothing refuses.
+5. **C# on SQL Server: `SqlBatch`** (not one multi-statement `sp_executesql`):
+   each statement keeps its unbatched text, so plans are reused.
+6. **The explicit batch always runs in a transaction.**
+7. **The relaxed failure rule** inside the caller's transaction.
+8. **Names**: `db.Batch()`, `SendAsync`, `BatchResult`, `DbOptions.Batching`, the
+   seam's `SupportsStatementBatching` and `MaxParametersPerMessage`, `TX-003`;
+   an unsent batch disposed is dropped silently.
+9. **SQL Server built and pinned without the engine**, its live legs skip-gated.
+
+Added by the owner with the scope: **SQLite reuses prepared statements under
+`Auto`** (it has no round trip to save; the reuse is its gain); **multi-row
+inserts are a later rule**, for keys the database does not generate only.
+
+**Decision.**
+
+- **A message is one round trip.** The statements of one call — `FlushAsync`, or
+  `StatementBatch.SendAsync` — are planned into messages; nothing else batches.
+- **The plan** (spec/session.md "Batching"), the same in every implementation and
+  for every driver of a dialect: walking the call's statements in order — never
+  reordered, added, dropped, or changed — a statement starts a new message when
+  (1) it depends on the current one: a statement on the same instance or on one of
+  the same type with the same set key is in it, or an instance its many-to-one
+  navigation (or, in a flush, its cascade owner) points at is inserted in it with
+  a database-generated key — decided before it is prepared; (2) it reads a result
+  (a generated key; SQL Server's reported count) and a registry command is in the
+  message; (3) the message is full (`MaxStatementsPerMessage`, sent as soon as it
+  is) or the statement's bound parameters would take it over the dialect's cap
+  (SQL Server 2098: `sp_executesql` takes 2100, two of them its own). Under `Off`
+  the cap is one.
+- **One write shape.** Every generated write is prepared (checks, hooks, the bound
+  statement), executed, then completed (keys, counts judged, versions, tracking) —
+  the immediate operations, the flush, and the batch share it; undo puts back every
+  in-memory effect of everything a failed call prepared.
+- **Realizations** (spec/dialects.md "Statement batching"): C# `DbBatch` under
+  `#if NET` where the connection can create one (`SqlBatch`, `NpgsqlBatch`), the
+  `netstandard2.0` path sequential; Go pgx `SendBatch` on PostgreSQL and one
+  multi-statement text on SQL Server; PHP one multi-statement text with
+  `nextRowset()` on SQL Server, sequential on PostgreSQL; SQLite sequential
+  everywhere with one prepared command per statement text. A realization may take
+  more round trips than the plan's messages (a registry command of several
+  statements on Npgsql and pgx; any registry command in a multi-statement text),
+  never fewer; it reads every statement's own result and drains the response.
+- **Failure.** The call fails as a whole; its own transaction rolls back; inside
+  the caller's, statements after the failing one in its message may have run —
+  roll back.
+- **The explicit batch**: `Insert`, `Update`, `UpdateOnly`, `Delete`, `Execute`
+  queued without I/O; `SendAsync` behaves as the immediate calls would, in one
+  transaction; `BatchResult(Affected, Messages)`; `TX-003` once spent; reads not
+  batched.
+
+**Spec.** `spec/session.md` "Batching — messages, the option, the explicit batch"
+(the option, the plan, results, failure, the explicit batch, per-language names,
+ten Clarifications), the step scripts (`batching` header, `batch`/`batchAgain`,
+`expectMessages`, `expectAffected`, the fixture command `SetDisplayName`,
+composite keys in `get`/`delete`, the message boundary, flush-cases run in both
+modes), "System functions are not placeholders"; `spec/unit-of-work.md` "Batching"
+rewritten as the rule; `spec/dialects.md` the two seam members, the flags table,
+"Statement batching" per implementation, the testing contract, the deferred list
+(batched reads, multi-row inserts); `spec/errors.md` `TX-003`; `spec/crud.md`.
+
+**Conformance.** `conformance/batch-cases/` (12 cases): the grouping of a flush by
+generated-key levels, cascaded children waiting for their owner's key, the
+statement cap, an explicit batch carrying every operation, a result read after a
+command, the same instance and the same key, a failure that undoes everything
+(keys never flow between queued operations: `CRUD-004`), a stale version
+mid-send, a tracked clean update issuing nothing, `Off`'s one statement per
+message, `TX-003`. Every runner runs every `flush-cases` file under `Off` and
+`Auto` with the same expectations.
+
+**The ports, by the ADR-0031 method** (one Sonnet agent each, forbidden to open
+another implementation), then a review. PHP's 14 and Go's 16 gap questions became
+the ten Clarifications of session.md "Batching" and the dialects.md additions.
+Findings:
+
+- **`@@rowcount` read as a placeholder** — both ports independently: the second
+  `@` of SQL Server's generated `select @@rowcount` matched `@rowcount`. In PHP it
+  sat in the ADR-0040 add.3 write path (every generated SQL Server update and delete
+  would have failed — that leg has never run on an engine); in the reference a
+  registry command using a system function was `PRM-001`. Fixed in all three; the
+  rule is in session.md "Parameters".
+- **A failure in an unread statement** (PHP): in a multi-statement message the
+  driver surfaces it only when stepped past, so closing the cursor would discard
+  it and the call could commit around a failed statement. Every one-round-trip
+  realization now drains the response; the reference gained a live test with the
+  failing statement last.
+- **The same key on two instances in one message** (PHP and Go, mirror cases): the
+  identity gate at preparation read a map the message had not yet updated — a
+  delete of A then an insert of B with A's key passed under `Off` and refused
+  `UOW-002` under `Auto`; two new instances with one natural key refused `UOW-002`
+  under `Off` and hit the database's key violation under `Auto`. Rule 1a gained
+  the key clause; `batch_same_key_starts_a_new_message` pins it.
+- **When a full message goes out** (PHP): before the next statement is prepared —
+  the reference and Go decided it after preparing, which changed which error a
+  doubly failing call reported. Unified on PHP's: under `Off` the cap is one.
+- Smaller: the multi-statement join is `;` and a line break (a trailing line
+  comment), registry commands always alone in that realization, rule 3 counts
+  bound values, the hook counts the plan's messages, Go's zero-valued
+  `MaxStatementsPerMessage` means the default, Go's queue operations are package
+  functions with `Discard` for disposal.
+
+**Measurement** (`BatchBenchmarks`, ShortRun, Ryzen 7 5700U, `Off` against
+`Auto`; SQLite in WAL with `synchronous=OFF`; PostgreSQL 16.4 on loopback — the
+cheapest round trip there is, so over a network the gain grows with latency):
+
+| Path | SQLite `Off` → `Auto` | PostgreSQL `Off` → `Auto` |
+|---|---|---|
+| `Persist` × 100 + `Flush`, session opened per call | 2.04 → 1.66 ms (noisy) | 19.5 → 5.1 ms (3.9×) |
+| 100 inserts, one explicit batch | 1.65 → 0.73 ms (2.3×) | 19.7 → 4.8 ms (4.1×) |
+| 100 registry commands, one explicit batch | 0.78 → 0.34 ms (2.3×) | 20.5 → 5.5 ms (3.8×) |
+
+Allocation is unchanged within a few percent. On SQLite the gain is the
+prepared-command reuse — the same measurement that made multi-statement text a
+loss there (3× slower). SQL Server is unmeasured until the engine is back.
+
+**Verification.** PostgreSQL live on this machine (Laragon's 16.4), SQLite as
+always: C# 535 passed / 21 skipped (was 494 / 16 — the new SQL Server batching
+leg is five of the skips), both TFMs built; PHP 1075 tests (33 skipped, the SQL
+Server leg; was 1014 / 29); Go every package ok, `gofmt` and `go vet` clean.
+Every `batch-cases` case and every `flush-cases` case in both modes passes in all
+three; the PostgreSQL batching legs pass live in C# (`NpgsqlBatch`) and Go (pgx),
+and in PHP through the sequential realization.
+
+**Status.** Accepted. Level 4 item 3 is built in C#, PHP, and Go; its SQL Server
+live verification is pending the engine (with ADR-0040 add.3, ADR-0042, and
+ADR-0043's), by the same commands:
+
+```
+cd dotnet && dotnet test SimpleOrm.sln --filter "FullyQualifiedName~SqlServer"
+cd php && composer test-live -- --filter SqlServer
+go test -C go -count=1 -p 2 ./orm/sqlserver/ -run Live
+```
+
+Next: batched reads (3b) and multi-row inserts for keys the database does not
+generate, when the owner says so; the other Level 4 candidates wait.

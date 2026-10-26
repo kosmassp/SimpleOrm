@@ -98,4 +98,26 @@ final class SqlPlaceholdersTest extends TestCase
             SqlPlaceholders::toPdo('select @a, @b, @a from t'),
         );
     }
+
+    #[Test]
+    public function a_system_function_is_not_a_placeholder(): void
+    {
+        // SQL Server's generated writes end in `select @@rowcount` (ADR-0040 add.3): its second `@` is not a name.
+        $sql = 'set nocount on; update t set a = @a where id = @id; select @@rowcount; set nocount off';
+
+        self::assertSame(['a', 'id'], SqlPlaceholders::find($sql));
+        self::assertSame(
+            'set nocount on; update t set a = :a where id = :id; select @@rowcount; set nocount off',
+            SqlPlaceholders::toPdo($sql),
+        );
+    }
+
+    #[Test]
+    public function prefixed_renames_every_real_placeholder_and_only_those(): void
+    {
+        self::assertSame(
+            "select @p3_a, @p3_b, @p3_a, '@a', @@rowcount from t -- @a\n where id = @p3_id",
+            SqlPlaceholders::prefixed("select @a, @b, @a, '@a', @@rowcount from t -- @a\n where id = @id", 'p3_'),
+        );
+    }
 }

@@ -33,6 +33,23 @@ final class ParameterBinder
         TypeConverter $converter,
         bool $arrayParameters = false,
     ): BoundSql {
+        $bound = self::bindKeepingPlaceholders($sql, $args, $queryName, $converter, $arrayParameters);
+
+        return new BoundSql(SqlPlaceholders::toPdo($bound->sql), $bound->parameters);
+    }
+
+    /**
+     * The same binding with the SQL left in its `@name` form (any IN-list already expanded), for a caller that renames the
+     * placeholders itself before PDO sees them — a planned message of several statements (ADR-0044). The returned
+     * {@see BoundSql::$sql} is **not** PDO-ready.
+     */
+    public static function bindKeepingPlaceholders(
+        string $sql,
+        object $args,
+        string $queryName,
+        TypeConverter $converter,
+        bool $arrayParameters = false,
+    ): BoundSql {
         $properties = self::publicProperties($args);
         $tokens = self::declaredTokens($args);
         $placeholders = SqlPlaceholders::find($sql);
@@ -78,7 +95,7 @@ final class ParameterBinder
             }
         }
 
-        return new BoundSql(SqlPlaceholders::toPdo($text), $parameters);
+        return new BoundSql($text, $parameters);
     }
 
     /**

@@ -1,0 +1,72 @@
+{
+  "name": "batch_tracked_clean_update_issues_nothing",
+  "comment": "In a tracked session a queued update writes the dirty columns, and a clean instance issues no statement and counts 0 - exactly as the immediate update.",
+  "tracking": "tracked",
+  "batching": {
+    "mode": "auto"
+  },
+  "steps": [
+    {
+      "get": {
+        "entity": "User",
+        "key": 1,
+        "as": "clean"
+      }
+    },
+    {
+      "get": {
+        "entity": "User",
+        "key": 2,
+        "as": "dirty"
+      }
+    },
+    {
+      "set": {
+        "ref": "dirty",
+        "property": "Name",
+        "value": "Grace Hopper"
+      }
+    },
+    {
+      "batch": {
+        "ops": [
+          {
+            "update": {
+              "ref": "clean"
+            }
+          },
+          {
+            "update": {
+              "ref": "dirty"
+            }
+          }
+        ],
+        "expectStatements": [
+          {
+            "op": "update",
+            "entity": "User",
+            "columns": [
+              "Name",
+              "UpdatedAtUtc"
+            ]
+          }
+        ],
+        "expectMessages": [
+          1
+        ],
+        "expectAffected": [
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "expect": {
+        "dirty": {
+          "ref": "dirty",
+          "properties": []
+        }
+      }
+    }
+  ]
+}

@@ -397,6 +397,13 @@ final class SqlServerDialectTest extends TestCase
     }
 
     #[Test]
+    public function a_planned_message_is_one_multi_statement_text_capped_at_2098_parameters(): void
+    {
+        self::assertTrue($this->dialect->supportsStatementBatching());
+        self::assertSame(2098, $this->dialect->maxParametersPerMessage());
+    }
+
+    #[Test]
     public function introspection_queries_take_relation_and_name_their_result_columns(): void
     {
         $columns = $this->dialect->columnsInfoSql();

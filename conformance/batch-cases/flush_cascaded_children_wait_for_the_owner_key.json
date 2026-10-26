@@ -1,0 +1,108 @@
+{
+  "name": "flush_cascaded_children_wait_for_the_owner_key",
+  "comment": "Rule 1b through a cascade: the details take the transaction's generated key from their owner, so they wait for the message that inserted it - two messages where Off takes three round trips.",
+  "tracking": "tracked",
+  "batching": {
+    "mode": "auto"
+  },
+  "steps": [
+    {
+      "new": {
+        "entity": "TransactionDetail",
+        "as": "d1",
+        "values": {
+          "Description": "Widget",
+          "Quantity": 1,
+          "UnitPrice": "2.50",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "new": {
+        "entity": "TransactionDetail",
+        "as": "d2",
+        "values": {
+          "Description": "Gadget",
+          "Quantity": 2,
+          "UnitPrice": "1.25",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "new": {
+        "entity": "Transaction",
+        "as": "t",
+        "values": {
+          "UserId": 1,
+          "Status": "Pending",
+          "Amount": "5",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        },
+        "navigations": {
+          "Details": [
+            "d1",
+            "d2"
+          ]
+        }
+      }
+    },
+    {
+      "persist": {
+        "ref": "t"
+      }
+    },
+    {
+      "flush": {
+        "expectStatements": [
+          {
+            "op": "insert",
+            "entity": "Transaction"
+          },
+          {
+            "op": "insert",
+            "entity": "TransactionDetail"
+          },
+          {
+            "op": "insert",
+            "entity": "TransactionDetail"
+          }
+        ],
+        "expectMessages": [
+          1,
+          2
+        ],
+        "expectSummary": {
+          "inserted": 3,
+          "updated": 0,
+          "deleted": 0
+        }
+      }
+    },
+    {
+      "expect": {
+        "sameValue": [
+          "d1.TransactionId",
+          "t.Id"
+        ]
+      }
+    },
+    {
+      "expect": {
+        "sameValue": [
+          "d2.TransactionId",
+          "t.Id"
+        ]
+      }
+    },
+    {
+      "expect": {
+        "count": {
+          "entity": "TransactionDetail",
+          "equals": 2
+        }
+      }
+    }
+  ]
+}

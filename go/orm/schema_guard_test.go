@@ -404,3 +404,14 @@ func TestValidate_APendingDraftIsMIG030AndARecordedOneIsHistory(t *testing.T) {
 		t.Fatalf("a recorded draft is history, got %v", err)
 	}
 }
+
+func TestValidate_ASystemFunctionIsNotAPlaceholderSoItIsNeverPRM001(t *testing.T) {
+	db := testsupport.OpenSample(t)
+	// SQLite cannot prepare `@@rowcount` (VAL-001); the parameter check, which is static, must not read it as @rowcount.
+	entry := orm.InlineCommand[sample.UsersByEmailArgs]("update users set name = name where email = @Email; select @@rowcount")
+
+	err := orm.ValidateTypes(context.Background(), db, []orm.Entry{entry}, nil)
+	if orm.HasCode(err, "PRM-001") || orm.HasCode(err, "PRM-002") {
+		t.Fatalf("a system function is not a placeholder, got: %v", err)
+	}
+}

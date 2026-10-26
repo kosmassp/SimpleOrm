@@ -1,0 +1,197 @@
+{
+  "name": "flush_groups_by_generated_key_levels",
+  "comment": "A batched flush: two users and their transactions, a dirty user, a removed profile. The transactions read their users' generated keys, so the first transaction starts the second message; the update and the delete join it. The statements and their order are what Off would issue.",
+  "tracking": "tracked",
+  "batching": {
+    "mode": "auto"
+  },
+  "steps": [
+    {
+      "new": {
+        "entity": "User",
+        "as": "u1",
+        "values": {
+          "Name": "Linus",
+          "Email": "linus@example.com",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "new": {
+        "entity": "User",
+        "as": "u2",
+        "values": {
+          "Name": "Ken",
+          "Email": "ken@example.com",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        }
+      }
+    },
+    {
+      "new": {
+        "entity": "Transaction",
+        "as": "t1",
+        "values": {
+          "Status": "Pending",
+          "Amount": "5",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        },
+        "navigations": {
+          "User": "u1"
+        }
+      }
+    },
+    {
+      "new": {
+        "entity": "Transaction",
+        "as": "t2",
+        "values": {
+          "Status": "Pending",
+          "Amount": "7",
+          "CreatedAtUtc": "2026-08-28T09:30:00.0000000Z"
+        },
+        "navigations": {
+          "User": "u2"
+        }
+      }
+    },
+    {
+      "get": {
+        "entity": "User",
+        "key": 2,
+        "as": "grace"
+      }
+    },
+    {
+      "set": {
+        "ref": "grace",
+        "property": "Name",
+        "value": "Grace Hopper"
+      }
+    },
+    {
+      "get": {
+        "entity": "UserProfile",
+        "key": 1,
+        "as": "profile"
+      }
+    },
+    {
+      "persist": {
+        "ref": "u1"
+      }
+    },
+    {
+      "persist": {
+        "ref": "u2"
+      }
+    },
+    {
+      "persist": {
+        "ref": "t1"
+      }
+    },
+    {
+      "persist": {
+        "ref": "t2"
+      }
+    },
+    {
+      "remove": {
+        "ref": "profile"
+      }
+    },
+    {
+      "flush": {
+        "expectStatements": [
+          {
+            "op": "insert",
+            "entity": "User"
+          },
+          {
+            "op": "insert",
+            "entity": "User"
+          },
+          {
+            "op": "insert",
+            "entity": "Transaction"
+          },
+          {
+            "op": "insert",
+            "entity": "Transaction"
+          },
+          {
+            "op": "update",
+            "entity": "User",
+            "columns": [
+              "Name",
+              "UpdatedAtUtc"
+            ]
+          },
+          {
+            "op": "delete",
+            "entity": "UserProfile"
+          }
+        ],
+        "expectMessages": [
+          2,
+          4
+        ],
+        "expectSummary": {
+          "inserted": 4,
+          "updated": 1,
+          "deleted": 1
+        }
+      }
+    },
+    {
+      "expect": {
+        "sameValue": [
+          "t1.UserId",
+          "u1.Id"
+        ]
+      }
+    },
+    {
+      "expect": {
+        "sameValue": [
+          "t2.UserId",
+          "u2.Id"
+        ]
+      }
+    },
+    {
+      "expect": {
+        "dirty": {
+          "ref": "grace",
+          "properties": []
+        }
+      }
+    },
+    {
+      "expect": {
+        "tracked": {
+          "ref": "profile",
+          "is": false
+        }
+      }
+    },
+    {
+      "expect": {
+        "count": {
+          "entity": "Transaction",
+          "equals": 3
+        }
+      }
+    },
+    {
+      "expect": {
+        "count": {
+          "entity": "UserProfile",
+          "equals": 0
+        }
+      }
+    }
+  ]
+}

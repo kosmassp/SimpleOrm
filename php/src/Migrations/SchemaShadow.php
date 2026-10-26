@@ -15,6 +15,7 @@ use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Metadata\RelationKind;
 use SimpleOrm\Parameters\PdoBinder;
 use SimpleOrm\Parameters\SqlPlaceholders;
+use SimpleOrm\Session\StatementLog;
 use Throwable;
 
 /**
@@ -41,17 +42,22 @@ use Throwable;
  */
 final class SchemaShadow
 {
+    /** The statement log (ADR-0045), every line written as `shadow`: the replay, its introspection, the view and trigger read-back. */
+    private readonly StatementLog $log;
+
     public function __construct(
         private readonly Dialect $dialect,
         private readonly ShadowHost $host,
         private readonly string $adminConnectionString = '',
+        ?StatementLog $log = null,
     ) {
+        $this->log = ($log ?? StatementLog::off())->named('shadow');
     }
 
     /** The shadow of a dialect with its own host; `$adminConnectionString` is `--db` on SQL Server and PostgreSQL (ignored on SQLite). */
-    public static function for(Dialect $dialect, string $adminConnectionString = ''): self
+    public static function for(Dialect $dialect, string $adminConnectionString = '', ?StatementLog $log = null): self
     {
-        return new self($dialect, Dialects::shadowHost($dialect), $adminConnectionString);
+        return new self($dialect, Dialects::shadowHost($dialect), $adminConnectionString, $log);
     }
 
     public function rebuildSnapshots(
@@ -111,7 +117,7 @@ final class SchemaShadow
         if ($fromVersion > 0) {
             // Trust: rebuild the state at fromVersion from the committed snapshots, verify nothing below it.
             $this->restoreBaseline($connection, $migrationsDir, $fromVersion, $result);
-            (new MigrationRunner($connection, $this->dialect, $maps, MigrationSet::of(...$versions), replayDrafts: true))->baseline($fromVersion);
+            (new MigrationRunner($connection, $this->dialect, $maps, MigrationSet::of(...$versions), replayDrafts: true, log: $this->log))->baseline($fromVersion);
         }
 
         foreach ($versions as $version) {
@@ -120,7 +126,7 @@ final class SchemaShadow
             }
 
             $subset = array_values(array_filter($versions, static fn ($v): bool => $v->version() <= $version->version()));
-            (new MigrationRunner($connection, $this->dialect, $maps, MigrationSet::of(...$subset), replayDrafts: true))->migrate();
+            (new MigrationRunner($connection, $this->dialect, $maps, MigrationSet::of(...$subset), replayDrafts: true, log: $this->log))->migrate();
 
             $builder = new VersionBuilder();
             $version->compose($builder);
@@ -206,7 +212,7 @@ final class SchemaShadow
         $readBack = null;
         $note = null;
         if ($this->host->canReadTriggers()) {
-            $readBack = $this->host->readTrigger($connection, $name, $note);
+            $readBack = $this->host->readTrigger($connection, $name, $note, $this->log);
             if ($note !== null) {
                 $result->notes[] = sprintf('V%04d: %s', $version, $note);
             }
@@ -282,9 +288,9 @@ final class SchemaShadow
                 }
 
                 [$schema, $atVersion] = $latest;
-                $connection->exec($this->dialect->createTableSqlFromSchema($schema));
+                $this->exec($connection, $this->dialect->createTableSqlFromSchema($schema));
                 foreach ($schema->indexes as $index) {
-                    $connection->exec($this->dialect->createIndexSqlFromSchema($schema->name, $index));
+                    $this->exec($connection, $this->dialect->createIndexSqlFromSchema($schema->name, $index));
                 }
 
                 $result->notes[] = sprintf('baseline: %s restored from V%04d snapshot (trusted)', $schema->name, $atVersion);
@@ -308,7 +314,7 @@ final class SchemaShadow
 
                 [$ddl, $objectName, $atVersion] = $latest;
                 $parts = SchemaSnapshot::splitViewDdl($ddl);
-                $connection->exec($parts === null ? $ddl : $this->dialect->createViewSqlFromBody($objectName, $parts['body'], $parts['materialized']));
+                $this->exec($connection, $parts === null ? $ddl : $this->dialect->createViewSqlFromBody($objectName, $parts['body'], $parts['materialized']));
                 $result->notes[] = sprintf('baseline: %s restored from V%04d snapshot (trusted)', $objectName, $atVersion);
             }
         }
@@ -324,12 +330,19 @@ final class SchemaShadow
 
                 [$schema, $atVersion] = $latest;
                 foreach ($schema->createStatements($this->dialect) as $sql) {
-                    $connection->exec($sql);
+                    $this->exec($connection, $sql);
                 }
 
                 $result->notes[] = sprintf('baseline: %s restored from V%04d snapshot (trusted)', $schema->name(), $atVersion);
             }
         }
+    }
+
+    /** One restore statement of the trusted baseline: logged as `shadow` as it is sent, then executed. */
+    private function exec(PDO $connection, string $sql): void
+    {
+        $this->log->write('shadow', $sql);
+        $connection->exec($sql);
     }
 
     /** @return array{0: TriggerSchema, 1: int}|null */
@@ -416,7 +429,9 @@ final class SchemaShadow
      */
     private function introspectTable(PDO $connection, string $relation): ?TableSchema
     {
-        $columnsStatement = $connection->prepare(SqlPlaceholders::toPdo($this->dialect->columnsInfoSql()));
+        $columnsSql = $this->dialect->columnsInfoSql();
+        $columnsStatement = $connection->prepare(SqlPlaceholders::toPdo($columnsSql));
+        $this->log->write('shadow', $columnsSql, ['relation' => $relation]);
         PdoBinder::bindAndExecute($columnsStatement, ['relation' => $relation]);
         $columns = [];
         foreach ($columnsStatement->fetchAll(PDO::FETCH_NUM) as $row) {
@@ -434,7 +449,9 @@ final class SchemaShadow
             return null;
         }
 
-        $indexesStatement = $connection->prepare(SqlPlaceholders::toPdo($this->dialect->indexesInfoSql()));
+        $indexesSql = $this->dialect->indexesInfoSql();
+        $indexesStatement = $connection->prepare(SqlPlaceholders::toPdo($indexesSql));
+        $this->log->write('shadow', $indexesSql, ['relation' => $relation]);
         PdoBinder::bindAndExecute($indexesStatement, ['relation' => $relation]);
         /** @var array<string, array{unique: bool, parts: list<TableSchemaIndexPart>}> $found */
         $found = [];
@@ -508,7 +525,9 @@ final class SchemaShadow
     /** The stored view text, normalized — null when absent. */
     private function storedViewDdl(PDO $connection, string $relation): ?string
     {
-        $statement = $connection->prepare(SqlPlaceholders::toPdo($this->dialect->viewDefinitionSql()));
+        $sql = $this->dialect->viewDefinitionSql();
+        $statement = $connection->prepare(SqlPlaceholders::toPdo($sql));
+        $this->log->write('shadow', $sql, ['relation' => $relation]);
         PdoBinder::bindAndExecute($statement, ['relation' => $relation]);
         $sql = $statement->fetchColumn();
 

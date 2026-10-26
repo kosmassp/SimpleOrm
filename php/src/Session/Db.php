@@ -67,11 +67,18 @@ final class Db
     /** The test hook of {@see observeMessages()}; null in every real session. */
     private ?Closure $messageObserver = null;
 
+    /** The statement log's one funnel (ADR-0045): every statement this session sends is written through it. */
+    private readonly StatementLog $log;
+
+    /** @var array<string, string> the registry names SchemaGuard learned, by entry kind and SQL text (see {@see declareEntryName()}) */
+    private array $entryNames = [];
+
     private function __construct(
         PDO $connection,
         private readonly DbOptions $options,
     ) {
         $this->connection = $connection;
+        $this->log = new StatementLog($options->log, $options->logParameterValues);
         $this->maps = new EntityMapLoader($options->mapping);
         $this->converter = new TypeConverter(
             $options->typeHandlers,
@@ -128,6 +135,36 @@ final class Db
         return $this->mapper;
     }
 
+    /**
+     * The statement log of this session (ADR-0045): the funnel the migration runner, SchemaGuard, and the schema tooling
+     * write through when they run on this session's connection.
+     */
+    public function log(): StatementLog
+    {
+        return $this->log;
+    }
+
+    /**
+     * Teaches the session what the registry calls an entry (`Queries.userByEmail`), so the statement log names the lines of
+     * later calls by it. SchemaGuard calls this when it enumerates the registry (spec/session.md "Statement log": the
+     * implementations whose registry has no variable names learn them at the scan). Entries are looked up by their kind and SQL
+     * text — a registry method builds a fresh `Query` on every call (CODING-STANDARD §10), so there is no entry object to stamp;
+     * two entries with the same SQL keep the name learned first.
+     *
+     * @param 'query'|'command' $kind
+     * @internal called by SchemaGuard
+     */
+    public function declareEntryName(string $kind, string $sql, string $name): void
+    {
+        $this->entryNames[$kind . "\0" . $sql] ??= $name;
+    }
+
+    /** What the log calls a registry entry: the name SchemaGuard learned, else the file path of a `fromFile` entry, else its kind. */
+    private function entryName(string $kind, SqlSource $source): string
+    {
+        return $this->entryNames[$kind . "\0" . $source->sql] ?? $source->path ?? $kind;
+    }
+
     // --- registry surface (§6, spec/session.md) ---------------------------------
 
     /**
@@ -137,7 +174,7 @@ final class Db
      */
     public function query(Query $query, object $args): array
     {
-        $statement = $this->createStatement($query->source, $args);
+        $statement = $this->createStatement($query->source, $args, 'query');
 
         return $this->materializeAll($statement, $query->resultType, $query->source->description);
     }
@@ -182,7 +219,7 @@ final class Db
      */
     public function stream(Query $query, object $args): Generator
     {
-        $statement = $this->createStatement($query->source, $args);
+        $statement = $this->createStatement($query->source, $args, 'query');
         $plan = $this->planFor($statement, $query->resultType, $query->source->description);
         while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
             yield $plan($row);
@@ -192,7 +229,7 @@ final class Db
     /** A non-query command; returns the affected-row count. */
     public function execute(Command $command, object $args): int
     {
-        return $this->createStatement($command->source, $args)->rowCount();
+        return $this->createStatement($command->source, $args, 'command')->rowCount();
     }
 
     // --- transactions (§7.17) ---------------------------------------------------
@@ -264,11 +301,12 @@ final class Db
     /**
      * Renders and executes a criteria AST, returning the open statement — the
      * join engine reads its columns itself (segmented by alias), everything
-     * else goes through {@see executeAst()}.
+     * else goes through {@see executeAst()}. `$logKind` is the statement log's
+     * suffix after the entity name (`criteria`, or `include` for a join-mode eager query).
      *
      * @internal
      */
-    public function executeAstStatement(SelectAst $ast, string $queryName): PDOStatement
+    public function executeAstStatement(SelectAst $ast, string $queryName, string $logKind = 'criteria'): PDOStatement
     {
         $converter = $this->converter;
         $parameters = [];
@@ -279,8 +317,9 @@ final class Db
             return '@' . $name;
         };
 
-        $sql = SqlPlaceholders::toPdo($this->options->dialect->selectSql($ast, $bindParameter));
-        $statement = $this->connection()->prepare($sql);
+        $sql = $this->options->dialect->selectSql($ast, $bindParameter);
+        $statement = $this->connection()->prepare(SqlPlaceholders::toPdo($sql));
+        $this->log->write("{$ast->map->entityName()}.{$logKind}", $sql, $parameters);
         // PdoBinder::bindAndExecute, not a bare execute($parameters): the latter binds
         // everything as PDO::PARAM_STR, which a column SQLite gives no
         // declared affinity (a view's aggregate expression) never coerces back.
@@ -406,7 +445,7 @@ final class Db
         $predicates = [];
         $parameters = [];
         foreach ($keyValues as $i => $value) {
-            $predicates[] = $dialect->quoteIdentifier($map->keyProperties[$i]->columnName) . " = :k{$i}";
+            $predicates[] = $dialect->quoteIdentifier($map->keyProperties[$i]->columnName) . " = @k{$i}";
             $parameters["k{$i}"] = $this->converter->toParameter($value, "{$map->entityName()} key[{$i}]", type: $map->keyProperties[$i]->type);
         }
 
@@ -416,7 +455,8 @@ final class Db
         )) . ' from ' . $dialect->quoteIdentifier((string) $map->relationName)
             . ' where ' . implode(' and ', $predicates);
 
-        $statement = $this->connection()->prepare($sql);
+        $statement = $this->connection()->prepare(SqlPlaceholders::toPdo($sql));
+        $this->log->write("{$map->entityName()}.get", $sql, $parameters);
         PdoBinder::bindAndExecute($statement, $parameters);
 
         return $statement;
@@ -730,9 +770,9 @@ final class Db
             );
         }
 
-        $this->connection()->exec($this->options->dialect->createTableSql($map));
+        $this->exec("{$map->entityName()}.createTable", $this->options->dialect->createTableSql($map));
         foreach ($this->options->dialect->createIndexSql($map) as $indexSql) {
-            $this->connection()->exec($indexSql);
+            $this->exec("{$map->entityName()}.createIndex", $indexSql);
         }
     }
 
@@ -756,10 +796,17 @@ final class Db
             );
         }
 
-        $this->connection()->exec($this->options->dialect->createViewSql($map));
+        $this->exec("{$map->entityName()}.createView", $this->options->dialect->createViewSql($map));
         foreach ($this->options->dialect->createIndexSql($map) as $indexSql) {
-            $this->connection()->exec($indexSql);
+            $this->exec("{$map->entityName()}.createIndex", $indexSql);
         }
+    }
+
+    /** One parameterless statement (metadata DDL) on the session's connection: logged as it is sent, then run. */
+    private function exec(string $name, string $sql): void
+    {
+        $this->log->write($name, $sql);
+        $this->connection()->exec($sql);
     }
 
     /**
@@ -793,7 +840,7 @@ final class Db
         }
 
         foreach ($statements as $sql) {
-            $this->connection()->exec($sql);
+            $this->exec("{$map->entityName()}.createTrigger", $sql);
         }
     }
 
@@ -816,6 +863,7 @@ final class Db
         }
 
         $statement = $this->connection()->prepare($sql);
+        $this->log->write("{$map->entityName()}.selectAll", $sql);
         $statement->execute();
 
         return $this->materializeAll($statement, $entityType, $map->entityName() . ' select-all');
@@ -842,6 +890,7 @@ final class Db
     {
         try {
             $statement = $this->connection()->prepare(SqlPlaceholders::toPdo($write->sql));
+            $this->log->write($write->name, $write->sql, $write->parameters);
             PdoBinder::bindAndExecute($statement, $write->parameters);
             $write->complete(ResultReader::read($statement, $write->result, $this->options->dialect->reportsAffectedRowsBySelect()));
         } catch (Throwable $failure) {
@@ -928,6 +977,7 @@ final class Db
             instance: $entity,
             insertsGeneratedKey: $generatedKey !== null,
             identity: $this->entityIdentity($map, $entity),
+            name: "{$map->entityName()}.insert",
         );
     }
 
@@ -1090,6 +1140,7 @@ final class Db
                     $this->tracking?->resnapshotWritten($entry, $set);
                 }
             },
+            operation: 'updateOnly',
         );
     }
 
@@ -1165,6 +1216,7 @@ final class Db
      * @param object|null $planned the instance plan rule 1a keys on (null for a by-key soft delete's scratch instance)
      * @param Closure(): void $applied
      * @param (Closure(): void)|null $undoExtra
+     * @param string $operation the log's suffix after the entity name: `update`, `updateOnly`, or `delete` (the soft delete)
      */
     private function updateWrite(
         EntityMap $map,
@@ -1174,6 +1226,7 @@ final class Db
         array $bound,
         Closure $applied,
         ?Closure $undoExtra = null,
+        string $operation = 'update',
     ): PreparedWrite {
         // A failed write leaves the instance as it was (spec/hooks.md Clarifications): the previous stamp is put back, so a
         // refused write leaves nothing a row never held. The clock is read after the callers' gates.
@@ -1211,6 +1264,7 @@ final class Db
             },
             instance: $planned,
             identity: $this->entityIdentity($map, $entity),
+            name: "{$map->entityName()}.{$operation}",
         );
     }
 
@@ -1362,6 +1416,7 @@ final class Db
             },
             instance: $byEntity ? $keyOrEntity : null,
             identity: $identity,
+            name: "{$map->entityName()}.delete",
         );
     }
 
@@ -1395,6 +1450,7 @@ final class Db
                     $this->tracking?->forget($map, $map->getKeyValues($instance), $byEntity ? $instance : null);
                 },
                 $restoreFlag,
+                'delete',
             );
         } catch (Throwable $failure) {
             $restoreFlag();
@@ -1619,6 +1675,7 @@ final class Db
                 $dialect->reportsAffectedRowsBySelect(),
                 $this->batchingInEffect(),
                 $this->messageObserver,
+                $this->log,
             ))->run($operations, $journal);
 
             if ($ownsTransaction) {
@@ -1745,6 +1802,7 @@ final class Db
             undo: static function (): void {
                 // Nothing in memory to put back.
             },
+            name: $this->entryName('command', $command->source),
         );
     }
 
@@ -1900,14 +1958,15 @@ final class Db
             }
         }
 
-        $bound = ParameterBinder::bind(
+        $bound = ParameterBinder::bindKeepingPlaceholders(
             (string) $map->definingSql,
             $args,
             self::statementName($resultType),
             $this->converter,
             $this->options->dialect->supportsArrayParameters(),
         );
-        $statement = $this->connection()->prepare($bound->sql);
+        $statement = $this->connection()->prepare(SqlPlaceholders::toPdo($bound->sql));
+        $this->log->write("{$map->entityName()}.statement", $bound->sql, $bound->parameters);
         PdoBinder::bindAndExecute($statement, $bound->parameters);
 
         return $statement;
@@ -1920,16 +1979,18 @@ final class Db
 
     // --- shared plumbing ---------------------------------------------------------
 
-    private function createStatement(SqlSource $source, object $args): PDOStatement
+    /** @param 'query'|'command' $kind */
+    private function createStatement(SqlSource $source, object $args, string $kind): PDOStatement
     {
-        $bound = ParameterBinder::bind(
+        $bound = ParameterBinder::bindKeepingPlaceholders(
             $source->sql,
             $args,
             $source->description,
             $this->converter,
             $this->options->dialect->supportsArrayParameters(),
         );
-        $statement = $this->connection()->prepare($bound->sql);
+        $statement = $this->connection()->prepare(SqlPlaceholders::toPdo($bound->sql));
+        $this->log->write($this->entryName($kind, $source), $bound->sql, $bound->parameters);
         PdoBinder::bindAndExecute($statement, $bound->parameters);
 
         return $statement;

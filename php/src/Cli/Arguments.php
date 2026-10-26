@@ -13,7 +13,7 @@ namespace SimpleOrm\Cli;
 final class Arguments
 {
     /** @var list<string> */
-    private const array BOOLEAN_FLAGS = ['force', 'allow-delete', 'allow-remove', 'amend', 'draft'];
+    private const array BOOLEAN_FLAGS = ['force', 'allow-delete', 'allow-remove', 'amend', 'draft', 'log'];
 
     /** @var list<string> */
     public readonly array $positional;

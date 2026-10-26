@@ -29,6 +29,7 @@ final readonly class PreparedWrite
      * @param bool $insertsGeneratedKey an insert whose key the database generates — what a dependent statement waits for (plan rule 1b)
      * @param string|null $identity the (entity type, key) the statement writes, taken as the statement was prepared, when that
      *        key is set (plan rule 1a's key clause; {@see Db::writeIdentity()}); null for a registry command or an unset key
+     * @param string $name what the statement log calls the statement (`User.insert`, `Queries.markShipped`, ADR-0045)
      */
     public function __construct(
         public string $sql,
@@ -39,6 +40,7 @@ final readonly class PreparedWrite
         public ?object $instance = null,
         public bool $insertsGeneratedKey = false,
         public ?string $identity = null,
+        public string $name = '',
     ) {
     }
 

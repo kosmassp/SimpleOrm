@@ -10,6 +10,7 @@ use SimpleOrm\Metadata\TriggerEvent;
 use SimpleOrm\Metadata\TriggerTiming;
 use SimpleOrm\Migrations\SchemaSnapshot;
 use SimpleOrm\Migrations\TriggerSchema;
+use SimpleOrm\Session\StatementLog;
 
 /**
  * Reads a stored PostgreSQL trigger back to its neutral declaration (Level 4, ADR-0043): the shadow's self-check on that
@@ -31,9 +32,9 @@ final class PostgresTriggerParser
      *
      * @return list<string>
      */
-    public static function definitions(PDO $connection, string $name): array
+    public static function definitions(PDO $connection, string $name, ?StatementLog $log = null): array
     {
-        return TriggerCatalog::definitions($connection, new PostgresDialect(), $name);
+        return TriggerCatalog::definitions($connection, new PostgresDialect(), $name, $log);
     }
 
     /**

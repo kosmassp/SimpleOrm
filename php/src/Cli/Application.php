@@ -28,7 +28,9 @@ use SimpleOrm\Migrations\SchemaSync;
 use SimpleOrm\Migrations\SnapshotSet;
 use SimpleOrm\Naming\SnakeCaseNamingConvention;
 use SimpleOrm\Session\Db;
+use SimpleOrm\Session\DbLog;
 use SimpleOrm\Session\DbOptions;
+use SimpleOrm\Session\StatementLog;
 use SimpleOrm\Validation\SchemaGuard;
 
 /**
@@ -100,15 +102,15 @@ final class Application
 
     private static function forceSync(Db $db, Arguments $arguments): int
     {
-        $plan = SchemaSync::plan($db->connection(), $db->options()->dialect, $db->maps(), self::mappedTypes($arguments));
-        SchemaSync::apply($db->connection(), $plan->additive);
+        $plan = SchemaSync::plan($db->connection(), $db->options()->dialect, $db->maps(), self::mappedTypes($arguments), $db->log());
+        SchemaSync::apply($db->connection(), $plan->additive, $db->log());
         foreach ($plan->additive as $sql) {
             echo 'sync: ' . $sql . PHP_EOL;
         }
 
         if ($plan->deletions !== []) {
             if ($arguments->flag('allow-delete')) {
-                SchemaSync::apply($db->connection(), $plan->deletions);
+                SchemaSync::apply($db->connection(), $plan->deletions, $db->log());
                 foreach ($plan->deletions as $sql) {
                     echo 'sync (destructive): ' . $sql . PHP_EOL;
                 }
@@ -350,7 +352,7 @@ final class Application
         $set = MigrationSet::fromDirectory(self::migrationsDir($arguments), self::migrationsNamespace($arguments));
         // SQLite ignores --db (a temp file); the other dialects create and drop the throwaway database on it (the admin connection).
         $admin = $dialect->name() === Dialects::SQLITE ? '' : ($arguments->option('db') ?? '');
-        $result = SchemaShadow::for($dialect, $admin)->rebuildSnapshots($set, new EntityMapLoader(), $outDir, $from, $to);
+        $result = SchemaShadow::for($dialect, $admin, self::statementLog($arguments))->rebuildSnapshots($set, new EntityMapLoader(), $outDir, $from, $to);
 
         foreach ($result->notes as $note) {
             echo $note . PHP_EOL;
@@ -443,6 +445,8 @@ final class Application
                                        for the other dialects (for shadow: the admin connection, CREATE DATABASE rights)
               --dialect <name>         sqlite (default), sqlserver, or postgres; selects the dialect for every command —
                                        a snapshot stamped for another dialect is refused (MIG-014)
+              --log                    write every statement the run sends to standard output, one line each
+                                       (`migrate: <sql> [@names]`); parameter values are never written
             TXT . PHP_EOL;
 
         return 2;
@@ -535,7 +539,13 @@ final class Application
     {
         $db = $arguments->option('db') ?? throw new SimpleOrmException('CLI', 'arguments', '--db <path or connection string> is required');
 
-        return Db::open($db, new DbOptions(self::dialectFor($arguments)));
+        return Db::open($db, new DbOptions(self::dialectFor($arguments), log: $arguments->flag('log') ? DbLog::stdout() : null));
+    }
+
+    /** `--log` (ADR-0045): every statement of the run goes to standard output through the built-in sink; without it, nothing is logged. */
+    private static function statementLog(Arguments $arguments): StatementLog
+    {
+        return $arguments->flag('log') ? new StatementLog(DbLog::stdout()) : StatementLog::off();
     }
 
     /** @return array{0: Db, 1: MigrationRunner} */
@@ -545,7 +555,7 @@ final class Application
         $set = MigrationSet::fromDirectory(self::migrationsDir($arguments), self::migrationsNamespace($arguments));
         // Rollbacks derive from the snapshots (ADR-0018): the migrations dir by default, or --snapshots.
         $snapshots = SnapshotSet::fromDirectory(self::snapshotsDir($arguments));
-        $runner = new MigrationRunner($db->connection(), $db->options()->dialect, $db->maps(), $set, $snapshots);
+        $runner = new MigrationRunner($db->connection(), $db->options()->dialect, $db->maps(), $set, $snapshots, log: $db->log());
 
         return [$db, $runner];
     }

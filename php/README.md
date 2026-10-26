@@ -265,6 +265,30 @@ statement and `pdo_pgsql` cannot carry per-statement results — so the same pla
 run one at a time, **reusing one prepared `PDOStatement` per distinct SQL text** within the call (on SQLite, where
 there is no round trip to save, that reuse is the gain). Nothing refuses: one configuration serves every database.
 
+### Statement log (Level 4 item 4, ADR-0045)
+
+The session can tell you what it sends to the database: one line of text per statement, as the statement is sent (after it
+is bound, before it executes), and nothing when you do not ask. The library brings no logging dependency.
+
+```php
+$db = Db::open($dsn, new DbOptions(
+    new SqliteDialect(),
+    log: DbLog::stdout(),                          // or: fn (string $line) => $logger->debug($line)
+    logParameterValues: false,                     // the default: names only, never the values (they may be personal data)
+));
+// User.insert: insert into users (name, email, ...) values (@name, @email, ...) returning id [@name, @email, ...]
+// Role.delete: update roles set is_deleted = @is_deleted, updated_at = @updated_at where id = @id [@is_deleted, @updated_at, @id]
+```
+
+A line is `<name>: <sql>` and the parameter names in bind order in brackets (`[@a = 'x', @b = null]` with
+`logParameterValues: true`; strings single-quoted with `'` doubled, bytes as `0x` + the first 16 as hex and the length).
+The name says what issued it: `User.insert`/`update`/`updateOnly`/`delete`/`get`/`criteria`/`include`/`selectAll`/
+`statement`/`createTable`/…, `migrate`, `validate <source>`, `shadow`, `sync`, and for a registry entry the name the
+registry declares (`Queries.userByEmail`) once `SchemaGuard` has enumerated it — until then `query`/`command` (a
+`fromFile` entry: its path). A flush and an explicit batch write one line per statement, in order, under both batching
+modes. A statement refused before it is sent (`CRUD-004`, `PRM-001`, …) writes nothing. The run lock and
+`BEGIN`/`COMMIT`/`ROLLBACK` are not logged. The CLI takes `--log` (every statement of the run goes to standard output).
+
 ## The CLI
 
 `bin/simpleorm` has no assembly to load, so it takes a PSR-4 root instead:

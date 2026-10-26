@@ -9,6 +9,7 @@ use SimpleOrm\Metadata\TriggerDefinition;
 use SimpleOrm\Metadata\TriggerEvent;
 use SimpleOrm\Metadata\TriggerTiming;
 use SimpleOrm\Migrations\TriggerSchema;
+use SimpleOrm\Session\StatementLog;
 
 /**
  * Reads a stored SQLite trigger back to its neutral declaration (Level 4, ADR-0042): the shadow's history side of the
@@ -33,9 +34,9 @@ final class SqliteTriggerParser
      *
      * @return list<string>
      */
-    public static function definitions(PDO $connection, string $name): array
+    public static function definitions(PDO $connection, string $name, ?StatementLog $log = null): array
     {
-        return TriggerCatalog::definitions($connection, new SqliteDialect(), $name);
+        return TriggerCatalog::definitions($connection, new SqliteDialect(), $name, $log);
     }
 
     /**

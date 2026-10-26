@@ -14,13 +14,15 @@ use SimpleOrm\Errors\SimpleOrmException;
  * first use, cached), the PHP port's registry entries are built fresh by a
  * static factory method on every call (CODING-STANDARD §10: PHP has no `new` in
  * static property initializers), so there is no separate "declaration" moment
- * to defer past — reading eagerly here is observably identical.
+ * to defer past — reading eagerly here is observably identical. A file source carries its `path`, which the statement log
+ * (ADR-0045) names an undeclared entry by.
  */
 final readonly class SqlSource
 {
     private function __construct(
         public string $sql,
         public string $description,
+        public ?string $path = null,
     ) {
     }
 
@@ -45,6 +47,6 @@ final readonly class SqlSource
             throw new SimpleOrmException('QRY-003', $path, "could not read '{$path}'");
         }
 
-        return new self($sql, $path);
+        return new self($sql, $path, $path);
     }
 }

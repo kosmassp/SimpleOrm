@@ -33,7 +33,9 @@ use function count;
  * the dialect supports it (`Session\MessageText`, results read in order), else one at a time, in order, each judged
  * before the next runs, **reusing one prepared PDO statement per distinct text** within the call (under `Auto` only:
  * `Off` is the Level 0–3 session exactly). A registry command, whose own count a multi-statement text cannot tell
- * from its neighbours', is always sent on its own. Failure — a gate, a provider error, a zero-row check — propagates
+ * from its neighbours', is always sent on its own. The statement log (ADR-0045) writes one line per statement as it is
+ * sent: before each statement's execution in the sequential realization, all of a text's lines before the text goes out.
+ * Failure — a gate, a provider error, a zero-row check — propagates
  * as it is raised; the caller's journal undoes the in-memory effects.
  *
  * @internal
@@ -51,6 +53,7 @@ final class WriteRun
      * @param bool $countsBySelect the dialect's `ReportsAffectedRowsBySelect` (plan rule 2 and the reading of a count)
      * @param bool $inOneRoundTrip `BatchingInEffect`: a planned message goes out as one multi-statement text
      * @param (Closure(int): void)|null $observer the test hook: told each message's statement count as it is sent
+     * @param StatementLog $log the statement log: one line per statement, as it is sent (ADR-0045)
      */
     public function __construct(
         private readonly PDO $connection,
@@ -60,6 +63,7 @@ final class WriteRun
         private readonly bool $countsBySelect,
         private readonly bool $inOneRoundTrip,
         private readonly ?Closure $observer,
+        private readonly StatementLog $log = new StatementLog(),
     ) {
     }
 
@@ -213,6 +217,7 @@ final class WriteRun
     private function runOne(PreparedWrite $write): int
     {
         $statement = $this->statementFor($write->sql);
+        $this->log->write($write->name, $write->sql, $write->parameters);
         PdoBinder::bindAndExecute($statement, $write->parameters);
 
         return $write->complete(ResultReader::read($statement, $write->result, $this->countsBySelect));
@@ -228,6 +233,12 @@ final class WriteRun
     {
         [$sql, $parameters] = MessageText::render(array_map(static fn (array $entry): PreparedWrite => $entry[1], $group));
         $statement = $this->connection->prepare($sql);
+        // One line per statement the text holds, in statement order, before the message goes out (ADR-0045): each with its own
+        // text and parameter names, not the renamed-apart `@p<i>_name` form the single command text carries.
+        foreach ($group as [, $write]) {
+            $this->log->write($write->name, $write->sql, $write->parameters);
+        }
+
         PdoBinder::bindAndExecute($statement, $parameters);
 
         $reader = new ResultReader($statement);

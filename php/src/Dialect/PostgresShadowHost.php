@@ -6,6 +6,7 @@ namespace SimpleOrm\Dialect;
 
 use PDO;
 use SimpleOrm\Migrations\TriggerSchema;
+use SimpleOrm\Session\StatementLog;
 
 /**
  * The PostgreSQL {@see ShadowHost} (ADR-0043): `create database "simpleorm_shadow_<hex>"` on the admin connection (a
@@ -39,9 +40,9 @@ final class PostgresShadowHost implements ShadowHost
         return true;
     }
 
-    public function readTrigger(PDO $connection, string $name, ?string &$note = null): ?TriggerSchema
+    public function readTrigger(PDO $connection, string $name, ?string &$note = null, ?StatementLog $log = null): ?TriggerSchema
     {
-        return PostgresTriggerParser::parse($name, PostgresTriggerParser::definitions($connection, $name), $note);
+        return PostgresTriggerParser::parse($name, PostgresTriggerParser::definitions($connection, $name, $log), $note);
     }
 
     private static function databaseName(string $dsn): string

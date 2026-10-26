@@ -608,6 +608,24 @@ On SQLite there is no round trip to save: `Auto` reuses one prepared command per
 statement text within the call. On PostgreSQL a message goes out as one
 `NpgsqlBatch`. Allocation is unchanged within a few percent.
 
+PostgreSQL (`PostgresQueryBenchmarks`, loopback PostgreSQL 16.4, same shapes, Dapper and a raw
+Npgsql reader as baselines; 2026-10-26):
+
+| Path | SimpleOrm | Dapper (sync) | Raw Npgsql reader |
+|---|---|---|---|
+| 1000 rows → entities | 967 µs / 179 KB | 1173 µs / 225 KB | 816 µs / 177 KB |
+| single row by key (`GetAsync`) | 165 µs | 220 µs | |
+| criteria page, 100 rows | 489 µs | 244 µs | |
+| one-to-many graph, `Fetch(SubSelect)` | 5.3 ms / 1.8 MB | 2.8 ms / 0.6 MB (two queries, grouped by hand) | |
+
+Two things the PostgreSQL numbers say. Small result sets cost more than Dapper's synchronous
+path because the library is async-only and Npgsql's async reader is dearer per call than its
+sync one: against Dapper's own `QueryAsync` the 100-row page is at parity (455 µs vs 434 µs in a
+Stopwatch probe) and the 1000-row read is level with both. And the one-to-many graph is about
+2× Dapper's grouped lookup on PostgreSQL, where array parameters make Dapper's single `IN` list
+cheap; the difference is the attached, identity-resolved collections and their allocation,
+which the Level 4 performance pass owns.
+
 Numbers are machine-specific — run `dotnet run -c Release` in the benchmarks
 project for yours.
 

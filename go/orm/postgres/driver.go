@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	// The one import of the driver (CODING-STANDARD §1): pgx's connection configuration and its database/sql adapter.
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgconn/ctxwatch"
 	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
@@ -27,8 +29,20 @@ func openPool(connectionString string, cachedPlan CachedPlanPolicy) (*sql.DB, er
 	if err != nil {
 		return nil, err
 	}
+	// A statement whose context ends — the session's CommandTimeout (ADR-0047) or the caller's cancellation — is
+	// cancelled on the server (a CancelRequest), and the connection waits for the server's answer (57014) instead of
+	// severing the socket at once, pgx's default: the session owns one pinned connection, and "the session's next
+	// statement runs" (spec/session.md "Resilience"). The socket deadline stays as the fallback for a server that does
+	// not answer the cancel within cancelGrace.
+	config.BuildContextWatcherHandler = func(pgConn *pgconn.PgConn) ctxwatch.Handler {
+		return &pgconn.CancelRequestContextWatcherHandler{Conn: pgConn, DeadlineDelay: cancelGrace}
+	}
 	return sql.OpenDB(&connector{inner: stdlib.GetConnector(*config), cachedPlan: cachedPlan}), nil
 }
+
+// cancelGrace is how long a connection whose statement was cancelled waits for the server's answer before pgx severs
+// the socket.
+const cancelGrace = 5 * time.Second
 
 // connector wraps pgx's driver.Connector so every connection it makes is a [conn].
 type connector struct {

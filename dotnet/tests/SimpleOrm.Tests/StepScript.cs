@@ -553,6 +553,7 @@ internal sealed class RecordingDialect(IDialect inner) : IDialect
     public bool ReportsAffectedRowsBySelect => inner.ReportsAffectedRowsBySelect;
     public bool SupportsStatementBatching => inner.SupportsStatementBatching;
     public int? MaxParametersPerMessage => inner.MaxParametersPerMessage;
+    public bool IsTransient(Exception exception) => inner.IsTransient(exception);
     public string SelectSql(SelectAst select, BindCriteriaParameter bindParameter) => inner.SelectSql(select, bindParameter);
     public bool SupportsArrayParameters => inner.SupportsArrayParameters;
     public bool BindsTemporalsNatively => inner.BindsTemporalsNatively;

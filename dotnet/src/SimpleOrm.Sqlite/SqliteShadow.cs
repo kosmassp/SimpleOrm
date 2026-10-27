@@ -72,5 +72,5 @@ public static class SqliteShadow
         CancellationToken ct = default)
         => SchemaShadow.RebuildSnapshotsAsync(
             assembly, migrationsNamespace, migrationsDir, new SqliteDialect(), new SqliteShadowHost(),
-            adminConnectionString: null, fromVersion, toVersion, ct);
+            adminConnectionString: null, fromVersion, toVersion, ct: ct);
 }

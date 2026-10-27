@@ -294,4 +294,15 @@ public interface IDialect
     /// (spec/session.md "Batching", rule 3) is the same everywhere.
     /// </summary>
     int? MaxParametersPerMessage { get; }
+
+    /// <summary>
+    /// Whether a failure to open a connection is transient — worth another attempt
+    /// under <see cref="DbOptions.OpenRetries"/> (Level 4 resilience, ADR-0047). Asked
+    /// only about connection opens, never about statements. SQLite: never (a file
+    /// open fails the same way twice); SQL Server: the driver's error numbers of a
+    /// lost or not-yet-available server; PostgreSQL: SQLSTATE class 08, 53300,
+    /// 57P03; both also a socket, I/O, or timeout failure anywhere in the cause chain.
+    /// </summary>
+    bool IsTransient(Exception exception);
 }
+

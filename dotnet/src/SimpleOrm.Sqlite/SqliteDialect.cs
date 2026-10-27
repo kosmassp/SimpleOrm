@@ -298,6 +298,9 @@ public sealed class SqliteDialect : IDialect
     /// <inheritdoc />
     public int? MaxParametersPerMessage => null;
 
+    /// <summary>Never (ADR-0047): a SQLite open is a file open, and it fails the same way the second time — a missing directory, a locked or corrupt file, no permission.</summary>
+    public bool IsTransient(Exception exception) => false;
+
     private static string KeyPredicate(EntityMap map)
         => string.Join(" and ", map.KeyProperties.Select(k => k.ColumnName + " = @" + k.ColumnName));
 

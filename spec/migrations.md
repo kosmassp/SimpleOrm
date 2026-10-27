@@ -88,6 +88,13 @@ that fails mid-run reports as `MIG-021`, naming the SQL.
 `status` reports one entry per (version, object): the version, the object, the
 step's description, and the state — `Applied`, `Pending`, or `Draft` ("Draft
 migrations" below). The text layout is the implementation's (ADR-0039).
+The runner reads the recorded history in two ways, and never mistakes a failure
+for an empty history (ADR-0047): `status` (and SchemaGuard's `MIG-030` check
+through it) reads the history only when the table exists — asked through the
+dialect's `ColumnsInfoSql` with `@relation` = `schema_version`, no columns
+meaning no table and so an empty history; every other command (`migrate`,
+`migrate down`, `baseline`) creates the table first inside its run transaction,
+so a failing history read fails the run with the driver's error.
 
 ## Derived rollbacks (ADR-0018)
 

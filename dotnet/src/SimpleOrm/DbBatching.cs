@@ -454,7 +454,7 @@ public sealed partial class Db
                 return;
             }
 
-            using var batch = db._connection.CreateBatch();
+            using var batch = db.NewBatch();
             batch.Transaction = db._transaction;
             foreach (var write in run)
             {

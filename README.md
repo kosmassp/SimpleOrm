@@ -74,6 +74,11 @@ var result = await batch.SendAsync(ct);              // one transaction; result.
 await using var logged = await Db.OpenAsync(connectionString,
     new DbOptions { Dialect = new SqliteDialect(), Log = DbLog.Console /* or line => logger.LogDebug(line) */ }, ct);
 // User.get: select "id", "name", ... from "users" where "id" = @k0 [@k0]
+
+// Resilience (Level 4, ADR-0047): both off by default. CommandTimeout reaches every statement the session sends;
+// OpenRetries retries only the connection open, only on a failure the dialect calls transient, a fixed delay apart.
+await using var remote = await Db.OpenAsync(connectionString, new DbOptions
+    { Dialect = new SqlServerDialect(), CommandTimeout = TimeSpan.FromMinutes(5), OpenRetries = 3, OpenRetryDelay = TimeSpan.FromSeconds(2) }, ct);
 // batched.BatchingInEffect: one round trip per message (SqlBatch / NpgsqlBatch on net10.0); SQLite runs the plan
 // statement by statement, reusing prepared commands. TX-003: a batch used after it was sent or disposed
 // (nothing loads implicitly); UOW-006: Persist of an instance scheduled for removal
@@ -465,6 +470,18 @@ forwarding to `ILogger` is one lambda; unset, nothing is formatted. Values appea
 only with `LogParameterValues = true`. The CLI takes `--log`. The guide:
 [docs/guide/16-observability.md](docs/guide/16-observability.md); the rule:
 [spec/session.md "Statement log"](spec/session.md).
+
+### Resilience (ADR-0047)
+
+`DbOptions.CommandTimeout` (unset: the driver's default) applies to every command
+and batch the session creates, in whole seconds rounded up; a timeout that fires is
+the driver's own exception. `OpenRetries` (default 0) and `OpenRetryDelay` (default
+1 s, fixed) retry **only the connection open**, only when the dialect's `IsTransient`
+says so — SQL Server's transient error numbers, PostgreSQL's SQLSTATE class 08,
+53300, 57P03, or a socket/IO/timeout cause; SQLite never. A statement is never
+retried. The connect timeout stays in the connection string. The CLI takes
+`--command-timeout <seconds>`. The guide: [docs/guide/01-getting-started.md](docs/guide/01-getting-started.md);
+the rule: [spec/session.md "Resilience"](spec/session.md).
 
 ## SQL Server dialect (ADR-0024)
 

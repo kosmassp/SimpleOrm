@@ -22,6 +22,7 @@ internal abstract class ForwardingDialect(IDialect inner) : IDialect
     public virtual bool ReportsAffectedRowsBySelect => Inner.ReportsAffectedRowsBySelect;
     public virtual bool SupportsStatementBatching => Inner.SupportsStatementBatching;
     public virtual int? MaxParametersPerMessage => Inner.MaxParametersPerMessage;
+    public virtual bool IsTransient(Exception exception) => Inner.IsTransient(exception);
     public virtual string SelectSql(SelectAst select, BindCriteriaParameter bindParameter) => Inner.SelectSql(select, bindParameter);
     public virtual bool SupportsArrayParameters => Inner.SupportsArrayParameters;
     public virtual bool BindsTemporalsNatively => Inner.BindsTemporalsNatively;

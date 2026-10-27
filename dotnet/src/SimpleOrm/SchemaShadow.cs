@@ -37,11 +37,12 @@ public static class SchemaShadow
         string? adminConnectionString,
         long fromVersion = 0,
         long toVersion = long.MaxValue,
+        TimeSpan? commandTimeout = null,
         CancellationToken ct = default)
         => RebuildSnapshotsAsync(
             DiscoverVersions(assembly, migrationsNamespace),
             EntityMapLoader.ScannedEntityTypes(assembly.GetExportedTypes()),   // ADR-0041: a base class refuses the scan
-            migrationsDir, dialect, host, adminConnectionString, fromVersion, toVersion, ct);
+            migrationsDir, dialect, host, adminConnectionString, fromVersion, toVersion, commandTimeout, ct);
 
     /// <summary>As above, from explicit versions and entity types — the form the tests and an application without an assembly scan use.</summary>
     public static async Task<Result> RebuildSnapshotsAsync(
@@ -53,6 +54,7 @@ public static class SchemaShadow
         string? adminConnectionString,
         long fromVersion = 0,
         long toVersion = long.MaxValue,
+        TimeSpan? commandTimeout = null,
         CancellationToken ct = default)
     {
         var result = new Result();
@@ -69,7 +71,7 @@ public static class SchemaShadow
         var connectionString = await host.ProvisionAsync(adminConnectionString, ct).ConfigureAwait(false);
         try
         {
-            var db = await Db.OpenAsync(connectionString, new DbOptions { Dialect = dialect }, ct).ConfigureAwait(false);
+            var db = await Db.OpenAsync(connectionString, new DbOptions { Dialect = dialect, CommandTimeout = commandTimeout }, ct).ConfigureAwait(false);
             await using (db.ConfigureAwait(false))
             {
                 if (fromVersion > 0)
@@ -236,7 +238,7 @@ public static class SchemaShadow
 
     private static async Task<string?> ReadViewDefinitionAsync(Db db, string relation, CancellationToken ct)
     {
-        using var command = db.Connection.CreateCommand();
+        using var command = db.NewCommand();
         command.CommandText = db.Options.Dialect.ViewDefinitionSql;
         AddParameter(command, relation);
         db.LogStatement("shadow", command);
@@ -357,7 +359,7 @@ public static class SchemaShadow
     {
         var dialect = db.Options.Dialect;
         var columns = new List<TableSchema.Column>();
-        using (var command = db.Connection.CreateCommand())
+        using (var command = db.NewCommand())
         {
             command.CommandText = dialect.ColumnsInfoSql;
             AddParameter(command, relation);
@@ -378,7 +380,7 @@ public static class SchemaShadow
         }
 
         var indexes = new List<TableSchema.Index>();
-        using (var command = db.Connection.CreateCommand())
+        using (var command = db.NewCommand())
         {
             command.CommandText = dialect.IndexesInfoSql;
             AddParameter(command, relation);
@@ -466,7 +468,7 @@ public static class SchemaShadow
 
     private static async Task ExecuteAsync(Db db, string sql, CancellationToken ct)
     {
-        using var command = db.Connection.CreateCommand();
+        using var command = db.NewCommand();
         command.CommandText = sql;
         db.LogStatement("shadow", command);
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);

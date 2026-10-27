@@ -4263,3 +4263,153 @@ changed, and nothing in `dotnet/`, `php/`, `go/`, or `conformance/` was touched.
   cite the answer. The brief's "Current state" is rewritten, never appended to.
 
 **Status.** Accepted.
+## ADR-0047 — Resilience: command timeout and connection-open retry (2026-10-27)
+
+**Context.** The owner, quoting an earlier assessment: "Resilience is absent.
+No transient-error retry on connection open, no command timeout option. Narrow
+by design, but a trial on a network SQL Server will meet both." Every command
+ran with the driver's default timeout (30 s in SqlClient and Npgsql; long DDL in
+a migration on a network engine outruns it, and the library offered no way to
+raise it), and `Db.OpenAsync` made exactly one attempt, so a server failing over
+or restarting for a few seconds failed the application's startup. Built exactly
+those two things, in the one-option shape (keep designs minimal).
+
+**Decision.** The rulings, made on the owner's behalf by the orchestrating
+session and to be confirmed by the owner:
+
+1. **`DbOptions.CommandTimeout`**: `TimeSpan?`, default null = the driver's
+   default, untouched. When set, every `DbCommand` (and every `DbBatch` on the
+   `net10.0` batching path) the session creates gets `CommandTimeout` = the
+   whole seconds, rounded up (a sub-second value becomes 1; zero becomes 1,
+   never the drivers' "no limit"; negative refuses at open). **One funnel**:
+   `Db.NewCommand()` / `Db.NewBatch()` are the only places the core creates a
+   command or a batch on the session's connection: registry queries, streams,
+   commands, key reads, generated writes, criteria, loading, join includes,
+   select-all, statement entities, metadata DDL, the migration runner,
+   SchemaGuard's describe and introspection, the shadow (which takes the value
+   for the throwaway session it opens: `SchemaShadow.RebuildSnapshotsAsync(…,
+   commandTimeout, ct)`), and the force sync. Not covered, by construction: the
+   statements a dialect issues for itself on a connection it is handed (the
+   migration run lock, which carries its own 60 s lock timeout on SQL Server and
+   PostgreSQL; the shadow host's provisioning; the SQLite trigger read-back). The
+   CLI takes **`--command-timeout <seconds>`** (a whole number, at least 1) for
+   every command that opens a database; the case is `migrate`, `migrate down`,
+   `shadow`, `validate`. A timeout that fires surfaces as every driver failure
+   does on its path: the driver's exception unwrapped from a session call (the
+   library wraps no driver exception there; a constraint violation surfaces as
+   the provider's `DbException` today, which `LiveBatchingTests` asserts),
+   `MIG-021` naming the statement for a statement the migration runner executes
+   (it wraps every failing migration statement's `DbException`) and the driver's
+   exception unwrapped for one of the runner's reads (the history, `status`'s
+   version-table check, the guards' definition reads, as those reads already
+   surfaced), a `VAL-001` row from SchemaGuard. The connection-open timeout stays where it is: the connection
+   string (`Connect Timeout`, `Timeout`).
+2. **`DbOptions.OpenRetries`**: `int`, default 0 = one attempt, today's
+   behaviour; and **`DbOptions.OpenRetryDelay`**: `TimeSpan`, default 1 s, a
+   fixed delay between attempts (no backoff). `Db.OpenAsync` retries ONLY the
+   connection open (never a statement; a retried statement could double-apply,
+   and the PostgreSQL cached-plan retry of ADR-0040 add.1 stays exactly as it
+   is), ONLY when the dialect calls the failure transient, up to `OpenRetries`
+   additional attempts, honouring the cancellation token (a cancellation is
+   never retried, neither the token's nor an `OperationCanceledException` the
+   open raised; the delay is `Task.Delay(delay, ct)`). Each failed attempt's
+   connection is disposed; each attempt gets a fresh one from the dialect. After
+   the last attempt the last exception is thrown as-is (the same object). Nothing
+   is logged (the statement log is for statements; ADR-0045).
+3. **The seam gains one member, `bool IsTransient(Exception)`** (§7.25 allows a
+   member when a second dialect needs it; here all three answer differently). It
+   walks the failure's cause chain. **SQLite**: always false (a file open fails
+   deterministically). **SQL Server**: a `SqlException` any of whose errors
+   carries one of `SqlServerDialect.TransientErrorNumbers`, 26 numbers: -2, 20,
+   64, 121, 233, 997, 4060, 4221, 10053, 10054, 10060, 10928, 10929, 11001,
+   17197, 18401, 40143, 40197, 40501, 40540, 40613, 42108, 42109, 49918, 49919,
+   49920 (SqlClient's `SqlConfigurableRetryFactory` default list without its lock
+   numbers 1204/1205/1222, the connection-level numbers of EF Core's
+   `SqlServerTransientExceptionDetector`, and -2, the connect timeout on an
+   open); or a `SocketException`/`IOException`/`TimeoutException` in the chain.
+   **PostgreSQL**: a `PostgresException` with SQLSTATE class `08`, `53300`, or
+   `57P03`, or the same socket/IO/timeout chain (Npgsql reports an unreachable
+   server as an `NpgsqlException` wrapping one).
+4. **Defaults keep today's behaviour byte-for-byte**: no timeout set, no
+   retries. No SQL text changed anywhere; every conformance pin is identical.
+
+**One deviation from the brief, recorded.** The brief allowed the `net10.0`
+target to consult the driver's `DbException.IsTransient` (SQL Server) and asked
+for `NpgsqlException.IsTransient` "where the driver exposes it" (PostgreSQL), on
+condition that the two targets agree. They cannot both consult the flag and
+agree: Npgsql 4.1 (`netstandard2.0`) and 9.x (`net10.0`) list different states
+behind it, and SqlClient 5.1 and 6.x differ too. So neither dialect consults the
+driver's flag; the number list and the SQLSTATE rule, written once, are the whole
+answer on both targets, and are exactly what a PHP or Go port can mirror from its
+own driver's error numbers and SQLSTATEs.
+
+**Deliberately not done.** No statement retry, ever (a statement that failed in
+flight may have been applied). No backoff, no jitter, no circuit breaker, no
+retry budget across sessions. No reopening of a session whose connection is lost
+mid-life. No named error code: both failures are the driver's (spec/errors.md
+unchanged). No connect-timeout option. Nothing logged.
+
+**Spec.** `spec/session.md` "Resilience" (the options and defaults, the covered
+paths and the dialect's own statements, how a fired timeout surfaces per path,
+the connect timeout, the open as an algorithm, what is never retried, nothing
+logged; the per-language shapes and the driver equivalents for ports without a
+per-command timeout property); `spec/dialects.md`: the `IsTransient` row of the
+seam table, "Transient open failures" (the SQLite answer, the SQL Server set with
+its sources, the PostgreSQL SQLSTATEs, the runtime row per language), the connect
+timeout and `--command-timeout` under "Connection strings and the CLI", the
+resilience legs in the testing contract. The guide: "Resilience" on Getting
+started; the README.
+
+**Consequences.** A trial against a network SQL Server can raise the timeout for
+long DDL (`--command-timeout 600`) and ride out a failover at startup
+(`OpenRetries = 5`). An open's worst case becomes
+`(OpenRetries + 1) × connect timeout + OpenRetries × OpenRetryDelay`; the
+application chooses it. The PHP and Go ports follow by the port method.
+
+**A runner hole closed on the way (ruled by the orchestrating session: a
+correctness hole, §2 "strict by default", fixed rather than recorded).**
+`MigrationRunner.ReadRecordedAsync` caught every `DbException` as "no
+`schema_version` table yet", so a timeout, a lost connection, or a permission
+failure on that one read was taken for an empty history — the steps then fail on
+existing objects and the run rolls back, except a data-only step on SQL Server,
+where a timeout does not abort the transaction, which could re-apply. Three of
+its four callers — `migrate`, `migrate down`, `baseline` — read right after
+`EnsureVersionTableAsync` in the run transaction, where the table exists. Now the
+read swallows nothing: for those three a failing read fails the run with the
+driver's exception, unwrapped (the runner's reads have always surfaced that way;
+only the statements it executes are wrapped as `MIG-021`). `status` — the one
+caller that can meet a database without the table, behind the CLI's `status` and
+SchemaGuard's `MIG-030` — first asks the dialect's `ColumnsInfoSql` with
+`@relation` = `schema_version` (through the command funnel, so the timeout
+applies; logged as `migrate`), returns the empty history only when it reports no
+columns, and otherwise reads without a catch. spec/migrations.md "Recording and
+integrity" states it. Tests: with the table present, a failing history read
+surfaces on `migrate`, `status`, and `baseline`; on a fresh database `status`
+reports every entry pending without reading the history, and `migrate` still
+creates the table.
+
+**Verification.** `cd dotnet && dotnet build SimpleOrm.sln` (both TFMs, 0
+warnings) and `dotnet test SimpleOrm.sln`: **581 passed / 22 skipped** with
+PostgreSQL 16.4 live (was 543 / 21); `ResilienceTests` adds 39 (38 passed, the
+SQL Server timeout leg skipped), the runner fix's two included. Through a decorator around the real SQLite
+dialect: one attempt by default; three transient failures, then success after at
+least 3 × 50 ms; the last failure as thrown once retries are spent; a
+non-transient failure and a cancellation (during the delay, or raised by the
+open) never retried; negative options refuse before any attempt; the configured
+timeout on migrate, validate, execute, insert, query, stream, get, criteria, both
+include modes, load, update, update-only, the explicit batch, delete, and a
+batched tracked flush; the driver default untouched when unset. Pinned: the
+rounding, the CLI parse, SQLite's `false`, the PostgreSQL SQLSTATEs (directly and
+wrapped), the socket/IO/timeout chain on both network dialects, the SQL Server
+set, and the SQL Server answer on a real `SqlException` built through the
+driver's internal factory. Live PostgreSQL: `select pg_sleep(3)` under a 1 s
+timeout surfaces Npgsql's `NpgsqlException` (cause `TimeoutException`) and the
+next statement runs; `NewBatch().Timeout` is 1; an unreachable port is attempted
+3 times with `OpenRetries = 2`, a missing database (3D000) once. **PENDING on the
+owner's SQL Server** (with add.3, ADR-0042, ADR-0043, ADR-0044): with
+`SIMPLEORM_SQLSERVER` set, `dotnet test SimpleOrm.sln --filter
+"FullyQualifiedName~ResilienceTests.Sql_server"`. The `waitfor delay '00:00:03'`
+under a 1 s timeout must surface `SqlException` number -2 and pass, not skip.
+
+**Status.** Accepted in C#, pending the owner's confirmation of the rulings. The
+PHP and Go ports follow by the port method.

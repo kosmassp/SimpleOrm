@@ -59,7 +59,7 @@ public sealed partial class Db
         }
 
         var joined = new SelectAst(map, root.Where, root.Orderings, root.Limit, root.Offset, joins: joins);
-        using var command = _connection.CreateCommand();
+        using var command = NewCommand();
         command.Transaction = _transaction;
         var binder = new CommandParameterBinder(command, _converter, queryName);
         command.CommandText = Options.Dialect.SelectSql(joined, binder.Add);

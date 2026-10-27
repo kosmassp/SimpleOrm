@@ -45,7 +45,8 @@ until the module is tagged. Go 1.25 or later.
 
 A session owns one connection and at most one transaction. Options are fixed at
 open: the dialect (required), the mapping configuration, type handlers, the
-tracking mode, and the clock.
+tracking mode, the clock, batching, the statement log, and the resilience
+options below.
 
 ```csharp
 using SimpleOrm;
@@ -82,6 +83,55 @@ db, err := orm.Open(ctx, "app.db", orm.Options{Dialect: sqlite.New()})
 if err != nil { return err }
 defer db.Close()
 ```
+
+### Resilience: the command timeout and open retries
+
+Against a network SQL Server or PostgreSQL two options matter; both are off by
+default, so nothing changes until you set them.
+
+```csharp
+await using var db = await Db.OpenAsync(connectionString, new DbOptions
+{
+    Dialect = new SqlServerDialect(),
+    CommandTimeout = TimeSpan.FromMinutes(5),          // every statement; default: the driver's (30 s)
+    OpenRetries = 3,                                   // up to 3 more attempts at opening the connection
+    OpenRetryDelay = TimeSpan.FromSeconds(2),          // fixed wait between attempts; default 1 s
+}, ct);
+```
+
+- `CommandTimeout` applies to every statement the session sends — queries,
+  writes, loading, DDL, migrations, the schema guard — in whole seconds,
+  rounded up. A timeout that fires is the driver's own exception
+  (`SqlException` number `-2`, an `NpgsqlException` caused by a
+  `TimeoutException`), unwrapped; in the migration runner it is `MIG-021`
+  naming the statement, like any failing step.
+- `OpenRetries` retries **only the connection open**, and only when the
+  dialect calls the failure transient: a server restarting, failing over, or
+  unreachable for a moment. A wrong password or a missing database fails at
+  once. A cancelled token stops the waiting. After the last attempt you get the
+  driver's exception as it was thrown. A statement is never retried: the
+  session cannot know whether a statement that failed in flight was applied.
+- How long **one** open attempt may take is the connection string's
+  `Connect Timeout` (SqlClient) or `Timeout` (Npgsql); the library does not
+  duplicate it.
+- The CLI takes `--command-timeout <seconds>` for `migrate`, `migrate down`,
+  `shadow`, and `validate`, where long DDL on a network engine outruns 30 s.
+
+In PHP and Go — the ports take these options by the port method (ADR-0047);
+until they land there, the C# reference is the one that has them:
+
+```php
+$db = Db::open($dsn, new DbOptions(new SqlServerDialect(), commandTimeout: 300, openRetries: 3, openRetryDelay: 2));
+```
+
+```go
+db, err := orm.Open(ctx, cs, orm.Options{Dialect: sqlserver.New(),
+    CommandTimeout: 5 * time.Minute, OpenRetries: 3, OpenRetryDelay: 2 * time.Second})
+```
+
+The exact rule — the retry algorithm, what each dialect calls transient — is
+[`spec/session.md` "Resilience"](../../spec/session.md#resilience-level-4-adr-0047)
+and [`spec/dialects.md` "Transient open failures"](../../spec/dialects.md#transient-open-failures-istransient-adr-0047).
 
 ## The first entity
 

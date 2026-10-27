@@ -448,6 +448,42 @@ public sealed class PostgresDialect : IDialect
     /// <inheritdoc />
     public int? MaxParametersPerMessage => null;
 
+    /// <summary>
+    /// A <see cref="PostgresException"/> whose SQLSTATE is transient on an open
+    /// (<see cref="IsTransientSqlState"/>), or a socket, I/O, or timeout failure
+    /// anywhere in the cause chain — Npgsql reports an unreachable or vanished
+    /// server as an <see cref="NpgsqlException"/> wrapping one (ADR-0047). The
+    /// driver's <c>IsTransient</c> flag is not consulted: Npgsql 4.1
+    /// (<c>netstandard2.0</c>) and 9.x (<c>net10.0</c>) list different states, and
+    /// the two targets answer alike from the rule written once here.
+    /// </summary>
+    public bool IsTransient(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            switch (current)
+            {
+                case PostgresException postgres when IsTransientSqlState(postgres.SqlState):
+                    return true;
+                case System.Net.Sockets.SocketException or System.IO.IOException or TimeoutException:
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// SQLSTATE class <c>08</c> (connection exception: 08000, 08001, 08003, 08004,
+    /// 08006, 08007, 08P01), <c>53300</c> (too_many_connections), and <c>57P03</c>
+    /// (cannot_connect_now — the server is starting up or shutting down). An
+    /// authentication failure (28xxx) or a missing database (3D000) is not: it
+    /// fails the same way again.
+    /// </summary>
+    public static bool IsTransientSqlState(string? sqlState)
+        => sqlState is not null
+           && (sqlState.StartsWith("08", StringComparison.Ordinal) || sqlState is "53300" or "57P03");
+
     private string KeyPredicate(EntityMap map)
         => string.Join(" and ", map.KeyProperties.Select(k => QuoteIdentifier(k.ColumnName) + " = @" + k.ColumnName));
 

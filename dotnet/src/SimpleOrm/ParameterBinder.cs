@@ -1,6 +1,8 @@
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Data.Common;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -20,57 +22,64 @@ namespace SimpleOrm;
 /// </summary>
 internal static class ParameterBinder
 {
+    /// <summary>
+    /// The placeholder scan of one SQL text and its binding plans per args type
+    /// (ADR-0048), so neither the scan nor the args reflection repeats per call.
+    /// Keyed by the SQL string instance (a registry entry's resolved text, a
+    /// statement entity's defining SQL — the same instance every call); the scan
+    /// is a pure function of the text, so two instances with equal text simply
+    /// hold equal entries, and an entry dies with its string.
+    /// </summary>
+    private static readonly ConditionalWeakTable<string, SqlScan> Scans = new();
+
     public static void Bind(
         DbCommand command, string sql, object args, string queryName, TypeConverter converter,
         bool arrayParameters = false)
     {
-        var properties = args.GetType()
-            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => p.GetMethod is { IsPublic: true } && p.GetIndexParameters().Length == 0)
-            .ToArray();
-        var placeholders = SqlPlaceholders.Find(sql);
+        var argsType = args.GetType();
+        var plan = Scans.GetValue(sql, static text => new SqlScan(text)).PlanFor(argsType);
 
-        foreach (var placeholder in placeholders)
+        if (plan.UnmatchedPlaceholder is { } unmatched)
         {
-            if (!properties.Any(p => string.Equals(p.Name, placeholder, StringComparison.OrdinalIgnoreCase)))
-            {
-                throw new SimpleOrmException(
-                    "PRM-001", queryName, $"SQL parameter @{placeholder} has no matching property on {args.GetType().Name}");
-            }
+            throw new SimpleOrmException(
+                "PRM-001", queryName, $"SQL parameter @{unmatched} has no matching property on {argsType.Name}");
         }
 
         var text = sql;
-        foreach (var property in properties)
+        foreach (var slot in plan.Slots)
         {
-            var used = placeholders.Any(p => string.Equals(p, property.Name, StringComparison.OrdinalIgnoreCase));
-            if (!used)
+            // In property order, binding as it goes — so an earlier property's
+            // conversion error still wins over a later unused property, as before.
+            if (slot.Placeholder is not { } placeholder)
             {
                 throw new SimpleOrmException(
-                    "PRM-002", queryName, $"property {args.GetType().Name}.{property.Name} is never used by the SQL");
+                    "PRM-002", queryName, $"property {argsType.Name}.{slot.Property.Name} is never used by the SQL");
             }
 
-            var placeholder = placeholders.First(p => string.Equals(p, property.Name, StringComparison.OrdinalIgnoreCase));
-            var value = property.GetValue(args);
-
-            var context = $"{queryName} @{placeholder}";
+            var value = slot.Property.GetValue(args);
+            var context = slot.Context(queryName);
             if (value is IEnumerable enumerable and not string and not byte[])
             {
                 if (arrayParameters)
                 {
                     AddParameter(
-                        command, "@" + placeholder,
-                        ToTypedArray(enumerable, property.PropertyType, converter, context));
+                        command, slot.ParameterName,
+                        ToTypedArray(enumerable, slot.Property.PropertyType, converter, context));
                 }
                 else
                 {
-                    text = ExpandList(command, text, placeholder, enumerable, converter, context);
+                    // The scan's spans hold for the text as written; once one list
+                    // expanded, positions moved, so a further list rescans the text.
+                    text = ExpandList(
+                        command, text, placeholder, enumerable, converter, context,
+                        ReferenceEquals(text, sql) ? slot.Occurrences : SqlPlaceholders.Occurrences(text, placeholder));
                 }
             }
             else
             {
                 var parameter = command.CreateParameter();
-                parameter.ParameterName = "@" + placeholder;
-                converter.BindValue(parameter, value, context, enumAsInt: false, property.PropertyType);   // a typed null (ADR-0040 add.2)
+                parameter.ParameterName = slot.ParameterName;
+                converter.BindValue(parameter, value, context, enumAsInt: false, slot.Property.PropertyType);   // a typed null (ADR-0040 add.2)
                 command.Parameters.Add(parameter);
             }
         }
@@ -78,8 +87,86 @@ internal static class ParameterBinder
         command.CommandText = text;
     }
 
+    /// <summary>One SQL text, scanned once: its placeholders and every real occurrence of each.</summary>
+    private sealed class SqlScan(string sql)
+    {
+        private readonly IReadOnlyList<string> _placeholders = SqlPlaceholders.Find(sql);
+        private readonly ConcurrentDictionary<Type, BindPlan> _plans = new();
+
+        public BindPlan PlanFor(Type argsType)
+            => _plans.TryGetValue(argsType, out var plan)
+                ? plan
+                : _plans.GetOrAdd(argsType, new BindPlan(sql, _placeholders, argsType));
+    }
+
+    /// <summary>How one args type binds against one SQL text: the PRM-001 verdict and one slot per public property, in property order.</summary>
+    private sealed class BindPlan
+    {
+        public BindPlan(string sql, IReadOnlyList<string> placeholders, Type argsType)
+        {
+            var properties = argsType
+                .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .Where(p => p.GetMethod is { IsPublic: true } && p.GetIndexParameters().Length == 0)
+                .ToArray();
+            UnmatchedPlaceholder = placeholders.FirstOrDefault(
+                placeholder => !properties.Any(p => string.Equals(p.Name, placeholder, StringComparison.OrdinalIgnoreCase)));
+            Slots = properties
+                .Select(property => new Slot(
+                    property,
+                    placeholders.FirstOrDefault(p => string.Equals(p, property.Name, StringComparison.OrdinalIgnoreCase)),
+                    sql))
+                .ToArray();
+        }
+
+        public string? UnmatchedPlaceholder { get; }
+
+        public Slot[] Slots { get; }
+    }
+
+    /// <summary>One args property: the placeholder it binds (null = unused, <c>PRM-002</c>), its parameter name, its occurrences in the text as written, its error label.</summary>
+    private sealed class Slot
+    {
+        private Label? _label;
+
+        public Slot(PropertyInfo property, string? placeholder, string sql)
+        {
+            Property = property;
+            Placeholder = placeholder;
+            ParameterName = placeholder is null ? string.Empty : "@" + placeholder;
+            Occurrences = placeholder is null ? [] : SqlPlaceholders.Occurrences(sql, placeholder);
+        }
+
+        public PropertyInfo Property { get; }
+
+        public string? Placeholder { get; }
+
+        public string ParameterName { get; }
+
+        public IReadOnlyList<(int Index, int Length)> Occurrences { get; }
+
+        /// <summary>The converter's label, <c>{queryName} @{placeholder}</c>, kept for the query name last seen.</summary>
+        public string Context(string queryName)
+        {
+            var label = _label;
+            if (label is null || !string.Equals(label.QueryName, queryName, StringComparison.Ordinal))
+            {
+                _label = label = new Label(queryName, $"{queryName} @{Placeholder}");
+            }
+
+            return label.Text;
+        }
+
+        private sealed class Label(string queryName, string text)
+        {
+            public string QueryName { get; } = queryName;
+
+            public string Text { get; } = text;
+        }
+    }
+
     private static string ExpandList(
-        DbCommand command, string sql, string placeholder, IEnumerable values, TypeConverter converter, string context)
+        DbCommand command, string sql, string placeholder, IEnumerable values, TypeConverter converter, string context,
+        IReadOnlyList<(int Index, int Length)> occurrences)
     {
         var names = new List<string>();
         var index = 0;
@@ -96,7 +183,7 @@ internal static class ParameterBinder
         // Rewrite only real occurrences — a lookalike inside a string literal or
         // comment is not a placeholder for expansion any more than for detection.
         var builder = new StringBuilder(sql);
-        foreach (var (start, length) in SqlPlaceholders.Occurrences(sql, placeholder).Reverse())
+        foreach (var (start, length) in occurrences.Reverse())
         {
             builder.Remove(start, length).Insert(start, replacement);
         }

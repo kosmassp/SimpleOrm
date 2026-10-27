@@ -216,7 +216,7 @@ final class MigrationRunner
     public function status(): array
     {
         $plan = $this->renderAll();
-        $recorded = $this->readRecorded();
+        $recorded = $this->readRecordedIfPresent();
 
         $entries = [];
         foreach ($plan as $version) {
@@ -547,8 +547,29 @@ final class MigrationRunner
     }
 
     /**
-     * Reads every recorded `(version, object)` row. A missing `schema_version`
-     * table (no migration has ever run) means "nothing recorded", not an error.
+     * The history `status` reads (spec/migrations.md "Recording and integrity", ADR-0047): only where the `schema_version`
+     * table exists — asked through the dialect's `columnsInfoSql()` with `@relation` = `schema_version`, no columns meaning no
+     * table and so an empty history — and then read without a catch: a failing read is the driver's error, never mistaken
+     * for an empty history.
+     *
+     * @return array{versions: list<int>, rows: array<int, array<string, array{description: string, checksum: string}>>}
+     */
+    private function readRecordedIfPresent(): array
+    {
+        $sql = $this->dialect->columnsInfoSql();
+        $statement = $this->connection->prepare(SqlPlaceholders::toPdo($sql));
+        $this->log->write('migrate', $sql, ['relation' => 'schema_version']);
+        PdoBinder::bindAndExecute($statement, ['relation' => 'schema_version']);
+        $exists = $statement->fetch() !== false;
+        $statement->closeCursor();
+
+        return $exists ? $this->readRecorded() : ['versions' => [], 'rows' => []];
+    }
+
+    /**
+     * Reads every recorded `(version, object)` row. `migrate`, `migrate down`, and `baseline` call it right after creating
+     * the table in their run transaction, so the table exists and a failure here — a timeout, a lost connection, a
+     * permission — fails the run with the driver's error, unwrapped (ADR-0047: nothing is swallowed).
      *
      * @return array{versions: list<int>, rows: array<int, array<string, array{description: string, checksum: string}>>}
      */
@@ -556,11 +577,7 @@ final class MigrationRunner
     {
         $sql = 'select version, object, description, checksum from schema_version';
         $this->log->write('migrate', $sql);
-        try {
-            $statement = $this->connection->query($sql);
-        } catch (PDOException) {
-            return ['versions' => [], 'rows' => []];
-        }
+        $statement = $this->connection->query($sql);
 
         $rows = [];
         foreach ($statement as $row) {

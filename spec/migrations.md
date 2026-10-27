@@ -32,7 +32,10 @@ Migrations/
 Table steps expose ordered actions: whatever the declaration order, execution is
 **rename → add → remove → raw SQL** (declaration order inside each group) — renames
 running first is what makes a rename expressible without data loss. View steps run
-actions in declaration order (create / drop / recreate / raw SQL).
+actions in declaration order (create / drop / recreate / raw SQL). The `DropView()`
+action keeps its frozen `drop view <name>` for a plain view (checksums hash it)
+and says `drop materialized view` for a materialized one; `RecreateView()` drops
+through `DropViewSql` (ADR-0043).
 
 Every action takes optional **per-action data hooks**: `Pre(sql)` runs immediately
 before it, `Post(sql)` immediately after (e.g. preserve values before a remove,
@@ -82,6 +85,10 @@ neither be derived from the snapshots nor comes from a `Down()` override is
 `MIG-020` — checked for the full range before the first statement. A statement
 that fails mid-run reports as `MIG-021`, naming the SQL.
 
+`status` reports one entry per (version, object): the version, the object, the
+step's description, and the state — `Applied`, `Pending`, or `Draft` ("Draft
+migrations" below). The text layout is the implementation's (ADR-0039).
+
 ## Derived rollbacks (ADR-0018)
 
 Steps carry **no down DDL** — "Down could be deducted from the previous schema."
@@ -109,13 +116,13 @@ that version and the latest one before it, then derives the reverse:
 Every derived statement renders through the dialect (ADR-0043): the snapshots
 are the dialect's, and so is the rollback — a snapshot stamped for another
 dialect refuses with `MIG-014` for the whole range before anything executes
-("Dialects" below). `Down()` remains the manual override and always wins;
-`PreDown`/`PostDown` hooks wrap whichever core runs and carry the data work (a
-data-only step derives an empty rollback — schema-correct; its inserted rows
-are the hooks' job). The
-snapshots ship **embedded in the migrations assembly**
-(`<EmbeddedResource Include="Migrations\**\*.schema.json" />`) so rollbacks work
-deployed; the CLI's `--snapshots <dir>` reads them from source instead.
+("Snapshots" and "Dialects" below). `Down()` remains the manual override and
+always wins; `PreDown`/`PostDown` hooks wrap whichever core runs and carry the
+data work (a data-only step derives an empty rollback — schema-correct; its
+inserted rows are the hooks' job). The snapshots ship **embedded in the
+migrations assembly** (`<EmbeddedResource Include="Migrations\**\*.schema.json" />`)
+so rollbacks work deployed; the CLI's `--snapshots <dir>` reads them from
+source instead.
 
 ## Locking and atomicity
 
@@ -163,7 +170,10 @@ canonicalized to `create [materialized] view <name> as <body>`: `or alter`,
 databases rewrite that prefix when storing it and each dialect quotes its own
 way, while the body is the one SQL the entity declares. So a view snapshot's
 content is **dialect-neutral** (ADR-0043); it stays executable once a dialect
-renders it again from name and body.
+renders it again from name and body. The normalizer strips `"`, `[`/`]`, and
+backticks from the name (a schema-qualified name keeps its dot) and matches the
+name as one non-blank token: a quoted name containing spaces, or a view with a
+column list before `as`, stays unnormalized and compares as text (ADR-0043).
 
 A trigger snapshots by **declaration** (ADR-0042), `Migrations/Trigger/<Class>/V000N.schema.json`:
 
@@ -203,9 +213,15 @@ come from them, through the dialect.
 but SQLite carries `"dialect": "<name>"` right after `"object"`, whatever its
 kind — a tree and its snapshots belong to one dialect, like its checksums. An
 unstamped document is SQLite's (every format v2 file, every SQLite tree:
-nothing on disk changes). Every consumer checks the stamp against the dialect
-in use — the derived rollback, the diff baseline, the shadow's trusted
-baseline — and refuses a mismatch with `MIG-014`.
+nothing on disk changes). Every consumer checks the stamp of the snapshots it
+**consults** against the dialect in use and refuses a mismatch with `MIG-014`:
+the derived rollback, the snapshot at each reverting step's version and the
+latest before it, for every step without a `Down()` override, checked for the
+whole range before anything executes; `diff` and `--amend`, each baseline the
+diff uses; `shadow --from`, each snapshot the trusted baseline restores. A
+foreign document the tool does not consult is never seen (ADR-0043). The stamp
+compares case-insensitively; the message names the object, the stamp, and the
+dialect in use — its wording is free.
 
 ## The generator toolchain (ADR-0017)
 
@@ -215,10 +231,16 @@ baseline — and refuses a mismatch with `MIG-014`.
   table steps.
   Generated code freezes exactly like hand-written code. Tables diff by columns;
   views diff by normalized DDL, and a generated view change step is literal DDL
-  opening with the `ExpectDefinition` guard (below). Indexes match
+  opening with the `ExpectDefinition` guard (below). Generated view steps stay
+  literal, neutral text: `drop [materialized ]view if exists <name>` unquoted and
+  the normalized create, executable on every dialect for conventional names; a
+  reserved-word view name is hand-written (ADR-0043). Indexes match
   **structurally** — unique flag + ordered (column, direction), never by name
   (ADR-0017 add.2): an index that exists under another name counts as
   implemented, because indexes get added directly to the database in urgencies.
+  The shape-vs-shape diff core stays pure: it yields the added indexes as
+  shapes, and the emitter renders them through the dialect at emit time
+  (ADR-0043).
   Renames are **declared** (`--rename table.old=new`), never inferred. Removals gate on `--allow-remove`
   (`DDL-003`); type/nullability changes and non-nullable additions are `DDL-004` —
   hand-written, using the literal `AddColumn(name, type, nullable, defaultSql)`
@@ -263,9 +285,15 @@ engine stores the text as submitted (SQLite, SQL Server) both sides normalize
 and compare as text; where it reformats the parse tree (PostgreSQL's
 `pg_get_viewdef`) the runner creates the expected body as a probe view inside
 the run, reads it back the same way, drops it, and compares the engine's two
-renderings — equal exactly when the parse trees are. The probe runs under a
-savepoint, so a body the current schema cannot parse counts as drift instead
-of poisoning the transaction. Forcing
+renderings — equal exactly when the parse trees are. The probe, exactly
+(ADR-0043): the live definition is read first — absent is drift without a
+probe; the probe runs under a savepoint, and any failure inside it (the create,
+the read, the drop — a body the current schema cannot parse, say) is drift
+instead of poisoning the transaction: `rollback to savepoint`, then `release
+savepoint` so the name is free for the next probe in the run. An expectation
+that is not a view create (a procedure's DDL) compares as text. The probe may
+be a plain view even for a materialized expectation (`pg_get_viewdef` renders
+both alike). Forcing
 (`migrate --force` / `MigrateAsync(allowViewDrift: true, notify, ct)`) recreates
 the view from the code and reports the drift. Derived view rollbacks carry the
 mirrored guard. Guards evaluate at execution time (chained pending view changes
@@ -316,16 +344,30 @@ Everything above works on SQL Server and PostgreSQL as it does on SQLite —
   real tree's `decimal(18,2)` is the model's type, not a `DDL-004` forever.
 - **Tables snapshot from the engine, views and triggers from the step.** The
   shadow introspects tables after each version through `ColumnsInfoSql`
-  (`name, type, notnull, pk, generated`) and `IndexesInfoSql`. For a view it
-  takes the step's last create statement, normalized; for a trigger the
-  declaration the step's actions leave behind (`CreateTrigger()`/`Recreate`
-  → declared, `DropTrigger()` → gone) — because an engine's catalog may not
-  hand them back as declared: PostgreSQL reformats a view, SQL Server's
-  `inserted` has lost a `{new: …}` token's column list. A later drop ends the
-  history. Where the catalog is lossless (SQLite views and triggers, SQL
-  Server views, PostgreSQL triggers) the shadow reads it too and **notes** a
-  disagreement; a raw-SQL step with no create falls back to the catalog where
-  it is verbatim and is skipped with a note where it is not.
+  (`name, type, notnull, pk, generated`) and `IndexesInfoSql` — read by ordinal
+  or by name, as dialects.md "Introspection result shapes" allows; the fifth column is
+  `generated` either way (ADR-0043). For a view and a trigger it takes what the
+  step leaves behind — because an engine's catalog may not hand them back as
+  declared: PostgreSQL reformats a view, SQL Server's `inserted` has lost a
+  `{new: …}` token's column list. A later drop ends the history. Where the
+  catalog is lossless (SQLite views and triggers, SQL Server views, PostgreSQL
+  triggers) the shadow reads it too and **notes** a disagreement. Note wording
+  is free.
+  - *Views*: the step's last create statement, normalized — its rendered Up
+    statements are scanned in order (hooks included, guards skipped) for a
+    create or a drop of the object, and the last one wins. A raw-SQL step with
+    no create falls back to the catalog where it is verbatim and is skipped with
+    a note where it is not; verbatim catalog, no create in the step, and no view
+    in the catalog: the history ends silently (ADR-0043).
+  - *Triggers*: the declaration the step's actions leave behind
+    (`CreateTrigger()`/`Recreate` → declared, `DropTrigger()` → gone). A trigger
+    step that neither creates nor drops (a guard-only step) leaves the trigger as
+    it was, exactly like a raw-SQL step: the read-back where the host has one,
+    else skipped with a note. Read-back present and trigger absent: the history
+    ends silently; hand-written text: a note. A disagreement is judged on
+    relation, relation kind, timing, events, update-of columns, and the
+    normalized body; the relation's kind may come from the catalog or from the
+    mapped entity (ADR-0043).
 - **The rollback renders through the seam.** `RenameColumnSql`,
   `AddColumnSql`, `DropColumnSql` (SQL Server drops a leftover default
   constraint first), `DropIndexSql`, `CreateIndexSql(table, index)` from the
@@ -337,7 +379,14 @@ Everything above works on SQL Server and PostgreSQL as it does on SQLite —
 - **The shadow's database is the dialect's** (`IShadowHost` beside the seam,
   a tooling contract never consulted at runtime): provision on the admin
   connection, drop afterwards, and the optional trigger read-back for the
-  self-check (SQLite, PostgreSQL; none on SQL Server).
+  self-check (SQLite, PostgreSQL; none on SQL Server). SQLite ignores the admin
+  connection string; SQL Server and PostgreSQL refuse without one before
+  provisioning anything (a CLI error, no code). The throwaway connection string
+  is the admin string with its database name replaced — however the driver
+  spells it (`Database`/`Initial Catalog`, PDO's `dbname`/`Database`, a URL's
+  path). When the drop fails, the replay's result stands and the failure is a
+  note; when both fail, the replay's error surfaces. The SQL Server single-user
+  step is best effort (ADR-0043).
 - **`migrate --force`** reads the live schema through the same two
   introspection queries and renders through the same members; its gates
   (`DDL-003`, `DDL-004`) are unchanged.
@@ -353,64 +402,10 @@ Conformance: `snapshot-cases` expect one document per dialect;
 derived rollbacks and the guards on a live engine (skip-gated, each case in a
 throwaway database the shadow host provisions); every implementation's live
 leg runs a shadow round trip — a short tree replayed, its snapshots equal to
-the metadata-side export apart from `generatedAt`.
-
-**Clarifications** (the PHP and Go ports asked; ADR-0043):
-
-- **Which snapshots `MIG-014` checks: the ones consulted.** For the derived
-  rollback, the snapshot at each reverting step's version and the latest
-  before it, for every step without a `Down()` override, checked for the
-  whole range before anything executes; for `diff` and `--amend`, each
-  baseline the diff uses; for `shadow --from`, each snapshot the baseline
-  restores. A foreign document the tool does not consult is never seen (the
-  reference once refused on any file in a folder it enumerated; the consulted
-  rule is the one). The stamp compares case-insensitively; the message names
-  the object, the stamp, and the dialect in use — its wording is free.
-- **The normalizer's limits.** It strips `"`, `[`/`]`, and backticks from the
-  name (a schema-qualified name keeps its dot) and matches the name as one
-  non-blank token: a quoted name containing spaces, or a view with a column
-  list before `as`, stays unnormalized and compares as text.
-- **The probe, exactly.** The live definition is read first — absent is
-  drift without a probe. Any failure inside the probe (the create, the read,
-  the drop) is drift: `rollback to savepoint`, then `release savepoint` so
-  the name is free for the next probe in the run. An expectation that is not
-  a view create (a procedure's DDL) compares as text. The probe may be a
-  plain view even for a materialized expectation (`pg_get_viewdef` renders
-  both alike).
-- **Shadow views: "the step's last create".** The step's rendered Up
-  statements are scanned in order (hooks included, guards skipped) for a
-  create or a drop of the object; the last one wins. Verbatim catalog, no
-  create in the step, no view in the catalog: the history ends silently.
-- **Shadow triggers.** A trigger step that neither creates nor drops (a
-  guard-only step) leaves the trigger as it was, exactly like a raw-SQL step:
-  the read-back where the host has one, else skipped with a note. Read-back
-  present and trigger absent: the history ends silently; hand-written text:
-  a note. A disagreement is judged on relation, relation kind, timing,
-  events, update-of columns, and the normalized body; the relation's kind
-  may come from the catalog or from the mapped entity. Note wording is free.
-- **The shadow host, edges.** SQLite ignores the admin connection string;
-  SQL Server and PostgreSQL refuse without one before provisioning anything
-  (a CLI error, no code). The throwaway connection string is the admin
-  string with its database name replaced — however the driver spells it
-  (`Database`/`Initial Catalog`, PDO's `dbname`/`Database`, a URL's path).
-  When the drop fails, the replay's result stands and the failure is a note;
-  when both fail, the replay's error surfaces. The SQL Server single-user
-  step is best effort.
-- **Generated view steps stay literal, neutral text:** `drop [materialized
-  ]view if exists <name>` unquoted and the normalized create, executable on
-  every dialect for conventional names; a reserved-word view name is
-  hand-written. The `DropView()` action keeps its frozen `drop view <name>`
-  for a plain view (checksums hash it) and says `drop materialized view` for
-  a materialized one; `RecreateView()` drops through `DropViewSql`.
-- **The diff core stays pure.** The shape-vs-shape diff yields the added
-  indexes as shapes; the emitter renders them through the dialect at emit
-  time, and `diff-cases` `addedIndexes` compare by index name.
-- **The live shadow tree is not fixed**, only its content: a literal create
-  with a unique index in the dialect's SQL, a view step, a trigger step, and
-  a literal add-column — the shadow's snapshots equal the metadata-side export
-  apart from `generatedAt`, with no note of disagreement.
-- **Introspection reads by ordinal or by name**, as Clarification 1 of
-  dialects.md allows; the fifth column is `generated` either way.
+the metadata-side export apart from `generatedAt`, with no note of
+disagreement. The tree is not fixed, only its content: a literal create with a
+unique index in the dialect's SQL, a view step, a trigger step, and a literal
+add-column (ADR-0043).
 
 ## Conformance cases
 
@@ -428,10 +423,11 @@ expectations. Each implementation feeds the set through its runner (the
 ```
 
 A `run` step may override `versions` (drift scenarios). `expect` is either the
-exact `(version, object)` rows recorded afterwards or an error code.
+exact `(version, object)` rows recorded afterwards or an error code. A
+`baseline` step carries `version` (ADR-0039).
 
-The generator/derived-rollback additions (ADR-0017/18) extend the format so every
-behavior in this document is expressible as data:
+The format extends so every behavior in this document is expressible as data
+(ADR-0017/18 and later):
 
 - top-level `"snapshots": [ <snapshot documents> ]` — the history the runner
   derives rollbacks from;
@@ -451,6 +447,7 @@ behavior in this document is expressible as data:
   `"kind": "trigger"`; and the deep expect `"triggers": { "<name>": { "relation",
   "timing", "events", "updateOf"?, "sql" } | null }` — the live trigger read back
   through the dialect and parsed to its declaration, or absent (ADR-0042);
+- a version object may carry `"draft": true` ("Draft migrations" below);
 - per dialect (ADR-0043): the root folder runs on SQLite; `postgres/` and
   `sqlserver/` hold cases in that dialect's SQL with stamped snapshots
   (`"dialect": "postgres"`), run on a live engine. `columns` reads through
@@ -462,7 +459,11 @@ Two sibling suites cover the generator itself: `conformance/diff-cases/` feeds
 two shapes (snapshot form) plus declared renames through the diff and checks the
 resulting change exactly — no database (a case with `"kind": "trigger"` feeds
 two trigger declarations, either null, and expects `isNew` | `isChanged` |
-`isRemoved` or nothing); `conformance/snapshot-cases/` pins a fixture entity,
+`isRemoved` or nothing). In a diff case, `renames` is a map `{ "old": "new" }`
+(the explicit `--rename`s), `expect.renamed` lists `[old, new]` pairs in
+emitted order, `current.asOfVersion` is `0` — the model has no version
+(ADR-0039) — and `addedIndexes` compare by index name (ADR-0043).
+`conformance/snapshot-cases/` pins a fixture entity,
 version, and generation time and expects the exact exported snapshot document
 **per dialect** — `expect` keyed by dialect name, a shipped dialect missing from
 it fails the suite (ADR-0043; `"kind": "trigger"` names the linked trigger). `conformance/trigger-sql/` pins
@@ -473,85 +474,89 @@ what every dialect renders for a declaration (`dialects.md` "Triggers"). See
 
 Two additions to the generator, both declared, nothing inferred:
 
-- **`[RenamedFrom("old_column")]`** on a `[Column]` property (metadata-model.md:
-  exported as `"renamedFrom"`) is a declared rename the generator reads
-  exactly as a `--rename table.old=new` flag — one data-preserving
-  `RenameColumn` instead of a drop and an add — but kept with the model, so
-  the intent survives the one `diff` run. The declaration is **permanent and
-  harmless once applied**: when the latest snapshot already has the new
-  column, or has neither, it declares nothing (the column is then simply
-  new, or already renamed). An explicit `--rename` stays strict — an unknown
-  side is unsupported — and wins over a declaration of the same old column.
-  `MAP-027` for a declaration without `[Column]` or without a name. Table
-  renames are not declared this way (a table's rename is a step the author
-  writes).
-- **`diff --draft`** emits the version with a draft marker (C# `[Draft]` on
-  the root class; PHP/Go their own marker) that the runner refuses to apply
-  or baseline — **`MIG-013`, the whole plan, before anything executes** —
-  until the author has reviewed the generated code and removed it. A draft
-  still composes, renders, `status` reports it as `Draft`, and `shadow`
-  replays it: it is a version in every respect but applicability.
-  `--amend` regenerates a draft like any generated version.
+- **`[RenamedFrom("old_column")]`** on a `[Column]` property (metadata-model.md
+  "Declared renames": exported as `"renamedFrom"`) is a declared
+  rename the generator reads exactly as a `--rename table.old=new` flag — one
+  data-preserving `RenameColumn` instead of a drop and an add — but kept with
+  the model, so the intent survives the one `diff` run. The declaration is
+  **permanent and harmless once applied**: it is a rename only while it can be
+  one — the old column in the snapshot, the new one not yet there, **and the
+  model no longer mapping the old one** (a model that still maps it describes
+  two columns, and the new one simply adds; ADR-0038). Otherwise it declares
+  nothing: when the latest snapshot already has the new column, or has
+  neither, the column is then simply new, or already renamed; a declaration
+  naming the column's own name declares nothing — the snapshot already has it
+  (ADR-0039). A rename whose new column also changes type or nullability is
+  emitted, and the change is reported `DDL-004` under the new name, exactly as
+  for an unrenamed column (ADR-0039). An explicit `--rename` stays strict — an
+  unknown side is unsupported — and wins over a declaration of the same old
+  column, applied once, never doubled. Matching is case-insensitive, like
+  explicit renames; names are trimmed. Renames apply and emit in **ordinal
+  order of the old column**, so every implementation writes the same step
+  (ADR-0038). Where the declaration may sit, and every misplacement that is
+  `MAP-027`, is spec/metadata-model.md "Declared renames". Table renames are
+  not declared this way (a table's rename is a step the author writes).
+- **`diff --draft`** emits the version with a draft marker that the runner
+  refuses to apply or baseline — **`MIG-013`, the whole plan, before anything
+  executes** — until the author has reviewed the generated code and removed it.
+  The marker is the language's own (C# `[Draft]` on the root class, PHP
+  `#[Draft]`, Go `IsDraft()`), and beside it the language-neutral token: the
+  word `DRAFT` in the root's header comment (ADR-0039). A draft still
+  composes, renders, `status` reports it as `Draft`, and `shadow` replays it:
+  it is a version in every respect but applicability. The rules (ADR-0038):
+  - *Pending* for `MIG-013` means not recorded in `schema_version`. A recorded
+    draft is history (its checksum rules apply) and keeps its state; `status`
+    reports `Draft` only for an unrecorded one. `baseline N` refuses drafts at
+    or below `N` only; `migrate down` ignores the marker. The refusal names the
+    version (`V0002`), not an object.
+  - A pending draft is pending work: `HasPending` is true and SchemaGuard
+    reports it as `MIG-030`.
+  - "Before anything executes" is met by the run transaction: the version
+    table's creation precedes the refusal and rolls back with it.
+  - `shadow` replays a draft through a runner option that only the tooling
+    sets (C# `ReplayDrafts`, PHP `replayDrafts`, Go a marker-hiding wrapper) —
+    there is no application-side bypass of `MIG-013`.
+  - `--amend` regenerates a draft like any generated version and **keeps the
+    marker** of a root that already carries it, with or without `--draft`:
+    unreviewed code never becomes applicable by regeneration. `--amend` reads
+    the marker from the root file in the tree it regenerates — the marker is
+    text in the tree, not a property of a compiled class (ADR-0039).
 
 Conformance: `diff-cases/` current columns may carry `"renamedFrom"`;
-`migrations-cases/` versions may carry `"draft": true`; `entities/role.json`
-pins the export (`Role.Name` was `name` until V0004).
+`migrations-cases/` versions may carry `"draft": true`, and
+`draft_refuses_to_apply` pins the refusal's atomicity with a `down` to 0 that
+finds nothing applied; `amend-cases` pins the marker through `command.draft`
+(`diff --draft`) and `files[].draft` (a root laid out with the marker;
+ADR-0039); `entities/role.json` pins the export (`Role.Name` was `name` until
+V0004).
 
-**Clarifications** (the PHP and Go M5 ports asked; ADR-0038):
+## Where the Clarifications went
 
-- **A declaration is a rename only while it can be one**: the old column in
-  the snapshot, the new one not yet there, **and the model no longer mapping
-  the old one** — a model that still maps it describes two columns, and the
-  new one simply adds. An explicit `--rename` of the same old column wins
-  and is applied once, never doubled. Matching is case-insensitive, like
-  explicit renames; names are trimmed. Renames apply and emit in **ordinal
-  order of the old column**, so every implementation writes the same step.
-- **Two properties declaring the same previous column** is `MAP-027` at
-  load — two columns cannot both have come from one — never a diff-time
-  refusal.
-- **`MAP-027` covers every misplaced declaration**: without `[Column]`, on an
-  ignored property, a navigation, an owned navigation or an owned type's
-  member (a prefixed column cannot say which old name it means), a blank
-  name, and **a non-table source** (a view or statement has no column diff
-  for the declaration to feed — the `MAP-026` precedent). The manual builder
-  declares renames under the same rules.
-- **Export order of a column's optional keys**: `key`, `generated`, `audit`,
-  `softDelete`, `renamedFrom` — `renamedFrom` last.
-- **"Pending" for `MIG-013`**: a draft not recorded in `schema_version`. A
-  recorded draft is history (its checksum rules apply) and keeps its state;
-  `status` reports `Draft` only for an unrecorded one. `baseline N` refuses
-  drafts at or below `N` only; `migrate down` ignores the marker. The
-  refusal names the version (`V0002`), not an object.
-- **A pending draft is pending work**: `HasPending` is true and SchemaGuard
-  reports it as `MIG-030`.
-- **"Before anything executes"** is met by the run transaction: the version
-  table's creation precedes the refusal and rolls back with it.
-- **`shadow` replays a draft** through a runner option that only the
-  tooling sets (C# `ReplayDrafts`, PHP `replayDrafts`, Go a marker-hiding
-  wrapper) — there is no application-side bypass of `MIG-013`.
-- **`--amend` keeps the marker** of a root that already carries it, with or
-  without `--draft`: unreviewed code never becomes applicable by
-  regeneration.
+This document's Clarifications were never numbered; each is listed by its
+lead phrase.
 
-**Clarifications** (the Level 3 exit audit; ADR-0039):
-
-- **The draft marker's language-neutral token** is the word `DRAFT` in the
-  root's header comment, written beside the language's own marker (C#
-  `[Draft]`, PHP `#[Draft]`, Go `IsDraft()`); `amend-cases` pins it through
-  `command.draft` (`diff --draft`) and `files[].draft` (a root laid out with
-  the marker). **`--amend` reads the marker from the root file** in the tree
-  it regenerates — the marker is text in the tree, not a property of a
-  compiled class.
-- **A rename whose new column also changes type or nullability**: the rename
-  is emitted and the change is reported `DDL-004` under the new name, exactly
-  as for an unrenamed column. A declaration naming the column's own name
-  declares nothing — the snapshot already has it.
-- **Case-format fields.** `diff-cases`: `renames` is a map `{ "old": "new" }`
-  (the explicit `--rename`s); `expect.renamed` lists `[old, new]` pairs in
-  emitted order; `current.asOfVersion` is `0` — the model has no version.
-  `migrations-cases`: a `baseline` step carries `version`; a version object
-  may carry `"draft": true`; `draft_refuses_to_apply` pins the refusal's
-  atomicity with a `down` to 0 that finds nothing applied.
-- **`status` reports one entry per (version, object)**: the version, the
-  object, the step's description, and the state — `Applied`, `Pending`, or
-  `Draft`. The text layout is the implementation's.
+| Clarification (block) | Now in |
+|---|---|
+| Which snapshots `MIG-014` checks: the ones consulted (ADR-0043) | "Snapshots (schema history as data)" — Format v3 |
+| The normalizer's limits (ADR-0043) | "Snapshots (schema history as data)" |
+| The probe, exactly (ADR-0043) | "The view and trigger apply guard" |
+| Shadow views: "the step's last create" (ADR-0043) | "Dialects (ADR-0043)" — Tables snapshot from the engine, *Views* |
+| Shadow triggers (ADR-0043) | "Dialects (ADR-0043)" — Tables snapshot from the engine, *Triggers* |
+| The shadow host, edges (ADR-0043) | "Dialects (ADR-0043)" — The shadow's database is the dialect's |
+| Generated view steps stay literal, neutral text (ADR-0043) | "The generator toolchain" — `diff`; the `DropView()`/`RecreateView()` part in "Steps and actions" |
+| The diff core stays pure (ADR-0043) | "The generator toolchain" — `diff`; `addedIndexes` in "Conformance cases" |
+| The live shadow tree is not fixed (ADR-0043) | "Dialects (ADR-0043)" — Conformance paragraph |
+| Introspection reads by ordinal or by name (ADR-0043) | "Dialects (ADR-0043)" — Tables snapshot from the engine |
+| A declaration is a rename only while it can be one (ADR-0038) | "Draft migrations" — `[RenamedFrom]` |
+| Two properties declaring the same previous column (ADR-0038) | spec/metadata-model.md "Declared renames" |
+| `MAP-027` covers every misplaced declaration (ADR-0038) | spec/metadata-model.md "Declared renames" |
+| Export order of a column's optional keys (ADR-0038) | spec/metadata-model.md "Declared renames" |
+| "Pending" for `MIG-013` (ADR-0038) | "Draft migrations" — `diff --draft` |
+| A pending draft is pending work (ADR-0038) | "Draft migrations" — `diff --draft` |
+| "Before anything executes" (ADR-0038) | "Draft migrations" — `diff --draft` |
+| `shadow` replays a draft (ADR-0038) | "Draft migrations" — `diff --draft` |
+| `--amend` keeps the marker (ADR-0038) | "Draft migrations" — `diff --draft` |
+| The draft marker's language-neutral token (ADR-0039) | "Draft migrations" — `diff --draft` and its Conformance paragraph |
+| A rename whose new column also changes type or nullability (ADR-0039) | "Draft migrations" — `[RenamedFrom]` |
+| Case-format fields (ADR-0039) | "Conformance cases" (diff-case fields, `baseline` step); "Draft migrations" Conformance (`draft_refuses_to_apply`) |
+| `status` reports one entry per (version, object) (ADR-0039) | "Recording and integrity" |

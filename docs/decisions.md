@@ -1766,6 +1766,8 @@ private snake_case regex — now pinned by a test).
 
 **Status.** Accepted.
 
+*Recorded from the brief, 2026-10-27:* the PHP run command is `cd php && composer install && composer test`.
+
 ## Design seed — partial updates: an opt-in column list on `UpdateAsync` (2026-09-08)
 
 **Itch.** §7.15 makes `UpdateAsync` a full-row write: every mapped non-key,
@@ -2612,6 +2614,8 @@ advisory in the meantime; the SQL Server dialect pins the patched version.
 
 **Status.** Accepted. M1 done in all three implementations.
 
+*Recorded from the brief, 2026-10-27:* the patched `System.Security.Cryptography.Pkcs` version the SQL Server dialect pins is 10.0.13.
+
 ## ADR-0036 — Level 3 M2: the unit of work, in three implementations (2026-10-16)
 
 The second Level 3 milestone (ADR-0034 §7c M2), by the per-milestone method:
@@ -2972,6 +2976,8 @@ forbidden to read any implementation — the Python audit above is that port's
 first gap list already answered. Only when the owner says so.
 
 **Status.** Accepted. Level 3 closed in C#, PHP, and Go.
+
+*Recorded from the brief, 2026-10-27:* caching the dirty sweep's label strings cut its allocation by about 90%.
 
 ## ADR-0040 — The Level 4 dialects reach the ports: SQL Server and PostgreSQL for PHP and Go, built from the spec alone (2026-10-17)
 
@@ -3442,6 +3448,8 @@ implementation's own tests (C# `BaseClassRuleTests`, PHP `BaseClassRulesTest` +
 **Status.** Accepted; the ADR's implementation is complete. Nothing else
 inheritance-related changed: single-table and table-per-type stay out
 permanently.
+
+*Recorded from the brief, 2026-10-27:* merged onto ADR-0040 (the dialect ports, same day) and re-run with no live engine: C# 404 passed / 22 skipped, PHP 805 tests (40 skipped), Go ok.
 
 ### ADR-0040 addendum 2 — the SQL Server legs run for the first time; what they found (2026-10-19)
 
@@ -4098,6 +4106,8 @@ go test -C go -count=1 -p 2 ./orm/sqlserver/ -run Live
 Next: batched reads (3b) and multi-row inserts for keys the database does not
 generate, when the owner says so; the other Level 4 candidates wait.
 
+*Recorded from the brief, 2026-10-27:* the pending SQL Server batching legs are C# `LiveBatchingTests+OnSqlServer`, PHP `SqlServerLiveTest`'s batching scenarios, and Go `sqlserver/live_batch_test.go`.
+
 ## ADR-0045 — Level 4 item 4: observability, the statement log, in three implementations (2026-10-26)
 
 **The request (owner, 2026-10-26).** "Add a simple observability — at least we
@@ -4197,3 +4207,59 @@ pending from it; the SQL Server live verifications of ADR-0040 add.3,
 ADR-0042, ADR-0043, and ADR-0044 still await the owner's engine. The other
 Level 4 candidates (CI matrix, performance, packaging, tracing and timing,
 resilience) wait for the owner.
+
+*Recorded from the brief, 2026-10-27:* the developer-guide page is `docs/guide/16-observability.md`.
+
+## ADR-0046 — Spec consolidation and the brief as a state (2026-10-27)
+
+**Context.** The owner: "The spec has grown by accretion. Many documents carry
+long 'Clarifications' lists appended per milestone. They are correct but a
+porter must read the base text and then the amendments. A consolidation pass
+folding Clarifications into the sections they amend would make the spec read as
+one document. Same for the brief's session-state paragraphs, which are now a
+history rather than a state."
+
+**Decision.** An editorial pass; no rule, value, error code, name, or behaviour
+changed, and nothing in `dotnet/`, `php/`, `go/`, or `conformance/` was touched.
+
+- **Every Clarifications list in `spec/` is folded into the sections it
+  amended** — dialects.md (27 numbered), session.md (Batching 1–11, Statement
+  log 1–16, Tracking), metadata-model.md, migrations.md, unit-of-work.md,
+  hooks.md, query-ast.md, loading.md — each rule stated once, with a brief
+  `(ADR-xxxx)` marker where a port's gap produced it. Entries that amended
+  another document moved there (the `[RenamedFrom]` placement rules, `MAP-027`,
+  and the export order to metadata-model.md "Declared renames"; two hooks
+  entries to unit-of-work.md).
+- **Citations keep resolving.** Code comments, this log, the READMEs, and the
+  coding standards cite Clarifications by number or title; each document that
+  had them ends with "Where the Clarifications went", mapping every former
+  entry to the section that now states it. Citations inside `spec/` point at
+  sections.
+- **The brief is a state.** CLAUDE.md's 19 session-state paragraphs and §1's
+  run-on became one "Current state (2026-10-27)" section after §1 (where a
+  fresh session looks first); §3's cells say what each feature is and its
+  status + ADR. The history lives here: every fact the paragraphs held was
+  checked against its ADR, and the few found only in the brief were appended to
+  their ADRs as "Recorded from the brief" notes.
+
+**Consequences.**
+
+- A porter reads one text per document.
+- Where entries disagreed, the later ADR's text was kept: dialects.md 16 called
+  typed nulls "unverified against SQL Server", 18 (add.2) verified them and made
+  them the reference's rule; dialects.md 23's "Level 4's triggers in the mapping
+  may narrow it" was dropped, ADR-0042 having left the write strategy untouched;
+  unit-of-work.md's ADR-0037 "owned members are copied member by member" gave
+  way to ADR-0039's "an owned navigation as a whole".
+- Left as found, for the owner: dialects.md "Migration tooling" describes the
+  view probe as "`release savepoint` — or `rollback to savepoint` when the probe
+  fails to create", migrations.md (ADR-0043) as "any failure … `rollback to
+  savepoint`, then `release savepoint`"; and ADR-0040 add.1 counts PHP "was
+  805 / 16" where the brief recorded 805 / 40 skipped for ADR-0041 add.1's
+  merged run.
+- **The rule from here:** a milestone's gap answers are written directly into
+  the sections they amend, with the `(ADR-xxxx)` marker; a "Where the
+  Clarifications went" row is added only when something outside `spec/` will
+  cite the answer. The brief's "Current state" is rewritten, never appended to.
+
+**Status.** Accepted.

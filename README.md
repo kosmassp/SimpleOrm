@@ -553,7 +553,8 @@ known legacy-temporal caveats — prefer `net10.0` for Postgres.
 
 ## PHP port (ADR-0026)
 
-The first port, Levels 0–1, lives in [`php/`](php/README.md): same spec, same
+The first port lives in [`php/`](php/README.md) — Levels 0–3 (ADR-0026, ADR-0033,
+ADR-0035–0039) and all three dialects (ADR-0040): same spec, same
 conformance files, no shared code. Same API in PHP shape — `Db::open`, registries
 as static methods returning `Query`/`Command`, `$db->from(User::class)->where(…)`,
 `get`/`insert`/`update`/`delete`, `SchemaGuard::validate`, code migrations with
@@ -564,9 +565,10 @@ navigations, …). `cd php && composer install && composer test`.
 
 ## Go port (ADR-0027)
 
-The second port, Levels 0–1, lives in [`go/`](go/README.md): same spec, same
-conformance files, no shared code, one runtime dependency (`modernc.org/sqlite`,
-pure Go). Same API in Go shape — struct tags plus a small `Entity()` descriptor,
+The second port lives in [`go/`](go/README.md) — Levels 0–3 (ADR-0027, ADR-0031,
+ADR-0035–0039) and all three dialects (ADR-0040): same spec, same conformance
+files, no shared code; the SQLite driver is `modernc.org/sqlite` (pure Go), the
+other dialects add `go-mssqldb` and `pgx`. Same API in Go shape — struct tags plus a small `Entity()` descriptor,
 `orm.Open`, `orm.Query(ctx, db, entry, args)`, `orm.Get[User]`,
 `orm.From[User](db).Where(…)`, errors as `*orm.Error` values, `context.Context`
 everywhere, explicit `orm.Registry` instead of assembly scanning, `embed.FS`

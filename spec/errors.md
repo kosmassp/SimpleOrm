@@ -95,7 +95,7 @@ these codes.
 | Code | Rule | Origin | Enforced |
 |---|---|---|---|
 | `TX-001` | `BeginAsync` while a transaction is already active on the session | §7.17 | milestone 3 |
-| `TX-002` | the schema changed under a statement the driver had prepared and cached (PostgreSQL SQLSTATE 0A000 "cached plan must not change result type") and the statement is not retried — inside a transaction, which PostgreSQL has aborted, or under the surface policy; the message says to roll back and rerun the transaction (or rerun the statement outside one), or open a new session; the provider error is the wrapped cause (spec/dialects.md Clarification 15) | ADR-0040 add.1 | Go PostgreSQL — the one implementation whose driver caches statements |
+| `TX-002` | the schema changed under a statement the driver had prepared and cached (PostgreSQL SQLSTATE 0A000 "cached plan must not change result type") and the statement is not retried — inside a transaction, which PostgreSQL has aborted, or under the surface policy; the message says to roll back and rerun the transaction (or rerun the statement outside one), or open a new session; the provider error is the wrapped cause (spec/dialects.md "Drivers — binding and reading") | ADR-0040 add.1 | Go PostgreSQL — the one implementation whose driver caches statements |
 | `TX-003` | an explicit batch used after it was sent or disposed: queuing an operation on it, or sending it again — a batch is spent by its send, sent or failed (spec/session.md "The explicit batch") | ADR-0044 | Level 4 (batching) |
 
 ## VAL — SchemaGuard (enforced milestone 6)

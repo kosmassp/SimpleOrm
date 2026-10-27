@@ -790,6 +790,23 @@ a connection string that turns it on is outside this rule. PHP is unaffected:
 PDO prepares each statement when the library runs it, and nothing prepared
 outlives the call.
 
+**A statement whose context ends is cancelled on the server** (ADR-0047). The
+session owns one connection, and after a fired command timeout or a caller's
+cancellation its next statement must run (spec/session.md "Resilience"), so a
+driver must end the statement by the engine's own cancel and keep the
+connection, never by severing it. Npgsql and SqlClient do so already; `pdo_pgsql`
+and `pdo_sqlsrv` time out on the server or the client and keep the
+connection. **pgx** does not by default — it sets an immediate deadline on the
+socket, after which `database/sql` reports `driver: bad connection` for the
+pinned connection — so the Go dialect's connector builds every connection with
+`pgconn.CancelRequestContextWatcherHandler` (`config.BuildContextWatcherHandler`):
+the context's end sends a PostgreSQL `CancelRequest`, the connection waits for
+the server's answer (`57014`), and the socket deadline stays only as the
+fallback for a server that does not answer within 5 seconds. A caller's own
+cancellation takes the same path: the running statement ends, the caller sees
+its cancellation, and the connection survives — inside a transaction, which
+PostgreSQL has aborted, the rollback is accepted.
+
 ## Statement batching (ADR-0044)
 
 The plan — which statements share a message — is the session's and the same
@@ -873,56 +890,104 @@ from a driver's own "is transient" flag, whose lists differ between driver
 versions (Npgsql 4.1 and 9.x; SqlClient 5.1 and 6.x) and between languages.
 
 The rule walks the failure **and its whole cause chain** (C#
-`InnerException`; Go `errors.Unwrap`/`errors.As`, both the single and the
-joined form; PHP `getPrevious()`) and answers true at the first link that
-matches:
+`InnerException`, and every inner failure of an `AggregateException` — Npgsql
+gathers one failure per host tried into one; Go `errors.Unwrap`/`errors.As`,
+both the single and the joined form — pgx joins the failures of every address
+it tried; PHP `getPrevious()`), and decides in two steps, **the engine first**:
+
+1. **An engine answer settles it.** When the chain holds an engine error — the
+   server spoke: a SQL Server error number, a PostgreSQL SQLSTATE — the first
+   one found answers alone, by the engine row of the table below, whatever
+   transport failure the chain also carries: a missing database reported
+   beside a refused second address is what the server will say again.
+2. **Transport decides only without one.** When the chain holds no engine
+   error, a transport failure anywhere in it answers true — a
+   connection-level failure of the language runtime: refused, reset,
+   unreachable, timed out, an end of stream during the handshake. A malformed
+   address (an address the runtime cannot parse, an unknown network) is not
+   one: it fails the same way again.
 
 | | SQLite | SQL Server | PostgreSQL |
 |---|---|---|---|
-| engine error | never | the error **number** is in the set below — any of the error records the failure carries, not only the first (C# `SqlException.Errors[*].Number`; Go go-mssqldb `mssql.Error.All[*].Number`; PHP the native code of the `SQLSTATE[...]` error, `errorInfo[1]`) | the **SQLSTATE** is class `08` (any `08xxx`: 08000, 08001, 08003, 08004, 08006, 08007, 08P01), `53300` too_many_connections, or `57P03` cannot_connect_now (C# `PostgresException.SqlState`; Go pgx `*pgconn.PgError.Code`; PHP `PDOException::getCode()` / `errorInfo[0]`) |
-| runtime | never | a socket, I/O, or timeout failure of the language runtime | the same |
+| engine error | never | the error **number** is in the set below — any of the error records the failure carries, not only the first (C# `SqlException.Errors[*].Number`; Go go-mssqldb `mssql.Error.All[*].Number`; PHP the native code of every record the driver exposes, below) | the **SQLSTATE** is class `08` (any `08xxx`: 08000, 08001, 08003, 08004, 08006, 08007, 08P01), `53300` too_many_connections, or `57P03` cannot_connect_now (C# `PostgresException.SqlState`; Go pgx `*pgconn.PgError.Code`; PHP below) |
+| transport | never | a socket, I/O, or timeout failure of the language runtime, without an engine error in the chain | the same |
 
 - **SQLite: never.** A SQLite open is a file open; it fails the same way the
   second time (`SQLITE_CANTOPEN`, a locked or corrupt file, no permission).
-- **SQL Server — the number set** (26; `SqlServerDialect.TransientErrorNumbers`
-  in the reference): `-2`, `20`, `64`, `121`, `233`, `997`, `4060`, `4221`,
-  `10053`, `10054`, `10060`, `10928`, `10929`, `11001`, `17197`, `18401`,
-  `40143`, `40197`, `40501`, `40540`, `40613`, `42108`, `42109`, `49918`,
-  `49919`, `49920`. Its sources: Microsoft.Data.SqlClient's configurable-retry
-  default list (`SqlConfigurableRetryFactory`) **without** its lock numbers
-  1204, 1205, 1222 (statement failures — only an open is asked about); the
-  connection-level numbers of EF Core's `SqlServerTransientExceptionDetector`
-  (20, 64, 121, 10053, 10054, 11001, 17197, 18401); and `-2`, the driver's
-  "timeout expired", which on an open is the connect timeout elapsing (EF Core
-  leaves it out because it retries statements). The numbers above 10000 that
-  name Windows socket errors (10053, 10054, 10060, 11001) are what SqlClient
-  reports for a broken or unreachable TCP endpoint; a driver that reports the
-  socket error itself instead is covered by the runtime row. Login failed
-  (`18456`) is **not** transient.
+- **SQL Server — the number set** (28; `SqlServerDialect.TransientErrorNumbers`
+  in the reference): `-2`, `20`, `64`, `121`, `233`, `258`, `997`, `4060`,
+  `4221`, `10053`, `10054`, `10060`, `10061`, `10928`, `10929`, `11001`,
+  `17197`, `18401`, `40143`, `40197`, `40501`, `40540`, `40613`, `42108`,
+  `42109`, `49918`, `49919`, `49920`. Its sources: Microsoft.Data.SqlClient's
+  configurable-retry default list (`SqlConfigurableRetryFactory`) **without**
+  its lock numbers 1204, 1205, 1222 (statement failures — only an open is
+  asked about); the connection-level numbers of EF Core's
+  `SqlServerTransientExceptionDetector` (20, 64, 121, 10053, 10054, 11001,
+  17197, 18401); `-2`, the driver's "timeout expired", which on an open is the
+  connect timeout elapsing (EF Core leaves it out because it retries
+  statements); and the two numbers SqlClient reports for a server that is not
+  listening yet — `258`, the TCP connect's wait timing out, and `10061`, the
+  connection refused (ADR-0047's port round: on Windows SqlClient reports an
+  unreachable endpoint as a `SqlException` numbered `258` wrapping a
+  `Win32Exception`, which no runtime type covers). SqlClient reports the
+  socket failures of a broken or unreachable TCP endpoint as these numbers
+  (10053, 10054, 10060, 10061, 11001, 258), so for it the numbers are the
+  whole answer; a driver that reports the socket error itself instead
+  (go-mssqldb) is covered by the transport row. Login failed (`18456`) is
+  **not** transient.
 - **PostgreSQL — the SQLSTATEs.** Class `08` is every connection exception;
   `53300` is a server at `max_connections`; `57P03` is a server starting up,
   shutting down, or in recovery. Not transient: `28xxx` (authentication),
   `3D000` (no such database), and every statement-level state (`40001`,
   `40P01`, `57014`, …) — they cannot arise from an open, and are never asked
   about.
-- **The runtime row** — mirror the language's own types: C#
+- **The transport row** — mirror the language's own types: C#
   `System.Net.Sockets.SocketException`, `System.IO.IOException`,
-  `TimeoutException`; Go `net.Error` (a dial failure, `*net.OpError`, a
-  timeout), `syscall.ECONNREFUSED`/`ECONNRESET`, `io.EOF` /
-  `io.ErrUnexpectedEOF` during the handshake, and `context.DeadlineExceeded`
-  **only** when it is not the caller's own context ending (a cancelled or
-  expired caller context is a cancellation — never retried, spec/session.md);
-  PHP has no exception hierarchy for sockets — `PDOException` carries the
-  driver's message and code, so a PHP port answers from the engine row
-  (SQLSTATE `08xxx` from `pdo_pgsql` covers a refused or lost socket; on SQL
-  Server the ODBC SQLSTATE `08001`/`08S01`/`HYT00` stands for the socket and
-  timeout cases, beside the native number) and documents the mapping in its
-  §10. Npgsql reports an unreachable server as an `NpgsqlException` wrapping a
-  `SocketException` or `TimeoutException`, SqlClient as a `SqlException`
-  with one of the numbers above — both match.
+  `TimeoutException`; Go `net.Error` (a dial failure, `*net.OpError`, a DNS
+  failure, a timeout) except the malformed-address types (`*net.AddrError`,
+  `*net.ParseError`, `net.InvalidAddrError`, `net.UnknownNetworkError`),
+  `syscall.ECONNREFUSED`/`ECONNRESET`/`ECONNABORTED`, `io.EOF` /
+  `io.ErrUnexpectedEOF` during the handshake, `os.ErrDeadlineExceeded`, and
+  `context.DeadlineExceeded` **only** when it is not the caller's own context
+  ending (a cancelled or expired caller context is a cancellation — never
+  retried, spec/session.md). Npgsql reports an unreachable server as an
+  `NpgsqlException` wrapping a `SocketException` or `TimeoutException`; pgx
+  as a `*pgconn.ConnectError` wrapping the dial's `*net.OpError`; go-mssqldb
+  as the dial's net error — all match.
+- **PHP** has no exception types for sockets or timeouts — a `PDOException` is
+  all a driver raises — so a PHP dialect answers from the codes it carries and
+  documents the mapping in its §10. **Reading the codes:** `errorInfo` is
+  `[SQLSTATE, native code, message]` (plus whatever further records the driver
+  appends) where the driver fills it; `PDOException::getCode()` is the
+  SQLSTATE only there — on a constructor failure that leaves `errorInfo` null
+  (`pdo_odbc`) `getCode()` is the native code, and the SQLSTATE and native
+  number are read from the message's fixed prefix
+  `SQLSTATE[08001] SQLDriverConnect: 10061 …`. "Any of the error records"
+  means **any record the driver exposes**: `pdo_odbc` hands over only the
+  first. **SQL Server:** a native number in the set, or — standing in for the
+  transport row — the ODBC SQLSTATE `08001` (client unable to establish the
+  connection), `08S01` (communication link failure), or `HYT00` (timeout
+  expired); a record with any other SQLSTATE is an engine answer, and then the
+  numbers alone decide. **PostgreSQL:** the first SQLSTATE in the chain
+  decides (below for `pdo_pgsql`'s `08006`).
+- **A driver that hides the server's SQLSTATE on connect** may be refined by
+  the server's message, and the refinement's failure mode must be **fewer
+  retries, never more**. `pdo_pgsql` reports every failed connect as `08006`
+  (native code 7) with libpq's message, the server's own SQLSTATE never
+  reaching PHP: an `08006` whose message carries a server `FATAL:` line is
+  judged by that line — transient only for the `53300` texts ("too many
+  clients", "remaining connection slots are reserved") and the `57P03` texts
+  ("the database system is starting up / shutting down / in recovery mode /
+  not … accepting connections") — and one without (refused, unreachable,
+  timed out, an unknown host) is the transport failure. The texts are
+  English; under a localized `lc_messages` a transient `FATAL` reads as
+  non-transient, and the open fails at once. The ODBC `08001` is likewise
+  coarser than the engine: it also covers a refused certificate, which PHP
+  therefore retries (bounded by `OpenRetries`) where C# and Go do not — an
+  accepted divergence, recorded in PHP's §10.
 - **Cancellation is never transient**, whatever the dialect answers: the
-  session checks the token and the platform's cancellation signal before it
-  asks (spec/session.md "Resilience", step 2.3).
+  session checks the token and the language's cancellation signal before it
+  asks (spec/session.md "Resilience", step 2.3), where the language has them.
 - **The live check** is in the Testing contract below.
 
 ## Connection strings and the CLI
@@ -950,8 +1015,13 @@ The **connect timeout** of one open attempt is the connection string's
 drivers' equivalents) — the library adds no option for it (ADR-0047). The CLI's
 `--command-timeout <seconds>` (a whole number, at least 1) sets the session's
 `CommandTimeout` for every command that opens a database — `migrate`,
-`migrate down`, `shadow`, `validate`, and the rest — because long DDL on a
-network engine outruns the drivers' 30-second default.
+`migrate down`, `shadow` (its throwaway connection), `validate`, and the rest
+— because long DDL on a network engine outruns the drivers' 30-second
+default. Any other value — zero, a negative or fractional number, text, the
+flag without a value — refuses with exit code 1 and the reason, for every
+command, before anything opens; a driver that cannot take the timeout (PHP's
+`odbc:` connection, spec/session.md "Resilience") refuses at open, exit code 1
+as well.
 
 ## Migration tooling (ADR-0043)
 
@@ -1057,10 +1127,15 @@ in the middle of a message (`CRUD-010`, nothing applied, every instance as it
 was), and a failing statement in the middle of a message (the provider's error,
 nothing applied). Both legs, for resilience (ADR-0047): a statement outrunning
 a one-second `CommandTimeout` (`select pg_sleep(3)`; `waitfor delay
-'00:00:03'`) surfaces the driver's own error — SQL Server number `-2` — and
-the session's next statement runs. PostgreSQL additionally: an open against an
-unreachable port is attempted `OpenRetries + 1` times and surfaces the driver's
-failure; an open of a missing database (`3D000`) is attempted once.
+'00:00:03'`) surfaces the driver's own error — the one spec/session.md
+"Resilience" lists for that driver — and the session's next statement runs.
+PostgreSQL additionally: an open against an unreachable port is attempted
+`OpenRetries + 1` times and surfaces the driver's failure; an open of a missing
+database (`3D000`) is attempted once; where the driver needed a different
+cancellation handler to keep the connection (pgx), a caller's own cancellation
+of a running statement, in and out of a transaction, leaves the connection
+usable. PHP's SQL Server leg additionally, when it reaches the server through
+`pdo_odbc`: a `CommandTimeout` on the `odbc:` connection refuses at open.
 
 "A database per fixture" may be one database per test class with the schema
 reset per test, or one per test; both drop afterwards, including on failure.

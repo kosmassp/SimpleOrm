@@ -397,7 +397,7 @@ bound form; the rest in their invariant form.
 | a generated write | `<Entity>.insert`, `<Entity>.update` (the full-row and the tracked dirty update alike), `<Entity>.updateOnly`, `<Entity>.delete` (the key form, the entity form, and the soft delete's flag-setting update alike — the name is the operation asked for) |
 | a generated read | `<Entity>.get` (the key read, `Refresh` included — it is the key read), `<Entity>.criteria` (criteria queries, and the queries explicit, batch, and eager loading issue — a many-to-many load is the link entity's criteria, then the target's; `MultiQuery` logs the root as `<Root>.criteria` and each navigation's query as `<Target>.criteria`, `SubSelect` one statement per navigation the same way), `<Entity>.include` (a join-mode eager query — the only eager mode with its own name — one line), `<Entity>.selectAll`, `<Entity>.statement` (a statement-backed entity) |
 | metadata DDL | `<Entity>.createTable`, `<Entity>.createIndex`, `<Entity>.createView`, `<Entity>.createTrigger` (its drop statements too) |
-| the migration runner | `migrate` — every statement it runs: the version table, the recorded history, the steps, the guards' definition reads, the rollback |
+| the migration runner | `migrate` — every statement it runs: the version table, `status`'s version-table check (the dialect's `ColumnsInfoSql` with `@relation`, migrations.md "Recording and integrity"), the recorded history, the steps, the guards' definition reads, the rollback |
 | SchemaGuard | `validate <source>` — the describe call of a registry entry (its name as the registry declares it, else the fallback of the first row: `validate query`) or of a statement-backed entity, and the column introspection it causes, under the same source; `<source>` for an entity's own check is the class name. SchemaGuard's `MIG-030` check reads the history through the runner: `migrate` |
 | the schema tooling | `shadow` (everything a shadow run sends: the replayed steps, its introspection, the view and trigger read-back — the runner's statements take the shadow's name there), `sync` (the force-sync introspection and the plan's statements; the `migrate --force` run before it stays `migrate`) |
 
@@ -503,66 +503,111 @@ SimpleOrm error code: both failures are the driver's.
 **The options**, fixed at open like the others:
 
 - `CommandTimeout`: a duration, or **unset** (the default). Unset, every
-  command keeps the driver's own default timeout, untouched — the Level 0–3
-  behaviour exactly (SqlClient and Npgsql: 30 seconds; Microsoft.Data.Sqlite:
-  30, which SQLite only applies to waiting on a lock). Set, **every command
-  the session creates** carries it, in whole seconds **rounded up, at least
-  1** (0.2 s → 1, 1.5 s → 2; a zero duration is 1, never the drivers'
-  "no limit"); a negative duration refuses at open. A multi-statement message
-  (ADR-0044: a driver batch, a multi-statement text) carries the same value
-  as one command does. In C# `TimeSpan?`, PHP `commandTimeout` (seconds as a
-  float or int, null unset), Go `CommandTimeout time.Duration` — zero is
-  Go's spelling of unset (the language has no optional duration), so only
-  there a zero means "the driver's default"; a positive sub-second value
-  still becomes 1 second. Where the driver has no per-command timeout
-  property, the implementation uses the driver's own equivalent for the one
-  statement and reports whatever it raises: Go's `database/sql` takes the
-  statement's context deadline (`context.WithTimeout` around the call —
-  the error is the driver's, wrapping `context.DeadlineExceeded`); PHP PDO
-  takes the driver attribute (`PDO::SQLSRV_ATTR_QUERY_TIMEOUT` on
-  `pdo_sqlsrv`, `SQL_ATTR_QUERY_TIMEOUT` through `pdo_odbc`, the
-  `statement_timeout` setting on `pdo_pgsql` — SQLSTATE `57014`).
+  statement keeps the driver's own behaviour, untouched — the Level 0–3
+  behaviour exactly (SqlClient and Npgsql: 30 seconds; Microsoft.Data.Sqlite
+  and `pdo_sqlite`: a busy timeout of 30 and 60 seconds, which SQLite applies
+  only to waiting on a lock; Go's `database/sql` sets no deadline, and
+  `pdo_pgsql` and `pdo_sqlsrv` no timeout). Set, **every statement the session sends** carries
+  it, in whole seconds **rounded up, at least 1** — 0.2 s → 1, 1.5 s → 2, and
+  a zero duration is 1, never a driver's "no limit" — wherever the spelling
+  can say zero at all: in C# `TimeSpan?` and PHP `commandTimeout` (seconds as
+  an int or a float, `null` unset) a zero is 1 second; in Go
+  `CommandTimeout time.Duration` a zero is **unset**, because the language has
+  no optional duration and a zero value means "not set" there
+  (`MaxStatementsPerMessage`'s zero is 100 by the same rule), while a positive
+  sub-second value still becomes 1 second. A negative value refuses at open,
+  and so does a value the spelling can hold but no driver can take — PHP's
+  `NAN`, `INF`, or a number of seconds beyond the platform integer. A
+  multi-statement message (ADR-0044: a driver batch, a multi-statement text)
+  carries the same value as one statement does.
 - `OpenRetries`: how many **more** attempts the open may make after a failure
   the dialect calls transient; `0` by default — one attempt, the Level 0–3
   behaviour. Negative refuses at open.
 - `OpenRetryDelay`: the **fixed** wait between two attempts; **1 second** by
-  default. Zero is legal (no wait); negative refuses at open. In C#
-  `TimeSpan`, PHP `openRetryDelay` (seconds, float or int), Go
-  `OpenRetryDelay time.Duration`; where a zero value cannot mean "unset"
-  (Go), zero is the default 1 second, as `MaxStatementsPerMessage`'s zero is
-  100 there, and the port names its spelling of "no wait" in its §10.
+  default. Zero is legal (no wait); negative (and in PHP non-finite) refuses at
+  open. In C# `TimeSpan`, PHP `openRetryDelay` (seconds, an int or a float),
+  Go `OpenRetryDelay time.Duration`; where a zero value cannot mean "no wait"
+  because it means "unset" (Go), zero is the default 1 second and the port
+  names its spelling of "no wait" in its §10 (Go: `orm.NoOpenRetryDelay`, one
+  nanosecond).
 
-**"Every command the session creates"** means every statement the session
-sends on its connection: registry queries and commands, statement entities,
-key reads, generated writes (immediate, flushed, batched), criteria and
-loading queries, join includes, select-all, metadata DDL, the migration
-runner's statements (the version table, the history, the steps, the guards'
-definition reads, the rollbacks), SchemaGuard's describe calls and
+A refused option is the language's argument error — C#
+`ArgumentOutOfRangeException`, PHP `InvalidArgumentException`, Go a plain
+`error` from `Open` — raised before any attempt.
+
+**"Every statement the session sends"** means every statement on its
+connection: registry queries and commands, statement entities, key reads,
+generated writes (immediate, flushed, batched), criteria and loading queries,
+join includes, select-all, metadata DDL, the migration runner's statements
+(the version table, `status`'s version-table check, the history, the steps,
+the guards' definition reads, the rollbacks), SchemaGuard's describe calls and
 introspection, the shadow's replay and introspection (the shadow takes the
-timeout for the throwaway session it opens), and the force sync. Each
-implementation routes command creation through **one** place that applies
-the option, so no path can miss it. Not covered — they run on statements the
-**dialect** issues for itself, and keep the driver's default: the migration
-run lock (it carries its own 60-second lock timeout on SQL Server and
-PostgreSQL, dialects.md), the shadow host's provisioning on the admin
-connection, and a dialect's own catalog read-back of a trigger in the
-shadow.
+timeout for the throwaway connection it opens; the shadow host's provisioning
+on the admin connection keeps the driver's behaviour), and the force sync.
+Each implementation applies the option in **one** place, so no path can miss
+it, and where that place is decides the edges — both forms conform:
+
+- **Per statement** (C#, Go): the driver takes a timeout on each command or
+  context — C# `DbCommand.CommandTimeout` and `DbBatch.Timeout`, set where the
+  session creates every command and batch; Go `context.WithTimeout` derived
+  from the caller's context around each statement and each one-round-trip
+  message. The statements a **dialect** issues for itself on the connection it
+  is handed — the migration run lock, a dialect's own catalog read-back of a
+  trigger in the shadow — are not the session's and keep the driver's
+  behaviour, and transaction control (`begin`, `commit`, `rollback`,
+  savepoints) is not timed.
+- **Per connection** (PHP): PDO keeps every driver's timeout on the connection,
+  so the session applies the option once, right after the open succeeds, and
+  every statement sent on that connection afterwards carries it, whoever
+  issued it — the dialect's own statements on the session's connection and,
+  where the driver applies it there, transaction control included. Per driver:
+  `pdo_sqlite` the busy timeout (`PDO::ATTR_TIMEOUT`, as the reference's
+  driver applies its command timeout); `pdo_pgsql` the session's
+  `statement_timeout`, set by one `select set_config('statement_timeout',
+  @value, false)` at open — an open-time setup statement, not a session
+  statement: it is not logged, never retried, and a failure of it fails the
+  open; `pdo_sqlsrv` the connection attribute `PDO::SQLSRV_ATTR_QUERY_TIMEOUT`,
+  which the statements it creates inherit. **`pdo_odbc` has no query timeout**
+  (no attribute, no connection keyword), so a `CommandTimeout` on an `odbc:`
+  connection **refuses at open** with an `InvalidArgumentException` naming the
+  driver and the reason — never ignored (§2, strict by default); the open's
+  connection is released.
+
+**Reading the rows** counts against the timeout where the driver scopes the
+deadline to the result set (Go: a query's context lives until its rows are
+closed, so a `Stream` consumer's time counts); elsewhere the timeout is the
+driver's per command (C#, PHP). The migration run lock keeps its own 60-second
+wait (dialects.md) in every implementation; where the per-connection form also
+bounds it, the shorter of the two applies.
 
 **A timeout that fires** surfaces exactly as any other driver failure on
-that path: the driver's error, unwrapped, from a session call (Npgsql: an
-`NpgsqlException` whose cause is a timeout; SqlClient: a `SqlException` with
-number `-2`); from the migration runner, `MIG-021` naming the statement for a
-statement it executes (as every failing migration statement), and the driver's
-error unwrapped for one of its reads (the recorded history, the version-table
-check of `status`, the guards' definition reads) — never an empty history
-(migrations.md "Recording and integrity"); a `VAL-001` row from SchemaGuard, as
-every statement the engine refuses to describe. The session does not roll back,
-retry, or close anything because of it. What the connection is good for
-afterwards is the driver's answer — Npgsql and SqlClient cancel the
-statement on the server and the session's next statement runs (the live
-tests check it outside a transaction; on PostgreSQL it has run, the SQL
-Server leg awaits an engine); inside a transaction, PostgreSQL has
-aborted it and only a rollback is accepted.
+that path: the driver's or the engine's own error, unwrapped, from a session
+call. Per driver:
+
+| driver | the fired timeout |
+|---|---|
+| SqlClient (C#) | `SqlException` number `-2` |
+| `pdo_sqlsrv` (PHP) | `PDOException`, SQLSTATE `HYT00` "Query timeout expired" |
+| go-mssqldb (Go) | the context's deadline error (`context.DeadlineExceeded`), after the driver's attention |
+| Npgsql (C#) | `NpgsqlException` whose cause is a `TimeoutException` |
+| `pdo_pgsql` (PHP) | `PDOException`, SQLSTATE `57014` — the server cancelled the statement |
+| pgx (Go) | `*pgconn.PgError`, SQLSTATE `57014` — the deadline cancels the statement on the server (dialects.md "Drivers — binding and reading") |
+| Microsoft.Data.Sqlite (C#), `pdo_sqlite` (PHP) | the busy error — `SQLITE_BUSY`, "database is locked" — once a lock wait outlasts it |
+| modernc (Go) | the context's deadline error: the driver interrupts the running statement |
+
+The session's own deadline is told apart from the caller's cancellation by the
+caller's token or context, still live. From the migration runner a fired
+timeout is `MIG-021` naming the statement for a statement it executes (as
+every failing migration statement), and the driver's error unwrapped for one
+of its reads (the recorded history, the version-table check of `status`, the
+guards' definition reads) — never an empty history (migrations.md "Recording
+and integrity"); from SchemaGuard a `VAL-001` row, as every statement the
+engine refuses to describe. The session does not roll back, retry, or close
+anything because of it, and **after a fired timeout the connection stays
+usable: the session's next statement runs** — a rule in every implementation,
+which each driver meets by cancelling the statement on the server rather than
+severing the connection (the live legs check it); inside a transaction,
+PostgreSQL has aborted the transaction and only a rollback is accepted.
 
 **The connect timeout is not one of these options.** How long one open
 attempt may take stays where every driver already puts it — in the
@@ -574,21 +619,33 @@ Go's `dial timeout` / `connect_timeout`; PHP's `LoginTimeout` /
 **The open, as an algorithm** (`Db.OpenAsync(connectionString, options, ct)`):
 
 1. Validate the options (`MaxStatementsPerMessage ≥ 1`, `OpenRetries ≥ 0`,
-   `OpenRetryDelay ≥ 0`, `CommandTimeout` unset or ≥ 0); a violation refuses
-   before any attempt, with the platform's argument error.
+   `OpenRetryDelay ≥ 0`, `CommandTimeout` unset or ≥ 0, every value finite);
+   a violation refuses before any attempt, with the language's argument error.
 2. For `attempt = 0, 1, 2, …`:
-   1. Ask the dialect for a fresh, unopened connection.
-   2. Open it, honouring the cancellation token. On success, the session
-      owns it: return.
-   3. On failure, release the connection. Then **retry only when all of**:
-      `attempt < OpenRetries`; the token is not cancelled; the failure is not
-      the platform's cancellation signal; and the dialect's `IsTransient`
-      answers true for it (dialects.md). Otherwise **rethrow the failure as
-      it was raised** — unwrapped, the same object (the last attempt's
-      failure, when retries were spent).
+   1. Obtain a connection from the dialect and open it, honouring the
+      cancellation token. A failure of the dialect to **create** the
+      connection — the driver refusing the connection string before any
+      attempt to reach a server (C# `CreateConnection` throwing, Go
+      `CreateConnection`'s parser error) — is not an open attempt: it is
+      raised as it is and **never retried**. Where the driver's constructor
+      opens (PHP's PDO), creating and opening are one step and every failure
+      of it is an attempt's.
+   2. On success, the session owns the connection (and, per connection,
+      applies `CommandTimeout`, above): return.
+   3. On failure, release whatever was obtained. Then **retry only when all
+      of**: `attempt < OpenRetries`; the token is not cancelled; the failure
+      is not the language's cancellation signal; and the dialect's
+      `IsTransient` answers true for it (dialects.md). Otherwise **rethrow the
+      failure as it was raised** — unwrapped, the same object (the last
+      attempt's failure, when retries were spent).
    4. Wait `OpenRetryDelay`, honouring the token: a cancellation during the
-      wait ends the open with the platform's cancellation signal and no
+      wait ends the open with the language's cancellation signal and no
       further attempt.
+
+The cancellation clauses apply where the language has a cancellation token or
+signal (C# `CancellationToken` and `OperationCanceledException`, Go the
+context and `context.Canceled`); PHP has neither, so only spent retries or a
+failure the dialect does not call transient end its loop.
 
 Only the **connection open** is ever retried. A statement never is — not on
 a timeout, not on a lost connection: the session cannot know whether a

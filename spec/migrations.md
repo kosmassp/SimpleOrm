@@ -92,9 +92,13 @@ The runner reads the recorded history in two ways, and never mistakes a failure
 for an empty history (ADR-0047): `status` (and SchemaGuard's `MIG-030` check
 through it) reads the history only when the table exists — asked through the
 dialect's `ColumnsInfoSql` with `@relation` = `schema_version`, no columns
-meaning no table and so an empty history; every other command (`migrate`,
-`migrate down`, `baseline`) creates the table first inside its run transaction,
-so a failing history read fails the run with the driver's error.
+meaning no table and so an empty history, and a failing check or a failing
+read after it being the driver's error, unwrapped; every other command
+(`migrate`, `migrate down`, `baseline`) creates the table first inside its run
+transaction, so a failing history read fails the run with the driver's error.
+The check is a statement of the runner's: it carries the command timeout and
+logs as `migrate` (spec/session.md "Statement log"), so `status` sends two statements where the table exists and one where it
+does not.
 
 ## Derived rollbacks (ADR-0018)
 

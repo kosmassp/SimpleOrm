@@ -2,7 +2,6 @@ package orm
 
 import (
 	"context"
-	"database/sql"
 	"iter"
 	"reflect"
 	"strings"
@@ -103,7 +102,7 @@ func Execute[TArgs any](ctx context.Context, db *Db, command CommandEntry[TArgs]
 // openStatement runs a [Statement]-backed entity's own SQL: QRY-004 when
 // resultType is not statement-backed, then PRM-012 when an args field's type
 // differs from the declared parameter type, before binding.
-func openStatement(ctx context.Context, db *Db, resultType reflect.Type, args any) (*sql.Rows, string, error) {
+func openStatement(ctx context.Context, db *Db, resultType reflect.Type, args any) (*resultRows, string, error) {
 	name := resultType.Name() + " [Statement]"
 	m, err := db.maps.Load(resultType)
 	if err != nil {

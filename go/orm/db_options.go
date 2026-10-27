@@ -43,7 +43,30 @@ type Options struct {
 	// LogParameterValues adds the parameter values beside their names in each line. Off by default: values may be
 	// personal data, and a log never receives them unless the application asks.
 	LogParameterValues bool
+	// CommandTimeout bounds how long every statement the session sends may run (Level 4, ADR-0047, spec/session.md
+	// "Resilience"), in whole seconds rounded up, at least 1 (a positive sub-second value is 1 second). The zero value
+	// is unset — Go's spelling of the spec's "unset", since a duration has no optional form: every statement keeps the
+	// driver's own behaviour, untouched. database/sql has no per-command timeout, so each statement runs under
+	// context.WithTimeout derived from the caller's context, and a result set's rows are read under the same deadline.
+	// A negative value is refused at Open. A timeout that fires is the driver's error (errors.Is(err,
+	// context.DeadlineExceeded), or the engine's cancellation error) while the caller's context is still live; nothing
+	// is retried, rolled back, or closed because of it.
+	CommandTimeout time.Duration
+	// OpenRetries is how many more attempts Open makes after a failure the dialect calls transient (Dialect.IsTransient)
+	// — 0, the default, is one attempt. Only the open is ever retried, never a statement. Negative is refused at Open.
+	OpenRetries int
+	// OpenRetryDelay is the fixed wait between two open attempts. The zero value is the default, one second
+	// (DefaultOpenRetryDelay); NoOpenRetryDelay is the spelling of "no wait" (CODING-STANDARD §10). Negative is refused
+	// at Open. The wait ends early, with the context's error and no further attempt, when the context does.
+	OpenRetryDelay time.Duration
 }
+
+// DefaultOpenRetryDelay is the wait between two open attempts when Options leaves OpenRetryDelay unset (spec/session.md "Resilience").
+const DefaultOpenRetryDelay = time.Second
+
+// NoOpenRetryDelay is the OpenRetryDelay that means "no wait": the next attempt starts at once. Its value is one
+// nanosecond, because the zero value already means the one-second default.
+const NoOpenRetryDelay time.Duration = 1
 
 // DefaultMaxStatementsPerMessage is the cap on statements per message when Options leaves it unset (spec/session.md "Batching").
 const DefaultMaxStatementsPerMessage = 100

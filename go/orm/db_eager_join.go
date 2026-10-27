@@ -290,7 +290,7 @@ type targetInstance struct {
 // by column-name prefix, mapped through mapping.Plan.ReadValues, and folded
 // by structural key equality (never a stringified token, per spec/loading.md)
 // into deduplicated roots with shared, ordered navigation values.
-func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs []*joinNavigation, rows *sql.Rows, queryName string) ([]T, error) {
+func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs []*joinNavigation, rows *resultRows, queryName string) ([]T, error) {
 	defer rows.Close()
 
 	columns, err := rows.Columns()

@@ -136,7 +136,7 @@ func readRowByKey(ctx context.Context, db *Db, m *core.EntityMap, entityType ref
 		if result.IsValid() {
 			return reflect.Value{}, core.Errorf("QRY-002", entityType.Name(), "the key matched more than one row")
 		}
-		value, err := plan.Read(rows)
+		value, err := plan.Read(rows.Rows)
 		if err != nil {
 			return reflect.Value{}, err
 		}

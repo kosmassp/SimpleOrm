@@ -78,31 +78,31 @@ func (db *Db) countKind() core.StatementResult {
 // the prepared runner reuses one prepared command per distinct statement text within a call.
 type statementRunner interface {
 	exec(ctx context.Context, sqlText string, args []any) (sql.Result, error)
-	query(ctx context.Context, sqlText string, args []any) (*sql.Rows, error)
+	query(ctx context.Context, sqlText string, args []any) (*resultRows, error)
 }
 
-type directRunner struct{ executor executor }
+type directRunner struct{ executor statementExecutor }
 
 func (r directRunner) exec(ctx context.Context, sqlText string, args []any) (sql.Result, error) {
 	return r.executor.ExecContext(ctx, sqlText, args...)
 }
 
-func (r directRunner) query(ctx context.Context, sqlText string, args []any) (*sql.Rows, error) {
+func (r directRunner) query(ctx context.Context, sqlText string, args []any) (*resultRows, error) {
 	return r.executor.QueryContext(ctx, sqlText, args...)
 }
 
 // preparedRunner prepares each distinct statement text once and reuses it for the rest of the call (spec/session.md
 // "Batching": on SQLite, where no network round trip exists, the reuse is the gain). close releases the commands.
 type preparedRunner struct {
-	executor executor
-	prepared map[string]*sql.Stmt
+	executor statementExecutor
+	prepared map[string]*preparedStatement
 }
 
-func newPreparedRunner(executor executor) *preparedRunner {
-	return &preparedRunner{executor: executor, prepared: map[string]*sql.Stmt{}}
+func newPreparedRunner(executor statementExecutor) *preparedRunner {
+	return &preparedRunner{executor: executor, prepared: map[string]*preparedStatement{}}
 }
 
-func (r *preparedRunner) statement(ctx context.Context, sqlText string) (*sql.Stmt, error) {
+func (r *preparedRunner) statement(ctx context.Context, sqlText string) (*preparedStatement, error) {
 	if stmt, ok := r.prepared[sqlText]; ok {
 		return stmt, nil
 	}
@@ -122,7 +122,7 @@ func (r *preparedRunner) exec(ctx context.Context, sqlText string, args []any) (
 	return stmt.ExecContext(ctx, args...)
 }
 
-func (r *preparedRunner) query(ctx context.Context, sqlText string, args []any) (*sql.Rows, error) {
+func (r *preparedRunner) query(ctx context.Context, sqlText string, args []any) (*resultRows, error) {
 	stmt, err := r.statement(ctx, sqlText)
 	if err != nil {
 		return nil, err

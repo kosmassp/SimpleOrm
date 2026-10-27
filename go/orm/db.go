@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/mapping"
@@ -38,16 +39,16 @@ type Db struct {
 	maxStatements int
 	// log is the statement log (Level 4 item 4, ADR-0045): nil when Options.Log is unset.
 	log *core.StatementLog
+	// timeout is Options.CommandTimeout (Level 4, ADR-0047): zero when unset. Every statement the session sends runs
+	// under core.CommandContext(ctx, timeout) — through exec(), the statement executor, or around a dialect's
+	// one-round-trip message (db_statements.go).
+	timeout time.Duration
 }
-
-// executor is the surface *sql.Conn and *sql.Tx share — every statement runs
-// on it, so it automatically runs inside the current transaction when one is
-// active (§7.17).
-type executor = core.SQLExecutor
 
 // Open opens the session against connectionString (§7.17): the dialect
 // creates the connection, one *sql.Conn is pinned from its pool, and a failed
-// open leaves nothing behind. Options.Dialect is required.
+// open leaves nothing behind. Options.Dialect is required. Under Options.OpenRetries a
+// failure the dialect calls transient is attempted again (db_open.go, ADR-0047).
 func Open(ctx context.Context, connectionString string, options Options) (*Db, error) {
 	if options.Dialect == nil {
 		return nil, fmt.Errorf("orm.Open: Options.Dialect is required")
@@ -59,20 +60,19 @@ func Open(ctx context.Context, connectionString string, options Options) (*Db, e
 	if options.Batching != BatchingOff && options.Batching != BatchingAuto {
 		return nil, fmt.Errorf("orm.Open: Options.Batching is not a known mode: %d", options.Batching)
 	}
-
-	pool, err := options.Dialect.CreateConnection(connectionString)
-	if err != nil {
-		return nil, err
+	if options.OpenRetries < 0 {
+		return nil, fmt.Errorf("orm.Open: Options.OpenRetries must be at least 0, got %d", options.OpenRetries)
+	}
+	if options.OpenRetryDelay < 0 {
+		return nil, fmt.Errorf("orm.Open: Options.OpenRetryDelay must not be negative (0 means the default, %s; NoOpenRetryDelay means no wait), got %s",
+			DefaultOpenRetryDelay, options.OpenRetryDelay)
+	}
+	if options.CommandTimeout < 0 {
+		return nil, fmt.Errorf("orm.Open: Options.CommandTimeout must not be negative (0 means the driver's default), got %s", options.CommandTimeout)
 	}
 
-	connection, err := pool.Conn(ctx)
+	pool, connection, err := openConnection(ctx, connectionString, options)
 	if err != nil {
-		_ = pool.Close()
-		return nil, err
-	}
-	if err := connection.PingContext(ctx); err != nil {
-		_ = connection.Close()
-		_ = pool.Close()
 		return nil, err
 	}
 
@@ -96,6 +96,7 @@ func Open(ctx context.Context, connectionString string, options Options) (*Db, e
 		tracker:       identityMap,
 		maxStatements: options.MaxStatementsPerMessage,
 		log:           core.NewStatementLog(options.Log, options.LogParameterValues),
+		timeout:       options.CommandTimeout,
 	}
 	if db.maxStatements == 0 {
 		db.maxStatements = DefaultMaxStatementsPerMessage
@@ -142,12 +143,11 @@ func (db *Db) Options() Options { return db.options }
 // conn is the pinned connection (§7.17), for SchemaGuard's describe-statement path.
 func (db *Db) conn() *sql.Conn { return db.connection }
 
-// exec is the current statement target: the active transaction, or the pinned connection.
-func (db *Db) exec() executor {
-	if db.tx != nil {
-		return db.tx
-	}
-	return db.connection
+// exec is the current statement target — the active transaction, or the pinned connection — behind the session's one
+// statement funnel, which applies the command timeout (db_statements.go). Every statement runs inside the current
+// transaction when one is active (§7.17).
+func (db *Db) exec() statementExecutor {
+	return statementExecutor{inner: db.rawExecutor(), timeout: db.timeout}
 }
 
 // Tx is a transaction scope on one session (§7.17). Commit explicitly;
@@ -205,7 +205,7 @@ func (t *Tx) Rollback(context.Context) error {
 
 // bindAndQuery binds sqlText's placeholders from args and runs it on the
 // session's current executor.
-func bindAndQuery(ctx context.Context, db *Db, sqlText string, args any, queryName, logName string) (*sql.Rows, error) {
+func bindAndQuery(ctx context.Context, db *Db, sqlText string, args any, queryName, logName string) (*resultRows, error) {
 	bound, err := params.Bind(sqlText, args, db.converter, db.options.Dialect, queryName)
 	if err != nil {
 		return nil, err
@@ -222,7 +222,7 @@ func bindAndQuery(ctx context.Context, db *Db, sqlText string, args any, queryNa
 // analog of bindAndQuery above, for callers that render through
 // Dialect.SelectSQL instead of scanning `@name` placeholders out of literal
 // SQL.
-func renderAndRunSelect(ctx context.Context, db *Db, ast *core.SelectAst, queryName string) (*sql.Rows, error) {
+func renderAndRunSelect(ctx context.Context, db *Db, ast *core.SelectAst, queryName string) (*resultRows, error) {
 	var bound []any
 	bind := func(value any, property *core.PropertyMap) (string, error) {
 		name := fmt.Sprintf("c%d", len(bound))
@@ -260,7 +260,7 @@ func selectLogName(ast *core.SelectAst) string {
 // analog, minus the C#-only compiled fast paths): the plan is built from the
 // column schema before the first row, so strictness (MAP-001/002) fires even
 // for an empty result; cancellation is checked every 64 rows.
-func materializeRows[T any](ctx context.Context, db *Db, rows *sql.Rows, queryName string) ([]T, error) {
+func materializeRows[T any](ctx context.Context, db *Db, rows *resultRows, queryName string) ([]T, error) {
 	return readRows[T](ctx, db, rows, db.resultMapFor(reflect.TypeFor[T]()), queryName)
 }
 
@@ -273,7 +273,7 @@ func materializeRows[T any](ctx context.Context, db *Db, rows *sql.Rows, queryNa
 // A read that fails midway (a mapping error, cancellation, REL-002 in join mode) leaves the
 // rows it had already resolved registered: the map is a cache of what the session
 // materialized, not a transaction (spec/session.md Clarifications, ADR-0035).
-func readRows[T any](ctx context.Context, db *Db, rows *sql.Rows, tracked *core.EntityMap, queryName string) ([]T, error) {
+func readRows[T any](ctx context.Context, db *Db, rows *resultRows, tracked *core.EntityMap, queryName string) ([]T, error) {
 	defer rows.Close()
 
 	columns, err := rows.Columns()
@@ -288,7 +288,7 @@ func readRows[T any](ctx context.Context, db *Db, rows *sql.Rows, tracked *core.
 	var results []T
 	count := 0
 	for rows.Next() {
-		value, err := plan.Read(rows)
+		value, err := plan.Read(rows.Rows)
 		if err != nil {
 			return nil, err
 		}
@@ -313,7 +313,7 @@ func readRows[T any](ctx context.Context, db *Db, rows *sql.Rows, tracked *core.
 // streamRows is materializeRows's lazy counterpart (§10 Stream): the plan is
 // still built before the first row is yielded; an error is yielded once and
 // the sequence ends; rows close whenever the consumer stops (the caller's defer).
-func streamRows[T any](ctx context.Context, db *Db, rows *sql.Rows, queryName string, yield func(T, error) bool) {
+func streamRows[T any](ctx context.Context, db *Db, rows *resultRows, queryName string, yield func(T, error) bool) {
 	defer rows.Close()
 	var zero T
 	tracked := db.resultMapFor(reflect.TypeFor[T]())
@@ -334,7 +334,7 @@ func streamRows[T any](ctx context.Context, db *Db, rows *sql.Rows, queryName st
 			yield(zero, err)
 			return
 		}
-		value, err := plan.Read(rows)
+		value, err := plan.Read(rows.Rows)
 		if err != nil {
 			yield(zero, err)
 			return

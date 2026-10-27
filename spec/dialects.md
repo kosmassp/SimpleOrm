@@ -12,12 +12,11 @@ below under its own casing rule) and must reproduce the SQL of this document whe
 *shape* and *semantics*, and the reference text is given so that implementations
 stay uniform rather than inventive.
 
-The two non-SQLite dialects began **runtime-first** (ADR-0024/0025): session,
-CRUD, criteria rendering, loading in every fetch mode, tracking, unit of work,
-hooks, SchemaGuard, and the migration runner with the dialect's run lock. Since
-ADR-0043 the migration tooling — snapshot, shadow, diff, derived rollbacks, and
-force sync — works on them as on SQLite ("Migration tooling" below;
-spec/migrations.md "Dialects").
+On every dialect the library provides session, CRUD, criteria rendering, loading
+in every fetch mode, tracking, unit of work, hooks, SchemaGuard, the migration
+runner with the dialect's run lock (ADR-0024/0025), and the migration tooling —
+snapshot, shadow, diff, derived rollbacks, and force sync (ADR-0043; "Migration
+tooling" below, spec/migrations.md "Dialects").
 
 ## The seam, member by member
 
@@ -31,7 +30,7 @@ spec/migrations.md "Dialects").
 | `CreateViewSql(view, body, materialized)`, `DropViewSql(view, materialized)` | a view from its neutral snapshot (name and body — the text `CreateViewSql(map)` renders for that shape), and its idempotent drop | the derived rollback, the shadow baseline, the `MIG-012` probe |
 | `ViewDefinitionIsVerbatim` | true → `ViewDefinitionSql` returns the text as submitted and the `MIG-012` view guard compares normalized text; false → the engine reformats it (PostgreSQL) and the guard round-trips the expected body through a probe view (migrations.md "The view and trigger apply guard") | the runner |
 | `InsertSql`, `UpdateSql`, `UpdateOnlySql`, `DeleteSql` | the generated CRUD of spec/crud.md | the session, the unit of work |
-| `ReportsAffectedRowsBySelect` | true → the generated UPDATE and DELETE renderings end in a one-row, one-column select of the statement's own affected-row count, and the session judges that scalar instead of the driver's count (ADR-0040 add.3, Clarification 23) | the session's generated writes — never a registry command |
+| `ReportsAffectedRowsBySelect` | true → the generated UPDATE and DELETE renderings end in a one-row, one-column select of the statement's own affected-row count, and the session judges that scalar instead of the driver's count (ADR-0040 add.3; "Update and delete — the affected-row count") | the session's generated writes — never a registry command |
 | `SupportsStatementBatching` | true → this implementation's driver for the dialect can carry several statements in one message and hand back each statement's result; false → under `Batching = Auto` the planned messages run one statement at a time (ADR-0044, "Statement batching" below) | the session's batching realization (`BatchingInEffect`) |
 | `MaxParametersPerMessage` | the most bound parameters one message may carry, or none | the batching plan (spec/session.md "Batching", rule 3) |
 | `LimitOffsetClause(limit, offset)` | the paging clause from pre-bound placeholders | the renderer |
@@ -41,7 +40,7 @@ spec/migrations.md "Dialects").
 | `SupportsArrayParameters` | true → a collection-typed argument binds as **one** array parameter with the SQL untouched (spec/session.md) | the parameter binder |
 | `BindsTemporalsNatively` | true → temporals bind as native UTC values, not ISO-8601 strings | the type converter |
 | `SupportsMaterializedViews`, `SupportsProcedures`, `SupportsTransactionalDdl` | capability flags; a `[MaterializedView]` on a dialect without them is `DDL-002` | `CreateView`, SchemaGuard, snapshots |
-| `ColumnsInfoSql`, `IndexesInfoSql`, `ViewDefinitionSql` | introspection queries, parameter `@relation`, fixed result shapes (below; the columns shape carries `generated` since ADR-0043) | SchemaGuard, force sync, the shadow, the `MIG-012` guard |
+| `ColumnsInfoSql`, `IndexesInfoSql`, `ViewDefinitionSql` | introspection queries, parameter `@relation`, fixed result shapes (below; the columns shape carries `generated`, ADR-0043) | SchemaGuard, force sync, the shadow, the `MIG-012` guard |
 | `IsDeclaredTypeCompatible(declaredType, type)` | the `VAL-011` table | SchemaGuard |
 | `StorageType(map, property)` | the declared type `CREATE TABLE` emits, spelled exactly as `ColumnsInfoSql` reports it back (ADR-0043): the map tells whether the column is a key or belongs to a declared index (SQL Server's indexable length), the property's storage facets override the defaults | DDL, snapshots, diff, sync |
 | `BeginMigrationRunLock(connection)` | one transaction held for the whole run, made exclusive the dialect's way | the runner |
@@ -51,12 +50,20 @@ spec/migrations.md "Dialects").
 | `DropTriggerSql(relation, name)` | drops a trigger idempotently with whatever the dialect created beside it | trigger steps, the derived rollback, `CreateTriggers` |
 | `TriggerDefinitionSql` | introspection: `@relation` = the trigger name, one column `definition`, one row per statement the dialect created — each, normalized, equal to the matching `CreateTriggerSql` statement | the `MIG-012` guard on trigger steps, the shadow replayer |
 
-A port adds members only where the reference has them. Describing a statement
-without executing it (SchemaGuard, §7.19) is **not** a seam member: the reference
-reads the provider's column schema through its data-access layer; a port whose
-database layer has no such API exposes it as an optional capability beside the
-seam (the Go `StatementDescriber`) or realizes it inside its SchemaGuard (the PHP
-shield transaction) — its §10 says which.
+A port adds members only where the reference has them. Where a language has no
+overloading, the snapshot forms carry their own names (ADR-0043):
+`CreateTableSql(schema)`, `CreateIndexSql(table, index)`, and
+`CreateViewSql(view, body, materialized)` are `createTableSqlFromSchema` /
+`createIndexSqlFromSchema` / `createViewSqlFromBody` (PHP) and
+`CreateTableFromSchemaSQL` / `CreateIndexFromSchemaSQL` /
+`CreateViewFromBodySQL` (Go); the map forms keep their names. Describing a
+statement without executing it (SchemaGuard, §7.19) is **not** a seam member
+("Describing a statement without executing it" below): the reference reads the
+provider's column schema through its data-access layer; a port whose database
+layer has no such API exposes it as an optional capability beside the seam (the
+Go `StatementDescriber`) or realizes it inside its SchemaGuard (the PHP shield
+transaction) — its §10 says which. The PHP port's `PdoConventions` is another
+such optional capability ("Drivers — binding and reading").
 
 ## Capability flags
 
@@ -101,6 +108,13 @@ generates the key:
   triggers, and legacy schemas have them. The generated-key strategy is
   identity-only (ADR-0020), which `scope_identity()` always covers.
 
+The generated key is **the first column of the first row of the first result
+set that has columns** (ADR-0040). SQL Server's batch yields the insert's own
+row-count result before the scalar; a result-set API advances past column-less
+results (PDO `nextRowset()`; go-mssqldb skips them itself; ADO.NET's
+`ExecuteScalar` does so implicitly). The scalar is unnamed — it is read by
+position, never by the key column's name.
+
 ### Update and delete — the affected-row count (spec/crud.md)
 
 The generated full-row update, column-list update (the hook-stamped and
@@ -108,10 +122,20 @@ soft-delete forms are column-list updates), and delete differ between SQLite
 and PostgreSQL only by quoting, and the session judges the driver's affected-row
 count (spec/crud.md: zero rows is `CRUD-010` or `CRUD-001`).
 
-SQL Server reports the count itself (`ReportsAffectedRowsBySelect`, ADR-0040
-add.3): a table whose `AFTER` trigger lacks `SET NOCOUNT ON` makes the driver
-add the trigger's rows to the statement's (Clarification 22), so every generated
-UPDATE and DELETE renders as one batch
+SQL Server reports the count itself (`ReportsAffectedRowsBySelect`, owner
+ruling, ADR-0040 add.3). On SQL Server a table whose `AFTER` trigger lacks
+`SET NOCOUNT ON` makes the driver add the trigger's rows to the statement's:
+measured on SQL Server 2016 (ADR-0040 add.2), a one-row `UPDATE` under an
+`AFTER UPDATE` trigger inserting two log rows reports **3** rows affected,
+`SET NOCOUNT ON; <update>; SELECT @@ROWCOUNT` reports **1**, and
+`OUTPUT inserted.id` without `INTO` is refused on the triggered table
+(error 334). The hazard for the "zero rows affected" rule of spec/crud.md is
+not a false `CRUD-010` but the reverse: an `AFTER` trigger fires once per
+statement, rows or not, so a **stale** version-checked write affects no row of
+its own while the driver still reports the trigger's — the conflict would pass
+for a success, a silent lost update. So every generated UPDATE and DELETE —
+the dialect's `UpdateSql`, `UpdateOnlySql`, and `DeleteSql` — renders as one
+batch
 
 ```sql
 set nocount on; <statement>; select @@rowcount; set nocount off
@@ -119,12 +143,42 @@ set nocount on; <statement>; select @@rowcount; set nocount off
 
 — the counts suppressed, the write, the statement's own count as a one-row,
 one-column result the session reads as a scalar, and the session setting
-restored, because `SET NOCOUNT` outlives the batch on SQL Server and a registry
-command on the same connection must keep the driver's count. Not `OUTPUT`: it is
-refused without `INTO` on a triggered table (error 334). The `<statement>` is
-the SQLite rendering under SQL Server quoting; `conformance/crud-sql/` pins
-every form on every dialect. Inserts are unchanged: `scope_identity()` is already
-trigger-safe.
+restored, because `SET NOCOUNT` is session-scoped on SQL Server: without the
+restore every later registry command on the connection would report no count
+at all (−1 through ADO.NET). The session reads the batch's scalar as the count
+on exactly the paths that judge it — the full-row, column-list, dirty,
+hook-stamped, and soft-delete updates; the by-key and version-checked deletes —
+and the `CRUD-010`/`CRUD-001` rules are unchanged. The `<statement>` is the
+SQLite rendering under SQL Server quoting; `conformance/crud-sql/` pins every
+form on every dialect. Inserts are unchanged: `scope_identity()` is already
+trigger-safe. SQLite's and PostgreSQL's drivers report the statement's own
+count, triggers or not, so the flag is false there.
+
+Not chosen (ADR-0040 add.3): `OUTPUT` (refused on triggered tables), leaving
+the burden with trigger authors (a silent lost update is not a convenience),
+and keying the rendering off declared triggers — every generated update and
+delete on SQL Server pays the same one round trip.
+
+**Reading the reported count** (ADR-0040 add.3). The count is the first column
+of the first row of the first result that has columns; a count-only result a
+driver surfaces before it (PDO can) is skipped. It is read as an integer
+whatever the driver's shape (go-mssqldb returns `@@rowcount` as a 32-bit
+integer, `pdo_odbc` as a string). A batch that yields no such row, or a
+non-numeric value, is a dialect bug, not a conflict: the session fails with an
+internal or driver error naming the statement — the absence is **never zero**,
+so it is never `CRUD-010` or `CRUD-001`. There is no error code for it, as for
+any other broken seam contract.
+
+**`SET NOCOUNT` residue after an aborted batch** (ADR-0040 add.3). The trailing
+`set nocount off` runs only when the batch completes. A batch-aborting error
+inside the wrapped write (a deadlock victim, a conversion error under
+`XACT_ABORT ON`) leaves `NOCOUNT` on for the connection, so a registry command
+run on that session afterwards reports no count (−1 through ADO.NET, 0 or −1
+elsewhere) until the next generated write restores it or the connection is
+reset. The session does not repair this: the error is the caller's to handle,
+and the generated writes themselves are unaffected (they never read the
+driver's count on SQL Server). Hand-written SQL that must count under such a
+failure adds its own `set nocount off`.
 
 Only the generated writes are affected. A registry command (`Execute`) returns
 the driver's count on every dialect — hand-written SQL is the author's, and the
@@ -203,7 +257,11 @@ double any single quote.
 | drop index | `drop index I` | `drop index [I] on [T]` (index names are table-scoped) | `drop index "I"` (schema-scoped) |
 
 The snapshot-driven renderings (ADR-0043; the SQLite forms are `SnapshotDdl`'s
-reference text):
+reference text). The derived rollback, the shadow baseline, and the generator
+render through them — `DropViewSql`, `CreateViewSql(name, body, …)`,
+`CreateTableSql(schema)`, `CreateIndexSql(table, index)` — quoting as the
+dialect does, like the migration *actions* (`DropView`, `RecreateView`,
+`DropIndex`); no tooling path emits an unquoted name of its own.
 
 | From a snapshot | SQLite | SQL Server | PostgreSQL |
 |---|---|---|---|
@@ -255,8 +313,14 @@ run applies nothing (spec/migrations.md "Locking and atomicity").
   — the key pair is arbitrary but fixed (ASCII `Simp`, `leOr`); transaction-scoped,
   so it can never leak past a rollback.
 
-A refusal to acquire the lock surfaces as the implementation's database error; the
-run has not started.
+The lock may be taken as one batch or as consecutive statements inside the
+transaction (pgx's extended protocol refuses a multi-statement string with
+parameters; ADR-0040). A refusal to acquire the lock surfaces as the
+implementation's database error; the run has not started: a refused or failed
+acquisition **rolls the transaction back before the error surfaces**, so the
+connection is left as it was found. The runner closes the run with its own
+`COMMIT`/`ROLLBACK`; the dialect opens the transaction in whatever form that
+pairs with (a raw `BEGIN` where the driver's transaction API would not — PDO).
 
 ## Storage types
 
@@ -289,7 +353,15 @@ introspected and rendered types compare cleanly. The **storage facets**
 declarations the dialect renders its own way — `Length` for strings and bytes,
 `Precision`/`Scale` for decimals; SQLite's storage classes have none and ignore
 them. Whether a declared length fits an engine's index limits is the author's
-responsibility, as for composite `nvarchar(450)` keys.
+responsibility, as for composite `nvarchar(450)` keys: two such key columns
+exceed SQL Server's 900-byte index limit — the engine creates the index with a
+warning — and the author declares real lengths with a `Length` facet.
+
+The indexable length is a `StorageType` rule, not only a `CREATE TABLE` rule
+(ADR-0043): it applies to a key column and to a column of a declared index
+alike, so snapshots, diff, and sync see what `CREATE TABLE` emits and what
+introspection reports — an indexed `nvarchar` column such as
+`users.display_name` reads back as `nvarchar(450)`, never `nvarchar(max)`.
 
 ## Declared-type compatibility (`VAL-011`)
 
@@ -352,10 +424,17 @@ declaring the column's actual kind (handlers win over the fixed table). `date` a
 
 How an implementation *detects* a markerless value is its own: by the value's
 marker where the driver yields text or a kind-carrying value (ADO.NET `Kind`,
-PDO's `+hh[:mm]`/`Z` suffix — the SQL Server driver spells the offset after a
-space, PostgreSQL may spell it as `+07` with no minutes; both are markers), or by
-the column's declared type from the driver's column metadata where its native
-temporal type carries no marker at all. A port says which in its §10.
+PDO's `+hh[:mm]`/`Z` suffix), or by the column's declared type from the driver's
+column metadata where its native temporal type carries no marker at all. A port
+says which in its §10. **By text**, the drivers' spellings are all markers
+(ADR-0040): PostgreSQL renders `timestamptz` in the session's zone
+(`2026-10-17 08:49:19.462397+07`, minutes omitted when zero, `+05:30` otherwise,
+fewer fraction digits on a typed precision); the SQL Server driver spells
+` +00:00` after a space with seven fraction digits. **By column type** (Go), the
+driver's type name is compared case-insensitively: go-mssqldb reports
+`DATETIME`, `DATETIME2`, `SMALLDATETIME` (markerless) and `DATETIMEOFFSET`; pgx
+reports `TIMESTAMP` (markerless) and `TIMESTAMPTZ`. A property with a registered
+handler is never judged — the handler is the legacy-column escape.
 
 **Native binding** (`BindsTemporalsNatively`). PostgreSQL refuses
 `timestamptz >= text`, so the reference binds temporals there as native UTC values
@@ -363,7 +442,18 @@ temporal type carries no marker at all. A port says which in its §10.
 Server converts strings implicitly, so both bind ISO-8601 text. Where a driver has
 no typed parameters (PDO), the ISO-8601 string under an *untyped* parameter is
 equivalent — PostgreSQL infers the parameter's type from the comparison — and the
-flag changes nothing observable; the port's §10 says so.
+flag changes nothing observable; the port's §10 says so. (PHP through
+`pdo_odbc` binds SQL Server temporals in the ODBC text form — "Drivers — binding
+and reading".)
+
+**Calendar tokens on write** (ADR-0040). A `date` property writes the value's
+**own** calendar date and a `time` property its own time of day — never the
+instant converted to UTC first (23:30 at −05:00 is still the 28th). Under
+`BindsTemporalsNatively` a `date` binds natively or as `yyyy-MM-dd` text and a
+`time` always as `HH:mm:ss.fffffff` text (the database infers the type from the
+comparison; a `time` value carries no kind). A `datetimeoffset` write keeps its
+offset (`+00:00`, never `Z`) and binds natively as the instant; `datetime` is
+the §7.9 rule unchanged.
 
 ## Array parameters (`SupportsArrayParameters`, spec/session.md)
 
@@ -379,16 +469,29 @@ array type from the comparison. SQLite and SQL Server keep the expansion strateg
 (`@ids_0…`; SQL Server's 2100-parameter cap is far above the 500 chunk size of
 spec/loading.md).
 
+The edges (ADR-0040): a `null` element is `NULL` in the literal (PDO) or a
+pointer-element slice (Go); an **empty** collection is typed from the declared
+element type (Go) or left to the comparison (PDO's `{}`); elements pass through
+the conversion pipeline first, so enums bind by name, temporals by the rules
+above, decimals as text (`numeric[]` relies on text input — untested). A nested
+collection or an object element is a binding error with no spec code. The
+elements of a native array parameter stay text inside the array literal; bytes
+arrays are outside, with the other array-typed columns (ADR-0040 add.1).
+
 Criteria `In` renders per-value placeholders on every dialect (valid everywhere;
 an `= any` rendering for PostgreSQL is a possible later optimization, not a rule).
 
 ## Introspection result shapes
 
 Parameter `@relation` on every query; an empty result means the relation is absent.
-Flags are integers (`0`/`1`), ordinals zero-based. **Result columns carry the names
-below** — every non-SQLite dialect aliases them (`as name`, `as "notnull"`, `as [pk]`,
-…), so a consumer may read by name or by ordinal; SQLite's queries are the frozen
-reference text and are read by ordinal.
+`to_regclass(@relation)` and `object_id(@relation)` take the relation name
+**unquoted**: `to_regclass` resolves reserved words and folds case (`Order` →
+`order`), so no quoting rule exists for the parameter (ADR-0040). Flags are
+integers (`0`/`1`), ordinals zero-based. **Result columns carry the names
+below** — every non-SQLite dialect aliases them (`as name`, `as "notnull"`,
+`as [pk]`, …; the reference queries below carry the aliases) — and a consumer
+may read the five columns by ordinal or by name (ADR-0043). SQLite's queries
+are the frozen reference text.
 
 - **Columns**: `name, type, notnull, pk, generated` in column order, `pk` the key
   ordinal (0 = not part of the key), `generated` whether the database generates
@@ -480,7 +583,7 @@ where c.oid = to_regclass(@relation) and c.relkind in ('v', 'm')
 
 (The PostgreSQL column query reports `pk` as a presence flag, not an ordinal;
 SchemaGuard only asks whether the column is part of the key.) The SQLite
-reference query is now
+reference columns query, `generated` included (ADR-0043):
 
 ```sql
 select name, type, "notnull", pk,
@@ -536,6 +639,155 @@ join pg_class c on c.oid = t.tgrelid
 join pg_proc p on p.oid = t.tgfoid
 where t.tgname = @relation and not t.tgisinternal
 ```
+
+## Describing a statement without executing it
+
+SchemaGuard's describe (§7.19) per driver (ADR-0040):
+
+- **SQLite**: the column-origin API.
+- **SQL Server**: `sp_describe_first_result_set @tsql, @params,
+  @browse_information_mode = 1` with parameter types from
+  `sp_describe_undeclared_parameters` (else `nvarchar(max)`); `source_table` /
+  `source_column` give the origin, hidden browse columns are skipped, a `dbo`
+  table is unqualified.
+- **PostgreSQL**: prepare the (rewritten) statement as the unnamed server
+  statement and resolve `TableOID`/`TableAttributeNumber`/`DataTypeOID` through
+  one catalog query (`format_type(oid, -1)`, `regclass`, `attname`); `Table` is
+  `oid::regclass::text`.
+- A port whose driver exposes no origin table for a column (PDO `sqlsrv`
+  `getColumnMeta`) falls back to the expression-column rule — nullable member or
+  `-- notnull:` — and says so.
+
+**On PostgreSQL the describe runs under a savepoint.** PostgreSQL aborts the
+whole transaction on any statement error, so a describe that runs inside a
+transaction (SchemaGuard's shield, or a session transaction) opens a savepoint,
+rolls back to it on failure, and releases it — and the protection covers
+statement-backed entities as well as registry entries, so one `VAL-001` never
+poisons the entries after it. Statements PostgreSQL cannot type without a value
+(`select @a + @b`, `where @x is null`) fail to describe and report `VAL-001`;
+they would fail at run time too — cast the parameter.
+
+## Drivers — binding and reading
+
+What a port relies on from its drivers, and the binding rules every
+implementation applies through them. None of it is a seam member.
+
+**Value shapes** (ADR-0040). PDO (`pgsql`): temporals, `numeric`, `uuid`, and
+arrays arrive as strings, `bytea` as a stream, `int2/4/8` as int, `float4/8` as
+float, `bool` as bool. go-mssqldb: `decimal`/`numeric`/`money` as ASCII
+`[]byte` (the converter accepts it), `datetime2` as a `time.Time` without
+marker, strings bind as `nvarchar`, `time.Time` as `datetimeoffset`; empty
+result sets of a batch are skipped. pgx: `numeric`, `uuid`, `time`, and
+unregistered types as `string`, `bytea` as `[]byte`, `timestamptz` in the local
+zone (`.UTC()` is the rule), `timestamp` as a UTC-labelled instant.
+
+**A typed getter follows the provider's field type, never the target's alone**
+(ADR-0040 add.2). A provider-native read (`GetInt64`, `GetString`, …) is chosen
+only when the reader's field type **is** the target type — SQL Server returns
+`count(...)` as `int`, which a `GetInt64` compiled for a `long` target would
+throw on; otherwise the value goes through the converter, which widens integers
+losslessly (`int16` → `int32` → `int64`) and refuses the rest with `MAP-031`. A
+plan is keyed by the provider's field types as well as the column names, so one
+statement returning different shapes on two dialects compiles two plans.
+
+**`bytes` bind as binary parameters, chosen by the token** (owner ruling,
+ADR-0040 add.1). A value whose property's metadata type token is `bytes` binds
+as the driver's binary parameter on every dialect — generated CRUD, key reads,
+criteria, and registry queries alike. Where the language's static type says it
+(C# `byte[]`, Go `[]byte`), the driver does so already; where one string type
+holds text and bytes alike (PHP), the binder chooses `PDO::PARAM_LOB` from the
+token, and a registry args property declares its token the way an entity
+property does (`#[Column(type: ColumnType::Bytes)]`). A text binding refuses or
+corrupts bytes: SQLite stores TEXT, which a STRICT `BLOB` column refuses;
+PostgreSQL parses a `bytea` payload as escaped text (a backslash starts an
+escape); SQL Server receives a character string for `varbinary`. Pinned by the
+fixture's nullable `UserProfile.Avatar` (migration V0012),
+`crud-cases/bytes_round_trip` (a NUL, a backslash, 0xff, invalid UTF-8, and
+bytes that spell a `bytea` escape literal), and the round trip every live leg
+runs. A nullable bytes member is `byte[]?` (C#), `?string` with the `bytes`
+token (PHP), `*[]byte` (Go — a bare `[]byte` is required, like `string`).
+
+**Typed nulls from the metadata token** (owner ruling, ADR-0040 add.1; the
+reference's rule too, ADR-0040 add.2). A NULL parameter carries the SQL type its
+property's metadata token names, never an untyped null: a driver that types
+parameters from the bound value then declares the right type (go-mssqldb
+announces an untyped nil as `nvarchar(1)`, which SQL Server refuses to convert
+into `varbinary` — error 257; ADO.NET's untyped `DBNull` reaches it as
+`nvarchar`, refused into `varbinary(max)` the same way). The binder chooses it, metadata-driven and dialect-neutral, at every
+bind site — generated CRUD, the column-list update, hooks, key reads, criteria,
+and registry queries (a registry argument's token comes from its declared
+type). A value whose storage type is unknowable (a custom handler type) stays
+untyped. The realizations:
+
+- C#: every null binds with the `DbType` of what its non-null value would have
+  bound as — `Binary` for `bytes`, `String` for a temporal bound as text, the
+  numeric type otherwise — derived from the property's metadata type.
+- Go: `TypeConverter.ToParameter` turns a NULL into `mapping.TypedNull(token)` —
+  `[]byte(nil)` for `bytes`, `sql.NullInt16/32/64`, `NullFloat64`, `NullBool`,
+  `NullTime` for the numeric, `bool`, and instant tokens, `sql.NullString` for
+  `string`, `decimal`, `guid`, `date`, `time`, and text enums (SQL Server
+  converts a character type implicitly into each of those), an untyped nil only
+  for a custom handler type; the snapshot form (`ToDatabase`) keeps the plain
+  nil. SQLite and PostgreSQL bind exactly what they would untyped — every typed
+  null reaches them as SQL NULL (modernc binds a nil `[]byte` as NULL; pgx
+  encodes both forms as NULL and the server types the parameter).
+- PHP: PDO ODBC's `PARAM_NULL` binds a typeless NULL SQL Server accepts; nothing
+  more is needed.
+
+The SQL Server leg's NULL bytes write (insert and update) verifies it in every
+implementation.
+
+**PDO ODBC conventions** (PHP, SQL Server through `pdo_odbc`; ADR-0040 add.2).
+ODBC Driver 17 converts parameter text on the client with the SQL Server ODBC
+parser, which takes only `yyyy-mm-dd hh:mm:ss[.fffffff] [+|-]hh:mm` — a `T`
+separator or a `Z` is SQLSTATE 22018 — and it fetches every column as character
+data, so a `varbinary` arrives as upper-case hexadecimal text. The PHP port
+carries both as an optional dialect capability beside the mirrored seam,
+`PdoConventions` (`temporalText()`: `Iso8601` | `Odbc`; `binaryText()`: `Raw` |
+`Hex`), declared by `SqlServerDialect` and honoured by the converter: temporals
+bind in the ODBC form (the stored value is the same instant; what the server
+returns and what the markers mean are unchanged), and a hexadecimal binary read
+is decoded. `pdo_sqlite` and `pdo_pgsql` declare nothing and keep ISO-8601 and
+raw bytes. A `pdo_sqlsrv` driver, where installed, converts server-side and
+would declare nothing either.
+
+**Globalization-invariant mode and SqlClient** (ADR-0040 add.2).
+`Microsoft.Data.SqlClient` refuses to open any connection in a process running
+with `InvariantGlobalization=true` ("Globalization Invariant Mode is not
+supported"): collations need culture data. The reference's CLI and tests
+therefore run with it off; an application using the SQL Server dialect must
+too. SQLite and PostgreSQL are unaffected.
+
+**PostgreSQL: a cached plan after a schema change** (owner ruling, ADR-0040
+add.1; a per-implementation driver matter, never a seam member). A driver that
+prepares and caches statements on a long-lived connection meets SQLSTATE
+`0A000` "cached plan must not change result type" when the table under a
+cached statement changes (a column's type, say). Where the driver caches, the
+behaviour is configurable, and the default **retries the statement once, only
+when no transaction is active on the connection**: the failed statement ran in
+its own implicit transaction, so nothing of it happened. Inside a transaction
+PostgreSQL has already aborted it, and the error surfaces. The other setting
+surfaces the error always. **A surfaced cached-plan error is `TX-002`**, never
+the bare provider error: it names the statement, keeps the provider error as
+its wrapped cause, and says what to do — inside a transaction, roll it back
+and rerun the whole transaction; outside one, rerun the statement; or open a
+new session. **Who clears the cache:** the driver, per connection, on the
+error itself — the library holds no statement cache of its own. That is why
+the rerun works: it re-prepares against the new table shape. The retry-once
+default handles the no-transaction case transparently; inside a transaction
+the application's rerun is the fix. Go: pgx caches every statement with
+arguments and invalidates the entry on any error (`Conn.exec`'s deferred
+`Invalidate`, `Rows.Close`) but never retries, so the dialect's connection
+does —
+`postgres.New(postgres.WithCachedPlanPolicy(postgres.CachedPlanRetryOnce |
+postgres.CachedPlanSurface))`, retry by default, judged by the connection's
+transaction status; a statement the caller prepared explicitly is never
+retried (its server-side statement is what changed). A pipelined statement in
+a batched call is never retried either ("Statement batching"). C# is
+unaffected: Npgsql does not auto-prepare by default (`Max Auto Prepare=0`), so
+a connection string that turns it on is outside this rule. PHP is unaffected:
+PDO prepares each statement when the library runs it, and nothing prepared
+outlives the call.
 
 ## Statement batching (ADR-0044)
 
@@ -596,7 +848,8 @@ carry in a message on its own), never fewer, and never reorders.
   comments with anything but whitespace or more `;` after it. (A parameterized
   command of several statements fails on PostgreSQL immediately as well — the
   extended protocol takes one statement; a parameterless one runs.)
-- **A cached plan inside a batched call** (Go, Clarification 15): a pipelined
+- **A cached plan inside a batched call** (Go; "Drivers — binding and
+  reading"): a pipelined
   statement that hits SQLSTATE 0A000 is surfaced as `TX-002` and never retried —
   a batched call always runs in a transaction, which PostgreSQL has aborted.
 - **Transactions.** Every batched call runs in a transaction (the session's or
@@ -613,6 +866,17 @@ selects the dialect by name — `--dialect sqlite|sqlserver|postgres`, default
 opens. For `shadow` on SQL Server or PostgreSQL, `--db` is the **admin**
 connection (CREATE DATABASE rights): the throwaway `simpleorm_shadow_<hex>` is
 created and dropped there; on SQLite it is ignored (ADR-0043).
+
+Per driver (ADR-0040): PHP SQL Server takes a `sqlsrv:` **or** `odbc:` DSN
+verbatim and never emulates prepares (emulation would interpolate strings
+without the `N` prefix); PHP PostgreSQL a `pgsql:` DSN with credentials
+embedded. Go SQL Server parses the string with the driver's `msdsn` (URL, ADO,
+and `odbc:` forms) and sets `GuidConversion` so `uniqueidentifier` reads in RFC
+4122 order; Go PostgreSQL rewrites `@name` to `$n` inside its connector (first
+appearance numbers the parameter, names match case-insensitively, a repeated
+name shares one position, a placeholder without a value or a value without a
+placeholder is an error, SQL with no `@name` passes through untouched) — the
+seam gains no member for placeholders.
 
 ## Migration tooling (ADR-0043)
 
@@ -633,7 +897,9 @@ The rules live in spec/migrations.md "Dialects"; this is the seam side.
   the header's `before|after|instead of`, `insert`/`update[ of "a", "b"]`/
   `delete` joined by ` or `, the relation; the function body between `begin`
   and the rendered `return` tail, `(select new."a" as "a", …)` folded to
-  `{new: a, …}`, `now()` to `{now}`.
+  `{new: a, …}`, `now()` to `{now}`. The host's shape is the port's (ADR-0043):
+  PHP a `ShadowHost` interface with `canReadTriggers()`/`readTrigger()`, Go a
+  `ShadowHost` plus an optional `TriggerReadBack`, recorded in its §10.
 - **The view guard's mode** is `ViewDefinitionIsVerbatim`. The probe (false):
   `savepoint simpleorm_probe`; `CreateViewSql("simpleorm_expect_<hex>",
   <expected body>, false)`; `ViewDefinitionSql` on the probe and on the live
@@ -671,24 +937,9 @@ Named here so that no implementation attempts it ahead of the reference:
   that reach a database run on SQLite; `ast/` is the per-dialect pin.
 - Found by the ports, not yet ruled on: `time`- and `decimal`-typed array
   parameters; composite `nvarchar(450)` keys exceeding SQL Server's 900-byte index
-  limit (declare real lengths in migrations). (`bytes` writes through untyped
+  limit (declare real lengths — "Storage types"). (`bytes` writes through untyped
   drivers, pgx's statement cache after a schema change, and go-mssqldb's untyped
-  NULL are ruled — Clarifications 14, 15, and 16.)
-
-**Measured on a SQL Server engine** (ADR-0040 add.2, 2026-10-19 — SQL Server
-2016 on the owner's LAN, reached by every implementation's live leg):
-
-- **The SQL Server live legs ran green in all three implementations** — C#
-  through `Microsoft.Data.SqlClient`, PHP through `pdo_odbc` with ODBC Driver
-  17, Go through go-mssqldb — after the fixes recorded as Clarifications 17–21.
-  Clarification 16 (typed nulls) is verified: the NULL avatar write passed in
-  Go as built, exposed the reference's untyped `DBNull` (fixed, Clarification
-  18), and needed nothing in PHP.
-- **`RowsAffected` under triggers** is measured (Clarification 22) and ruled
-  (Clarification 23, ADR-0040 add.3): the SQL Server dialect reports the count
-  itself (`ReportsAffectedRowsBySelect`, "Update and delete — the affected-row
-  count" above), in every implementation.
-
+  NULL are ruled — "Drivers — binding and reading".)
 
 ## Testing contract
 
@@ -708,7 +959,7 @@ Each live leg covers at least (ADR-0024/0025): generated-key write-back and a
 temporal round-trip reading back marked; criteria paging with and without
 orderings; reserved-word identifiers end to end (table `order`, column `desc`);
 version-column concurrency on update and delete (SQL Server additionally under
-an `AFTER` trigger without `SET NOCOUNT ON`, Clarification 23); the declared
+an `AFTER` trigger without `SET NOCOUNT ON`, below); the declared
 fixture trigger created from metadata, firing once per updated row, and read
 back through `TriggerDefinitionSql` as exactly its rendering, plus a
 multi-event, narrowed, `before` declaration where the dialect has the form
@@ -717,311 +968,75 @@ batch, and link loading; a subselect include over a paged root; the composite-ke
 subselect (through the EXISTS rewrite on SQL Server, native row-value IN on
 PostgreSQL); migrations up, re-run, and down under the run lock (with `Down()`
 overrides); the `VAL-020` refusal on a markerless column; the bytes round trip
-of Clarification 14 (insert, column-list and full update, a criteria and a
-registry match, a NULL). PostgreSQL additionally: array parameters filled and
+("Drivers — binding and reading": insert, column-list and full update, a
+criteria and a registry match, a NULL); that all three fetch modes load the
+same graph; that the run lock excludes a second connection and is released by
+rollback (ADR-0040). PostgreSQL additionally: array parameters filled and
 empty, a temporal criteria comparison against `timestamptz`, a materialized view
 created and read, and — where the driver caches statements — the cached-plan
-policy of Clarification 15 in and out of a transaction. Both legs, where the
-implementation batches (ADR-0044): a batched flush whose generated keys flow
-across messages, an explicit batch carrying every operation, a stale version
-in the middle of a message (`CRUD-010`, nothing applied, every instance as it
-was), and a failing statement in the middle of a message (the provider's error,
-nothing applied).
+policy ("Drivers — binding and reading") in and out of a transaction. Both legs,
+where the implementation batches (ADR-0044): a batched flush whose generated
+keys flow across messages, an explicit batch carrying every operation, a stale
+version in the middle of a message (`CRUD-010`, nothing applied, every instance
+as it was), and a failing statement in the middle of a message (the provider's
+error, nothing applied).
 
-## Clarifications
+"A database per fixture" may be one database per test class with the schema
+reset per test, or one per test; both drop afterwards, including on failure.
+The LocalDB default applies only where the driver can address a LocalDB
+instance (ADR-0040).
 
-Answers to the four port gap lists of ADR-0040 (PHP and Go, SQL Server and
-PostgreSQL — 42 questions, consolidated), each the answer the implementations now
-embody. No rule above changed; the ADR records the three reference deviations the
-same lists surfaced. Clarifications 14, 15, and 16 are owner rulings on items the
-ports found (ADR-0040 add.1).
+**The SQL Server trigger test** (ADR-0040 add.3) is the same shape in every
+implementation: `AFTER UPDATE, DELETE` on `transactions`, two single-row
+`INSERT` statements into a log table, no `SET NOCOUNT ON`, created with
+`create trigger` as the batch's only statement (`create or alter` needs 2016
+SP1) and dropped afterwards. Under it the version-checked update, column-list
+update, and delete of one row succeed, a stale update and delete are
+`CRUD-010`, a by-key delete of the gone row is `CRUD-001`, and a registry
+command on the same session still reports its own count. Six statements fire
+it — the full update, the column-list update, the stale update, the stale
+delete, the entity delete, and the by-key delete of the gone row (an `AFTER`
+trigger fires once per statement, rows or not) — so the log holds 12 rows; the
+stale instance's version stays what it was.
 
-1. **Introspection columns are named.** Every non-SQLite dialect aliases its result
-   columns to the names of "Introspection result shapes" (the reference queries
-   above carry the aliases); a consumer may read by name or by ordinal. SQLite's
-   frozen queries are read by ordinal. `to_regclass(@relation)` and
-   `object_id(@relation)` take the relation name **unquoted**: `to_regclass`
-   resolves reserved words and folds case (`Order` → `order`), so no quoting rule
-   exists for the parameter.
-2. **The generated key is the first column of the first row of the first result
-   set that has columns.** SQL Server's `insert …; select cast(scope_identity() as
-   bigint)` batch yields the insert's own row-count result before the scalar; a
-   result-set API advances past column-less results (PDO `nextRowset()`; go-mssqldb
-   skips them itself; ADO.NET's `ExecuteScalar` does so implicitly). The scalar is
-   unnamed — read it by position, never by the key column's name.
-3. **The run lock may be taken as one batch or as consecutive statements** inside
-   the transaction (pgx's extended protocol refuses a multi-statement string with
-   parameters). A refused or failed acquisition **rolls the transaction back before
-   the error surfaces**, so the connection is left as it was found. The runner
-   closes the run with its own `COMMIT`/`ROLLBACK`; the dialect opens the
-   transaction in whatever form that pairs with (a raw `BEGIN` where the driver's
-   transaction API would not — PDO).
-4. **Describing on PostgreSQL happens under a savepoint.** PostgreSQL aborts the
-   whole transaction on any statement error, so a describe that runs inside a
-   transaction (SchemaGuard's shield, or a session transaction) opens a savepoint,
-   rolls back to it on failure, and releases it — and the protection covers
-   statement-backed entities as well as registry entries, so one `VAL-001` never
-   poisons the entries after it. Statements PostgreSQL cannot type without a
-   value (`select @a + @b`, `where @x is null`) fail to describe and report
-   `VAL-001`; they would fail at run time too — cast the parameter.
-5. **Calendar tokens on write.** A `date` property writes the value's **own**
-   calendar date and a `time` property its own time of day — never the instant
-   converted to UTC first (23:30 at −05:00 is still the 28th). Under
-   `BindsTemporalsNatively` a `date` binds natively or as `yyyy-MM-dd` text and a
-   `time` always as `HH:mm:ss.fffffff` text (the database infers the type from the
-   comparison; a `time` value carries no kind). A `datetimeoffset` write keeps its
-   offset (`+00:00`, never `Z`) and binds natively as the instant; `datetime` is
-   the §7.9 rule unchanged.
-6. **Marker detection by text** accepts the drivers' spellings: PostgreSQL renders
-   `timestamptz` in the session's zone (`2026-10-17 08:49:19.462397+07`, minutes
-   omitted when zero, `+05:30` otherwise, fewer fraction digits on a typed
-   precision); the SQL Server driver spells ` +00:00` after a space with seven
-   fraction digits. **Marker detection by column type** (Go) consults the driver's
-   type name case-insensitively: go-mssqldb reports `DATETIME`, `DATETIME2`,
-   `SMALLDATETIME` (markerless) and `DATETIMEOFFSET`; pgx reports `TIMESTAMP`
-   (markerless) and `TIMESTAMPTZ`. A property with a registered handler is never
-   judged — the handler is the legacy-column escape.
-7. **Array parameters, the edges.** A `null` element is `NULL` in the literal (PDO)
-   or a pointer-element slice (Go); an **empty** collection is typed from the
-   declared element type (Go) or left to the comparison (PDO's `{}`); elements pass
-   through the conversion pipeline first, so enums bind by name, temporals by the
-   rules above, decimals as text (`numeric[]` relies on text input — untested). A
-   nested collection or an object element is a binding error with no spec code.
-8. **Connection strings and drivers.** PHP SQL Server takes a `sqlsrv:` **or**
-   `odbc:` DSN verbatim and never emulates prepares (emulation would interpolate
-   strings without the `N` prefix); PHP PostgreSQL a `pgsql:` DSN with credentials
-   embedded. Go SQL Server parses the string with the driver's `msdsn` (URL, ADO,
-   and `odbc:` forms) and sets `GuidConversion` so `uniqueidentifier` reads in RFC
-   4122 order; Go PostgreSQL rewrites `@name` to `$n` inside its connector (first
-   appearance numbers the parameter, names match case-insensitively, a repeated
-   name shares one position, a placeholder without a value or a value without a
-   placeholder is an error, SQL with no `@name` passes through untouched) — the
-   seam gains no member for placeholders.
-9. **Driver value shapes a port relies on.** PDO (`pgsql`): temporals, `numeric`,
-   `uuid`, and arrays arrive as strings, `bytea` as a stream, `int2/4/8` as int,
-   `float4/8` as float, `bool` as bool. go-mssqldb: `decimal`/`numeric`/`money`
-   as ASCII `[]byte` (the converter accepts it), `datetime2` as a `time.Time`
-   without marker, strings bind as `nvarchar`, `time.Time` as `datetimeoffset`;
-   empty result sets of a batch are skipped. pgx: `numeric`, `uuid`, `time`, and
-   unregistered types as `string`, `bytea` as `[]byte`, `timestamptz` in the local
-   zone (`.UTC()` is the rule), `timestamp` as a UTC-labelled instant.
-10. **Describing without executing, per driver.** SQLite: the column-origin API.
-    SQL Server: `sp_describe_first_result_set @tsql, @params,
-    @browse_information_mode = 1` with parameter types from
-    `sp_describe_undeclared_parameters` (else `nvarchar(max)`); `source_table` /
-    `source_column` give the origin, hidden browse columns are skipped, a `dbo`
-    table is unqualified. PostgreSQL: prepare the (rewritten) statement as the
-    unnamed server statement and resolve `TableOID`/`TableAttributeNumber`/
-    `DataTypeOID` through one catalog query (`format_type(oid, -1)`, `regclass`,
-    `attname`); `Table` is `oid::regclass::text`. A port whose driver exposes no
-    origin table for a column (PDO `sqlsrv` `getColumnMeta`) falls back to the
-    expression-column rule — nullable member or `-- notnull:` — and says so.
-11. ~~**The indexable length is a `CREATE TABLE` rule**, not a `StorageType`
-    rule~~ — **superseded by ADR-0043**: `StorageType(map, property)` applies
-    the indexable length to a key column and to a column of a declared index
-    alike, so snapshots, diff, and sync see what `CREATE TABLE` emits and
-    introspection reports (`nvarchar(450)`). Two such key columns exceed SQL
-    Server's 900-byte index limit — it creates with a warning; declare real
-    lengths with a `Length` facet.
-12. **Testing contract, precisely.** "A database per fixture" may be one database
-    per test class with the schema reset per test, or one per test; both drop
-    afterwards, including on failure. Beyond the list above every live leg pins
-    that all three fetch modes load the same graph and that the run lock excludes
-    a second connection and is released by rollback. The LocalDB default applies
-    only where the driver can address a LocalDB instance.
-13. ~~**Unquoted names in tooling-only paths** stay as they are~~ — **superseded
-    by ADR-0043**: the derived rollback, the shadow baseline, and the generator
-    render through `DropViewSql`, `CreateViewSql(name, body, …)`,
-    `CreateTableSql(schema)`, and `CreateIndexSql(table, index)`, quoting as
-    the dialect does. The migration *actions* (`DropView`, `RecreateView`,
-    `DropIndex`) rendered through the seam already.
-14. **`bytes` bind as binary parameters, chosen by the token** (owner ruling,
-    ADR-0040 add.1). A value whose property's metadata type token is `bytes`
-    binds as the driver's binary parameter on every dialect — generated CRUD, key
-    reads, criteria, and registry queries alike. Where the language's static type
-    says it (C# `byte[]`, Go `[]byte`), the driver does so already; where one
-    string type holds text and bytes alike (PHP), the binder chooses `PDO::PARAM_LOB`
-    from the token, and a registry args property declares its token the way an
-    entity property does (`#[Column(type: ColumnType::Bytes)]`). A text binding
-    refuses or corrupts bytes: SQLite stores TEXT, which a STRICT `BLOB` column
-    refuses; PostgreSQL parses a `bytea` payload as escaped text (a backslash
-    starts an escape); SQL Server receives a character string for `varbinary`.
-    The elements of a native array parameter stay text inside the array literal
-    (bytes arrays are outside, with the other array-typed columns). Pinned by the
-    fixture's nullable `UserProfile.Avatar` (migration V0012),
-    `crud-cases/bytes_round_trip` (a NUL, a backslash, 0xff, invalid UTF-8, and
-    bytes that spell a `bytea` escape literal), and the round trip every live leg
-    runs. A nullable bytes member is `byte[]?` (C#), `?string` with the `bytes`
-    token (PHP), `*[]byte` (Go — a bare `[]byte` is required, like `string`).
-15. **PostgreSQL: a cached plan after a schema change** (owner ruling, ADR-0040
-    add.1; a per-implementation driver matter, never a seam member). A driver that
-    prepares and caches statements on a long-lived connection meets SQLSTATE
-    `0A000` "cached plan must not change result type" when the table under a
-    cached statement changes (a column's type, say). Where the driver caches, the
-    behaviour is configurable, and the default **retries the statement once, only
-    when no transaction is active on the connection**: the failed statement ran in
-    its own implicit transaction, so nothing of it happened. Inside a transaction
-    PostgreSQL has already aborted it, and the error surfaces. The other setting
-    surfaces the error always. **A surfaced cached-plan error is `TX-002`**, never
-    the bare provider error: it names the statement, keeps the provider error as
-    its wrapped cause, and says what to do — inside a transaction, roll it back
-    and rerun the whole transaction; outside one, rerun the statement; or open a
-    new session. **Who clears the cache:** the driver, per connection, on the
-    error itself — the library holds no statement cache of its own. That is why
-    the rerun works: it re-prepares against the new table shape. The retry-once
-    default handles the no-transaction case transparently; inside a transaction
-    the application's rerun is the fix. Go: pgx caches every statement with
-    arguments and invalidates the entry on any error (`Conn.exec`'s deferred
-    `Invalidate`, `Rows.Close`) but never retries, so the dialect's connection
-    does —
-    `postgres.New(postgres.WithCachedPlanPolicy(postgres.CachedPlanRetryOnce |
-    postgres.CachedPlanSurface))`, retry by default, judged by the connection's
-    transaction status; a statement the caller prepared explicitly is never
-    retried (its server-side statement is what changed). C# is unaffected: Npgsql
-    does not auto-prepare by default (`Max Auto Prepare=0`), so a connection string
-    that turns it on is outside this rule. PHP is unaffected: PDO prepares each
-    statement when the library runs it, and nothing prepared outlives the call.
-16. **Typed nulls from the metadata token** (owner ruling, ADR-0040 add.1). A
-    NULL parameter carries the SQL type its property's metadata token names,
-    never an untyped null: a driver that types parameters from the bound value
-    (go-mssqldb announces an untyped nil as `nvarchar(1)`, which SQL Server
-    refuses to convert into `varbinary` — error 257) then declares the right
-    type. The binder chooses it, metadata-driven and dialect-neutral, for
-    generated CRUD, key reads, criteria, and registry queries (a registry
-    argument's token comes from its declared type). Go: `TypeConverter.
-    ToParameter` turns a NULL into `mapping.TypedNull(token)` — `[]byte(nil)`
-    for `bytes`, `sql.NullInt16/32/64`, `NullFloat64`, `NullBool`, `NullTime`
-    for the numeric, `bool`, and instant tokens, `sql.NullString` for `string`,
-    `decimal`, `guid`, `date`, `time`, and text enums (SQL Server converts a
-    character type implicitly into each of those), an untyped nil only for a
-    custom handler type; the snapshot form (`ToDatabase`) keeps the plain nil.
-    SQLite and PostgreSQL bind exactly what they bound before — every typed null
-    reaches them as SQL NULL (modernc binds a nil `[]byte` as NULL; pgx encodes
-    both forms as NULL and the server types the parameter). Built and pinned by
-    unit tests on the binder's output; **unverified against SQL Server** until an
-    engine exists — the SQL Server leg's NULL bytes write (insert and update) is
-    the verification. C# and PHP: whether ADO.NET's untyped `DBNull` and PDO
-    ODBC's `PARAM_NULL` reach SQL Server as a character type is the same live
-    question, answered by the same NULL write in their SQL Server legs.
+The SQL Server legs ran green in all three implementations on SQL Server 2016
+(ADR-0040 add.2) — C# through `Microsoft.Data.SqlClient`, PHP through
+`pdo_odbc` with ODBC Driver 17, Go through go-mssqldb; the legs added since
+(ADR-0040 add.3 onward) await that engine.
 
-17. **A typed getter follows the provider's field type, never the target's alone**
-    (ADR-0040 add.2, the first SQL Server run). The reference compiled
-    `GetInt64` for a `long` target, and SQL Server returns `count(...)` as
-    `int`: the typed getter threw where the converter would have widened. The
-    rule: a provider-native read (`GetInt64`, `GetString`, …) is chosen only when
-    the reader's field type **is** the target type; otherwise the value goes
-    through the converter, which widens integers losslessly (`int16` → `int32` →
-    `int64`) and refuses the rest with `MAP-031`. A plan is keyed by the
-    provider's field types as well as the column names, so one statement
-    returning different shapes on two dialects compiles two plans.
-18. **Typed nulls are the reference's rule too.** Clarification 16's Go rule
-    held the first time the SQL Server legs ran: ADO.NET's untyped `DBNull`
-    reaches SQL Server as `nvarchar`, which it refuses into `varbinary(max)`
-    (the NULL avatar write). The reference now binds every null with the
-    `DbType` of what its non-null value would have bound as — `Binary` for
-    `bytes`, `String` for a temporal bound as text, the numeric type otherwise —
-    derived from the property's metadata type, at every bind site (CRUD, the
-    column-list update, hooks, criteria, registry arguments). A value whose
-    storage type is unknowable (a handler-registered type) stays untyped. PDO
-    ODBC's `PARAM_NULL` needed nothing: it binds a typeless NULL the server
-    accepts.
-19. **PDO ODBC conventions (PHP, SQL Server through `pdo_odbc`).** ODBC Driver
-    17 converts parameter text on the client with the SQL Server ODBC parser,
-    which takes only `yyyy-mm-dd hh:mm:ss[.fffffff] [+|-]hh:mm` — a `T`
-    separator or a `Z` is SQLSTATE 22018 — and it fetches every column as
-    character data, so a `varbinary` arrives as upper-case hexadecimal text. The
-    PHP port carries both as an optional dialect capability beside the mirrored
-    seam, `PdoConventions` (`temporalText()`: `Iso8601` | `Odbc`;
-    `binaryText()`: `Raw` | `Hex`), declared by `SqlServerDialect` and honoured
-    by the converter: temporals bind in the ODBC form (the stored value is the
-    same instant; what the server returns and what the markers mean are
-    unchanged), and a hexadecimal binary read is decoded. `pdo_sqlite` and
-    `pdo_pgsql` declare nothing and keep ISO-8601 and raw bytes. A `pdo_sqlsrv`
-    driver, where installed, converts server-side and would declare nothing
-    either.
-20. **Globalization-invariant mode and SqlClient.** `Microsoft.Data.SqlClient`
-    refuses to open any connection in a process running with
-    `InvariantGlobalization=true` ("Globalization Invariant Mode is not
-    supported"): collations need culture data. The reference's CLI and tests
-    therefore run with it off; an application using the SQL Server dialect must
-    too. SQLite and PostgreSQL are unaffected.
-21. **An indexed `nvarchar` column reads back as `nvarchar(450)`** from
-    introspection, because that is what `CREATE TABLE` writes (and, since
-    ADR-0043, what `StorageType` says too); a live expectation of
-    `nvarchar(max)` for `users.display_name` (indexed) was the Go leg's
-    mistake, not the dialect's.
-22. **`RowsAffected` under a trigger, measured** (SQL Server 2016, 2026-10-19):
-    a one-row `UPDATE` on a table whose `AFTER UPDATE` trigger inserts two log
-    rows without `SET NOCOUNT ON` reports **3** rows affected through the
-    driver; `SET NOCOUNT ON; <update>; SELECT @@ROWCOUNT` reports **1**; an
-    `OUTPUT inserted.id` without `INTO` is refused outright on the triggered
-    table (error 334). The hazard for the "zero rows affected" rule of
-    spec/crud.md runs the other way from a false `CRUD-010`: an `AFTER` trigger
-    fires once per statement, rows or not, so a **stale** version-checked write
-    affects no row of its own and the driver still reports the trigger's two —
-    the conflict passes for a success, in every implementation as they stood.
-    Ruled by Clarification 23.
-23. **The SQL Server dialect reports the affected-row count itself** (owner
-    ruling, ADR-0040 add.3, closing item 3). `ReportsAffectedRowsBySelect` is a
-    seam member — true on SQL Server, false on SQLite and PostgreSQL, whose
-    drivers report the statement's own count triggers or not — under which the
-    dialect's `UpdateSql`, `UpdateOnlySql`, and `DeleteSql` render
-    `set nocount on; <statement>; select @@rowcount; set nocount off` and the
-    session reads the batch's first scalar as the count on exactly the paths
-    that judge it (the full-row, column-list, dirty, hook-stamped, and
-    soft-delete updates; the by-key and version-checked deletes), leaving the
-    `CRUD-010`/`CRUD-001` rules untouched. The trailing `set nocount off`
-    exists because the setting is session-scoped: without it every later
-    registry command on the connection would report no count at all (−1
-    through ADO.NET). Registry commands keep the driver's count on every
-    dialect. Not chosen:
-    `OUTPUT` (refused on triggered tables), leaving the burden with trigger
-    authors (Hibernate's stance — a silent lost update is not a convenience),
-    and keying the rendering off declared triggers (Level 4's triggers in the
-    mapping may narrow it to the tables that need it; today every generated
-    write pays one round trip of the same size). Pinned by
-    `conformance/crud-sql/` (every generated form, every dialect) and by each
-    implementation's SQL Server leg: an `AFTER UPDATE, DELETE` trigger inserting
-    two log rows without `SET NOCOUNT ON`, under which the version-checked
-    update, column-list update, and delete of one row succeed, a stale update
-    and delete are `CRUD-010`, a by-key delete of the gone row is `CRUD-001`,
-    and a registry command on the same session still reports its own count.
-24. **Reading the reported count** (the PHP and Go port gap lists of ADR-0040
-    add.3). The count is the first column of the first row of the first result
-    that has columns; a count-only result a driver surfaces before it (PDO can)
-    is skipped. It is read as an integer whatever the driver's shape (go-mssqldb
-    returns `@@rowcount` as a 32-bit integer, `pdo_odbc` as a string). A batch
-    that yields no such row, or a non-numeric value, is a dialect bug, not a
-    conflict: the session fails with an internal or driver error naming the
-    statement — the absence is **never zero**, so it is never `CRUD-010` or
-    `CRUD-001`. There is no error code for it, as for any other broken seam
-    contract.
-25. **`SET NOCOUNT` residue after an aborted batch.** The trailing `set nocount
-    off` runs only when the batch completes. A batch-aborting error inside the
-    wrapped write (a deadlock victim, a conversion error under `XACT_ABORT ON`)
-    leaves `NOCOUNT` on for the connection, so a registry command run on that
-    session afterwards reports no count (−1 through ADO.NET, 0 or −1
-    elsewhere) until the next generated write restores it or the connection is
-    reset. The session does not repair this: the error is the caller's to
-    handle, and the generated writes themselves are unaffected (they never read
-    the driver's count on SQL Server). Hand-written SQL that must count under
-    such a failure adds its own `set nocount off`.
-26. **The trigger of the SQL Server leg** is the same shape in every
-    implementation: `AFTER UPDATE, DELETE` on `transactions`, two single-row
-    `INSERT` statements into a log table, no `SET NOCOUNT ON`, created with
-    `create trigger` as the batch's only statement (`create or alter` needs
-    2016 SP1) and dropped afterwards. Six statements fire it — the full update,
-    the column-list update, the stale update, the stale delete, the entity
-    delete, and the by-key delete of the gone row (an `AFTER` trigger fires
-    once per statement, rows or not) — so the log holds 12 rows; the stale
-    instance's version stays what it was.
-27. **Overload-less ports name the snapshot forms** (ADR-0043): where a
-    language has no overloading, `CreateTableSql(schema)`,
-    `CreateIndexSql(table, index)`, and `CreateViewSql(view, body,
-    materialized)` are `createTableSqlFromSchema` / `createIndexSqlFromSchema`
-    / `createViewSqlFromBody` (PHP) and `CreateTableFromSchemaSQL` /
-    `CreateIndexFromSchemaSQL` / `CreateViewFromBodySQL` (Go); the map forms
-    keep their names. The shadow host's shape is the port's (PHP a
-    `ShadowHost` interface with `canReadTriggers()`/`readTrigger()`, Go a
-    `ShadowHost` plus an optional `TriggerReadBack`), recorded in its §10.
-    The five introspection columns may be read by ordinal or by name.
+## Where the Clarifications went
+
+This document once ended in a numbered Clarifications list (the port gap lists
+and owner rulings of ADR-0040 and its addenda, and ADR-0043). Each entry now
+lives in the section it amended (ADR-0046); the numbers below keep every
+existing citation resolvable.
+
+| Clarification | ADR | Now in |
+|---|---|---|
+| 1 — introspection columns are named; `@relation` unquoted | ADR-0040 | "Introspection result shapes" |
+| 2 — the generated key is the first column of the first result set with columns | ADR-0040 | "Generated keys" |
+| 3 — the run lock as one batch or consecutive statements; rollback on refusal | ADR-0040 | "The run lock" |
+| 4 — describing on PostgreSQL under a savepoint | ADR-0040 | "Describing a statement without executing it" |
+| 5 — calendar tokens on write | ADR-0040 | "Temporals: the §7.9 rule on databases with real date types" |
+| 6 — marker detection by text and by column type | ADR-0040 | "Temporals: the §7.9 rule on databases with real date types" |
+| 7 — array parameters, the edges | ADR-0040 | "Array parameters" |
+| 8 — connection strings and drivers | ADR-0040 | "Connection strings and the CLI" |
+| 9 — driver value shapes | ADR-0040 | "Drivers — binding and reading" |
+| 10 — describing without executing, per driver | ADR-0040 | "Describing a statement without executing it" |
+| 11 — the indexable length (superseded) | ADR-0040, ADR-0043 | "Storage types" |
+| 12 — testing contract, precisely | ADR-0040 | "Testing contract" |
+| 13 — unquoted names in tooling-only paths (superseded) | ADR-0040, ADR-0043 | "Migration-action DDL" |
+| 14 — `bytes` bind as binary parameters | ADR-0040 add.1 | "Drivers — binding and reading" |
+| 15 — PostgreSQL cached plan after a schema change, `TX-002` | ADR-0040 add.1 | "Drivers — binding and reading" |
+| 16 — typed nulls from the metadata token | ADR-0040 add.1 | "Drivers — binding and reading" |
+| 17 — a typed getter follows the provider's field type | ADR-0040 add.2 | "Drivers — binding and reading" |
+| 18 — typed nulls are the reference's rule too | ADR-0040 add.2 | "Drivers — binding and reading" (merged with 16) |
+| 19 — PDO ODBC conventions | ADR-0040 add.2 | "Drivers — binding and reading" |
+| 20 — globalization-invariant mode and SqlClient | ADR-0040 add.2 | "Drivers — binding and reading" |
+| 21 — an indexed `nvarchar` reads back as `nvarchar(450)` | ADR-0040 add.2 | "Storage types" |
+| 22 — `RowsAffected` under a trigger, measured | ADR-0040 add.2 | "Update and delete — the affected-row count" |
+| 23 — the SQL Server dialect reports the affected-row count itself | ADR-0040 add.3 | "Update and delete — the affected-row count" (the live test: "Testing contract") |
+| 24 — reading the reported count | ADR-0040 add.3 | "Update and delete — the affected-row count" |
+| 25 — `SET NOCOUNT` residue after an aborted batch | ADR-0040 add.3 | "Update and delete — the affected-row count" |
+| 26 — the trigger of the SQL Server leg | ADR-0040 add.3 | "Testing contract" |
+| 27 — overload-less ports name the snapshot forms; shadow host shapes; read by ordinal or name | ADR-0043 | "The seam, member by member"; "Migration tooling"; "Introspection result shapes" |

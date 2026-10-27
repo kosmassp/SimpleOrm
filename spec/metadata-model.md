@@ -74,30 +74,85 @@ order), then each base class upward — a language whose own reflection lists ba
 members first (a Python dataclass, a Go embedded struct) reorders to match.
 Composite key order is `[Key]` declaration order.
 
-**A base class is never an entity** (ADR-0041). A base class shares members only:
-its column, key, generated, version, hook, and rename declarations are inherited by
-every concrete subclass as if declared there, each concrete relation carrying its
-own copy of every column; identity comes from the concrete class alone. A base
-class is never read, written, queried, exported, validated, or targeted by a
-navigation — a read through one throws `MAP-028` rather than silently excluding or
-remapping it. Three cases, all `MAP-028`: an **abstract class** loaded as an entity
-by any path that loads a map (a registry result type, a key read, a criteria query,
-a write, an explicit or eager load of a navigation typed to it, a manual-builder
-registration, the tracker, SchemaGuard, `export-metadata`); a mapped type whose
-**base class carries a relation source** (`[Table]`/`[View]`/`[MaterializedView]`/
-`[Statement]`/`[Procedure]`) or an `[Index]` of its own — the error names both
-classes, and class-level declarations are read **without inheritance**, so a
-subclass never adopts its base's relation; and, in an **assembly scan** (SchemaGuard,
-the CLI's `export-metadata`/`validate`), a **concrete class without a source that
-another scanned type extends** — the one case a lone load cannot see, because such a
-class legitimately maps to a convention-named table on its own. Declaring base
-classes `abstract` is the convention (the fixture's `BaseModel`). Mapped
-inheritance — single-table, table-per-type, a polymorphic read over concrete
-tables — is ruled out permanently; a language without subclassing (Go, Rust) has
-nothing to refuse in these three forms and records the code as unreachable —
-except what its own inheritance-like mechanism would silently carry (Go method
-promotion of an embedded struct's entity descriptor), which it refuses with the
-same code (see Clarifications).
+### A base class is never an entity (ADR-0041)
+
+A base class shares members only: its column, key, generated, version, hook, and
+rename declarations are inherited by every concrete subclass as if declared there,
+each concrete relation carrying its own copy of every column; identity comes from
+the concrete class alone. A base class is never read, written, queried, exported,
+validated, or targeted by a navigation — a read through one throws `MAP-028`
+rather than silently excluding or remapping it. Declaring base classes `abstract`
+is the convention (the fixture's `BaseModel`). Mapped inheritance — single-table,
+table-per-type, a polymorphic read over concrete tables — is ruled out
+permanently. Three cases, all `MAP-028`:
+
+1. **An abstract class loaded as an entity.** "Abstract" includes interfaces and
+   any other type that can never be instantiated (ADR-0041 add.1). The check runs
+   once, first, at the single map-loading entry point — before explicit
+   registrations, the annotation loader, and the convention loader — so every path
+   that loads a map inherits it: a registry result type, a key read, a criteria
+   query, a write, an explicit or eager load of a navigation typed to it, the
+   tracker, SchemaGuard, `export-metadata`. A manual-builder registration of an
+   abstract type is refused where it is written (at registration), not only when
+   the map is first needed. A navigation typed to an abstract class is
+   shape-valid and the owner's map loads; what refuses is every load of the
+   target — an explicit load, a batch load, an eager load in any fetch mode, and
+   an export that needs the target's map (a one-to-many's foreign-key columns). An
+   owner's map that never needs the target's map (a many-to-one) exports.
+2. **A mapped type whose base class carries a relation source**
+   (`[Table]`/`[View]`/`[MaterializedView]`/`[Statement]`/`[Procedure]`) **or an
+   `[Index]` of its own.** "Mapped" means mapped by any loader — annotation,
+   convention, or manual builder. Class-level declarations are read **without
+   inheritance**, so a subclass never adopts its base's relation. The error is
+   collected beside the type's other errors (never first-error-only), one per
+   ancestor that carries a relation source or an `[Index]`, naming the subclass,
+   that ancestor, and the declarations found, however far up the chain — a
+   grandparent's `[Table]` is named even when the parent is clean, and an
+   abstract ancestor carrying `[Table]` counts: its source names it an entity.
+   (A trigger link on a base class: "Triggers" below.)
+3. **The scan rule: a concrete class without a source that another scanned type
+   extends** — the one case a lone load cannot see, because such a class
+   legitimately maps to a convention-named table on its own. A *base candidate*
+   is a concrete, mapped, non-owned class carrying no relation source of its own;
+   an *extender* is any scanned mapped, non-owned class below it — abstract ones
+   included — directly or through intermediates. Every candidate in the scanned
+   list that an extender sits under is reported, each once, naming its extenders
+   (sorted by name): a chain `Base ← Middle (no source) ← Leaf ([Table])` reports
+   both `Base` and `Middle`. An ancestor outside the scanned list is invisible to
+   the scan. A reported base is not validated as a relation; its extenders still
+   are. Alone, the same concrete class loads and maps to its convention-named
+   table, and so does a subclass of it that carries its own `[Table]`. SchemaGuard
+   reports the bases in its complete report; every CLI command that enumerates
+   entities — `export-metadata`, `snapshot`, `diff`, `migrate --force`'s sync,
+   `shadow` — refuses before doing anything, with exit code 1 and every
+   `MAP-028`; `validate` reports through SchemaGuard. Where there is no assembly
+   to scan (PHP), the scan runs over the class list the caller passes; where
+   registration is explicit and nothing extends anything (Go), the rule has
+   nothing to see.
+
+**Per language.** "Read without inheritance" is vacuous where the language's
+reflection never inherits class-level annotations (PHP `getAttributes()`); it is an
+instruction where it does (C# attribute inheritance) or where an inheritance-like
+mechanism exists. A language without subclassing (Go, Rust) has nothing to refuse
+in the three forms above and records the code as unreachable — except what its own
+inheritance-like mechanism would silently carry: under Go method promotion, an
+embedded struct whose entity descriptor names a relation source or indexes would
+be promoted onto the embedding struct, so the loader refuses the pair with
+`MAP-028` naming both types — the deepest declaring struct through nested
+embedding — and never reads the promoted descriptor; an embedded struct with no
+descriptor, or one declaring only foreign keys or links, shares its fields and
+nothing else (ADR-0041 add.1).
+
+**A registry entry whose result type fails to load** (`MAP-028`, or any other
+loader failure) is one SchemaGuard report row per violation, with the entry as the
+source, and the entry's per-column checks are skipped; never an escaping exception.
+
+**The conformance case** (`cases/map028_read_through_a_base_class`) needs nothing
+in the fixture database: the refusal happens when the result type's map is first
+needed, before any row is read. Where the code is unreachable, the runner resolves
+`BaseModel` to its field-sharing fixture type and pins the premise (the type is
+embedded by value in the fixture entities) instead of running the query — "passes
+by construction" is honest only because the premise is checked.
 
 ## Naming convention
 
@@ -198,14 +253,33 @@ public sealed class Role { … }
 - **The declaration** (on the trigger class, exactly one): a name (unique across
   the model — database-wide on SQLite and SQL Server), a timing — `before`,
   `after`, `instead_of` — one or more events — `insert`, `update`, `delete` —
-  an optional `updateOf` list naming **properties** of the entity (resolved to
-  columns; only with the update event), and the body. The class is a
-  declaration object, never an entity: no columns, no key; scans skip it; a
-  load of it is `MAP-029`.
+  an optional `updateOf` list naming **properties** of the entity (dotted paths
+  for owned members; resolved to columns, compared in declared order and
+  exactly; only with the update event), and the body. A declaration with no
+  timing where the language allows one (a Go zero value) is `MAP-029`, never a
+  default (ADR-0042). The class is a declaration object, never an entity: no
+  columns, no key; a pure declaration class does not count as mapped, so scans
+  skip it; a load of it, or a class that is both an entity and a declaration,
+  is `MAP-029`.
 - **The link** (on the entity, repeatable): a table carries many triggers; a
   trigger belongs to one table. A table takes every timing, a view only
   `instead_of`, no other source takes a trigger. The entity's map carries the
-  resolved triggers in link order.
+  resolved triggers in link order. A class carrying a link counts as mapped (it
+  routes to the annotation loader, so the link is never silently ignored).
+  Where class-level annotations are not inherited, a link on a base class is
+  simply invisible; where they are (C#), the link is read without inheritance
+  like `[Index]` and a base carrying one is `MAP-028` (ADR-0042).
+- **Telling the two shapes apart** — declaration and link — is the language's
+  business: C# by constructor, PHP by the arguments given (a single class
+  argument is a link; an incomplete declaration is `MAP-029`, never read as a
+  link), Go by a descriptor method on the trigger type and a typed link in the
+  entity's descriptor (ADR-0042).
+- **A trigger's name is its object.** Renaming a declaration is a removal plus
+  a creation, never a change; a declaration moved to another relation (or
+  between a table and a view) is `DDL-004` for the generator — the generated
+  guard and drop would target the new relation while the trigger lives on the
+  old one — and is written by hand (drop on the old relation, create on the
+  new) (ADR-0042).
 - **The body** is set-based SQL over the changed rows, each statement ended by
   `;`, real SQL first-class — with three **tokens**, the only non-SQL in it,
   standing for exactly what differs per database:
@@ -221,12 +295,25 @@ public sealed class Role { … }
   entity's relation (matched exactly), and a row token must have rows on
   **every** declared event, since one body serves them all: `{new}` refuses a
   declaration that includes delete, `{old}` one that includes insert.
-  Braces inside a single-quoted SQL literal are text, not tokens; any spelling
-  of a token (`{ NEW : id ,name }`) is accepted and canonicalized to
+- **What a token is.** A token is `{…}` with no brace inside, outside a
+  single-quoted SQL literal — braces inside the literal are text, and nothing
+  else is masked (a brace in a `/* … */` comment or a quoted identifier is read
+  as a token). A lone `{` or `}` that opens or closes no token is text. The kind
+  is case-insensitive (`{NOW}`, `{ New : a }`); a row token's columns are
+  trimmed, none may be empty, and a repeated column is not an error. Any
+  spelling of a token (`{ NEW : id ,name }`) is accepted and canonicalized to
   `{new: id, name}` wherever the body is normalized (exports, snapshots,
-  diffs); a `--` line comment is refused (whitespace is collapsed in
-  snapshots and would fold the rest of the body into it — use `/* … */`). Everything around
-  the body — `set nocount on`, `begin/end`, the PostgreSQL function and its
+  diffs). A `--` line comment is refused (whitespace is collapsed in snapshots
+  and would fold the rest of the body into it — use `/* … */`). A body the
+  dialect is asked to render through the data-driven form is parsed by the
+  same rules, and a malformed token or a `--` comment there is `MAP-029` at
+  rendering (ADR-0042).
+- **What the dialect renders from metadata** is the author's body trimmed,
+  verbatim; only exports, snapshots, and diffs normalize it — the `--` rule
+  keeps the two equivalent. A body may not contain `$$` (PostgreSQL's function
+  quoting); the SQLite `{now}` carries three fractional digits (`%f`), which the
+  reader accepts like any marked ISO text (ADR-0042). Everything around the
+  body — `set nocount on`, `begin/end`, the PostgreSQL function and its
   `return`, the granularity (`for each row` where it exists; SQL Server is
   statement-level) — is the dialect's rendering (`dialects.md` "Triggers"),
   configured once, never written by the author. A form a dialect lacks is
@@ -238,68 +325,28 @@ public sealed class Role { … }
   without the update event or naming an unmapped property; an unknown or
   malformed token, a row token without columns or naming an unmapped column, or
   one impossible for the events; a class linked twice by one entity. Collected
-  with the entity's other errors, never first-error-only.
+  with the entity's other errors, never first-error-only. `before`/`after` on a
+  view is refused by the loader only: a dialect asked for it through the
+  data-driven step form renders it and the database refuses; `DDL-005` stays
+  the two forms of the dialects.md renderings table (ADR-0042).
 - **The scan rule** (SchemaGuard, every CLI command that enumerates entities,
   like `MAP-028`): a trigger class linked by two entities, or two classes
   declaring one name — one `MAP-029` per conflict; a lone load cannot see them.
+  Trigger names compare case-insensitively and are unique model-wide on every
+  dialect, PostgreSQL's per-table names included. The name set is every
+  declaration class the scan sees — the classes entities link and any
+  declaration class in the scanned list itself, linked or not (a class kept for
+  its removal step still names the database object). The error for a name
+  conflict names the trigger name; for a class linked twice, the class
+  (ADR-0042).
 - The manual builder links a trigger class under the same rules.
-
-**Clarifications** (the PHP and Go port gap lists; ADR-0042):
-
-- **Telling the two attribute shapes apart** is the language's business: C#
-  by constructor, PHP by the arguments given (a single class argument is a
-  link; an incomplete declaration is `MAP-029`, never read as a link), Go by
-  a descriptor method on the trigger type and a typed link in the entity's
-  descriptor. A declaration with no timing where the language allows one
-  (a Go zero value) is `MAP-029`, never a default.
-- **A class carrying a link counts as mapped** (it routes to the annotation
-  loader, so the link is never silently ignored); a pure declaration class
-  does not, so scans skip it; a class that is both an entity and a
-  declaration is `MAP-029`. Where class-level annotations are not inherited,
-  a link on a base class is simply invisible; where they are (C#), the link
-  is read without inheritance like `[Index]` and a base carrying one is
-  `MAP-028`.
-- **`updateOf`** names properties (dotted paths for owned members), resolved
-  to columns, compared in declared order and exactly; the scan rule compares
-  trigger names case-insensitively and enforces model-wide uniqueness on
-  every dialect, PostgreSQL's per-table names included.
-- **A trigger's name is its object.** Renaming a declaration is a removal
-  plus a creation, never a change; a declaration moved to another relation
-  (or between a table and a view) is `DDL-004` for the generator — the
-  generated guard and drop would target the new relation while the trigger
-  lives on the old one — and is written by hand (drop on the old relation,
-  create on the new).
-- **What the dialect renders from metadata** is the author's body trimmed,
-  verbatim; only exports, snapshots, and diffs normalize it. The `--` rule
-  above keeps the two equivalent. A body may not contain `$$` (PostgreSQL's
-  function quoting); the SQLite `{now}` carries three fractional digits
-  (`%f`), which the reader accepts like any marked ISO text.
-- **`before`/`after` on a view** is refused by the loader only; a dialect
-  asked for it through the data-driven step form renders it and the database
-  refuses. `DDL-005` stays the two forms of the renderings table.
-
-**Clarifications** (the uniformity review; ADR-0042):
-
-- **What a token is.** A token is `{…}` with no brace inside, outside a
-  single-quoted literal — nothing else is masked (a brace in a `/* … */`
-  comment or a quoted identifier is read as a token). A lone `{` or `}` that
-  opens or closes no token is text. The kind is case-insensitive (`{NOW}`,
-  `{ New : a }`); a row token's columns are trimmed, none may be empty, and a
-  repeated column is not an error. A body the dialect is asked to render
-  through the data-driven form is parsed by the same rules, and a malformed
-  token or a `--` comment there is `MAP-029` at rendering.
-- **The scan rule's name set** is every declaration class the scan sees — the
-  classes entities link and any declaration class in the scanned list itself,
-  linked or not (a class kept for its removal step still names the database
-  object). The error for a name conflict names the trigger name; for a class
-  linked twice, the class.
 - **The SQLite read-back** (the shadow, the conformance deep expect) merges the
   per-event triggers only when they form one declaration — the names the
-  rendering gives them, one relation, one timing, one normalized body, no
-  event twice; the update-of list comes from the update trigger whatever the
-  name order. It folds only the exact expansions — one row variable and every
-  alias its column — and leaves any other `(select new.… as …)` as the
-  author's SQL. Anything else is a hand-written trigger: skipped with a note.
+  rendering gives them, one relation, one timing, one normalized body, no event
+  twice; the update-of list comes from the update trigger whatever the name
+  order. It folds only the exact expansions — one row variable and every alias
+  its column — and leaves any other `(select new.… as …)` as the author's SQL.
+  Anything else is a hand-written trigger: skipped with a note (ADR-0042).
 
 ## Entity identity
 
@@ -430,9 +477,17 @@ table it writes (`entities/role_change.json`).
 ### Declared renames (Level 3 M5, migrations.md "Draft migrations")
 
 A column may declare the column it was previously stored under, exported
-only when declared: `"renamedFrom": "name"`. The diff generator reads it as
-a declared rename; the mapper and the session ignore it. `MAP-027` when
-declared without `[Column]` or without a name.
+only when declared: `"renamedFrom": "name"`, the last of a column's optional
+keys — `key`, `generated`, `audit`, `softDelete`, `renamedFrom` (ADR-0038).
+The diff generator reads it as a declared rename; the mapper and the session
+ignore it. `MAP-027` covers every misplaced declaration, at load: without
+`[Column]`, on an ignored property, a navigation, an owned navigation or an
+owned type's member (a prefixed column cannot say which old name it means),
+a blank name, **a non-table source** (a view or statement has no column diff
+for the declaration to feed — the `MAP-026` precedent), and **two properties
+declaring the same previous column** (two columns cannot both have come from
+one — never a diff-time refusal; ADR-0038). The manual builder declares
+renames under the same rules.
 
 ### Storage facets (Level 4, ADR-0043; dialects.md "Storage types")
 
@@ -440,100 +495,76 @@ A column may declare a **size** the dialect's default storage type does not
 carry — dialect-neutral facets the dialect renders its own way, so the model
 can say `decimal(18,2)` without naming a database:
 
-- `Length` on a string or bytes column (`[Column(Length = 50)]`; PHP
-  `#[Column(length: 50)]`; Go `orm:"column,length=50"`): SQL Server
-  `nvarchar(50)` / `varbinary(50)`, PostgreSQL `character varying(50)`
-  (`bytea` has no length), SQLite ignores it. A declared length wins over SQL
-  Server's indexable default (450) for a key or indexed column.
+- `Length` on a column of the `string` or `bytes` token
+  (`[Column(Length = 50)]`; PHP `#[Column(length: 50)]`; Go
+  `orm:"column,length=50"`): SQL Server `nvarchar(50)` / `varbinary(50)`,
+  PostgreSQL `character varying(50)` (`bytea` has no length), SQLite ignores
+  it. A declared length wins over SQL Server's indexable default (450) for a
+  key or indexed column.
 - `Precision` and `Scale` on a decimal column (`[Column(Precision = 18, Scale = 2)]`;
   a `Scale` left out is 0): SQL Server `decimal(18,2)`, PostgreSQL
-  `numeric(18,2)`, SQLite ignores them.
+  `numeric(18,2)`, SQLite ignores them. A `Precision` with the scale omitted
+  renders `(p,0)` — what the introspection spellings report (ADR-0043).
+- A facet on an owned type's `[Column]` member is legal: it sizes a column of
+  the owner's table, and the dotted property carries it (ADR-0043).
 
 Exported only when declared, after `renamedFrom`: `"length": 50`, or
 `"precision": 18, "scale": 2` (the scale always beside its precision). The
 fixture declares `Transaction.Amount` at 18, 2 (`entities/transaction.json`,
 `snapshot-cases/transactions_v3`). The mapper and the session ignore the
 facets; `StorageType`, snapshots, the diff generator, and force sync read
-them. `MAP-032` for a misplaced one: `Length` off a string or bytes column,
-`Precision`/`Scale` off a decimal, a `Scale` without a `Precision` or above
-it, a non-positive value, or any facet on a non-table source. Whether a
-declared size fits an engine's limits is the author's business. Without the
-facets a real tree's `decimal(18,2)` would read as a type change against the
-model's `decimal(38,9)` on every `diff` — the reason they exist.
+them. Whether a declared size fits an engine's limits is the author's
+business. Without the facets a real tree's `decimal(18,2)` would read as a
+type change against the model's `decimal(38,9)` on every `diff` — the reason
+they exist.
 
-**Clarifications** (the PHP and Go ports asked; ADR-0043):
+`MAP-032` for a misplaced or malformed facet:
 
-- **"Non-positive"**: a `Length` or `Precision` below 1 refuses; a negative
-  `Scale` refuses; an explicit `Scale` of 0 is legal (a left-out scale is 0);
-  a `Scale` declared without a `Precision` refuses, even 0, wherever the
-  language can tell a declared 0 from an absent one (a C# attribute cannot:
-  a bare `Scale = 0` is indistinguishable from nothing and passes).
-- **A facet on an owned type's `[Column]` member is legal**: it sizes a column
-  of the owner's table, and the dotted property carries it.
-- **`Length` is legal on the `string` and `bytes` tokens only**: `enum_text`,
-  `guid`, JSON, and handler-typed columns refuse, however they are stored.
-- **Where a facet can sit at all is the language's.** In C# it rides on
-  `[Column]` and cannot be misplaced; a port whose declaration form allows it
-  beside an ignore marker, on a navigation or owned navigation, or without the
-  column marker refuses those with `MAP-032`; a malformed value in an untyped
-  declaration (Go's tag) is `MAP-023`.
-- **A `Precision` with the scale omitted renders `(p,0)`** — what the
-  introspection spellings report.
+- `Length` on any token but `string` and `bytes` — `enum_text`, `guid`, JSON,
+  and handler-typed columns refuse, however they are stored (ADR-0043);
+- `Precision`/`Scale` off a decimal;
+- a non-positive value: a `Length` or `Precision` below 1, a negative `Scale`
+  (an explicit `Scale` of 0 is legal; a left-out scale is 0);
+- a `Scale` above its `Precision`, or declared without a `Precision` — even 0,
+  wherever the language can tell a declared 0 from an absent one (a C#
+  attribute cannot: a bare `Scale = 0` is indistinguishable from nothing and
+  passes) (ADR-0043);
+- any facet on a non-table source.
 
-## Clarifications (the PHP and Go ports asked; ADR-0041 add.1)
+Where a facet can sit at all is the language's: in C# it rides on `[Column]`
+and cannot be misplaced; a port whose declaration form allows it beside an
+ignore marker, on a navigation or owned navigation, or without the column marker
+refuses those with `MAP-032`; a malformed value in an untyped declaration (Go's
+tag) is `MAP-023` (ADR-0043).
 
-- **"Abstract" includes interfaces** and any other type that can never be
-  instantiated: a map is never loaded for it, whatever the loader.
-- **Where the check runs.** The abstract check runs once, first, at the single
-  map-loading entry point — before explicit registrations, the annotation loader,
-  and the convention loader — so every path that loads a map inherits it. A
-  manual-builder registration of an abstract type is refused where it is written
-  (at registration), not only when the map is first needed.
-- **A navigation typed to an abstract class.** The owner's declaration is
-  shape-valid and the owner's map loads; what refuses is every load of the
-  target — an explicit load, a batch load, an eager load in any fetch mode, and an
-  export that needs the target's map (a one-to-many's foreign-key columns). An
-  owner's map that never needs the target's map (a many-to-one) exports.
-- **The parent rule applies under every loader** — annotation, convention, and
-  manual builder: "a mapped type" is mapped by any of them. It is collected
-  beside the type's other errors (never first-error-only), one error per ancestor
-  that carries a relation source or an `[Index]`, naming the subclass, that
-  ancestor, and the declarations found, however far up the chain — a
-  grandparent's `[Table]` is named even when the parent is clean, and an
-  abstract ancestor carrying `[Table]` counts: its source names it an entity.
-- **"Read without inheritance" is vacuous** where the language's reflection never
-  inherits class-level annotations (PHP `getAttributes()`); it is an instruction
-  where it does (C# attribute inheritance) or where an inheritance-like mechanism
-  exists (Go method promotion: an embedded struct whose entity descriptor names a
-  relation source or indexes would be promoted onto the embedding struct — the
-  loader refuses the pair with `MAP-028` naming both types, the deepest declaring
-  struct through nested embedding, and never reads the promoted descriptor; an
-  embedded struct with no descriptor, or one declaring only foreign keys or links,
-  shares its fields and nothing else).
-- **The scan rule's sets.** A *base candidate* is a concrete, mapped, non-owned
-  class carrying no relation source of its own; an *extender* is any scanned
-  mapped, non-owned class below it — abstract ones included — directly or through
-  intermediates. Every candidate in the scanned list that an extender sits under
-  is reported, each once, naming its extenders (sorted by name): a chain
-  `Base ← Middle (no source) ← Leaf ([Table])` reports both `Base` and `Middle`.
-  An ancestor outside the scanned list is invisible to the scan. A reported base
-  is not validated as a relation; its extenders still are. Alone, the same
-  concrete class loads and maps to its convention-named table, and so does a
-  subclass of it that carries its own `[Table]`.
-- **What the scan refuses.** SchemaGuard reports the bases in its complete
-  report. Every CLI command that enumerates entities — `export-metadata`,
-  `snapshot`, `diff`, `migrate --force`'s sync, `shadow` — refuses before doing
-  anything, with exit code 1 and every `MAP-028`; `validate` reports through
-  SchemaGuard. Where there is no assembly to scan (PHP), the scan runs over the
-  class list the caller passes; where registration is explicit and nothing
-  extends anything (Go), the rule has nothing to see.
-- **A registry entry whose result type fails to load** (`MAP-028`, or any other
-  loader failure) is one SchemaGuard report row per violation, with the entry as
-  the source, and the entry's per-column checks are skipped; never an escaping
-  exception.
-- **The conformance case needs nothing in the fixture database**: the refusal
-  happens when the result type's map is first needed, before any row is read.
-  Where the code is unreachable, the runner resolves `BaseModel` to its
-  field-sharing fixture type and pins the premise (the type is embedded by value
-  in the fixture entities) instead of running the query — "passes by
-  construction" is honest only because the premise is checked.
+
+## Where the Clarifications went
+
+The Clarifications lists of ADR-0041 add.1, ADR-0042, and ADR-0043 were folded
+into the sections they amend (ADR-0046). They were never numbered; by title:
+
+| Clarification (block) | Now in |
+|---|---|
+| "Abstract" includes interfaces (ADR-0041 add.1) | "A base class is never an entity", case 1 |
+| Where the check runs (ADR-0041 add.1) | "A base class is never an entity", case 1 |
+| A navigation typed to an abstract class (ADR-0041 add.1) | "A base class is never an entity", case 1 |
+| The parent rule applies under every loader (ADR-0041 add.1) | "A base class is never an entity", case 2 |
+| "Read without inheritance" is vacuous (ADR-0041 add.1) | "A base class is never an entity", "Per language" |
+| The scan rule's sets (ADR-0041 add.1) | "A base class is never an entity", case 3 |
+| What the scan refuses (ADR-0041 add.1) | "A base class is never an entity", case 3 |
+| A registry entry whose result type fails to load (ADR-0041 add.1) | "A base class is never an entity" |
+| The conformance case needs nothing in the fixture database (ADR-0041 add.1) | "A base class is never an entity" |
+| Telling the two attribute shapes apart (ADR-0042, port gaps) | "Triggers", "Telling the two shapes apart"; the Go zero-value timing under "The declaration" |
+| A class carrying a link counts as mapped (ADR-0042, port gaps) | "Triggers", "The declaration" and "The link" |
+| `updateOf` (ADR-0042, port gaps) | "Triggers", "The declaration"; name comparison under "The scan rule" |
+| A trigger's name is its object (ADR-0042, port gaps) | "Triggers", "A trigger's name is its object" |
+| What the dialect renders from metadata (ADR-0042, port gaps) | "Triggers", "What the dialect renders from metadata" |
+| `before`/`after` on a view (ADR-0042, port gaps) | "Triggers", "`MAP-029`" |
+| What a token is (ADR-0042, review) | "Triggers", "What a token is" |
+| The scan rule's name set (ADR-0042, review) | "Triggers", "The scan rule" |
+| The SQLite read-back (ADR-0042, review) | "Triggers", "The SQLite read-back" |
+| "Non-positive" (ADR-0043) | "Storage facets", the `MAP-032` list |
+| A facet on an owned type's `[Column]` member is legal (ADR-0043) | "Storage facets" |
+| `Length` is legal on the `string` and `bytes` tokens only (ADR-0043) | "Storage facets", the `Length` bullet and the `MAP-032` list |
+| Where a facet can sit at all is the language's (ADR-0043) | "Storage facets", after the `MAP-032` list |
+| A `Precision` with the scale omitted renders `(p,0)` (ADR-0043) | "Storage facets", the `Precision` bullet |

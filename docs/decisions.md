@@ -4411,5 +4411,130 @@ owner's SQL Server** (with add.3, ADR-0042, ADR-0043, ADR-0044): with
 "FullyQualifiedName~ResilienceTests.Sql_server"`. The `waitfor delay '00:00:03'`
 under a 1 s timeout must surface `SqlException` number -2 and pass, not skip.
 
-**Status.** Accepted in C#, pending the owner's confirmation of the rulings. The
-PHP and Go ports follow by the port method.
+### The ports (2026-10-27)
+
+Built by the port method: the PHP and Go agents worked from `spec/` and
+`conformance/` with the other implementations off limits, then one reviewer read
+all three. Their gap lists held **10** (PHP) and **7** (Go) questions; the
+rulings below, made by the orchestrating session on the owner's behalf, answer
+them, and the answers are written into the spec sections themselves
+(spec/session.md "Resilience", spec/dialects.md "Transient open failures",
+"Drivers — binding and reading", "Connection strings and the CLI", the testing
+contract; spec/migrations.md "Recording and integrity") in ADR-0046's style — no
+"Clarifications" lists.
+
+- **A — the funnel's scope.** The rule: the timeout reaches every statement the
+  session sends. Where the driver keeps the timeout on the connection (PHP: the
+  SQLite busy timeout, PostgreSQL's `statement_timeout` set once at open,
+  `pdo_sqlsrv`'s connection attribute), the dialect's own statements on that
+  connection carry it too; where it is per command or per context (C#, Go), they
+  do not. Both conform. The migration run lock keeps its own 60-second wait in
+  every case, the shorter of the two where both apply; transaction control is
+  not timed except where the per-connection form makes it so. The reference's
+  "not covered" sentence is gone. PHP's one open-time `set_config` (PHP gap 4) is
+  an open-time setup statement, not a session statement: not logged, never
+  retried, and a failure of it fails the open.
+- **B — the fired timeout** is the driver's or the engine's own error,
+  unwrapped, listed per driver in the spec (SqlClient number `-2`, `pdo_sqlsrv`
+  `HYT00`, go-mssqldb the context deadline; Npgsql's `TimeoutException`-caused
+  `NpgsqlException`, `pdo_pgsql` and pgx SQLSTATE `57014`; SQLite the driver's
+  busy or interrupt error); the one-driver sentence "wrapping
+  `context.DeadlineExceeded`" was wrong for pgx and is gone. After a fired
+  timeout the connection stays usable and the session's next statement runs — a
+  rule in every implementation. The Go port's connector change to
+  `pgconn.CancelRequestContextWatcherHandler` (pgx's default severs the socket
+  at once, which left the pinned connection `driver: bad connection`) was
+  **verified sound** by the review: two new live tests show a caller's own
+  cancellation still ending a running `pg_sleep(3)` in about 300 ms, the caller
+  seeing its cancellation, and the connection surviving — outside a transaction
+  and inside one (the rollback accepted, the next statement running) — and the
+  whole PostgreSQL live suite stays green. It is the rule for pgx in
+  spec/dialects.md "Drivers — binding and reading".
+- **C — `pdo_odbc` has no query timeout**: the spec's claim of
+  `SQL_ATTR_QUERY_TIMEOUT` was wrong. A `CommandTimeout` on an `odbc:`
+  connection refuses at open with an `InvalidArgumentException` naming the driver
+  and the reason (§2, strict by default) — the PHP rule, in its §10 and the
+  spec's PHP note.
+- **D — classification precedence**: when the cause chain holds an engine error
+  (a SQL Server error number, a PostgreSQL SQLSTATE), the first one found decides
+  alone; transport failures decide only without one. Go's rule became the spec's.
+  **The reference differed** — it answered true at the first matching link, so a
+  `3D000` wrapped beside an I/O failure, or Npgsql's per-host `AggregateException`
+  holding a refused host and a missing database, read as transient. Aligned: both
+  C# network dialects find the engine error first, and the chain walk now
+  descends every inner failure of an `AggregateException` (the joined form Go
+  walks); `ResilienceTests.An_engine_error_in_the_chain_decides_alone`. PHP read
+  "the first link that matches" literally too and was aligned the same way
+  (PostgreSQL: the first SQLSTATE decides; SQL Server: a record with a SQLSTATE
+  other than the ODBC stand-ins is an engine answer, and then only the numbers
+  decide). A `CreateConnection` failure (the driver refusing the connection string
+  before any attempt) is never retried — true in all three, now stated. Go's
+  malformed-address exclusion (Go gap 5) is the spec's transport rule: refused,
+  reset, unreachable, timed out — a malformed address is not.
+- **E — drivers that hide the server's SQLSTATE.** `pdo_pgsql` reports every
+  failed connect as `08006`; the PHP port refines by the server's `FATAL` text,
+  treating only the 53300/57P03 texts as transient. Accepted as a documented PHP
+  divergence, with the spec's general rule: such a driver may be refined by the
+  server's message, and the failure mode must be fewer retries, never more.
+  PHP's ODBC `08001` also covering a refused certificate (retried, bounded by
+  `openRetries`) is accepted the same way.
+- **F — option validation**: negative or non-finite values refuse at open with
+  the language's argument error (C# `ArgumentOutOfRangeException`, PHP
+  `InvalidArgumentException` — PHP also refuses `NAN`, `INF`, and values beyond
+  the platform integer —, Go a plain `error`). Zero `CommandTimeout` is 1 second
+  in C# and PHP (rounded up, never "no limit") and unset in Go (the zero-value
+  rule); the spec states both. The CLI refuses a bad `--command-timeout` with
+  exit code 1 before anything opens, **for every command** — Go did; the
+  reference and PHP validated it only where a command opened a database, and the
+  reference took a bare `--command-timeout` with no value for "absent". Both
+  aligned: the value is parsed once before dispatch, and a missing value refuses.
+- **G — reading rows**: counts against the timeout where the driver scopes the
+  deadline to the result set (Go); per command elsewhere. Stated. SQL Server's
+  describe sharing one deadline across its catalog reads in Go needs no spec
+  text.
+- **H — cancellation**: PHP has none; the open algorithm's cancellation
+  clauses apply where the language has one. Stated.
+- **I — the history read**: all three fail the run on a failing read, and
+  `status` checks the table first through `ColumnsInfoSql` — verified in each
+  (the PHP and Go commits, and the reference's tests). The check is logged as
+  `migrate` in all three, as ADR-0045's naming rule has it (the runner's
+  statement; SchemaGuard's `MIG-030` read through the runner is `migrate`); the
+  two PHP statement-log tests that pinned the old one-line `status` read now pin
+  the check and the read. The statement-log name table and migrations.md say so.
+- **J — pending on the owner's SQL Server**: the `waitfor delay` legs in all
+  three, `pdo_sqlsrv`'s timeout attribute being inherited by `exec()`
+  (unverified), and PHP's `odbc:` refusal live.
+
+**Found by the review beyond the gap lists.** The reference does not retry a
+SQL Server that is not listening yet: SqlClient on Windows reports an
+unreachable endpoint as a `SqlException` numbered **258** (the TCP connect's
+wait timing out) wrapping a `Win32Exception` — probed on this machine against a
+closed port, with native and managed networking alike — and a refused one as
+**10061**, WSAECONNREFUSED (the number SQL Server's client stack reports, which
+the PHP port pins from ODBC's `SQLSTATE[08001] SQLDriverConnect: 10061`; not
+observed from SqlClient here, where the loopback port timed out instead);
+neither was in the set, and no runtime type in the chain matched,
+while both ports retried the same event through their transport row (Go's dial
+error, PHP's `08001`). The set gains both, in all three implementations (28
+numbers; spec/dialects.md names them and why); **the owner's confirmation is
+asked for this addition** with the rulings.
+
+**Port divergences recorded, each in its §10.** PHP: the per-connection funnel
+and the open-time `set_config` (A); the `FATAL`-text refinement and the
+`08001` certificate case (E); the `odbc:` refusal (C); "any record the driver
+exposes" — `pdo_odbc` hands over only the first (PHP gap 9); no cancellation
+(H); the SQLSTATE read from the message prefix where a constructor failure
+leaves `errorInfo` null (`getCode()` is the native code there). Go: the zero
+values and `orm.NoOpenRetryDelay` (one nanosecond) for "no wait"; the deadline
+covering the rows (G); the pgx cancel handler (B).
+
+**Verification** (PostgreSQL 16.4 live, SQL Server skip-gated; no SQL text
+changed, every conformance pin byte-identical). `cd dotnet && dotnet build
+SimpleOrm.sln` (both TFMs, 0 warnings) and `dotnet test SimpleOrm.sln`: **584
+passed / 22 skipped** (was 581 / 22: the precedence test and the 258/10061
+cases). `cd php && composer test` and `composer test-live`: **1174 tests / 35
+skipped** each (the PHP port's 1173 + the precedence test). `go test -C go
+-count=1 -p 2 ./...`: every package ok, the PostgreSQL package's live tests run
+(the two cancellation tests added); `go vet ./...` and `gofmt -l .` clean.
+
+**Status.** Accepted (the owner's confirmation of the rulings pending).

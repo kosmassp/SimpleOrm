@@ -1766,6 +1766,8 @@ private snake_case regex — now pinned by a test).
 
 **Status.** Accepted.
 
+*Recorded from the brief, 2026-10-27:* the PHP run command is `cd php && composer install && composer test`.
+
 ## Design seed — partial updates: an opt-in column list on `UpdateAsync` (2026-09-08)
 
 **Itch.** §7.15 makes `UpdateAsync` a full-row write: every mapped non-key,
@@ -2612,6 +2614,8 @@ advisory in the meantime; the SQL Server dialect pins the patched version.
 
 **Status.** Accepted. M1 done in all three implementations.
 
+*Recorded from the brief, 2026-10-27:* the patched `System.Security.Cryptography.Pkcs` version the SQL Server dialect pins is 10.0.13.
+
 ## ADR-0036 — Level 3 M2: the unit of work, in three implementations (2026-10-16)
 
 The second Level 3 milestone (ADR-0034 §7c M2), by the per-milestone method:
@@ -2972,6 +2976,8 @@ forbidden to read any implementation — the Python audit above is that port's
 first gap list already answered. Only when the owner says so.
 
 **Status.** Accepted. Level 3 closed in C#, PHP, and Go.
+
+*Recorded from the brief, 2026-10-27:* caching the dirty sweep's label strings cut its allocation by about 90%.
 
 ## ADR-0040 — The Level 4 dialects reach the ports: SQL Server and PostgreSQL for PHP and Go, built from the spec alone (2026-10-17)
 
@@ -3442,6 +3448,8 @@ implementation's own tests (C# `BaseClassRuleTests`, PHP `BaseClassRulesTest` +
 **Status.** Accepted; the ADR's implementation is complete. Nothing else
 inheritance-related changed: single-table and table-per-type stay out
 permanently.
+
+*Recorded from the brief, 2026-10-27:* merged onto ADR-0040 (the dialect ports, same day) and re-run with no live engine: C# 404 passed / 22 skipped, PHP 805 tests (40 skipped), Go ok.
 
 ### ADR-0040 addendum 2 — the SQL Server legs run for the first time; what they found (2026-10-19)
 
@@ -4098,6 +4106,8 @@ go test -C go -count=1 -p 2 ./orm/sqlserver/ -run Live
 Next: batched reads (3b) and multi-row inserts for keys the database does not
 generate, when the owner says so; the other Level 4 candidates wait.
 
+*Recorded from the brief, 2026-10-27:* the pending SQL Server batching legs are C# `LiveBatchingTests+OnSqlServer`, PHP `SqlServerLiveTest`'s batching scenarios, and Go `sqlserver/live_batch_test.go`.
+
 ## ADR-0045 — Level 4 item 4: observability, the statement log, in three implementations (2026-10-26)
 
 **The request (owner, 2026-10-26).** "Add a simple observability — at least we
@@ -4197,3 +4207,5 @@ pending from it; the SQL Server live verifications of ADR-0040 add.3,
 ADR-0042, ADR-0043, and ADR-0044 still await the owner's engine. The other
 Level 4 candidates (CI matrix, performance, packaging, tracing and timing,
 resilience) wait for the owner.
+
+*Recorded from the brief, 2026-10-27:* the developer-guide page is `docs/guide/16-observability.md`.

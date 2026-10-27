@@ -152,7 +152,7 @@ write the SQL.
 
 ## Performance
 
-The renderer costs about 9% over the equivalent inline SQL on a 1000-row read
+The renderer costs about 7% over the equivalent inline SQL on a 100-row page
 (see the README's [performance table](../../README.md#performance)). Renderings
 are pure and cheap; the cost that matters is the query plan, which is yours to
 shape with indexes.

@@ -603,34 +603,39 @@ Level 2 was proven reimplementable. Its coding standard — `go/CODING-STANDARD.
 
 ## Performance
 
-Compiled expression-tree mappers with typed-getter fast paths. BenchmarkDotNet vs
-Dapper and raw `Microsoft.Data.Sqlite` (net10.0, `dotnet/benchmarks/`): mapping
-1000 rows to entities runs **~5% faster than Dapper with 21% less allocation**
-(matching the raw reader's allocation floor); single-row reads are at parity.
+Compiled expression-tree mappers with typed-getter fast paths, and since the
+performance pass (ADR-0048) nothing re-derived per call that a map, a dialect, or
+a SQL text already determines. BenchmarkDotNet vs Dapper and raw
+`Microsoft.Data.Sqlite` (net10.0, `dotnet/benchmarks/`, ShortRun; refreshed
+2026-10-27): mapping 1000 rows to entities runs **at or below Dapper's time with
+21% less allocation** (956 µs / 174 KB vs 1023 µs / 220 KB; the raw reader's
+allocation floor is 173 KB); a read by key is at parity (89 µs / 1.8 KB vs 84 µs /
+1.7 KB).
 
-Level 2 paths (ADR-0029 refresh, same machine, 1000 rows × 3 child rows):
+Level 2 paths (same machine, 1000 rows × 3 child rows):
 
 | Path | SimpleOrm | Hand-written Dapper |
 |---|---|---|
-| criteria `Where(Eq).OrderBy.Limit(100)` (AST → SQL) | 134 µs | 123 µs (inline SQL) |
-| registry query, same SQL | 123 µs | 123 µs |
-| one-to-many graph, `Fetch(SubSelect)` | 4.1 ms | 3.8 ms (multi-mapped join, grouped by hand) |
-| one-to-many graph, `Fetch(Join)` | 6.4 ms, 2× the allocation | |
-| one-to-many graph, `Fetch(MultiQuery)` / `LoadEachAsync` | 7.2 ms (500-key chunks) | 16.0 ms (one 1000-key `IN` list) |
+| criteria `Where(Eq).OrderBy.Limit(100)` (AST → SQL) | 151 µs / 7.8 KB | 141 µs / 6.4 KB (inline SQL) |
+| registry query, same SQL | 136 µs / 5.3 KB | 141 µs / 6.4 KB |
+| one-to-many graph, `Fetch(SubSelect)` | 3.8 ms / 901 KB | 3.9 ms / 1147 KB (multi-mapped join, grouped by hand) |
+| one-to-many graph, `Fetch(Join)` | 5.0 ms / 1388 KB | |
+| one-to-many graph, `Fetch(MultiQuery)` / `LoadEachAsync` | 6.7 ms / 1214 KB (500-key chunks) | 17.0 ms / 1123 KB (one 1000-key `IN` list) |
 
-The criteria renderer costs ~9% over the equivalent inline SQL. On SQLite the
+The criteria renderer costs ~7% over the equivalent inline SQL. On SQLite the
 parameter-heavy `IN` list is what hurts, so **SubSelect is the fastest mode for
-large owner sets** there; Join pays for its segment readers in allocation.
-Level 3 paths (ADR-0039, same machine; `TrackingBenchmarks`, SQLite in WAL mode so
-the journal does not swamp the library):
+large owner sets** there, now level with Dapper's join and below its allocation;
+Join pays ~1.3 ms for its segment readers.
+Level 3 paths (`TrackingBenchmarks`, same machine, SQLite in WAL mode so the
+journal does not swamp the library):
 
 | Path | Untracked | Tracked |
 |---|---|---|
-| 1000-row read, warm session (every row an identity hit) | 751 µs | 822 µs (1.09×, +32% allocation) |
-| 1000-row read, fresh session (1000 registrations + snapshots) | 2.2 ms | 3.7 ms (~1.5 µs and ~0.4 KB per row) |
-| get + update one row (Dapper by hand: 32 µs) | 33 µs, the full row | 33 µs, the dirty column only; 9.8 µs when clean (no statement) |
-| 100 inserts in one transaction (Dapper: 519 µs) | 1.40 ms | `Persist` × 100 + `Flush`: 1.67 ms |
-| nothing-to-do flush over 1000 tracked rows | — | ~100 µs and ~30 KB for the dirty sweep |
+| 1000-row read, warm session (every row an identity hit) | 774 µs | 847 µs (1.10×, +32% allocation) |
+| 1000-row read, fresh session (1000 registrations + snapshots) | 2.6 ms | 3.7 ms (~1.1 µs and ~0.4 KB per row) |
+| get + update one row (Dapper by hand: 32 µs / 3.9 KB) | 32 µs / 3.9 KB, the full row | 34 µs / 4.3 KB, the dirty column only; 9.9 µs when clean (no statement) |
+| 100 inserts in one transaction (Dapper: 545 µs / 192 KB) | 1.18 ms / 237 KB | `Persist` × 100 + `Flush`: 1.98 ms / 514 KB |
+| nothing-to-do flush over 1000 tracked rows | — | ~170 µs and ~30 KB for the dirty sweep |
 
 Tracking costs an identity lookup per row read and a snapshot per row registered;
 a flush sweeps every tracked instance (linear in the session's size, as in every
@@ -642,31 +647,49 @@ there is — over a network the gain grows with latency):
 
 | Path | SQLite `Off` → `Auto` | PostgreSQL `Off` → `Auto` |
 |---|---|---|
-| `Persist` × 100 + `Flush` (session opened per call) | 2.04 → 1.66 ms (noisy) | 19.5 → 5.1 ms (3.9×) |
-| 100 inserts, one explicit batch | 1.65 → 0.73 ms (2.3×) | 19.7 → 4.8 ms (4.1×) |
-| 100 registry commands, one explicit batch | 0.78 → 0.34 ms (2.3×) | 20.5 → 5.5 ms (3.8×) |
+| `Persist` × 100 + `Flush` (session opened per call) | 2.38 → 1.18 ms (noisy) | 16.1 → 5.7 ms (2.8×, noisy) |
+| 100 inserts, one explicit batch | 1.74 → 0.65 ms (2.7×) | 14.4 → 5.0 ms (2.9×) |
+| 100 registry commands, one explicit batch | 0.70 → 0.22 ms (3.2×) | 19.2 → 5.3 ms (3.6×) |
 
 On SQLite there is no round trip to save: `Auto` reuses one prepared command per
 statement text within the call. On PostgreSQL a message goes out as one
-`NpgsqlBatch`. Allocation is unchanged within a few percent.
+`NpgsqlBatch`. Allocation is the same in both modes within a few percent — and
+since ADR-0048 a third less for 100 inserts on SQLite (410 → 278 KB) and under
+half for 100 commands (406 → 150 KB).
 
 PostgreSQL (`PostgresQueryBenchmarks`, loopback PostgreSQL 16.4, same shapes, Dapper and a raw
-Npgsql reader as baselines; 2026-10-26):
+Npgsql reader as baselines; refreshed 2026-10-27):
 
 | Path | SimpleOrm | Dapper (sync) | Raw Npgsql reader |
 |---|---|---|---|
-| 1000 rows → entities | 967 µs / 179 KB | 1173 µs / 225 KB | 816 µs / 177 KB |
-| single row by key (`GetAsync`) | 165 µs | 220 µs | |
-| criteria page, 100 rows | 489 µs | 244 µs | |
-| one-to-many graph, `Fetch(SubSelect)` | 5.3 ms / 1.8 MB | 2.8 ms / 0.6 MB (two queries, grouped by hand) | |
+| 1000 rows → entities | 718 µs / 174 KB | 741 µs / 220 KB | 657 µs / 172 KB |
+| single row by key (`GetAsync`) | 141 µs / 2.1 KB | 132 µs / 0.8 KB | |
+| criteria page, 100 rows | 265 µs / 8.5 KB | 231 µs / 5.5 KB | |
+| one-to-many graph, `Fetch(SubSelect)` | 3.9 ms / 902 KB | 2.8 ms / 615 KB (two queries, grouped by hand) | |
+| one-to-many graph, `Fetch(Join)` | 4.6 ms / 1350 KB | | |
 
-Two things the PostgreSQL numbers say. Small result sets cost more than Dapper's synchronous
-path because the library is async-only and Npgsql's async reader is dearer per call than its
-sync one: against Dapper's own `QueryAsync` the 100-row page is at parity (455 µs vs 434 µs in a
-Stopwatch probe) and the 1000-row read is level with both. And the one-to-many graph is about
-2× Dapper's grouped lookup on PostgreSQL, where array parameters make Dapper's single `IN` list
-cheap; the difference is the attached, identity-resolved collections and their allocation,
-which the Level 4 performance pass owns.
+Two things the PostgreSQL numbers say. Small result sets cost a little more than Dapper's
+synchronous path because the library is async-only and Npgsql's async reader is dearer per
+call than its sync one: against Dapper's own `QueryAsync` the 100-row page is at parity (455 µs
+vs 434 µs in a Stopwatch probe) and the 1000-row read is level with both. And the one-to-many
+graph is about 1.4× Dapper's grouped lookup on PostgreSQL (it was 2× before ADR-0048), where
+array parameters make Dapper's single `IN` list cheap; the difference left is the attached,
+identity-resolved collections — a typed list per owner, set through the navigation — at 1.5×
+the allocation (it was 2.9×).
+
+The performance pass (ADR-0048) changed, item by item: the generated CRUD text
+(insert, update, column-list update, delete, key read, select-all) is rendered
+once per map and dialect, not per call; the placeholder scan and the args
+binding plan of a registry entry are built once per SQL text and args type; the
+bind sites' error labels and the per-entity log and plan names are built once;
+graph loading groups single-column integer keys by value instead of boxed key
+tuples and skips the per-owner sort where the engine's key order already is the
+value order (integer keys everywhere, decimal keys where the dialect stores a
+number — not SQLite); join mode recognizes a repeated root or child from the
+row's integer key before materializing it again; and the mapping-plan cache
+compares the result's shape structurally instead of joining a string key per
+call. Caching the unit of work's type ranks was measured and declined (within
+noise).
 
 Numbers are machine-specific — run `dotnet run -c Release` in the benchmarks
 project for yours.

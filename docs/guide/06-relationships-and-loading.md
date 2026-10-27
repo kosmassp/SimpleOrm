@@ -170,10 +170,10 @@ in-memory paging is never acceptable), more than one collection include is
 `REL-003`.
 
 The README's [performance table](../../README.md#performance) measured 1000
-owners with 3 children each on SQLite: SubSelect 4.1 ms, Join 6.4 ms with twice
-the allocation, MultiQuery 7.2 ms. On SQLite the parameter-heavy `IN` list is
-what hurts, so SubSelect is the fastest mode for large owner sets there. Join
-pays for its segment readers in allocation.
+owners with 3 children each on SQLite: SubSelect 3.8 ms, Join 5.0 ms with about
+1.5× SubSelect's allocation, MultiQuery 6.7 ms (ADR-0048). On SQLite the
+parameter-heavy `IN` list is what hurts, so SubSelect is the fastest mode for
+large owner sets there. Join pays for its segment readers.
 
 Includes are single-level; deeper graphs load explicitly from the loaded
 entities. Non-included collections keep the `REL-004` guard.

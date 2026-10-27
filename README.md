@@ -505,8 +505,9 @@ Two requirements the first live run against a real engine taught (ADR-0040 add.2
 process must **not** run in globalization-invariant mode (`Microsoft.Data.SqlClient`
 refuses every connection with "Globalization Invariant Mode is not supported"; the
 CLI and the tests set `InvariantGlobalization` to false), and a table whose triggers
-lack `SET NOCOUNT ON` inflates the affected-row count the version check reads — see
-spec/dialects.md Clarification 22 for the measurement and the pending ruling. The
+lack `SET NOCOUNT ON` inflates the affected-row count the driver reports — which is
+why the SQL Server dialect reads `@@rowcount` itself (ADR-0040 add.3; the measurement
+is under "Update and delete — the affected-row count" in spec/dialects.md). The
 live tests take the admin connection string from `SIMPLEORM_SQLSERVER` (C#: an
 ADO.NET connection string; Go: `sqlserver://user:password@host:1433?database=master`;
 PHP: a `sqlsrv:` or `odbc:` DSN such as `odbc:Driver={ODBC Driver 17 for SQL

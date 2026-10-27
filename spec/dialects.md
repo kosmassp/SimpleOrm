@@ -903,9 +903,10 @@ The rules live in spec/migrations.md "Dialects"; this is the seam side.
 - **The view guard's mode** is `ViewDefinitionIsVerbatim`. The probe (false):
   `savepoint simpleorm_probe`; `CreateViewSql("simpleorm_expect_<hex>",
   <expected body>, false)`; `ViewDefinitionSql` on the probe and on the live
-  view, compared trimmed; `DropViewSql(probe)`; `release savepoint` — or
-  `rollback to savepoint` when the probe fails to create, which counts as
-  drift. Standard savepoint grammar: the probe path runs only on dialects
+  view, compared trimmed; `DropViewSql(probe)`; `release savepoint`. When the
+  probe fails to create, which counts as drift, `rollback to savepoint` and
+  then `release savepoint`, so the name is free for the next probe (the order
+  spec/migrations.md states). Standard savepoint grammar: the probe path runs only on dialects
   that have it; a dialect with another grammar and a reformatting catalog
   would need a member (§7.25).
 - **The stamp.** `Name` is what `snapshot`/`shadow` write as `"dialect"` for

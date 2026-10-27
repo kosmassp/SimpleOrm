@@ -289,6 +289,28 @@ registry declares (`Queries.userByEmail`) once `SchemaGuard` has enumerated it �
 modes. A statement refused before it is sent (`CRUD-004`, `PRM-001`, …) writes nothing. The run lock and
 `BEGIN`/`COMMIT`/`ROLLBACK` are not logged. The CLI takes `--log` (every statement of the run goes to standard output).
 
+### Resilience (Level 4, ADR-0047)
+
+Two options for a network engine, both off by default:
+
+```php
+$db = Db::open($dsn, new DbOptions(
+    new SqlServerDialect(),
+    commandTimeout: 300,    // seconds every statement may run (whole seconds, rounded up); null: the driver's default
+    openRetries: 3,         // up to 3 more attempts at opening, only on a failure the dialect calls transient
+    openRetryDelay: 2,      // the fixed wait between attempts, in seconds (default 1; 0 = none)
+));
+```
+
+PDO keeps a timeout on the connection, so the session sets it once at open and every statement it sends carries it:
+the busy timeout on SQLite (`PDO::ATTR_TIMEOUT`), `statement_timeout` on PostgreSQL (a fired one is SQLSTATE `57014`;
+the session's next statement runs), `PDO::SQLSRV_ATTR_QUERY_TIMEOUT` on SQL Server through `pdo_sqlsrv` (`HYT00`).
+`pdo_odbc` has no statement timeout: an `odbc:` DSN with `commandTimeout` set is refused at open with an
+`InvalidArgumentException` — use a `sqlsrv:` DSN for it, or leave it unset. Only the open is ever retried, never a
+statement; a wrong password or a missing database fails at once; after the last attempt the driver's `PDOException` is
+thrown as raised. How long one attempt may take is the DSN's (`connect_timeout` for `pgsql:`, `LoginTimeout` for
+`sqlsrv:`). The CLI takes `--command-timeout <seconds>` for every command that opens a database.
+
 ## The CLI
 
 `bin/simpleorm` has no assembly to load, so it takes a PSR-4 root instead:

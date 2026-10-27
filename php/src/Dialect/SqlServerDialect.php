@@ -54,11 +54,12 @@ final class SqlServerDialect implements Dialect, PdoConventions
 
     /**
      * The SQL Server error numbers an open may be retried on (ADR-0047, spec/dialects.md "Transient open failures" — the
-     * 26 numbers, written once): SqlClient's configurable-retry defaults without its lock numbers, the connection-level
-     * numbers of EF Core's detector, and `-2`, the connect timeout.
+     * 28 numbers, written once): SqlClient's configurable-retry defaults without its lock numbers, the connection-level
+     * numbers of EF Core's detector, `-2`, the connect timeout, and `258`/`10061`, the client's wait timing out and the
+     * connection refused.
      */
     public const TRANSIENT_ERROR_NUMBERS = [
-        -2, 20, 64, 121, 233, 997, 4060, 4221, 10053, 10054, 10060, 10928, 10929, 11001, 17197, 18401,
+        -2, 20, 64, 121, 233, 258, 997, 4060, 4221, 10053, 10054, 10060, 10061, 10928, 10929, 11001, 17197, 18401,
         40143, 40197, 40501, 40540, 40613, 42108, 42109, 49918, 49919, 49920,
     ];
 
@@ -94,19 +95,30 @@ final class SqlServerDialect implements Dialect, PdoConventions
      * failures C# and Go read from runtime exception types (CODING-STANDARD §10). The native number is `errorInfo[1]`
      * (`pdo_sqlsrv`, and `pdo_odbc` after the connection exists) or the number `pdo_odbc`'s constructor puts in its message
      * (`SQLSTATE[08001] SQLDriverConnect: 10061 …`). Login failed (`18456`, SQLSTATE `28000`) is not transient.
+     *
+     * An engine answer settles it (spec/dialects.md): when any record carries a SQLSTATE other than the three stand-ins —
+     * the server (or the driver manager) answered — the native numbers alone decide; the stand-ins count only when no
+     * such record is present.
      */
     public function isTransient(Throwable $failure): bool
     {
+        $records = [];
         foreach (PdoFailure::chain($failure) as $link) {
-            foreach (PdoFailure::records($link) as [$state, $native]) {
-                if (($native !== null && in_array($native, self::TRANSIENT_ERROR_NUMBERS, true))
-                    || in_array($state, self::TRANSIENT_STATES, true)) {
-                    return true;
-                }
+            foreach (PdoFailure::records($link) as $record) {
+                $records[] = $record;
             }
         }
 
-        return false;
+        $numbered = false;
+        $answered = false;
+        $standIn = false;
+        foreach ($records as [$state, $native]) {
+            $numbered = $numbered || ($native !== null && in_array($native, self::TRANSIENT_ERROR_NUMBERS, true));
+            $standIn = $standIn || in_array($state, self::TRANSIENT_STATES, true);
+            $answered = $answered || ($state !== null && !in_array($state, self::TRANSIENT_STATES, true));
+        }
+
+        return $numbered || (!$answered && $standIn);
     }
 
     /** `[name]`, a `]` doubled (spec/dialects.md "Capability flags"). */

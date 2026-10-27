@@ -74,6 +74,49 @@ func assertNextStatementRuns(t *testing.T, db *orm.Db) {
 	}
 }
 
+// The connector cancels on the server (CancelRequestContextWatcherHandler) for the caller's own cancellation too: the
+// running statement ends, the caller sees its cancellation, and the session's pinned connection survives it (the
+// review of ADR-0047's pgx change).
+func TestLiveCallersCancellationCancelsTheStatementAndTheConnectionSurvives(t *testing.T) {
+	db, _ := openBare(t, orm.Options{})
+	ctx, cancel := context.WithCancel(context.Background())
+	timer := time.AfterFunc(300*time.Millisecond, cancel)
+	defer timer.Stop()
+
+	started := time.Now()
+	_, err := orm.QuerySingle(ctx, db, orm.Inline[orm.EmptyArgs, *string]("select pg_sleep(3)::text"), orm.EmptyArgs{})
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("pg_sleep(3) under a cancelled context succeeded")
+	}
+	if elapsed >= 2500*time.Millisecond {
+		t.Fatalf("the cancellation took effect after %s; expected about 300 ms", elapsed)
+	}
+	if !errors.Is(err, context.Canceled) && !isQueryCanceled(err) {
+		t.Fatalf("expected the caller's cancellation or SQLSTATE 57014, got %T: %v", err, err)
+	}
+	assertNextStatementRuns(t, db)
+}
+
+func TestLiveCallersCancellationInsideATransactionLeavesARollbackAndTheNextStatement(t *testing.T) {
+	db, _ := openBare(t, orm.Options{})
+	tx, err := db.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	timer := time.AfterFunc(300*time.Millisecond, cancel)
+	defer timer.Stop()
+
+	if _, err := orm.QuerySingle(ctx, db, orm.Inline[orm.EmptyArgs, *string]("select pg_sleep(3)::text"), orm.EmptyArgs{}); err == nil {
+		t.Fatal("pg_sleep(3) under a cancelled context succeeded")
+	}
+	if err := tx.Rollback(context.Background()); err != nil {
+		t.Fatalf("the rollback after a cancelled statement: %v", err)
+	}
+	assertNextStatementRuns(t, db)
+}
+
 func TestLiveCommandTimeoutLeavesAFastStatementAlone(t *testing.T) {
 	db, _ := openBare(t, orm.Options{CommandTimeout: time.Second})
 	got, err := orm.QuerySingle(context.Background(), db, orm.Inline[orm.EmptyArgs, *string]("select pg_sleep(0.1)::text"), orm.EmptyArgs{})

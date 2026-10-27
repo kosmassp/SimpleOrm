@@ -452,7 +452,11 @@ public sealed class SqlServerDialect : IDialect
     /// the connection-level numbers of EF Core's <c>SqlServerTransientExceptionDetector</c>
     /// (20, 64, 121, 10053, 10054, 11001, 17197, 18401), plus -2, the driver's own
     /// "timeout expired" — on an open it is the connect timeout, and the open
-    /// applied nothing (EF Core leaves -2 out because it retries statements).
+    /// applied nothing (EF Core leaves -2 out because it retries statements) — and
+    /// the two numbers SqlClient reports for a server that is not listening yet
+    /// (the review of ADR-0047): 258, the TCP connect's wait timing out, and 10061,
+    /// the connection refused. Both reach C# only as numbers (wrapping a
+    /// <c>Win32Exception</c>), where the ports see the runtime's own socket failure.
     /// </summary>
     public static readonly IReadOnlyCollection<int> TransientErrorNumbers = new HashSet<int>
     {
@@ -461,12 +465,14 @@ public sealed class SqlServerDialect : IDialect
         64,      // the network name is no longer available, during login
         121,     // the semaphore timeout period has expired
         233,     // connection initialization failed before login (no process at the other end of the pipe)
+        258,     // the wait operation timed out (the TCP connect of an open; SqlClient's "unreachable")
         997,     // login error during overlapped I/O (named pipes)
         4060,    // cannot open the database requested by the login
         4221,    // read-secondary login waits for row versioning
         10053,   // connection aborted during receive
         10054,   // connection forcibly closed by the remote host
         10060,   // connection attempt timed out (host did not respond)
+        10061,   // connection refused (nothing listening yet: a restart)
         10928,   // resource limit reached (Azure SQL)
         10929,   // server too busy for the requested resources (Azure SQL)
         11001,   // host not found (DNS)
@@ -485,25 +491,41 @@ public sealed class SqlServerDialect : IDialect
     };
 
     /// <summary>
-    /// A <see cref="SqlException"/> any of whose errors carries one of
-    /// <see cref="TransientErrorNumbers"/>, or a socket, I/O, or timeout failure
-    /// anywhere in the cause chain (ADR-0047).
+    /// Whether a failed open is transient (ADR-0047, spec/dialects.md "Transient
+    /// open failures"). The engine's answer settles it: when the cause chain holds a
+    /// <see cref="SqlException"/>, its error numbers alone decide — transient when any
+    /// of its errors carries one of <see cref="TransientErrorNumbers"/> — whatever
+    /// transport failure the chain also carries (SqlClient reports a broken or
+    /// unreachable endpoint as a <see cref="SqlException"/> with the socket's number,
+    /// wrapping a <c>Win32Exception</c>). Only without one does a socket, I/O, or
+    /// timeout failure anywhere in the chain answer true.
     /// </summary>
     public bool IsTransient(Exception exception)
     {
-        for (Exception? current = exception; current is not null; current = current.InnerException)
+        var chain = CauseChain(exception).ToList();
+        if (chain.OfType<SqlException>().FirstOrDefault() is { } sql)
         {
-            switch (current)
-            {
-                case SqlException sql when sql.Errors.Cast<SqlError>().Any(e => TransientErrorNumbers.Contains(e.Number))
-                                           || TransientErrorNumbers.Contains(sql.Number):
-                    return true;
-                case System.Net.Sockets.SocketException or System.IO.IOException or TimeoutException:
-                    return true;
-            }
+            return TransientErrorNumbers.Contains(sql.Number)
+                   || sql.Errors.Cast<SqlError>().Any(e => TransientErrorNumbers.Contains(e.Number));
         }
 
-        return false;
+        return chain.Any(link => link is System.Net.Sockets.SocketException or System.IO.IOException or TimeoutException);
+    }
+
+    /// <summary>The failure and every cause below it, depth first: <c>InnerException</c>, and each of an <see cref="AggregateException"/>'s inner failures.</summary>
+    private static IEnumerable<Exception> CauseChain(Exception exception)
+    {
+        yield return exception;
+        var causes = exception is AggregateException aggregate
+            ? aggregate.InnerExceptions
+            : exception.InnerException is { } inner ? [inner] : (IEnumerable<Exception>)[];
+        foreach (var cause in causes)
+        {
+            foreach (var link in CauseChain(cause))
+            {
+                yield return link;
+            }
+        }
     }
 
     private static string ReportingAffectedRows(string statement)

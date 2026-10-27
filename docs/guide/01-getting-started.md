@@ -128,8 +128,7 @@ through a `sqlsrv:` DSN for it. `bin/simpleorm` takes `--command-timeout` too.
 $db = Db::open($dsn, new DbOptions(new SqlServerDialect(), commandTimeout: 300, openRetries: 3, openRetryDelay: 2));
 ```
 
-In Go — the port takes these options by the port method (ADR-0047); until it
-lands there, the shape will be:
+In Go:
 
 ```go
 db, err := orm.Open(ctx, cs, orm.Options{Dialect: sqlserver.New(),

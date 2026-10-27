@@ -449,28 +449,44 @@ public sealed class PostgresDialect : IDialect
     public int? MaxParametersPerMessage => null;
 
     /// <summary>
-    /// A <see cref="PostgresException"/> whose SQLSTATE is transient on an open
-    /// (<see cref="IsTransientSqlState"/>), or a socket, I/O, or timeout failure
-    /// anywhere in the cause chain — Npgsql reports an unreachable or vanished
-    /// server as an <see cref="NpgsqlException"/> wrapping one (ADR-0047). The
-    /// driver's <c>IsTransient</c> flag is not consulted: Npgsql 4.1
-    /// (<c>netstandard2.0</c>) and 9.x (<c>net10.0</c>) list different states, and
-    /// the two targets answer alike from the rule written once here.
+    /// Whether a failed open is transient (ADR-0047, spec/dialects.md "Transient
+    /// open failures"). The engine's answer settles it: when the cause chain holds a
+    /// <see cref="PostgresException"/> (the server spoke), its SQLSTATE alone decides
+    /// (<see cref="IsTransientSqlState"/>), whatever transport failure the chain also
+    /// carries — Npgsql gathers one failure per host tried into an
+    /// <see cref="AggregateException"/>, whose every inner failure is walked. Only
+    /// without one does a socket, I/O, or timeout failure anywhere in the chain
+    /// answer true — Npgsql reports an unreachable or vanished server as an
+    /// <see cref="NpgsqlException"/> wrapping one. The driver's <c>IsTransient</c>
+    /// flag is not consulted: Npgsql 4.1 (<c>netstandard2.0</c>) and 9.x
+    /// (<c>net10.0</c>) list different states, and the two targets answer alike from
+    /// the rule written once here.
     /// </summary>
     public bool IsTransient(Exception exception)
     {
-        for (Exception? current = exception; current is not null; current = current.InnerException)
+        var chain = CauseChain(exception).ToList();
+        if (chain.OfType<PostgresException>().FirstOrDefault() is { } postgres)
         {
-            switch (current)
-            {
-                case PostgresException postgres when IsTransientSqlState(postgres.SqlState):
-                    return true;
-                case System.Net.Sockets.SocketException or System.IO.IOException or TimeoutException:
-                    return true;
-            }
+            return IsTransientSqlState(postgres.SqlState);
         }
 
-        return false;
+        return chain.Any(link => link is System.Net.Sockets.SocketException or System.IO.IOException or TimeoutException);
+    }
+
+    /// <summary>The failure and every cause below it, depth first: <c>InnerException</c>, and each of an <see cref="AggregateException"/>'s inner failures.</summary>
+    private static IEnumerable<Exception> CauseChain(Exception exception)
+    {
+        yield return exception;
+        var causes = exception is AggregateException aggregate
+            ? aggregate.InnerExceptions
+            : exception.InnerException is { } inner ? [inner] : (IEnumerable<Exception>)[];
+        foreach (var cause in causes)
+        {
+            foreach (var link in CauseChain(cause))
+            {
+                yield return link;
+            }
+        }
     }
 
     /// <summary>

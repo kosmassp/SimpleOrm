@@ -111,10 +111,25 @@ final class TransientFailureTest extends TestCase
     }
 
     #[Test]
-    public function the_sql_server_set_is_the_specs_twenty_six_numbers(): void
+    public function an_engine_answer_decides_alone(): void
+    {
+        // A login failure carried beside a link-failure stand-in: the server answered, so the stand-in does not count.
+        $login = self::withInfo('28000', 18456, 'Login failed');
+        $login->errorInfo = ['28000', 18456, 'Login failed', '08S01', 0, 'Communication link failure'];
+        self::assertFalse((new SqlServerDialect())->isTransient($login));
+
+        // PostgreSQL: the first SQLSTATE in the chain decides; a later link never overrules it.
+        $missing = self::withInfo('3D000', 7, 'ERROR: database does not exist');
+        self::assertFalse((new PostgresDialect())->isTransient(new RuntimeException('outer', 0, $missing)));
+        $startingUp = self::libpq('FATAL:  the database system is starting up');
+        self::assertTrue((new PostgresDialect())->isTransient(new RuntimeException('outer', 0, $startingUp)));
+    }
+
+    #[Test]
+    public function the_sql_server_set_is_the_specs_twenty_eight_numbers(): void
     {
         self::assertSame(
-            [-2, 20, 64, 121, 233, 997, 4060, 4221, 10053, 10054, 10060, 10928, 10929, 11001, 17197, 18401,
+            [-2, 20, 64, 121, 233, 258, 997, 4060, 4221, 10053, 10054, 10060, 10061, 10928, 10929, 11001, 17197, 18401,
                 40143, 40197, 40501, 40540, 40613, 42108, 42109, 49918, 49919, 49920],
             SqlServerDialect::TRANSIENT_ERROR_NUMBERS,
         );

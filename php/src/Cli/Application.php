@@ -66,6 +66,7 @@ final class Application
 
         try {
             $command = strtolower($arguments->positional[0]);
+            self::commandTimeout($arguments);   // a bad --command-timeout refuses for every command, before anything opens (ADR-0047)
 
             return match (true) {
                 $command === 'migrate' && ($arguments->positional[1] ?? null) === 'down' => self::migrateDown($arguments),

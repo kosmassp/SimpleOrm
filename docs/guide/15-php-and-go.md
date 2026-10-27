@@ -286,6 +286,38 @@ ctx = migrations.WithStatementLog(ctx, orm.ConsoleLog, false)
 
 The CLI's `--log` flag is the same in all three.
 
+## Resilience
+
+The command timeout and the open retry mean the same in all three
+implementations ([Getting started](01-getting-started.md#resilience-the-command-timeout-and-open-retries));
+the spelling of "unset" and "no wait" is each language's.
+
+```php
+// PHP: seconds as an int or a float; null leaves the driver's default; 0 seconds is 1
+$db = Db::open($dsn, new DbOptions(new SqlServerDialect(), commandTimeout: 300, openRetries: 3, openRetryDelay: 2));
+```
+
+PDO keeps the timeout on the connection, so it is set once at open and every
+statement on the connection carries it: the busy timeout on SQLite,
+`statement_timeout` on PostgreSQL (a fired one is SQLSTATE `57014`), the
+`pdo_sqlsrv` query timeout on SQL Server (`HYT00`). An `odbc:` DSN with
+`commandTimeout` set is refused at open — `pdo_odbc` has no query timeout. PHP
+has no cancellation token, so only spent retries or a non-transient failure end
+the open's loop. `bin/simpleorm --command-timeout <seconds>` takes it too.
+
+```go
+// Go: durations; CommandTimeout 0 is unset, OpenRetryDelay 0 is the 1 s default
+db, err := orm.Open(ctx, cs, orm.Options{Dialect: sqlserver.New(),
+    CommandTimeout: 5 * time.Minute, OpenRetries: 3, OpenRetryDelay: orm.NoOpenRetryDelay})
+
+// the tooling takes a pool, not a session: hand it the timeout through the context
+ctx = migrations.WithCommandTimeout(ctx, 5*time.Minute)
+```
+
+Every Go statement runs under `context.WithTimeout` derived from your context,
+a result set's rows included. The CLI's `--command-timeout` is the same in all
+three.
+
 ## Pitfalls
 
 - PHP: a plainly `public` navigation is `MAP-011`; `private(set)` is the shape.
@@ -294,6 +326,8 @@ The CLI's `--log` flag is the same in all three.
   C# one, in criteria and column lists.
 - PHP: reading an unloaded collection without the `Navigations` trait is a
   PHP `Error`, not `REL-004`; both are refusals.
+- PHP: `commandTimeout: 0` is one second, not "no limit"; `openRetryDelay: 0`
+  is no wait. A `commandTimeout` through an `odbc:` DSN is refused at open.
 - Go: `orm.Get[User]` returns a copy in a tracked session; use `orm.Get[*User]`
   when identity matters.
 - Go: `OpenRetryDelay: 0` is the one-second default, not "no wait" — that is

@@ -473,15 +473,19 @@ only with `LogParameterValues = true`. The CLI takes `--log`. The guide:
 
 ### Resilience (ADR-0047)
 
-`DbOptions.CommandTimeout` (unset: the driver's default) applies to every command
-and batch the session creates, in whole seconds rounded up; a timeout that fires is
-the driver's own exception. `OpenRetries` (default 0) and `OpenRetryDelay` (default
+`DbOptions.CommandTimeout` (unset: the driver's default) applies to every statement
+the session sends, in whole seconds rounded up; a timeout that fires is the driver's
+own exception, and the session's next statement runs. `OpenRetries` (default 0) and `OpenRetryDelay` (default
 1 s, fixed) retry **only the connection open**, only when the dialect's `IsTransient`
 says so — SQL Server's transient error numbers, PostgreSQL's SQLSTATE class 08,
 53300, 57P03, or a socket/IO/timeout cause; SQLite never. A statement is never
 retried. The connect timeout stays in the connection string. The CLI takes
-`--command-timeout <seconds>`. The guide: [docs/guide/01-getting-started.md](docs/guide/01-getting-started.md);
-the rule: [spec/session.md "Resilience"](spec/session.md).
+`--command-timeout <seconds>`. Done in C#, PHP, and Go — PHP sets the timeout once
+on the connection (`commandTimeout: 300`; refused at open through `pdo_odbc`, which
+has none), Go derives a context deadline per statement (`CommandTimeout: 5 *
+time.Minute`; zero is unset). The guide: [docs/guide/01-getting-started.md](docs/guide/01-getting-started.md)
+and [docs/guide/15-php-and-go.md](docs/guide/15-php-and-go.md); the rule:
+[spec/session.md "Resilience"](spec/session.md).
 
 ## SQL Server dialect (ADR-0024)
 

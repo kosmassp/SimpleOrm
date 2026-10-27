@@ -4209,3 +4209,57 @@ Level 4 candidates (CI matrix, performance, packaging, tracing and timing,
 resilience) wait for the owner.
 
 *Recorded from the brief, 2026-10-27:* the developer-guide page is `docs/guide/16-observability.md`.
+
+## ADR-0046 — Spec consolidation and the brief as a state (2026-10-27)
+
+**Context.** The owner: "The spec has grown by accretion. Many documents carry
+long 'Clarifications' lists appended per milestone. They are correct but a
+porter must read the base text and then the amendments. A consolidation pass
+folding Clarifications into the sections they amend would make the spec read as
+one document. Same for the brief's session-state paragraphs, which are now a
+history rather than a state."
+
+**Decision.** An editorial pass; no rule, value, error code, name, or behaviour
+changed, and nothing in `dotnet/`, `php/`, `go/`, or `conformance/` was touched.
+
+- **Every Clarifications list in `spec/` is folded into the sections it
+  amended** — dialects.md (27 numbered), session.md (Batching 1–11, Statement
+  log 1–16, Tracking), metadata-model.md, migrations.md, unit-of-work.md,
+  hooks.md, query-ast.md, loading.md — each rule stated once, with a brief
+  `(ADR-xxxx)` marker where a port's gap produced it. Entries that amended
+  another document moved there (the `[RenamedFrom]` placement rules, `MAP-027`,
+  and the export order to metadata-model.md "Declared renames"; two hooks
+  entries to unit-of-work.md).
+- **Citations keep resolving.** Code comments, this log, the READMEs, and the
+  coding standards cite Clarifications by number or title; each document that
+  had them ends with "Where the Clarifications went", mapping every former
+  entry to the section that now states it. Citations inside `spec/` point at
+  sections.
+- **The brief is a state.** CLAUDE.md's 19 session-state paragraphs and §1's
+  run-on became one "Current state (2026-10-27)" section after §1 (where a
+  fresh session looks first); §3's cells say what each feature is and its
+  status + ADR. The history lives here: every fact the paragraphs held was
+  checked against its ADR, and the few found only in the brief were appended to
+  their ADRs as "Recorded from the brief" notes.
+
+**Consequences.**
+
+- A porter reads one text per document.
+- Where entries disagreed, the later ADR's text was kept: dialects.md 16 called
+  typed nulls "unverified against SQL Server", 18 (add.2) verified them and made
+  them the reference's rule; dialects.md 23's "Level 4's triggers in the mapping
+  may narrow it" was dropped, ADR-0042 having left the write strategy untouched;
+  unit-of-work.md's ADR-0037 "owned members are copied member by member" gave
+  way to ADR-0039's "an owned navigation as a whole".
+- Left as found, for the owner: dialects.md "Migration tooling" describes the
+  view probe as "`release savepoint` — or `rollback to savepoint` when the probe
+  fails to create", migrations.md (ADR-0043) as "any failure … `rollback to
+  savepoint`, then `release savepoint`"; and ADR-0040 add.1 counts PHP "was
+  805 / 16" where the brief recorded 805 / 40 skipped for ADR-0041 add.1's
+  merged run.
+- **The rule from here:** a milestone's gap answers are written directly into
+  the sections they amend, with the `(ADR-xxxx)` marker; a "Where the
+  Clarifications went" row is added only when something outside `spec/` will
+  cite the answer. The brief's "Current state" is rewritten, never appended to.
+
+**Status.** Accepted.

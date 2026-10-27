@@ -18,10 +18,28 @@ namespace SimpleOrm;
 /// </summary>
 internal sealed class ResultMapper(EntityMapLoader loader, TypeConverter converter)
 {
-    private readonly ConcurrentDictionary<string, Delegate> _plans = new();
+    /// <summary>
+    /// The plan cache (ADR-0048): per result type, the plans built so far, each
+    /// with the column names and provider field types it was built for — a
+    /// structural key compared against the reader directly, so a hit allocates
+    /// nothing (it was a joined string per call). Names compare ordinally, as the
+    /// joined key did; types by identity.
+    /// </summary>
+    private readonly ConcurrentDictionary<Type, PlanEntry[]> _plans = new();
 
     public Func<DbDataReader, T> CreatePlan<T>(DbDataReader reader, string queryName)
     {
+        if (_plans.TryGetValue(typeof(T), out var entries))
+        {
+            foreach (var entry in entries)
+            {
+                if (entry.Matches(reader))
+                {
+                    return (Func<DbDataReader, T>)entry.Plan;
+                }
+            }
+        }
+
         var columns = new string[reader.FieldCount];
         var fieldTypes = new Type[reader.FieldCount];
         for (var i = 0; i < reader.FieldCount; i++)
@@ -30,8 +48,51 @@ internal sealed class ResultMapper(EntityMapLoader loader, TypeConverter convert
             fieldTypes[i] = reader.GetFieldType(i);   // the provider's type: what a typed getter may read (ADR-0040 add.2)
         }
 
-        var key = typeof(T).FullName + "|" + string.Join(",", columns) + "|" + string.Join(",", fieldTypes.Select(t => t.FullName));
-        return (Func<DbDataReader, T>)_plans.GetOrAdd(key, _ => BuildPlan<T>(columns, fieldTypes, queryName));
+        var plan = BuildPlan<T>(columns, fieldTypes, queryName);
+        lock (_plans)
+        {
+            var current = _plans.TryGetValue(typeof(T), out var known) ? known : [];
+            foreach (var entry in current)
+            {
+                if (entry.Matches(columns, fieldTypes))
+                {
+                    return (Func<DbDataReader, T>)entry.Plan;   // another thread built it first: one plan per shape
+                }
+            }
+
+            _plans[typeof(T)] = [.. current, new PlanEntry(columns, fieldTypes, plan)];
+        }
+
+        return plan;
+    }
+
+    /// <summary>One cached plan and the result shape it was built for.</summary>
+    private sealed class PlanEntry(string[] columns, Type[] fieldTypes, Delegate plan)
+    {
+        public Delegate Plan { get; } = plan;
+
+        public bool Matches(DbDataReader reader)
+        {
+            if (reader.FieldCount != columns.Length)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < columns.Length; i++)
+            {
+                if (reader.GetFieldType(i) != fieldTypes[i] || !string.Equals(reader.GetName(i), columns[i], StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        public bool Matches(string[] otherColumns, Type[] otherFieldTypes)
+            => otherColumns.Length == columns.Length
+                && otherColumns.SequenceEqual(columns, StringComparer.Ordinal)
+                && otherFieldTypes.SequenceEqual(fieldTypes);
     }
 
     private Func<DbDataReader, T> BuildPlan<T>(string[] columns, Type[] fieldTypes, string queryName)

@@ -450,7 +450,7 @@ public sealed class MigrationRunner
     private async Task<RecordedHistory> ReadRecordedAsync(DbTransaction? transaction, CancellationToken ct)
     {
         var rows = new Dictionary<(long, string), (string, string)>();
-        using var command = _db.Connection.CreateCommand();
+        using var command = _db.NewCommand();
         command.Transaction = transaction;
         command.CommandText = "select version, object, description, checksum from schema_version";
         _db.LogStatement(LogName, command);
@@ -480,7 +480,7 @@ public sealed class MigrationRunner
     private async Task RecordAsync(
         DbTransaction transaction, long version, RenderedStep step, long executionMs, CancellationToken ct)
     {
-        using var command = _db.Connection.CreateCommand();
+        using var command = _db.NewCommand();
         command.Transaction = transaction;
         command.CommandText =
             "insert into schema_version (version, object, description, checksum, applied_at, execution_ms) "
@@ -571,7 +571,7 @@ public sealed class MigrationRunner
 
     private async Task<List<string>> ReadTriggerDefinitionsAsync(DbTransaction transaction, string trigger, CancellationToken ct)
     {
-        using var command = _db.Connection.CreateCommand();
+        using var command = _db.NewCommand();
         command.Transaction = transaction;
         command.CommandText = _db.Options.Dialect.TriggerDefinitionSql;
         var parameter = command.CreateParameter();
@@ -661,7 +661,7 @@ public sealed class MigrationRunner
 
     private async Task<string?> ReadViewDefinitionAsync(DbTransaction transaction, string view, CancellationToken ct)
     {
-        using var command = _db.Connection.CreateCommand();
+        using var command = _db.NewCommand();
         command.Transaction = transaction;
         command.CommandText = _db.Options.Dialect.ViewDefinitionSql;
         var parameter = command.CreateParameter();
@@ -674,7 +674,7 @@ public sealed class MigrationRunner
 
     private async Task ExecuteAsync(DbTransaction transaction, string sql, CancellationToken ct, bool log = true)
     {
-        using var command = _db.Connection.CreateCommand();
+        using var command = _db.NewCommand();
         command.Transaction = transaction;
         command.CommandText = sql;
         if (log)

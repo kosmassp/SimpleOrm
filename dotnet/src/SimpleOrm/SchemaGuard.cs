@@ -163,7 +163,7 @@ public static class SchemaGuard
         }
 
         // Prepare / describe without executing anything that persists.
-        using var command = db.Connection.CreateCommand();
+        using var command = db.NewCommand();
         command.Transaction = shield;
         command.CommandText = sql;
         foreach (var placeholder in placeholders)
@@ -402,7 +402,7 @@ public static class SchemaGuard
         Db db, DbTransaction shield, string relation, string source, CancellationToken ct)
     {
         var columns = new Dictionary<string, ColumnInfo>(StringComparer.OrdinalIgnoreCase);
-        using var command = db.Connection.CreateCommand();
+        using var command = db.NewCommand();
         command.Transaction = shield;
         command.CommandText = db.Options.Dialect.ColumnsInfoSql;
         var parameter = command.CreateParameter();

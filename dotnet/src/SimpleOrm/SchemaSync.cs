@@ -113,7 +113,7 @@ public static class SchemaSync
     {
         var parts = new Dictionary<string, (bool Unique, List<(string Column, bool Descending)> Columns)>();
         var order = new List<string>();
-        using var command = db.Connection.CreateCommand();
+        using var command = db.NewCommand();
         command.CommandText = db.Options.Dialect.IndexesInfoSql;
         var parameter = command.CreateParameter();
         parameter.ParameterName = "@relation";
@@ -152,7 +152,7 @@ public static class SchemaSync
     {
         foreach (var sql in statements)
         {
-            using var command = db.Connection.CreateCommand();
+            using var command = db.NewCommand();
             command.CommandText = sql;
             db.LogStatement("sync", command);
             await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
@@ -164,7 +164,7 @@ public static class SchemaSync
     private static async Task<Dictionary<string, LiveColumn>> ReadColumnsAsync(Db db, string relation, CancellationToken ct)
     {
         var columns = new Dictionary<string, LiveColumn>(StringComparer.OrdinalIgnoreCase);
-        using var command = db.Connection.CreateCommand();
+        using var command = db.NewCommand();
         command.CommandText = db.Options.Dialect.ColumnsInfoSql;
         var parameter = command.CreateParameter();
         parameter.ParameterName = "@relation";

@@ -132,6 +132,11 @@ int Usage()
                               snapshot stamped for another is MIG-014
           --log               write every statement sent to the database to stdout
                               (the statement log, ADR-0045; parameter names, no values)
+          --command-timeout <seconds>
+                              the timeout of every statement sent (ADR-0047; default:
+                              the driver's — 30 s on SQL Server and PostgreSQL); for
+                              long DDL in migrate, migrate down, shadow, validate.
+                              The connect timeout stays in the connection string
         """);
     return 2;
 }
@@ -183,7 +188,12 @@ async Task<(Db Db, MigrationRunner Runner)> OpenAsync()
     var connectionString = db.Contains('=') ? db : $"Data Source={db}";
     var session = await Db.OpenAsync(
         connectionString,
-        new DbOptions { Dialect = DialectFor(), Log = Flag("log") ? DbLog.Console : null },   // --log: every statement to stdout (ADR-0045)
+        new DbOptions
+        {
+            Dialect = DialectFor(),
+            Log = Flag("log") ? DbLog.Console : null,   // --log: every statement to stdout (ADR-0045)
+            CommandTimeout = CommandTimeoutOption.Parse(Option("command-timeout")),   // ADR-0047
+        },
         CancellationToken.None);
 
     // Rollbacks derive from the snapshots (ADR-0018): embedded in the assembly by
@@ -480,7 +490,8 @@ async Task<int> ShadowAsync()
     }
 
     var result = await SchemaShadow.RebuildSnapshotsAsync(
-        LoadAssembly(), Option("namespace"), outDir, DialectFor(), ShadowHostFor(), Option("db"), from, to, CancellationToken.None);
+        LoadAssembly(), Option("namespace"), outDir, DialectFor(), ShadowHostFor(), Option("db"), from, to,
+        CommandTimeoutOption.Parse(Option("command-timeout")), CancellationToken.None);
     foreach (var note in result.Notes)
     {
         Console.WriteLine(note);

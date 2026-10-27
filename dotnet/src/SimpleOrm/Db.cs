@@ -22,7 +22,10 @@ public sealed partial class Db : IAsyncDisposable
         Maps = new EntityMapLoader(options.Mapping);
         _converter = new TypeConverter(options.TypeHandlers, options.Dialect.BindsTemporalsNatively);
         _mapper = new ResultMapper(Maps, _converter);
+        _commandTimeoutSeconds = TimeoutSeconds(options.CommandTimeout);
     }
+
+    private readonly int? _commandTimeoutSeconds;
 
     public DbOptions Options { get; }
 
@@ -43,19 +46,84 @@ public sealed partial class Db : IAsyncDisposable
                 nameof(options), options.MaxStatementsPerMessage, "MaxStatementsPerMessage must be at least 1");
         }
 
-        var connection = options.Dialect.CreateConnection(connectionString);
-        try
+        if (options.OpenRetries < 0)
         {
-            await connection.OpenAsync(ct).ConfigureAwait(false);
-        }
-        catch
-        {
-            connection.Dispose();
-            throw;
+            throw new ArgumentOutOfRangeException(nameof(options), options.OpenRetries, "OpenRetries must not be negative");
         }
 
-        return new Db(connection, options);
+        if (options.OpenRetryDelay < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), options.OpenRetryDelay, "OpenRetryDelay must not be negative");
+        }
+
+        if (options.CommandTimeout is { } timeout && timeout < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), timeout, "CommandTimeout must not be negative");
+        }
+
+        // Resilience (ADR-0047): only the open is retried, only when the dialect
+        // calls the failure transient, at most OpenRetries more times, a fixed
+        // delay between attempts; a cancellation is never retried, and the last
+        // failure surfaces as the driver threw it.
+        for (var attempt = 0; ; attempt++)
+        {
+            var connection = options.Dialect.CreateConnection(connectionString);
+            try
+            {
+                await connection.OpenAsync(ct).ConfigureAwait(false);
+                return new Db(connection, options);
+            }
+            catch (Exception exception) when (
+                attempt < options.OpenRetries
+                && !ct.IsCancellationRequested
+                && exception is not OperationCanceledException
+                && options.Dialect.IsTransient(exception))
+            {
+                connection.Dispose();
+            }
+            catch
+            {
+                connection.Dispose();
+                throw;
+            }
+
+            await Task.Delay(options.OpenRetryDelay, ct).ConfigureAwait(false);
+        }
     }
+
+    /// <summary>
+    /// The one place the session creates a command (ADR-0047): on its connection,
+    /// with <see cref="DbOptions.CommandTimeout"/> applied when set. The caller
+    /// sets the transaction, as before.
+    /// </summary>
+    internal DbCommand NewCommand()
+    {
+        var command = _connection.CreateCommand();
+        if (_commandTimeoutSeconds is { } seconds)
+        {
+            command.CommandTimeout = seconds;
+        }
+
+        return command;
+    }
+
+#if NET
+    /// <summary>As <see cref="NewCommand"/>, for the one-message batch (ADR-0044).</summary>
+    internal DbBatch NewBatch()
+    {
+        var batch = _connection.CreateBatch();
+        if (_commandTimeoutSeconds is { } seconds)
+        {
+            batch.Timeout = seconds;
+        }
+
+        return batch;
+    }
+#endif
+
+    /// <summary>The command timeout in whole seconds, rounded up, at least 1; null leaves the driver's default.</summary>
+    internal static int? TimeoutSeconds(TimeSpan? timeout)
+        => timeout is { } value ? (int)Math.Max(1, Math.Min(int.MaxValue, Math.Ceiling(value.TotalSeconds))) : null;
 
     public Task<IReadOnlyList<TResult>> QueryAsync<TArgs, TResult>(
         Query<TArgs, TResult> query, TArgs args, CancellationToken ct)
@@ -202,7 +270,7 @@ public sealed partial class Db : IAsyncDisposable
     internal Task<IReadOnlyList<TEntity>> ExecuteAstAsync<TEntity>(SelectAst ast, CancellationToken ct)
         where TEntity : class
     {
-        var command = _connection.CreateCommand();
+        var command = NewCommand();
         command.Transaction = _transaction;
         try
         {
@@ -247,7 +315,7 @@ public sealed partial class Db : IAsyncDisposable
     private async Task<TEntity?> ReadByKeyAsync<TEntity>(EntityMap map, object?[] keyValues, CancellationToken ct)
         where TEntity : class
     {
-        using var command = _connection.CreateCommand();
+        using var command = NewCommand();
         command.Transaction = _transaction;
         var dialect = Options.Dialect;
         var predicates = new string[keyValues.Length];
@@ -464,7 +532,7 @@ public sealed partial class Db : IAsyncDisposable
             sql += " order by " + string.Join(", ", map.KeyProperties.Select(k => dialect.QuoteIdentifier(k.ColumnName)));
         }
 
-        var command = _connection.CreateCommand();
+        var command = NewCommand();
         command.Transaction = _transaction;
         command.CommandText = sql;
         return await MaterializeAsync<TEntity>(command, typeof(TEntity).Name + " select-all", ct, typeof(TEntity).Name + ".selectAll").ConfigureAwait(false);
@@ -571,7 +639,7 @@ public sealed partial class Db : IAsyncDisposable
             }
         }
 
-        var command = _connection.CreateCommand();
+        var command = NewCommand();
         try
         {
             command.CommandText = Options.Dialect.InsertSql(map);
@@ -750,7 +818,7 @@ public sealed partial class Db : IAsyncDisposable
         DbCommand command;
         try
         {
-            command = _connection.CreateCommand();
+            command = NewCommand();
             command.CommandText = sql;
             foreach (var property in bound)
             {
@@ -831,7 +899,7 @@ public sealed partial class Db : IAsyncDisposable
         }
 
         var checkVersion = byEntity && map.VersionProperty is not null;
-        var command = _connection.CreateCommand();
+        var command = NewCommand();
         object?[] key;
         try
         {
@@ -1008,7 +1076,7 @@ public sealed partial class Db : IAsyncDisposable
 
     private async Task ExecuteRawAsync(string name, string sql, CancellationToken ct)
     {
-        using var command = _connection.CreateCommand();
+        using var command = NewCommand();
         command.Transaction = _transaction;
         command.CommandText = sql;
         LogStatement(name, command);
@@ -1111,7 +1179,7 @@ public sealed partial class Db : IAsyncDisposable
             }
         }
 
-        var command = _connection.CreateCommand();
+        var command = NewCommand();
         command.Transaction = _transaction;
         ParameterBinder.Bind(
             command, map.DefiningSql!, args, StatementName<TResult>(), _converter,
@@ -1154,7 +1222,7 @@ public sealed partial class Db : IAsyncDisposable
 
     private DbCommand CreateCommand(SqlSource source, object args)
     {
-        var command = _connection.CreateCommand();
+        var command = NewCommand();
         command.Transaction = _transaction;
         ParameterBinder.Bind(
             command, source.Sql, args, source.Description, _converter,

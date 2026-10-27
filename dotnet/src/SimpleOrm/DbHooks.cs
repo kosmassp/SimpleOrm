@@ -108,7 +108,7 @@ public sealed partial class Db
         }
 
         var keyValues = ValidateKey(map, keyOrEntity);
-        var command = _connection.CreateCommand();
+        var command = NewCommand();
         try
         {
             command.CommandText = Options.Dialect.UpdateOnlySql(map, set);

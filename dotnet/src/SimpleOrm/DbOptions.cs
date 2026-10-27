@@ -55,6 +55,26 @@ public sealed class DbOptions
     /// them unless the application asks.
     /// </summary>
     public bool LogParameterValues { get; init; }
+
+    /// <summary>
+    /// The command timeout (Level 4 resilience, ADR-0047, spec/session.md
+    /// "Resilience"): null by default — every command keeps the driver's own
+    /// default. When set, every command (and batch) the session creates gets it
+    /// in whole seconds, rounded up, at least 1. A timeout that fires surfaces the
+    /// driver's exception as it is. The connection-open timeout is not this: it
+    /// lives in the connection string (<c>Connect Timeout</c>, <c>Timeout</c>).
+    /// </summary>
+    public TimeSpan? CommandTimeout { get; init; }
+
+    /// <summary>
+    /// How many more times <see cref="Db.OpenAsync"/> tries to open the connection
+    /// after a failure the dialect calls transient (<see cref="IDialect.IsTransient"/>);
+    /// 0 by default — one attempt. Only the open is retried, never a statement.
+    /// </summary>
+    public int OpenRetries { get; init; }
+
+    /// <summary>The fixed wait between two open attempts; 1 second by default. No backoff.</summary>
+    public TimeSpan OpenRetryDelay { get; init; } = TimeSpan.FromSeconds(1);
 }
 
 /// <summary>

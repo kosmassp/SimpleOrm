@@ -20,7 +20,8 @@ public sealed partial class Db
         where TEntity : class
     {
         var map = root.Map;
-        var queryName = typeof(TEntity).Name + " criteria";
+        var names = EntityNames.For(typeof(TEntity));
+        var queryName = names.Criteria;
 
         // Refusal precedence (spec/loading.md Clarifications, ADR-0033): REL-001
         // (the caller, before any mode), then REL-006/REL-005 — the request's
@@ -61,7 +62,7 @@ public sealed partial class Db
         var joined = new SelectAst(map, root.Where, root.Orderings, root.Limit, root.Offset, joins: joins);
         using var command = NewCommand();
         command.Transaction = _transaction;
-        var binder = new CommandParameterBinder(command, _converter, queryName);
+        var binder = new CommandParameterBinder(command, _converter, names);
         command.CommandText = Options.Dialect.SelectSql(joined, binder.Add);
 
         var results = new List<TEntity>();
@@ -75,7 +76,7 @@ public sealed partial class Db
         var attachments = plans.Select(p => new Attachment(p, dedupFanOut)).ToArray();
         var markUnloaded = UnloadedNavigations.MarkerFor(typeof(TEntity), Maps);
 
-        LogStatement(typeof(TEntity).Name + ".include", command);
+        LogStatement(names.Include, command);
         var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         try
         {

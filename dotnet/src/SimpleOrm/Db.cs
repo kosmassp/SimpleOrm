@@ -270,11 +270,12 @@ public sealed partial class Db : IAsyncDisposable
     internal Task<IReadOnlyList<TEntity>> ExecuteAstAsync<TEntity>(SelectAst ast, CancellationToken ct)
         where TEntity : class
     {
+        var names = EntityNames.For(typeof(TEntity));
         var command = NewCommand();
         command.Transaction = _transaction;
         try
         {
-            var binder = new CommandParameterBinder(command, _converter, typeof(TEntity).Name + " criteria");
+            var binder = new CommandParameterBinder(command, _converter, names);
             command.CommandText = Options.Dialect.SelectSql(ast, binder.Add);
         }
         catch
@@ -285,7 +286,7 @@ public sealed partial class Db : IAsyncDisposable
             throw;
         }
 
-        return MaterializeAsync<TEntity>(command, typeof(TEntity).Name + " criteria", ct, typeof(TEntity).Name + ".criteria");
+        return MaterializeAsync<TEntity>(command, names.Criteria, ct, names.CriteriaLog);
     }
 
     /// <summary>Read by key (ADR-0006): a missing row throws <c>CRUD-001</c>; composite keys pass a tuple.</summary>
@@ -318,21 +319,22 @@ public sealed partial class Db : IAsyncDisposable
         using var command = NewCommand();
         command.Transaction = _transaction;
         var read = Generated(map).Get;
+        var names = EntityNames.For(typeof(TEntity));
         for (var i = 0; i < keyValues.Length; i++)
         {
             var parameter = command.CreateParameter();
             parameter.ParameterName = read.ParameterNames[i];
-            parameter.Value = _converter.ToDatabase(keyValues[i], $"{typeof(TEntity).Name} key[{i}]");
+            parameter.Value = _converter.ToDatabase(keyValues[i], names.KeyLabel(i));
             command.Parameters.Add(parameter);
         }
 
         command.CommandText = read.Sql;
 
-        LogStatement(typeof(TEntity).Name + ".get", command);
+        LogStatement(names.GetLog, command);
         var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         try
         {
-            var plan = _mapper.CreatePlan<TEntity>(reader, typeof(TEntity).Name + " get");
+            var plan = _mapper.CreatePlan<TEntity>(reader, names.Get);
             var markUnloaded = UnloadedNavigations.MarkerFor(typeof(TEntity), Maps);
             TEntity? result = null;
             while (reader.Read())
@@ -522,7 +524,8 @@ public sealed partial class Db : IAsyncDisposable
         var command = NewCommand();
         command.Transaction = _transaction;
         command.CommandText = Generated(map).SelectAll;
-        return await MaterializeAsync<TEntity>(command, typeof(TEntity).Name + " select-all", ct, typeof(TEntity).Name + ".selectAll").ConfigureAwait(false);
+        var names = EntityNames.For(typeof(TEntity));
+        return await MaterializeAsync<TEntity>(command, names.SelectAll, ct, names.SelectAllLog).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -582,7 +585,7 @@ public sealed partial class Db : IAsyncDisposable
         var completed = false;
         return new PendingWrite(command, generated ? WriteResult.Scalar : WriteResult.None, entity, generatesKey: generated)
         {
-            Name = map.EntityType.Name + ".insert",
+            Name = EntityNames.For(map.EntityType).Insert,
             Key = SetKeyOf(map, entity),
             Complete = result =>
             {
@@ -595,7 +598,7 @@ public sealed partial class Db : IAsyncDisposable
 
                     var key = map.KeyProperties[0];
                     key.SetValue(entity, _converter.FromDatabase(
-                        result, key.ClrType, $"{map.EntityType.Name}.{key.PropertyName}"));
+                        result, key.ClrType, key.LabelFor(map.EntityType)));
                 }
 
                 completed = true;
@@ -824,7 +827,7 @@ public sealed partial class Db : IAsyncDisposable
         Action? undoSuccess = null;
         return new PendingWrite(command, AffectedResult, entity, generatesKey: false)
         {
-            Name = map.EntityType.Name + "." + operation,
+            Name = EntityNames.For(map.EntityType).WriteLog(operation),
             Key = SetKeyOf(map, entity),
             Complete = result =>
             {
@@ -910,11 +913,12 @@ public sealed partial class Db : IAsyncDisposable
             else
             {
                 var keyValues = ValidateKey(map, keyOrEntity);
+                var names = EntityNames.For(map.EntityType);
                 for (var i = 0; i < keyValues.Length; i++)
                 {
                     var parameter = command.CreateParameter();
-                    parameter.ParameterName = "@" + map.KeyProperties[i].ColumnName;
-                    parameter.Value = _converter.ToDatabase(keyValues[i], $"{map.EntityType.Name} key[{i}]");
+                    parameter.ParameterName = map.KeyProperties[i].ParameterName;
+                    parameter.Value = _converter.ToDatabase(keyValues[i], names.KeyLabel(i));
                     command.Parameters.Add(parameter);
                 }
 
@@ -931,7 +935,7 @@ public sealed partial class Db : IAsyncDisposable
         Action? undoForget = null;
         return new PendingWrite(command, AffectedResult, byEntity ? keyOrEntity : null, generatesKey: false)
         {
-            Name = map.EntityType.Name + ".delete",
+            Name = EntityNames.For(map.EntityType).Delete,
             Key = new EntityKey(map.EntityType, key),
             Complete = result =>
             {
@@ -1042,11 +1046,11 @@ public sealed partial class Db : IAsyncDisposable
     private void AddEntityParameter(DbCommand command, PropertyMap property, object entity)
     {
         var parameter = command.CreateParameter();
-        parameter.ParameterName = "@" + property.ColumnName;
+        parameter.ParameterName = property.ParameterName;
         _converter.BindValue(
             parameter,
             property.GetValue(entity),
-            $"{entity.GetType().Name}.{property.PropertyName}",
+            property.LabelFor(entity.GetType()),
             property.EnumAsInt,
             property.ClrType);
         command.Parameters.Add(parameter);

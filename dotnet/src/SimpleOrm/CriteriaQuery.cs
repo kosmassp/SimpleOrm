@@ -182,16 +182,17 @@ public sealed class CriteriaQuery<TEntity>
 /// (@c0…). The compared property's conversion rules apply — an enum against an
 /// <c>[EnumAsInt]</c> column binds as its number, not its name.
 /// </summary>
-internal sealed class CommandParameterBinder(DbCommand command, TypeConverter converter, string queryName)
+internal sealed class CommandParameterBinder(DbCommand command, TypeConverter converter, EntityNames names)
 {
     private int _next;
 
     public string Add(object? value, PropertyMap? property)
     {
-        var name = "@c" + _next++;
+        var index = _next++;
+        var name = CriteriaParameterNames.Of(index);
         var parameter = command.CreateParameter();
         parameter.ParameterName = name;
-        converter.BindValue(parameter, value, queryName + " " + name, property?.EnumAsInt ?? false, property?.ClrType ?? typeof(object));
+        converter.BindValue(parameter, value, names.CriteriaLabel(index), property?.EnumAsInt ?? false, property?.ClrType ?? typeof(object));
         command.Parameters.Add(parameter);
         return name;
     }

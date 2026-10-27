@@ -117,7 +117,7 @@ func (db *Db) prepareSoftDeleteEntity(entityType reflect.Type, m *core.EntityMap
 		_ = flag.Set(entity, priorFlag) // the value came from Get, so it always assigns back
 		return nil, err
 	}
-	write, err := db.countedWrite(entityType, entity, "delete", db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set))
+	write, err := db.countedWrite(entityType, m, entity, "delete", db.columnListWrite(m, set))
 	if err != nil {
 		_ = flag.Set(entity, priorFlag)
 		restoreStamp()
@@ -151,7 +151,7 @@ func (db *Db) prepareSoftDeleteByKey(entityType reflect.Type, m *core.EntityMap,
 	if err != nil {
 		return nil, err
 	}
-	write, err := db.countedWrite(entityType, scratch, "delete", db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set))
+	write, err := db.countedWrite(entityType, m, scratch, "delete", db.columnListWrite(m, set))
 	if err != nil {
 		return nil, err
 	}

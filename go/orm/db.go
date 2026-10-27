@@ -43,6 +43,10 @@ type Db struct {
 	// under core.CommandContext(ctx, timeout) — through exec(), the statement executor, or around a dialect's
 	// one-round-trip message (db_statements.go).
 	timeout time.Duration
+	// renders is the generated CRUD text per entity map (ADR-0048 item 1, generated_sql.go).
+	renders renderCache
+	// renderObserver is the step-script runners' test hook (core.RenderObserver): the dialect, when it implements it.
+	renderObserver core.RenderObserver
 }
 
 // Open opens the session against connectionString (§7.17): the dialect
@@ -98,6 +102,7 @@ func Open(ctx context.Context, connectionString string, options Options) (*Db, e
 		log:           core.NewStatementLog(options.Log, options.LogParameterValues),
 		timeout:       options.CommandTimeout,
 	}
+	db.renderObserver, _ = options.Dialect.(core.RenderObserver)
 	if db.maxStatements == 0 {
 		db.maxStatements = DefaultMaxStatementsPerMessage
 	}

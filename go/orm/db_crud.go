@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"strings"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
 )
@@ -94,26 +93,15 @@ func getByKey(ctx context.Context, db *Db, requested reflect.Type, shape resultS
 // fresh *E (never through the identity map), or an invalid Value when no row
 // matches; a key matching several rows is QRY-002.
 func readRowByKey(ctx context.Context, db *Db, m *core.EntityMap, entityType reflect.Type, keyValues []any) (reflect.Value, error) {
-	dialect := db.options.Dialect
-	predicates := make([]string, len(keyValues))
+	sqlText, names, _ := db.keyReadText(m)
 	args := make([]any, len(keyValues))
 	for i, value := range keyValues {
-		name := fmt.Sprintf("k%d", i)
-		predicates[i] = dialect.QuoteIdentifier(m.KeyProperties[i].ColumnName) + " = @" + name
 		converted, err := db.converter.ToParameter(value, "", fmt.Sprintf("%s key[%d]", entityType.Name(), i))
 		if err != nil {
 			return reflect.Value{}, err
 		}
-		args[i] = sql.Named(name, converted)
+		args[i] = sql.Named(names[i], converted)
 	}
-
-	columns := make([]string, len(m.Properties))
-	for i, p := range m.Properties {
-		columns[i] = dialect.QuoteIdentifier(p.ColumnName)
-	}
-	sqlText := "select " + strings.Join(columns, ", ") +
-		" from " + dialect.QuoteIdentifier(m.RelationName) +
-		" where " + strings.Join(predicates, " and ")
 
 	db.logStatement(db.logName(entityType, "get"), sqlText, args)
 	rows, err := db.exec().QueryContext(ctx, sqlText, args...)
@@ -316,19 +304,7 @@ func QueryAll[T any](ctx context.Context, db *Db) ([]T, error) {
 		return nil, err
 	}
 
-	dialect := db.options.Dialect
-	columns := make([]string, len(m.Properties))
-	for i, p := range m.Properties {
-		columns[i] = dialect.QuoteIdentifier(p.ColumnName)
-	}
-	sqlText := "select " + strings.Join(columns, ", ") + " from " + dialect.QuoteIdentifier(m.RelationName)
-	if len(m.KeyProperties) > 0 {
-		keyColumns := make([]string, len(m.KeyProperties))
-		for i, k := range m.KeyProperties {
-			keyColumns[i] = dialect.QuoteIdentifier(k.ColumnName)
-		}
-		sqlText += " order by " + strings.Join(keyColumns, ", ")
-	}
+	sqlText := db.selectAllText(m)
 
 	db.logStatement(db.logName(entityType, "selectAll"), sqlText, nil)
 	rows, err := db.exec().QueryContext(ctx, sqlText)
@@ -416,21 +392,20 @@ func (db *Db) prepareInsert(entityType reflect.Type, entity any) (*preparedWrite
 // insertStatement binds the row and shapes the insert statement: a database-generated key is the statement's result,
 // written back onto the entity when it completes.
 func (db *Db) insertStatement(entityType reflect.Type, m *core.EntityMap, entity any) (*preparedWrite, error) {
-	args := make([]any, 0, len(m.Properties))
-	for _, p := range m.Properties {
-		if p.IsGenerated {
-			continue
-		}
+	text, noRow := db.insertText(m)
+	args := make([]any, len(text.bound))
+	for i, p := range text.bound {
 		converted, err := db.converter.ToParameter(p.Get(entity), p.ColumnType, entityType.Name()+"."+p.PropertyName)
 		if err != nil {
 			return nil, err
 		}
-		args = append(args, sql.Named(p.ColumnName, converted))
+		args[i] = sql.Named(p.ColumnName, converted)
 	}
 
 	generated := m.KeyStrategy == core.KeyDatabaseGenerated
+	db.observeWrite("insert", m, false, nil)
 	write := &preparedWrite{
-		sql:          db.options.Dialect.InsertSQL(m),
+		sql:          text.sql,
 		name:         db.logName(entityType, "insert"),
 		args:         args,
 		kind:         core.ResultNone,
@@ -440,7 +415,7 @@ func (db *Db) insertStatement(entityType reflect.Type, m *core.EntityMap, entity
 	}
 	if generated {
 		write.kind = core.ResultKey
-		write.noRow = fmt.Sprintf("insert into %s: RETURNING produced no row", m.RelationName)
+		write.noRow = noRow
 	}
 	write.finish = func(result writeResult, journal *undoJournal) error {
 		if generated {
@@ -523,13 +498,9 @@ func (db *Db) prepareUpdate(entityType reflect.Type, entity any) (*preparedWrite
 
 	// Bind SET values, key values, and the current version for the WHERE;
 	// database-generated non-key columns are never written.
-	var bound []*core.PropertyMap
-	for _, p := range m.Properties {
-		if p.IsKey || p.IsVersion || !p.IsGenerated {
-			bound = append(bound, p)
-		}
-	}
-	write, err := db.countedWrite(entityType, entity, "update", db.options.Dialect.UpdateSQL(m), bound)
+	text := db.updateText(m)
+	db.observeWrite("update", m, true, nil)
+	write, err := db.countedWrite(entityType, m, entity, "update", text)
 	if err != nil {
 		restoreStamp()
 		return nil, err
@@ -572,7 +543,7 @@ func (db *Db) prepareTrackedUpdate(m *core.EntityMap, entry *trackedEntry, entit
 	if err != nil {
 		return nil, err
 	}
-	write, err := db.countedWrite(m.Type, entity, "update", db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set))
+	write, err := db.countedWrite(m.Type, m, entity, "update", db.columnListWrite(m, set))
 	if err != nil {
 		restoreStamp()
 		return nil, err
@@ -651,7 +622,7 @@ func (db *Db) prepareUpdateOnly(entityType reflect.Type, entity any, properties 
 	if err != nil {
 		return nil, err
 	}
-	write, err := db.countedWrite(entityType, entity, "updateOnly", db.options.Dialect.UpdateOnlySQL(m, set), updateOnlyBindings(m, set))
+	write, err := db.countedWrite(entityType, m, entity, "updateOnly", db.columnListWrite(m, set))
 	if err != nil {
 		restoreStamp()
 		return nil, err
@@ -732,16 +703,23 @@ func ownedNavigation(m *core.EntityMap, name string) *core.OwnedMap {
 // from entity) and shapes the statement's result the way the dialect judges it: the driver's affected-row count,
 // unless the dialect reports it by a select of the statement's own count (ReportsAffectedRowsBySelect, ADR-0040
 // add.3, spec/dialects.md Clarification 23). Registry commands never come through here — they keep the driver's count.
-func (db *Db) countedWrite(entityType reflect.Type, entity any, operation, sqlText string, bound []*core.PropertyMap) (*preparedWrite, error) {
-	args := make([]any, 0, len(bound))
-	for _, p := range bound {
+func (db *Db) countedWrite(entityType reflect.Type, m *core.EntityMap, entity any, operation string, text *boundText) (*preparedWrite, error) {
+	args := make([]any, len(text.bound))
+	for i, p := range text.bound {
 		converted, err := db.converter.ToParameter(p.Get(entity), p.ColumnType, entityType.Name()+"."+p.PropertyName)
 		if err != nil {
 			return nil, err
 		}
-		args = append(args, sql.Named(p.ColumnName, converted))
+		args[i] = sql.Named(p.ColumnName, converted)
 	}
-	return &preparedWrite{sql: sqlText, args: args, kind: db.countKind(), instance: entity, name: db.logName(entityType, operation)}, nil
+	return &preparedWrite{sql: text.sql, args: args, kind: db.countKind(), instance: entity, name: db.logName(entityType, operation)}, nil
+}
+
+// columnListWrite is the column-list UPDATE for set, cached (generated_sql.go), observed as the rendering it is.
+func (db *Db) columnListWrite(m *core.EntityMap, set []*core.PropertyMap) *boundText {
+	text := db.updateOnlyText(m, set)
+	db.observeWrite("update", m, false, set)
+	return text
 }
 
 // updateJudge is the update rule of §7.15–16 for a counted update: zero rows is CRUD-010 with a version column
@@ -826,8 +804,10 @@ func (db *Db) prepareDeleteByKey(entityType reflect.Type, key any) (*preparedWri
 		}
 		args[i] = sql.Named(m.KeyProperties[i].ColumnName, converted)
 	}
+	sqlText, _ := db.deleteByKeyText(m)
+	db.observeWrite("delete", m, false, nil)
 	return &preparedWrite{
-		sql:  db.options.Dialect.DeleteSQL(m, false),
+		sql:  sqlText,
 		name: db.logName(entityType, "delete"),
 		args: args,
 		kind: db.countKind(),
@@ -888,11 +868,9 @@ func (db *Db) prepareDeleteEntity(entityType reflect.Type, entity any) (*prepare
 	}
 	checkVersion := m.VersionProperty != nil
 
-	bound := append([]*core.PropertyMap{}, m.KeyProperties...)
-	if checkVersion {
-		bound = append(bound, m.VersionProperty)
-	}
-	write, err := db.countedWrite(entityType, entity, "delete", db.options.Dialect.DeleteSQL(m, checkVersion), bound)
+	text := db.deleteEntityText(m, checkVersion)
+	db.observeWrite("delete", m, false, nil)
+	write, err := db.countedWrite(entityType, m, entity, "delete", text)
 	if err != nil {
 		return nil, err
 	}

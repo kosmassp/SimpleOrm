@@ -4538,3 +4538,230 @@ skipped** each (the PHP port's 1173 + the precedence test). `go test -C go
 (the two cancellation tests added); `go vet ./...` and `gofmt -l .` clean.
 
 **Status.** Accepted (the owner's confirmation of the rulings pending).
+
+## ADR-0048 — The performance pass (2026-10-27)
+
+**Context.** The owner: "do the performance pass." The scope was fixed on
+2026-10-26 from measured hot paths, benchmarking SQLite and PostgreSQL against
+Dapper and a raw reader: the untracked insert path at 2.7× Dapper on SQLite,
+with the generated CRUD text re-rendered on every call; a parameterized 100-row
+page ~100 µs dearer than its literal form, the placeholder scan repeated per
+call; error labels concatenated at every bind site; the one-to-many graph at
+~2× Dapper's grouped two-query form on PostgreSQL (`Fetch(SubSelect)` 5.3 ms /
+1.8 MB vs 2.8 ms / 0.6 MB), boxed `object?[]` key tuples and a per-owner sort
+that SQLite's text ordering of decimals needs and an integer key does not;
+join-mode segment readers paying the same tuples per row; the mapping-plan
+cache keyed by a joined string per call; the unit of work's Tarjan ranks
+recomputed every flush. Seven items in that order; the Npgsql async
+small-result cost and row mapping (already at the raw-reader floor) were agreed
+not worth chasing. Method per item: measure the benchmark classes that cover
+the path, change, run the full suite, measure again, keep a change only if the
+numbers show it helps without a regression elsewhere. A fresh baseline was
+taken on the branch first (the machine differs from 2026-10-26's: today's
+`Fetch(SubSelect)` on PostgreSQL measured 4.55 ms / 1.83 MB against Dapper's
+2.82 ms / 0.63 MB). All numbers below are BenchmarkDotNet ShortRun on
+`net10.0`, this machine, PostgreSQL 16.4 on loopback; ShortRun's error bars
+are wide (often ±10–30% on time), so allocation is the steadier signal and a
+time change under ~10% is noise.
+
+**Decision.** Six of the seven items kept; no SQL text changed, every
+conformance pin and statement-log line byte-identical, the same errors in the
+same order.
+
+1. **The generated CRUD text, cached per (map, dialect)** — `GeneratedSql`: the
+   INSERT, the full-row UPDATE, both DELETE forms, the key read, the select-all,
+   and each column-list UPDATE by its ordered column set (at most 256 sets per
+   map; beyond that, rendered uncached), with the property lists they bind.
+   Keyed by the `EntityMap` instance (`ConditionalWeakTable`) and then the
+   `IDialect` instance by reference. The dialect is now asked once per text, so
+   the step-script runner's seam — which recorded the dialect's write
+   renderings — observes them through a session test hook
+   (`Db.RenderObserver`, never public API); spec/session.md "The seam" says an
+   implementation that caches gives its runner such a hook, and what is
+   recorded is unchanged.
+
+   | Benchmark | Before | After |
+   |---|---|---|
+   | Tracking `Untracked_Insert100_Transaction` | 1308 µs / 368 KB | 1287 µs / 276 KB |
+   | Tracking `Untracked_GetAndUpdate` | 36.4 µs / 6.43 KB | 35.5 µs / 5.05 KB |
+   | Tracking `Tracked_Persist100_Flush` | 3412 µs / 633 KB | 3173 µs / 540 KB |
+   | Query `SimpleOrm_GetAsync` (SQLite) | 85.8 µs / 3.13 KB | 84.8 µs / 2.59 KB |
+   | Batch `Batch100_Inserts` SQLite `Auto` | 821 µs / 420 KB | 680 µs / 326 KB |
+   | Batch `Batch100_Inserts` PostgreSQL `Auto` | 4915 µs / 487 KB | 4435 µs / 363 KB |
+
+   The rendering was mostly an allocation cost; the insert path's remaining
+   gap to Dapper (now ~2.2×) is elsewhere — the prepared-write closures,
+   reflection `GetValue`/`SetValue`, the navigation and identity checks, one
+   `ExecuteScalarAsync` per row — and outside this pass's scope.
+
+2. **The placeholder scan and the binding plan, cached per SQL text** —
+   `ParameterBinder` keeps, per SQL string instance (`ConditionalWeakTable`; the
+   registry entry's resolved text and a statement entity's defining SQL are the
+   same instance every call, and the scan is a pure function of the text), the
+   placeholders, and per args type the reflected properties, the `PRM-001`
+   verdict, each property's placeholder (null = `PRM-002`, still thrown in
+   property order while binding, so an earlier property's conversion error
+   still wins), its parameter name, its occurrences for IN-list expansion (a
+   second expanded list rescans the moved text, as before), and its label.
+
+   | Benchmark | Before | After |
+   |---|---|---|
+   | Query `SimpleOrm_QuerySingle` (SQLite) | 84.4 µs / 4.20 KB | 89.8 µs (noise) / 2.46 KB |
+   | Loading `SimpleOrm_RegistryQuery100` (SQLite) | 139.9 µs / 7.81 KB | 140.3 µs / 5.96 KB |
+   | Postgres `SimpleOrm_QuerySingle` | 202.6 µs / 4507 B | 169.1 µs / 2747 B |
+   | Batch `Batch100_Commands` SQLite `Off` | 861 µs / 406 KB | 649 µs / 150 KB |
+   | Batch `Batch100_Commands` SQLite `Auto` | 368 µs / 406 KB | 231 µs / 153 KB |
+   | Batch `Batch100_Commands` PostgreSQL `Auto` | 5354 µs / 482 KB | 4967 µs / 230 KB |
+
+3. **Bind labels and per-entity names, built once** — `PropertyMap` keeps its
+   parameter name (`@column`), its declaring-class label, and its entity-type
+   label (for the type last asked — the map's own in practice); `EntityNames`
+   keeps, per `Type` (`ConditionalWeakTable`), the plan and log names
+   (`X criteria`, `X.get`, `X.insert`, …), the key-part labels (`X key[i]`), and
+   the criteria parameter labels (`X criteria @cN`); the `@cN` names are one
+   static table. Every string is the one the call sites concatenated before.
+
+   | Benchmark | Before | After |
+   |---|---|---|
+   | Tracking `Untracked_Insert100_Transaction` | 1287 µs / 276 KB | 1173 µs / 237 KB |
+   | Tracking `Untracked_GetAndUpdate` | 35.5 µs / 5.05 KB | 35.8 µs / 4.52 KB |
+   | Query `SimpleOrm_GetAsync` (SQLite) | 84.6 µs / 2.59 KB | 81.8 µs / 2.45 KB |
+   | Loading `SimpleOrm_Criteria100` | 149 µs / 8.73 KB | 153 µs / 8.38 KB |
+   | Loading `SimpleOrm_Include_MultiQuery` (500-key chunks) | 8470 µs / 2163 KB | 7742 µs / 2048 KB |
+   | Batch `Batch100_Inserts` PostgreSQL `Auto` | 4435 µs / 363 KB | 4437 µs / 325 KB |
+
+4. **Graph loading: a typed integer-key path, and no sort where the engine
+   already orders by value** — one-to-many/one-to-one loading with a
+   single-part key and a foreign key of one integer CLR type (byte, short, int,
+   long) groups by `long` instead of boxed tuples (the same equality: the two
+   parts share one CLR type, so `object.Equals` on the boxed values and `long`
+   equality agree), and builds no owner key list in SubSelect mode, where the
+   subquery replaces it. The per-owner sort of rows that arrive `ORDER BY`
+   target key is skipped when `GeneratedSql.KeyOrderIsValueOrder` holds: **every
+   key part is an integer or decimal CLR type and the dialect's `StorageType`
+   for it is an integer or exact numeric type** (`integer`, `bigint`, `int`,
+   `smallint`, `tinyint`, `numeric`, `decimal`, sized or not) — then
+   `ORDER BY` compares numbers exactly as the value comparison does and the
+   sort is the identity. SQLite's `TEXT` decimal keeps the sort (`'10'` before
+   `'2'`); strings (collations are not ordinal), GUIDs, temporals, booleans,
+   enums, and byte arrays always sort. spec/loading.md's rule — value order
+   after fetching — is unchanged; this only omits a sort that cannot move
+   anything. Every remaining sort (the fallback path, many-to-many, join mode)
+   reads each row's key once instead of twice per comparison — the same
+   comparisons over the same sequence, so the same permutation.
+   `PerformanceCacheTests` pins the rule per dialect and the rendering cache.
+
+   | Benchmark | Before | After |
+   |---|---|---|
+   | Loading `SimpleOrm_Include_SubSelect` (SQLite) | 5021 µs / 1782 KB | 3830 µs / 902 KB |
+   | Loading `SimpleOrm_Include_MultiQuery` (SQLite) | 7742 µs / 2048 KB | 7013 µs / 1215 KB |
+   | Loading `SimpleOrm_LoadEach` (SQLite) | 7586 µs / 2048 KB | 7153 µs / 1216 KB |
+   | Postgres `SimpleOrm_Include_SubSelect` | 4487 µs / 1784 KB | 4017 µs / 904 KB |
+   | Postgres `SimpleOrm_Include_MultiQuery` | 6308 µs / 2231 KB | 5413 µs / 1284 KB |
+
+5. **Join mode without per-row boxed tuples** — roots and children key by a
+   `JoinKey`: a single integer key part read from the row as a `long` (the
+   segment column at the key's ordinal, named as the key column, an integer
+   provider field), any other key the boxed tuple under the same structural
+   comparison. A root repeated once per child row, and a child repeated across
+   rows, is recognized before it is materialized again (the discarded
+   re-materialization was the bulk of the cost); the fan-out seen-sets exist
+   only when used. Same instances, same collections, same order, same errors.
+
+   | Benchmark | Before | After |
+   |---|---|---|
+   | Loading `SimpleOrm_Include_Join` (SQLite) | 6538 µs / 2231 KB | 5024 µs / 1389 KB |
+   | Postgres `SimpleOrm_Include_Join` | 6296 µs / 2193 KB | 4624 µs / 1351 KB |
+
+6. **A structural plan-cache key** — `ResultMapper` keys plans by result type,
+   then by the column names (ordinal) and provider field types (by identity)
+   each was built for, compared against the reader directly: a hit allocates
+   nothing, where every call joined a string from the names and type names.
+   Stricter only in that two types sharing a `FullName` can no longer share a
+   plan.
+
+   | Benchmark | Before | After |
+   |---|---|---|
+   | Query `SimpleOrm_GetAsync` (SQLite) | 81.8 µs / 2.45 KB | 81.4 µs / 1.82 KB |
+   | Query `SimpleOrm_QuerySingle` (SQLite) | 82.9 µs / 2.46 KB | 80.8 µs / 1.84 KB |
+   | Loading `SimpleOrm_RegistryQuery100` | 139 µs / 5.96 KB | 136 µs / 5.34 KB |
+   | Loading `SimpleOrm_Criteria100` | 149 µs / 8.38 KB | 143 µs / 7.75 KB |
+   | Postgres `SimpleOrm_QuerySingle` | 166.5 µs / 2757 B | 142.1 µs / 2114 B |
+
+7. **Declined: caching the Tarjan type ranks per type set.** Built (a
+   per-session cache keyed by the set of starting types — a rank is a depth in
+   the component graph, so order-independent) and measured against the same
+   commit without it:
+
+   | Benchmark | Before | After |
+   |---|---|---|
+   | Tracking `Tracked_Persist100_Flush` | 2013 µs / 514.2 KB | 2255 µs / 513.9 KB |
+   | Tracking `Tracked_Flush_NothingToDo_1000Tracked` | 965 µs / 259.4 KB | 1044 µs / 255.2 KB |
+   | Batch `Persist100_Flush` SQLite `Off` | 2104 µs / 514.0 KB | 2039 µs / 513.9 KB |
+
+   Over the one or two types a flush involves the ranks cost ~0.3 KB, and ~4 KB
+   on the 1000-instance sweep (1.6%), against the dirty sweep's ~250 KB; the
+   time moved within noise both ways. Not worth per-session state; the code is
+   left as it was.
+
+**Before and after, the whole pass** (the branch's baseline against the final
+run, same machine, same day):
+
+| Path | Before | After | Dapper |
+|---|---|---|---|
+| SQLite 1000 rows → entities | 879 µs / 175 KB | 956 µs (noise) / 174 KB | 1023 µs / 220 KB |
+| SQLite `GetAsync` | 85.8 µs / 3.13 KB | 88.8 µs (noise) / 1.82 KB | 84.2 µs / 1.73 KB |
+| SQLite registry page, 100 rows | 139.9 µs / 7.81 KB | 136.0 µs / 5.34 KB | 141.0 µs / 6.40 KB |
+| SQLite 100 inserts, one transaction | 1308 µs / 368 KB | 1179 µs / 237 KB | 545 µs / 192 KB |
+| SQLite `Fetch(SubSelect)` | 4415 µs / 1783 KB | 3796 µs / 901 KB | 3944 µs / 1147 KB (multi-mapped join) |
+| SQLite `Fetch(Join)` | 7267 µs / 2231 KB | 4976 µs / 1388 KB | |
+| SQLite `Fetch(MultiQuery)` | 8470 µs / 2163 KB | 6715 µs / 1214 KB | 16974 µs / 1123 KB (one 1000-key `IN`) |
+| PostgreSQL `GetAsync` | 152.0 µs / 3836 B | 141.2 µs / 2170 B | 131.6 µs / 816 B |
+| PostgreSQL criteria page, 100 rows | 276.4 µs / 9709 B | 264.9 µs / 8718 B | 230.6 µs / 5617 B |
+| PostgreSQL `Fetch(SubSelect)` | 4549 µs / 1784 KB | 3878 µs / 902 KB | 2751 µs / 615 KB (two queries, grouped) |
+| PostgreSQL `Fetch(Join)` | 6009 µs / 2193 KB | 4575 µs / 1350 KB | |
+
+(KB is BenchmarkDotNet's: 1024 bytes; the PostgreSQL class reports bytes, converted.)
+
+**Consequences.**
+
+- **The caches and their keys.** `GeneratedSql`: `ConditionalWeakTable` on the
+  `EntityMap` instance, then the dialect instance by reference; the dialect's
+  CRUD renderings are taken as pure functions of their arguments (the seam's
+  existing contract — a dialect that rendered differently per call would see
+  its first rendering reused). `ParameterBinder`: `ConditionalWeakTable` on the
+  SQL string instance, then the args `Type`. `EntityNames`:
+  `ConditionalWeakTable` on the `Type`. `PropertyMap`: lazy per-instance fields.
+  `ResultMapper`: its existing per-session dictionary, now by result type and a
+  structural shape. Every cache is safe across threads (copy-on-write arrays,
+  locks, or benign racing writes of pure values), none takes a string key that
+  could collide across models, and none outlives what it is keyed by. Maps are
+  still per session (`Db` creates its `EntityMapLoader`), so a session opened
+  per call renders once per session; the cache is keyed so that sharing maps
+  across sessions later would pay without a change here.
+- **The test seam.** The step-script runner records write renderings through
+  `Db.RenderObserver` instead of a wrapping dialect; spec/session.md "The seam"
+  allows it. A port that caches its renderings needs the same move.
+- **For a porter.** Every kept item names a hot path that exists in both ports
+  (the brief's state says where); whether to port it is open. The key-order
+  rule (item 4) is the one piece with spec weight, and it is an implementation
+  latitude, not a rule change: the spec's order is value order, and a port may
+  omit a sort that cannot move anything by the same storage-type test.
+- **Still behind Dapper**, by measurement: the untracked insert (~2.2×: the
+  write-preparation machinery, not the SQL text), the PostgreSQL one-to-many
+  graph (1.4× time, 1.5× allocation: attached, identity-resolved collections —
+  the reflection-invoked typed query per navigation, a typed list per owner,
+  `PropertyInfo.SetValue` per owner), and small PostgreSQL results (the Npgsql
+  async cost, agreed not worth chasing).
+
+**Verification.** `cd dotnet && dotnet build SimpleOrm.sln` (both TFMs,
+0 warnings) and `dotnet test SimpleOrm.sln` after every item, PostgreSQL 16.4
+live, SQL Server skip-gated: **586 passed / 22 skipped** (584 + the two
+`PerformanceCacheTests`); every conformance runner unchanged and green, so the
+SQL, the statement-log lines, the errors, and the loaded graphs are
+byte-identical. Benchmarks: `cd dotnet/benchmarks/SimpleOrm.Benchmarks &&
+dotnet run -c Release -- --filter "QueryBenchmarks.*"` (and `LoadingBenchmarks.*`,
+`TrackingBenchmarks.*`, `BatchBenchmarks.*`, `PostgresQueryBenchmarks.*`), one
+class at a time, nothing else building. C# only; PHP and Go unchanged.
+
+**Status.** Accepted.

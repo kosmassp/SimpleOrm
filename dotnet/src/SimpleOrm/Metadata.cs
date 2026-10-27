@@ -343,6 +343,37 @@ public sealed class PropertyMap
 
     /// <summary>Entity type this FK column references (<c>[ForeignKey]</c>), if declared.</summary>
     public Type? ForeignKeyReferences { get; }
+
+    // The binding names and labels the session asks for on every write, built
+    // once per property (ADR-0048) — exactly the strings the bind sites built.
+    private string? _parameterName;
+    private string? _declaringLabel;
+    private EntityLabel? _entityLabel;
+
+    /// <summary>The generated CRUD parameter name, <c>@column</c>.</summary>
+    internal string ParameterName => _parameterName ??= "@" + ColumnName;
+
+    /// <summary>The converter's label naming the declaring class: <c>{DeclaringType}.{PropertyName}</c>.</summary>
+    internal string DeclaringLabel => _declaringLabel ??= $"{Property.DeclaringType!.Name}.{PropertyName}";
+
+    /// <summary>The converter's label naming an entity type: <c>{entityType}.{PropertyName}</c>; kept for the type last asked (the map's own, in practice).</summary>
+    internal string LabelFor(Type entityType)
+    {
+        var label = _entityLabel;
+        if (label is null || label.Type != entityType)
+        {
+            _entityLabel = label = new EntityLabel(entityType, $"{entityType.Name}.{PropertyName}");
+        }
+
+        return label.Text;
+    }
+
+    private sealed class EntityLabel(Type type, string text)
+    {
+        public Type Type { get; } = type;
+
+        public string Text { get; } = text;
+    }
 }
 
 /// <summary>

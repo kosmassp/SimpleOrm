@@ -89,7 +89,7 @@ public sealed partial class Db
             try
             {
                 return PrepareUpdateStatement(
-                    map, keyOrEntity, "delete", Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set),
+                    map, keyOrEntity, "delete", UpdateOnlyText(map, set), BoundForUpdate(map, set),
                     () => Forget(map, map.GetKeyValues(keyOrEntity)),
                     restore: () => flag.SetValue(keyOrEntity, flagBefore));
             }
@@ -111,7 +111,7 @@ public sealed partial class Db
         var command = NewCommand();
         try
         {
-            command.CommandText = Options.Dialect.UpdateOnlySql(map, set);
+            command.CommandText = UpdateOnlyText(map, set);
             AddParameter(command, flag, true);
             if (map.UpdatedAtProperty is { } updated)
             {
@@ -133,7 +133,7 @@ public sealed partial class Db
         Action? undoForget = null;
         return new PendingWrite(command, AffectedResult, null, generatesKey: false)
         {
-            Name = map.EntityType.Name + ".delete",
+            Name = EntityNames.For(map.EntityType).Delete,
             Key = new EntityKey(map.EntityType, keyValues),
             Complete = result =>
             {
@@ -153,8 +153,8 @@ public sealed partial class Db
     private void AddParameter(DbCommand command, PropertyMap property, object? value)
     {
         var parameter = command.CreateParameter();
-        parameter.ParameterName = "@" + property.ColumnName;
-        _converter.BindValue(parameter, value, $"{property.Property.DeclaringType!.Name}.{property.PropertyName}", property.EnumAsInt, property.ClrType);
+        parameter.ParameterName = property.ParameterName;
+        _converter.BindValue(parameter, value, property.DeclaringLabel, property.EnumAsInt, property.ClrType);
         command.Parameters.Add(parameter);
     }
 }

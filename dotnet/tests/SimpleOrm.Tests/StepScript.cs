@@ -34,6 +34,7 @@ internal sealed class StepScript
         this.dialect = dialect;
         this.databasePath = databasePath;
         db.MessageObserver = _messages.Add;   // the plan's message boundary (ADR-0044)
+        db.RenderObserver = dialect.Record;   // the write renderings the session takes, cached or not (ADR-0048)
     }
 
     public static string ConformanceDirectory()
@@ -512,34 +513,34 @@ internal sealed record SetDisplayNameArgs(long Id, string? DisplayName);
 /// <summary>One statement the session asked the dialect to render: the op, the entity, and for updates the property list (or <c>all</c>).</summary>
 internal sealed record Statement(string Op, string Entity, string[]? Columns);
 
-/// <summary>Records every generated statement the dialect is asked to render — the seam where every implementation renders SQL.</summary>
+/// <summary>
+/// Records every generated write rendering the session takes — the seam where
+/// every implementation renders SQL. The reference caches its renderings per map
+/// and dialect (ADR-0048), so the dialect is asked once per text; the session's
+/// <c>RenderObserver</c> hook reports each one it takes instead, cached or not,
+/// in the shape the dialect wrapper recorded before.
+/// </summary>
 internal sealed class RecordingDialect(IDialect inner) : IDialect
 {
     public List<Statement> Statements { get; } = [];
 
-    public string InsertSql(EntityMap map)
-    {
-        Statements.Add(new Statement("insert", map.EntityType.Name, null));
-        return inner.InsertSql(map);
-    }
+    /// <summary>The session's report of one write rendering (<c>Db.RenderObserver</c>).</summary>
+    public void Record(GeneratedWrite kind, EntityMap map, IReadOnlyList<PropertyMap>? set)
+        => Statements.Add(kind switch
+        {
+            GeneratedWrite.Insert => new Statement("insert", map.EntityType.Name, null),
+            GeneratedWrite.Update => new Statement("update", map.EntityType.Name, ["all"]),
+            GeneratedWrite.UpdateOnly => new Statement("update", map.EntityType.Name, set!.Select(p => p.PropertyName).ToArray()),
+            _ => new Statement("delete", map.EntityType.Name, null),
+        });
 
-    public string UpdateSql(EntityMap map)
-    {
-        Statements.Add(new Statement("update", map.EntityType.Name, ["all"]));
-        return inner.UpdateSql(map);
-    }
+    public string InsertSql(EntityMap map) => inner.InsertSql(map);
 
-    public string UpdateOnlySql(EntityMap map, IReadOnlyList<PropertyMap> properties)
-    {
-        Statements.Add(new Statement("update", map.EntityType.Name, properties.Select(p => p.PropertyName).ToArray()));
-        return inner.UpdateOnlySql(map, properties);
-    }
+    public string UpdateSql(EntityMap map) => inner.UpdateSql(map);
 
-    public string DeleteSql(EntityMap map, bool checkVersion)
-    {
-        Statements.Add(new Statement("delete", map.EntityType.Name, null));
-        return inner.DeleteSql(map, checkVersion);
-    }
+    public string UpdateOnlySql(EntityMap map, IReadOnlyList<PropertyMap> properties) => inner.UpdateOnlySql(map, properties);
+
+    public string DeleteSql(EntityMap map, bool checkVersion) => inner.DeleteSql(map, checkVersion);
 
     public DbConnection CreateConnection(string connectionString) => inner.CreateConnection(connectionString);
     public string QuoteIdentifier(string identifier) => inner.QuoteIdentifier(identifier);

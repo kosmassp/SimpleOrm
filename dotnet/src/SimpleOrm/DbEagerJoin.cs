@@ -20,7 +20,8 @@ public sealed partial class Db
         where TEntity : class
     {
         var map = root.Map;
-        var queryName = typeof(TEntity).Name + " criteria";
+        var names = EntityNames.For(typeof(TEntity));
+        var queryName = names.Criteria;
 
         // Refusal precedence (spec/loading.md Clarifications, ADR-0033): REL-001
         // (the caller, before any mode), then REL-006/REL-005 — the request's
@@ -61,11 +62,11 @@ public sealed partial class Db
         var joined = new SelectAst(map, root.Where, root.Orderings, root.Limit, root.Offset, joins: joins);
         using var command = NewCommand();
         command.Transaction = _transaction;
-        var binder = new CommandParameterBinder(command, _converter, queryName);
+        var binder = new CommandParameterBinder(command, _converter, names);
         command.CommandText = Options.Dialect.SelectSql(joined, binder.Add);
 
         var results = new List<TEntity>();
-        var rootsByKey = new Dictionary<object?[], TEntity>(KeyTupleComparer.Instance);
+        var rootsByKey = new Dictionary<JoinKey, TEntity>();
         // With a single projected navigation the join cannot fan out, so raw
         // per-root row counting applies — REL-002 and duplicate collection rows
         // behave exactly as in the other modes. With several, identity-dedup
@@ -75,12 +76,15 @@ public sealed partial class Db
         var attachments = plans.Select(p => new Attachment(p, dedupFanOut)).ToArray();
         var markUnloaded = UnloadedNavigations.MarkerFor(typeof(TEntity), Maps);
 
-        LogStatement(typeof(TEntity).Name + ".include", command);
+        LogStatement(names.Include, command);
         var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         try
         {
             var rootSegment = new SegmentReader(reader, 0, map.Properties.Count, "t_");
             var rootPlan = _mapper.CreatePlan<TEntity>(rootSegment, queryName);
+            var rootKeys = JoinKeyReader.For(
+                map, rootSegment,
+                map.KeyProperties.Select(k => IndexOf(map.Properties, k)).ToArray());
             var cursor = map.Properties.Count;
             foreach (var attachment in attachments)
             {
@@ -90,9 +94,11 @@ public sealed partial class Db
                     reader, cursor, targetMap.Properties.Count, attachment.Plan.TargetAlias + "_");
                 attachment.MaterializeChild = ChildPlan(target, attachment.Segment, queryName);
                 attachment.KeyOrdinals = targetMap.KeyProperties
-                    .Select(k => targetMap.Properties.ToList().FindIndex(p => ReferenceEquals(p, k)))
+                    .Select(k => IndexOf(targetMap.Properties, k))
                     .ToArray();
                 attachment.TargetMap = targetMap;
+                attachment.ChildKeys = JoinKeyReader.For(targetMap, attachment.Segment, attachment.KeyOrdinals);
+                attachment.RootKeys = rootKeys;
                 // Children guard their own unloaded collections (REL-004) exactly
                 // like every other materialized entity.
                 attachment.MarkChildUnloaded = UnloadedNavigations.MarkerFor(target, Maps);
@@ -103,18 +109,42 @@ public sealed partial class Db
             var row = 0;
             while (reader.Read())
             {
-                var rootEntity = rootPlan(rootSegment);
-                var rootKey = map.GetKeyValues(rootEntity);
-                if (rootsByKey.TryGetValue(rootKey, out var existing))
+                // A root repeats once per child row: with an integer key read from
+                // the row (ADR-0048), a repeat is recognized before it is
+                // materialized again; otherwise the materialized key decides.
+                TEntity rootEntity;
+                JoinKey rootKey;
+                if (rootKeys.ReadsRow(rootSegment))
                 {
-                    rootEntity = existing;
+                    rootKey = rootKeys.FromRow(rootSegment);
+                    if (rootsByKey.TryGetValue(rootKey, out var known))
+                    {
+                        rootEntity = known;
+                    }
+                    else
+                    {
+                        rootEntity = rootPlan(rootSegment);
+                        markUnloaded?.Invoke(rootEntity);
+                        rootEntity = (TEntity)Track(map, rootEntity);
+                        rootsByKey[rootKey] = rootEntity;
+                        results.Add(rootEntity);
+                    }
                 }
                 else
                 {
-                    markUnloaded?.Invoke(rootEntity);
-                    rootEntity = (TEntity)Track(map, rootEntity);
-                    rootsByKey[rootKey] = rootEntity;
-                    results.Add(rootEntity);
+                    rootEntity = rootPlan(rootSegment);
+                    rootKey = rootKeys.FromEntity(rootEntity);
+                    if (rootsByKey.TryGetValue(rootKey, out var existing))
+                    {
+                        rootEntity = existing;
+                    }
+                    else
+                    {
+                        markUnloaded?.Invoke(rootEntity);
+                        rootEntity = (TEntity)Track(map, rootEntity);
+                        rootsByKey[rootKey] = rootEntity;
+                        results.Add(rootEntity);
+                    }
                 }
 
                 foreach (var attachment in attachments)
@@ -268,54 +298,92 @@ public sealed partial class Db
         /// <summary>The session's identity map for the child type (Level 3 M1), or null when untracked.</summary>
         public Func<object, object>? TrackChild;
 
-        private readonly Dictionary<object?[], object> _children = new(KeyTupleComparer.Instance);
-        private readonly Dictionary<object?[], List<object>> _byRoot = new(KeyTupleComparer.Instance);
-        private readonly Dictionary<object?[], HashSet<object?[]>> _seenByRoot = new(KeyTupleComparer.Instance);
+        /// <summary>How the child's identity key is read (ADR-0048): from the row for a single integer key, else from the materialized child.</summary>
+        public JoinKeyReader ChildKeys = null!;
 
-        public void Absorb(object rootEntity, object?[] rootKey)
+        /// <summary>The root's key reader, for <see cref="Finish{TEntity}"/>'s lookups by root instance.</summary>
+        public JoinKeyReader RootKeys = null!;
+
+        private readonly Dictionary<JoinKey, object> _children = new();
+        private readonly Dictionary<JoinKey, List<object>> _byRoot = new();
+        private readonly Dictionary<JoinKey, HashSet<JoinKey>> _seenByRoot = new();   // only with fan-out deduplication
+
+        public void Absorb(object rootEntity, JoinKey rootKey)
         {
             // LEFT JOIN: an absent child is all-NULL key columns in the segment.
-            if (KeyOrdinals.Any(Segment.IsDBNull))
+            var absent = false;
+            foreach (var ordinal in KeyOrdinals)
+            {
+                if (Segment.IsDBNull(ordinal))
+                {
+                    absent = true;
+                    break;
+                }
+            }
+
+            if (absent)
             {
                 if (!_byRoot.ContainsKey(rootKey))
                 {
                     _byRoot[rootKey] = [];
-                    _seenByRoot[rootKey] = new HashSet<object?[]>(KeyTupleComparer.Instance);
                 }
 
                 return;
             }
 
-            var child = MaterializeChild(Segment);
-            var childKey = TargetMap.GetKeyValues(child);
-            if (_children.TryGetValue(childKey, out var existing))
+            // A child repeated across rows (a to-one target, a fan-out) is the
+            // shared instance per identity (§7.4); with an integer key read from
+            // the row, a repeat is recognized before it is materialized again.
+            object child;
+            JoinKey childKey;
+            if (ChildKeys.ReadsRow(Segment))
             {
-                child = existing;   // shared instance per identity (§7.4)
+                childKey = ChildKeys.FromRow(Segment);
+                child = _children.TryGetValue(childKey, out var known) ? known : Adopt(MaterializeChild(Segment), childKey);
             }
             else
             {
-                MarkChildUnloaded?.Invoke(child);
-                if (TrackChild is not null)
-                {
-                    child = TrackChild(child);
-                }
-
-                _children[childKey] = child;
+                child = MaterializeChild(Segment);
+                childKey = ChildKeys.FromEntity(child);
+                child = _children.TryGetValue(childKey, out var existing) ? existing : Adopt(child, childKey);
             }
 
             if (!_byRoot.TryGetValue(rootKey, out var list))
             {
                 _byRoot[rootKey] = list = [];
-                _seenByRoot[rootKey] = new HashSet<object?[]>(KeyTupleComparer.Instance);
             }
 
             // With one navigation the join cannot fan out: every row is a real
             // source row, so raw counting keeps duplicate-key rows and lets
             // REL-002 fire exactly as in the other modes.
-            if (!dedupFanOut || _seenByRoot[rootKey].Add(childKey))
+            if (!dedupFanOut)
+            {
+                list.Add(child);
+                return;
+            }
+
+            if (!_seenByRoot.TryGetValue(rootKey, out var seen))
+            {
+                _seenByRoot[rootKey] = seen = [];
+            }
+
+            if (seen.Add(childKey))
             {
                 list.Add(child);
             }
+        }
+
+        /// <summary>A child seen for the first time: guarded, tracked, remembered.</summary>
+        private object Adopt(object child, JoinKey childKey)
+        {
+            MarkChildUnloaded?.Invoke(child);
+            if (TrackChild is not null)
+            {
+                child = TrackChild(child);
+            }
+
+            _children[childKey] = child;
+            return child;
         }
 
         public void Finish<TEntity>(IReadOnlyList<TEntity> roots, EntityMap map)
@@ -324,7 +392,7 @@ public sealed partial class Db
             var navigation = map.EntityType.GetProperty(Plan.Relationship.PropertyName)!;
             foreach (var root in roots)
             {
-                _byRoot.TryGetValue(map.GetKeyValues(root), out var children);
+                _byRoot.TryGetValue(RootKeys.FromEntity(root), out var children);
                 children ??= [];
                 switch (Plan.Relationship.Kind)
                 {
@@ -340,12 +408,125 @@ public sealed partial class Db
                         navigation.SetValue(root, children.Count > 0 ? children[0] : null);
                         break;
                     default:
-                        children.Sort((left, right) => CompareKeyTuples(
-                            TargetMap.GetKeyValues(left), TargetMap.GetKeyValues(right)));
+                        // Always: the join orders roots, not each root's children.
+                        SortByKey(children, TargetMap);
                         navigation.SetValue(root, TypedList(Plan.Relationship.TargetType, children));
                         break;
                 }
             }
+        }
+    }
+
+    private static int IndexOf(IReadOnlyList<PropertyMap> properties, PropertyMap property)
+    {
+        for (var i = 0; i < properties.Count; i++)
+        {
+            if (ReferenceEquals(properties[i], property))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// A join-mode identity key (ADR-0048): a single integer key part as a
+    /// <see cref="long"/>, read from the row without boxing; any other key as the
+    /// boxed tuple under the §7.4 structural comparison. The two forms never
+    /// compare equal to each other, and one reader produces one form per value
+    /// (a null key part always takes the tuple form, from the materialized entity).
+    /// </summary>
+    internal readonly struct JoinKey : IEquatable<JoinKey>
+    {
+        private readonly long _value;
+        private readonly object?[]? _tuple;
+
+        public JoinKey(long value)
+        {
+            _value = value;
+            _tuple = null;
+        }
+
+        public JoinKey(object?[] tuple)
+        {
+            _value = 0;
+            _tuple = tuple;
+        }
+
+        public bool Equals(JoinKey other)
+            => _tuple is null
+                ? other._tuple is null && _value == other._value
+                : other._tuple is not null && KeyTupleComparer.Instance.Equals(_tuple, other._tuple);
+
+        public override bool Equals(object? obj) => obj is JoinKey other && Equals(other);
+
+        public override int GetHashCode() => _tuple is null ? _value.GetHashCode() : KeyTupleComparer.Instance.GetHashCode(_tuple);
+    }
+
+    /// <summary>
+    /// Reads one map's identity key in a join (ADR-0048). The typed form applies
+    /// when the key is one integer part (byte, short, int, long) and the segment
+    /// column at its ordinal — named as the key column — is an integer field: the
+    /// row's value is then the key the materialized entity would carry, so equal
+    /// keys are equal either way. Otherwise every key comes from the entity, as
+    /// the tuple, exactly as before.
+    /// </summary>
+    internal sealed class JoinKeyReader
+    {
+        private readonly EntityMap _map;
+        private readonly int _ordinal;
+        private readonly Type? _fieldType;
+
+        private JoinKeyReader(EntityMap map, int ordinal, Type? fieldType)
+        {
+            _map = map;
+            _ordinal = ordinal;
+            _fieldType = fieldType;
+        }
+
+        public static JoinKeyReader For(EntityMap map, DbDataReader segment, int[] keyOrdinals)
+        {
+            if (map.KeyProperties.Count == 1 && keyOrdinals.Length == 1 && keyOrdinals[0] >= 0
+                && IntegerKeyType(map.KeyProperties[0]) is not null
+                && string.Equals(segment.GetName(keyOrdinals[0]), map.KeyProperties[0].ColumnName, StringComparison.OrdinalIgnoreCase))
+            {
+                var fieldType = segment.GetFieldType(keyOrdinals[0]);
+                if (fieldType == typeof(long) || fieldType == typeof(int) || fieldType == typeof(short) || fieldType == typeof(byte))
+                {
+                    return new JoinKeyReader(map, keyOrdinals[0], fieldType);
+                }
+            }
+
+            return new JoinKeyReader(map, -1, null);
+        }
+
+        /// <summary>Whether this row's key reads from the row: the typed form, and a non-null key cell.</summary>
+        public bool ReadsRow(DbDataReader segment) => _fieldType is not null && !segment.IsDBNull(_ordinal);
+
+        public JoinKey FromRow(DbDataReader segment)
+        {
+            if (_fieldType == typeof(long))
+            {
+                return new JoinKey(segment.GetInt64(_ordinal));
+            }
+
+            if (_fieldType == typeof(int))
+            {
+                return new JoinKey(segment.GetInt32(_ordinal));
+            }
+
+            return _fieldType == typeof(short) ? new JoinKey(segment.GetInt16(_ordinal)) : new JoinKey(segment.GetByte(_ordinal));
+        }
+
+        public JoinKey FromEntity(object entity)
+        {
+            if (_fieldType is not null && _map.KeyProperties[0].GetValue(entity) is { } value)
+            {
+                return new JoinKey(ToInt64(value));
+            }
+
+            return new JoinKey(_map.GetKeyValues(entity));
         }
     }
 }

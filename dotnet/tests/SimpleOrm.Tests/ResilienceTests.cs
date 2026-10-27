@@ -222,6 +222,55 @@ public sealed class ResilienceTests(SqliteFixture fixture) : IClassFixture<Sqlit
         }
     }
 
+    // --- the runner's history read swallows nothing ------------------------------------
+
+    private static readonly Func<string, Exception?> FailHistoryRead = sql =>
+        sql.StartsWith("select version, object", StringComparison.Ordinal) ? new TestDbException("history read timed out") : null;
+
+    [Fact]
+    public async Task A_failing_history_read_fails_migrate_status_and_baseline()
+    {
+        var dialect = new FaultyDialect(new SqliteDialect());
+        await using var db = await Db.OpenAsync(fixture.ConnectionString, new DbOptions { Dialect = dialect }, CancellationToken.None);
+        var runner = new MigrationRunner(db, typeof(User).Assembly, "SimpleOrm.Sample.Migrations");
+        await runner.MigrateAsync(CancellationToken.None);   // the version table exists from here on
+
+        dialect.FailCommand = FailHistoryRead;
+        Assert.Equal("history read timed out", (await Assert.ThrowsAsync<TestDbException>(() => runner.MigrateAsync(CancellationToken.None))).Message);
+        await Assert.ThrowsAsync<TestDbException>(() => runner.StatusAsync(CancellationToken.None));
+        await Assert.ThrowsAsync<TestDbException>(() => runner.BaselineAsync(1, CancellationToken.None));
+
+        dialect.FailCommand = null;
+        Assert.All(await runner.StatusAsync(CancellationToken.None), e => Assert.Equal(MigrationState.Applied, e.State));
+    }
+
+    [Fact]
+    public async Task Status_on_a_fresh_database_reports_every_entry_pending_and_migrate_still_creates_the_table()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"simpleorm_test_{Guid.NewGuid():N}.db");
+        try
+        {
+            var dialect = new FaultyDialect(new SqliteDialect()) { FailCommand = FailHistoryRead };
+            await using (var db = await Db.OpenAsync($"Data Source={path}", new DbOptions { Dialect = dialect }, CancellationToken.None))
+            {
+                var runner = new MigrationRunner(db, typeof(User).Assembly, "SimpleOrm.Sample.Migrations");
+                var status = await runner.StatusAsync(CancellationToken.None);   // no version table: introspection says so, no history read
+                Assert.NotEmpty(status);
+                Assert.All(status, e => Assert.Equal(MigrationState.Pending, e.State));
+                Assert.DoesNotContain(dialect.Timeouts, t => t.Sql.StartsWith("select version, object", StringComparison.Ordinal));
+
+                dialect.FailCommand = null;
+                Assert.True(await runner.MigrateAsync(CancellationToken.None) > 0);
+                Assert.All(await runner.StatusAsync(CancellationToken.None), e => Assert.Equal(MigrationState.Applied, e.State));
+            }
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(path);
+        }
+    }
+
     // --- the dialects' transient answers ----------------------------------------------
 
     [Fact]
@@ -380,6 +429,9 @@ public sealed class ResilienceTests(SqliteFixture fixture) : IClassFixture<Sqlit
 
     private sealed class TransientTestException(int attempt) : Exception($"transient failure {attempt}");
 
+    /// <summary>A driver failure as the runner's old catch-all would have swallowed it.</summary>
+    private sealed class TestDbException(string message) : DbException(message);
+
     /// <summary>Counts the connections the session creates — one per open attempt.</summary>
     private sealed class CountingOpens(IDialect inner) : ForwardingDialect(inner)
     {
@@ -409,6 +461,9 @@ public sealed class ResilienceTests(SqliteFixture fixture) : IClassFixture<Sqlit
         public bool CancellationIsTransient { get; init; }
 
         public List<(string Sql, int Timeout)> Timeouts { get; } = [];
+
+        /// <summary>When set, a command whose text it answers with an exception throws that exception instead of executing.</summary>
+        public Func<string, Exception?>? FailCommand { get; set; }
 
         public override DbConnection CreateConnection(string connectionString)
         {
@@ -462,7 +517,7 @@ public sealed class ResilienceTests(SqliteFixture fixture) : IClassFixture<Sqlit
 
         protected override DbTransaction BeginDbTransaction(IsolationLevel isolationLevel) => inner.BeginTransaction(isolationLevel);
 
-        protected override DbCommand CreateDbCommand() => new RecordingCommand(inner.CreateCommand(), this, dialect.Timeouts);
+        protected override DbCommand CreateDbCommand() => new RecordingCommand(inner.CreateCommand(), this, dialect);
 
         protected override void Dispose(bool disposing)
         {
@@ -480,7 +535,7 @@ public sealed class ResilienceTests(SqliteFixture fixture) : IClassFixture<Sqlit
         }
     }
 
-    private sealed class RecordingCommand(DbCommand inner, DbConnection connection, List<(string Sql, int Timeout)> timeouts) : DbCommand
+    private sealed class RecordingCommand(DbCommand inner, DbConnection connection, FaultyDialect dialect) : DbCommand
     {
         [AllowNull]
         public override string CommandText
@@ -555,7 +610,14 @@ public sealed class ResilienceTests(SqliteFixture fixture) : IClassFixture<Sqlit
             return inner.ExecuteReader(behavior);
         }
 
-        private void Record() => timeouts.Add((inner.CommandText, inner.CommandTimeout));
+        private void Record()
+        {
+            dialect.Timeouts.Add((inner.CommandText, inner.CommandTimeout));
+            if (dialect.FailCommand?.Invoke(inner.CommandText) is { } failure)
+            {
+                throw failure;
+            }
+        }
 
         protected override void Dispose(bool disposing)
         {

@@ -587,9 +587,12 @@ shadow.
 **A timeout that fires** surfaces exactly as any other driver failure on
 that path: the driver's error, unwrapped, from a session call (Npgsql: an
 `NpgsqlException` whose cause is a timeout; SqlClient: a `SqlException` with
-number `-2`); `MIG-021` naming the statement from the migration runner, as
-every failing migration statement; a `VAL-001` row from SchemaGuard, as every
-statement the engine refuses to describe. The session does not roll back,
+number `-2`); from the migration runner, `MIG-021` naming the statement for a
+statement it executes (as every failing migration statement), and the driver's
+error unwrapped for one of its reads (the recorded history, the version-table
+check of `status`, the guards' definition reads) — never an empty history
+(migrations.md "Recording and integrity"); a `VAL-001` row from SchemaGuard, as
+every statement the engine refuses to describe. The session does not roll back,
 retry, or close anything because of it. What the connection is good for
 afterwards is the driver's answer — Npgsql and SqlClient cancel the
 statement on the server and the session's next statement runs (the live

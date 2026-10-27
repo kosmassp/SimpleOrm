@@ -82,6 +82,14 @@ neither be derived from the snapshots nor comes from a `Down()` override is
 `MIG-020` — checked for the full range before the first statement. A statement
 that fails mid-run reports as `MIG-021`, naming the SQL.
 
+The runner reads the recorded history in two ways, and never mistakes a failure
+for an empty history (ADR-0047): `status` (and SchemaGuard's `MIG-030` check
+through it) reads the history only when the table exists — asked through the
+dialect's `ColumnsInfoSql` with `@relation` = `schema_version`, no columns
+meaning no table and so an empty history; every other command (`migrate`,
+`migrate down`, `baseline`) creates the table first inside its run transaction,
+so a failing history read fails the run with the driver's error.
+
 ## Derived rollbacks (ADR-0018)
 
 Steps carry **no down DDL** — "Down could be deducted from the previous schema."

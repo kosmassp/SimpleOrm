@@ -4233,9 +4233,11 @@ session and to be confirmed by the owner:
    does on its path: the driver's exception unwrapped from a session call (the
    library wraps no driver exception there; a constraint violation surfaces as
    the provider's `DbException` today, which `LiveBatchingTests` asserts),
-   `MIG-021` naming the statement from the migration runner (it wraps every
-   failing migration statement's `DbException`), a `VAL-001` row from
-   SchemaGuard. The connection-open timeout stays where it is: the connection
+   `MIG-021` naming the statement for a statement the migration runner executes
+   (it wraps every failing migration statement's `DbException`) and the driver's
+   exception unwrapped for one of the runner's reads (the history, `status`'s
+   version-table check, the guards' definition reads, as those reads already
+   surfaced), a `VAL-001` row from SchemaGuard. The connection-open timeout stays where it is: the connection
    string (`Connect Timeout`, `Timeout`).
 2. **`DbOptions.OpenRetries`**: `int`, default 0 = one attempt, today's
    behaviour; and **`DbOptions.OpenRetryDelay`**: `TimeSpan`, default 1 s, a
@@ -4297,18 +4299,34 @@ started; the README.
 long DDL (`--command-timeout 600`) and ride out a failover at startup
 (`OpenRetries = 5`). An open's worst case becomes
 `(OpenRetries + 1) × connect timeout + OpenRetries × OpenRetryDelay`; the
-application chooses it. A pre-existing hazard noticed while reading the runner,
-not changed here: `MigrationRunner.ReadRecordedAsync` treats any `DbException`
-as "no history yet", so a timeout on that one read would be taken for an empty
-history (the steps then fail on existing objects and the run rolls back; a
-data-only step on SQL Server, where a timeout does not abort the transaction, is
-the one case that could re-apply). That is for the owner to rule on. The PHP and
-Go ports follow by the port method.
+application chooses it. The PHP and Go ports follow by the port method.
+
+**A runner hole closed on the way (ruled by the orchestrating session: a
+correctness hole, §2 "strict by default", fixed rather than recorded).**
+`MigrationRunner.ReadRecordedAsync` caught every `DbException` as "no
+`schema_version` table yet", so a timeout, a lost connection, or a permission
+failure on that one read was taken for an empty history — the steps then fail on
+existing objects and the run rolls back, except a data-only step on SQL Server,
+where a timeout does not abort the transaction, which could re-apply. Three of
+its four callers — `migrate`, `migrate down`, `baseline` — read right after
+`EnsureVersionTableAsync` in the run transaction, where the table exists. Now the
+read swallows nothing: for those three a failing read fails the run with the
+driver's exception, unwrapped (the runner's reads have always surfaced that way;
+only the statements it executes are wrapped as `MIG-021`). `status` — the one
+caller that can meet a database without the table, behind the CLI's `status` and
+SchemaGuard's `MIG-030` — first asks the dialect's `ColumnsInfoSql` with
+`@relation` = `schema_version` (through the command funnel, so the timeout
+applies; logged as `migrate`), returns the empty history only when it reports no
+columns, and otherwise reads without a catch. spec/migrations.md "Recording and
+integrity" states it. Tests: with the table present, a failing history read
+surfaces on `migrate`, `status`, and `baseline`; on a fresh database `status`
+reports every entry pending without reading the history, and `migrate` still
+creates the table.
 
 **Verification.** `cd dotnet && dotnet build SimpleOrm.sln` (both TFMs, 0
-warnings) and `dotnet test SimpleOrm.sln`: **579 passed / 22 skipped** with
-PostgreSQL 16.4 live (was 543 / 21); `ResilienceTests` adds 37 (36 passed, the
-SQL Server timeout leg skipped). Through a decorator around the real SQLite
+warnings) and `dotnet test SimpleOrm.sln`: **581 passed / 22 skipped** with
+PostgreSQL 16.4 live (was 543 / 21); `ResilienceTests` adds 39 (38 passed, the
+SQL Server timeout leg skipped), the runner fix's two included. Through a decorator around the real SQLite
 dialect: one attempt by default; three transient failures, then success after at
 least 3 × 50 ms; the last failure as thrown once retries are spent; a
 non-transient failure and a cancellation (during the delay, or raised by the

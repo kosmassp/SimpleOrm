@@ -129,6 +129,15 @@ db, err := orm.Open(ctx, cs, orm.Options{Dialect: sqlserver.New(),
     CommandTimeout: 5 * time.Minute, OpenRetries: 3, OpenRetryDelay: 2 * time.Second})
 ```
 
+In Go a zero `CommandTimeout` is unset (the driver's behaviour), a zero
+`OpenRetryDelay` is the one-second default, and `orm.NoOpenRetryDelay` means no
+wait. Every statement runs under `context.WithTimeout` derived from your
+context, a result set's rows included; a timeout that fires is the driver's
+error while your own context is still live — PostgreSQL's `57014` (the
+statement is cancelled on the server, and the session's next statement runs),
+`context.DeadlineExceeded` on SQLite. The migration tooling takes it through
+the context: `ctx = migrations.WithCommandTimeout(ctx, 5*time.Minute)`.
+
 The exact rule — the retry algorithm, what each dialect calls transient — is
 [`spec/session.md` "Resilience"](../../spec/session.md#resilience-level-4-adr-0047)
 and [`spec/dialects.md` "Transient open failures"](../../spec/dialects.md#transient-open-failures-istransient-adr-0047).

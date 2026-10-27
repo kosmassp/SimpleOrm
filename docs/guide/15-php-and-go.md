@@ -296,6 +296,8 @@ The CLI's `--log` flag is the same in all three.
   PHP `Error`, not `REL-004`; both are refusals.
 - Go: `orm.Get[User]` returns a copy in a tracked session; use `orm.Get[*User]`
   when identity matters.
+- Go: `OpenRetryDelay: 0` is the one-second default, not "no wait" — that is
+  `orm.NoOpenRetryDelay`; `CommandTimeout: 0` is unset, the driver's own behaviour.
 - Go: a nil slice navigation means "never loaded"; an empty non-nil slice
   means "loaded and empty". Do not initialize collection fields to `nil` and
   expect a persist cascade to see them.

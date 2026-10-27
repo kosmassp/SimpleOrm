@@ -166,6 +166,33 @@ final class ApplicationTest extends TestCase
     }
 
     #[Test]
+    public function command_timeout_takes_a_whole_number_of_seconds_for_every_command_that_opens_a_database(): void
+    {
+        // ADR-0047: `--command-timeout <seconds>` sets the session's commandTimeout (on SQLite, the busy timeout).
+        [$exit, $out] = $this->exec(['migrate', '--command-timeout', '30']);
+        self::assertSame(0, $exit, $out);
+        self::assertStringContainsString('applied 2 version(s)', $out);
+
+        foreach ([['status'], ['validate'], ['migrate', 'down', '--to', '0'], ['shadow', '--out', $this->workDir . '/shadow']] as $command) {
+            [$exit, $out] = $this->exec([...$command, '--command-timeout', '5']);
+            self::assertSame(0, $exit, implode(' ', $command) . ': ' . $out);
+        }
+    }
+
+    #[Test]
+    public function command_timeout_refuses_anything_but_a_whole_number_of_at_least_one_before_anything_opens(): void
+    {
+        foreach (['0', '-1', '1.5', 'soon'] as $value) {
+            [$exit] = $this->exec(['migrate', '--command-timeout', $value]);
+            self::assertSame(1, $exit, $value);
+        }
+
+        [$exit] = $this->exec(['migrate', '--command-timeout']);   // no value at all
+        self::assertSame(1, $exit);
+        self::assertFileDoesNotExist($this->database->connectionString(), 'nothing opened');
+    }
+
+    #[Test]
     public function shadow_accepts_every_dialect_but_a_server_one_needs_the_admin_connection(): void
     {
         // ADR-0043: `shadow` is no longer SQLite-only; on SQL Server and PostgreSQL `--db` is the admin connection.

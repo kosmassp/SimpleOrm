@@ -81,6 +81,10 @@ final class StatementLogCliTest extends TestCase
 
         [$exit, $out, $err] = self::php([...$common, '--log']);
         self::assertSame(0, $exit, $err);
-        self::assertStringContainsString("migrate: select version, object, description, checksum from schema_version\n", str_replace("\r\n", "\n", $out));
+        // A fresh database: status asks whether the version table exists and, finding none, reads no history (ADR-0047).
+        $out = str_replace("\r\n", "\n", $out);
+        self::assertStringContainsString("migrate: select name, type, \"notnull\", pk, ", $out);
+        self::assertStringContainsString('from pragma_table_info(@relation) [@relation]', $out);
+        self::assertStringNotContainsString('from schema_version', $out);
     }
 }

@@ -94,8 +94,16 @@ final class Db
     }
 
     /**
-     * Opens the connection now (§7.17): a failed open leaves nothing behind. A `maxStatementsPerMessage` below 1 is the
-     * language's argument error, raised before anything opens (ADR-0044, spec/session.md "Batching").
+     * Opens the connection now (§7.17): a failed open leaves nothing behind. The options are checked first — a
+     * `maxStatementsPerMessage` below 1 (ADR-0044), a negative `openRetries`/`openRetryDelay`, a negative or non-finite
+     * `commandTimeout` (ADR-0047) are the language's argument error, raised before any attempt.
+     *
+     * The open, as spec/session.md "Resilience" states it: each attempt asks the dialect for a fresh connection (in PDO the
+     * constructor opens it); a failure is attempted again only while attempts remain (`openRetries` more after the first)
+     * **and** the dialect calls it transient, after a fixed `openRetryDelay`; otherwise the failure is rethrown as raised —
+     * the same object, the last attempt's when retries were spent. PHP has no cancellation token and no cancellation signal
+     * (CODING-STANDARD §10), so nothing else ends the retries. Only the open is retried, never a statement — the command
+     * timeout's one `set_config` on PostgreSQL included. Nothing is logged for an attempt: an attempt sends no statement.
      */
     public static function open(string $connectionString, DbOptions $options): self
     {
@@ -105,7 +113,49 @@ final class Db
             );
         }
 
-        return new self($options->dialect->createConnection($connectionString), $options);
+        if ($options->openRetries < 0) {
+            throw new InvalidArgumentException("openRetries must not be negative, got {$options->openRetries}");
+        }
+
+        if (is_float($options->openRetryDelay) && (is_nan($options->openRetryDelay) || is_infinite($options->openRetryDelay))) {
+            throw new InvalidArgumentException('openRetryDelay must be a finite number of seconds');
+        }
+
+        if ($options->openRetryDelay < 0) {
+            throw new InvalidArgumentException("openRetryDelay must not be negative, got {$options->openRetryDelay}");
+        }
+
+        CommandTimeout::validate($options->commandTimeout);
+
+        $connection = self::openWithRetries($connectionString, $options);
+        try {
+            CommandTimeout::applyTo($connection, $options->commandTimeout);
+        } catch (Throwable $failure) {
+            $connection = null;   // released: the session never existed
+
+            throw $failure;
+        }
+
+        return new self($connection, $options);
+    }
+
+    /** Steps 2.1–2.4 of the open algorithm (spec/session.md "Resilience"). */
+    private static function openWithRetries(string $connectionString, DbOptions $options): PDO
+    {
+        for ($attempt = 0; ; $attempt++) {
+            try {
+                return $options->dialect->createConnection($connectionString);
+            } catch (Throwable $failure) {
+                // The failed attempt's connection never left the dialect: nothing to release here.
+                if ($attempt >= $options->openRetries || !$options->dialect->isTransient($failure)) {
+                    throw $failure;
+                }
+            }
+
+            if ($options->openRetryDelay > 0) {
+                usleep((int) round($options->openRetryDelay * 1_000_000));
+            }
+        }
     }
 
     // --- accessors the migration runner, SchemaGuard, and the CLI need ----------

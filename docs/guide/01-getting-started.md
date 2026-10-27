@@ -117,12 +117,19 @@ await using var db = await Db.OpenAsync(connectionString, new DbOptions
 - The CLI takes `--command-timeout <seconds>` for `migrate`, `migrate down`,
   `shadow`, and `validate`, where long DDL on a network engine outruns 30 s.
 
-In PHP and Go — the ports take these options by the port method (ADR-0047);
-until they land there, the C# reference is the one that has them:
+In PHP the options are seconds (an `int` or a `float`). PDO keeps the timeout
+on the connection, so it is set once at open: the busy timeout on SQLite,
+`statement_timeout` on PostgreSQL (a fired one is SQLSTATE `57014`), the
+`pdo_sqlsrv` query timeout on SQL Server (`HYT00`). `pdo_odbc` has no statement
+timeout, so an `odbc:` DSN with `commandTimeout` set is refused at open — connect
+through a `sqlsrv:` DSN for it. `bin/simpleorm` takes `--command-timeout` too.
 
 ```php
 $db = Db::open($dsn, new DbOptions(new SqlServerDialect(), commandTimeout: 300, openRetries: 3, openRetryDelay: 2));
 ```
+
+In Go — the port takes these options by the port method (ADR-0047); until it
+lands there, the shape will be:
 
 ```go
 db, err := orm.Open(ctx, cs, orm.Options{Dialect: sqlserver.New(),

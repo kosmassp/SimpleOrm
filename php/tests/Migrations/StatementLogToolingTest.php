@@ -98,7 +98,7 @@ final class StatementLogToolingTest extends TestCase
     }
 
     #[Test]
-    public function a_runner_without_a_log_writes_nothing_and_a_status_read_is_still_one_migrate_line(): void
+    public function a_runner_without_a_log_writes_nothing_and_a_status_read_is_its_table_check_then_its_history_read(): void
     {
         $dialect = new SqliteDialect();
         $connection = $dialect->createConnection($this->database->connectionString());
@@ -108,7 +108,9 @@ final class StatementLogToolingTest extends TestCase
         self::assertSame([], $this->lines);
 
         (new MigrationRunner($connection, $dialect, new EntityMapLoader(), MigrationSet::of($version), log: $this->log()))->status();
-        self::assertSame(['migrate'], $this->names());
+        self::assertSame(['migrate', 'migrate'], $this->names());   // the table check (ADR-0047), then the history
+        self::assertStringContainsString('pragma_table_info', $this->lines[0]);
+        self::assertStringContainsString('from schema_version', $this->lines[1]);
     }
 
     #[Test]

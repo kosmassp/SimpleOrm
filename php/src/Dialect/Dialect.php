@@ -12,6 +12,7 @@ use SimpleOrm\Metadata\TriggerDefinition;
 use SimpleOrm\Migrations\TableSchema;
 use SimpleOrm\Migrations\TableSchemaIndex;
 use SimpleOrm\Query\SelectAst;
+use Throwable;
 
 /**
  * The seam between the provider-neutral core and a database provider (§7.25).
@@ -31,6 +32,15 @@ interface Dialect
 
     /** An unopened-until-used PDO connection for the given connection string (a PDO DSN, or a bare SQLite path). */
     public function createConnection(string $connectionString): PDO;
+
+    /**
+     * Whether a failure raised by **opening a connection** ({@see createConnection()}) is transient — a server restarting,
+     * failing over, overloaded, or briefly unreachable, so another attempt may succeed (ADR-0047, spec/dialects.md "Transient
+     * open failures"). A pure function of the failure and its `getPrevious()` chain: no I/O, no state. Never asked about a
+     * statement; the session asks it only under `DbOptions::$openRetries`. PHP has no socket exception types, so every
+     * dialect answers from the SQLSTATE and native error code a `PDOException` carries (CODING-STANDARD §10).
+     */
+    public function isTransient(Throwable $failure): bool;
 
     /** Quotes one identifier (ADR-0024). SQLite returns the name unquoted — the reference renderings stay byte-identical. */
     public function quoteIdentifier(string $identifier): string;

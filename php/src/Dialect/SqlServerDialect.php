@@ -52,6 +52,19 @@ final class SqlServerDialect implements Dialect, PdoConventions
     /** One `sp_executesql` takes 2100 parameters, two of them its own (spec/dialects.md "Statement batching"). */
     private const MAX_PARAMETERS_PER_MESSAGE = 2098;
 
+    /**
+     * The SQL Server error numbers an open may be retried on (ADR-0047, spec/dialects.md "Transient open failures" — the
+     * 26 numbers, written once): SqlClient's configurable-retry defaults without its lock numbers, the connection-level
+     * numbers of EF Core's detector, and `-2`, the connect timeout.
+     */
+    public const TRANSIENT_ERROR_NUMBERS = [
+        -2, 20, 64, 121, 233, 997, 4060, 4221, 10053, 10054, 10060, 10928, 10929, 11001, 17197, 18401,
+        40143, 40197, 40501, 40540, 40613, 42108, 42109, 49918, 49919, 49920,
+    ];
+
+    /** The ODBC SQLSTATEs that stand for a socket or timeout failure where PHP has no exception type for one. */
+    private const TRANSIENT_STATES = ['08001', '08S01', 'HYT00'];
+
     public function name(): string
     {
         return Dialects::SQLSERVER;
@@ -71,6 +84,29 @@ final class SqlServerDialect implements Dialect, PdoConventions
         }
 
         return $pdo;
+    }
+
+    /**
+     * Whether an open failure is transient (ADR-0047, spec/dialects.md "Transient open failures"): at any link of the
+     * `getPrevious()` chain, any error record the `PDOException` carries has a native number in
+     * {@see self::TRANSIENT_ERROR_NUMBERS}, or the ODBC SQLSTATE `08001` (client unable to establish the connection),
+     * `08S01` (communication link failure), or `HYT00` (timeout expired) — PHP's stand-ins for the socket and timeout
+     * failures C# and Go read from runtime exception types (CODING-STANDARD §10). The native number is `errorInfo[1]`
+     * (`pdo_sqlsrv`, and `pdo_odbc` after the connection exists) or the number `pdo_odbc`'s constructor puts in its message
+     * (`SQLSTATE[08001] SQLDriverConnect: 10061 …`). Login failed (`18456`, SQLSTATE `28000`) is not transient.
+     */
+    public function isTransient(Throwable $failure): bool
+    {
+        foreach (PdoFailure::chain($failure) as $link) {
+            foreach (PdoFailure::records($link) as [$state, $native]) {
+                if (($native !== null && in_array($native, self::TRANSIENT_ERROR_NUMBERS, true))
+                    || in_array($state, self::TRANSIENT_STATES, true)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /** `[name]`, a `]` doubled (spec/dialects.md "Capability flags"). */

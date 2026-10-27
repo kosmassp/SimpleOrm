@@ -16,7 +16,8 @@ await using var db = await Db.OpenAsync(connectionString, options, ct);
 
 - The dialect creates the connection (§7.25); the session opens it. A failed
   open leaves nothing behind — the connection is released and the error
-  propagates.
+  propagates. (An open the dialect calls transient may be attempted again
+  under `OpenRetries` — "Resilience" below.)
 - Options are fixed at open: the dialect (required), the mapping configuration
   (naming convention, explicit maps — metadata-model.md), and the type-handler
   registry (mapping-rules.md). The session owns its metadata cache: an entity's
@@ -526,6 +527,113 @@ embody):
     statement" by count, not by newline: a trigger body or a `create table`
     keeps its line breaks. A consumer that needs one physical line per
     statement replaces them itself.
+
+## Resilience (Level 4, ADR-0047)
+
+Two things a network engine needs and a file database does not: a bound on
+how long one statement may run, and another attempt at opening the
+connection when the server is briefly unreachable. Nothing else — no
+statement is ever retried, there is no backoff, no circuit breaker, and no
+SimpleOrm error code: both failures are the driver's.
+
+**The options**, fixed at open like the others:
+
+- `CommandTimeout`: a duration, or **unset** (the default). Unset, every
+  command keeps the driver's own default timeout, untouched — the Level 0–3
+  behaviour exactly (SqlClient and Npgsql: 30 seconds; Microsoft.Data.Sqlite:
+  30, which SQLite only applies to waiting on a lock). Set, **every command
+  the session creates** carries it, in whole seconds **rounded up, at least
+  1** (0.2 s → 1, 1.5 s → 2; a zero duration is 1, never the drivers'
+  "no limit"); a negative duration refuses at open. A multi-statement message
+  (ADR-0044: a driver batch, a multi-statement text) carries the same value
+  as one command does. In C# `TimeSpan?`, PHP `commandTimeout` (seconds as a
+  float or int, null unset), Go `CommandTimeout time.Duration` — zero is
+  Go's spelling of unset (the language has no optional duration), so only
+  there a zero means "the driver's default"; a positive sub-second value
+  still becomes 1 second. Where the driver has no per-command timeout
+  property, the implementation uses the driver's own equivalent for the one
+  statement and reports whatever it raises: Go's `database/sql` takes the
+  statement's context deadline (`context.WithTimeout` around the call —
+  the error is the driver's, wrapping `context.DeadlineExceeded`); PHP PDO
+  takes the driver attribute (`PDO::SQLSRV_ATTR_QUERY_TIMEOUT` on
+  `pdo_sqlsrv`, `SQL_ATTR_QUERY_TIMEOUT` through `pdo_odbc`, the
+  `statement_timeout` setting on `pdo_pgsql` — SQLSTATE `57014`).
+- `OpenRetries`: how many **more** attempts the open may make after a failure
+  the dialect calls transient; `0` by default — one attempt, the Level 0–3
+  behaviour. Negative refuses at open.
+- `OpenRetryDelay`: the **fixed** wait between two attempts; **1 second** by
+  default. Zero is legal (no wait); negative refuses at open. In C#
+  `TimeSpan`, PHP `openRetryDelay` (seconds, float or int), Go
+  `OpenRetryDelay time.Duration`; where a zero value cannot mean "unset"
+  (Go), zero is the default 1 second, as `MaxStatementsPerMessage`'s zero is
+  100 there, and the port names its spelling of "no wait" in its §10.
+
+**"Every command the session creates"** means every statement the session
+sends on its connection: registry queries and commands, statement entities,
+key reads, generated writes (immediate, flushed, batched), criteria and
+loading queries, join includes, select-all, metadata DDL, the migration
+runner's statements (the version table, the history, the steps, the guards'
+definition reads, the rollbacks), SchemaGuard's describe calls and
+introspection, the shadow's replay and introspection (the shadow takes the
+timeout for the throwaway session it opens), and the force sync. Each
+implementation routes command creation through **one** place that applies
+the option, so no path can miss it. Not covered — they run on statements the
+**dialect** issues for itself, and keep the driver's default: the migration
+run lock (it carries its own 60-second lock timeout on SQL Server and
+PostgreSQL, dialects.md), the shadow host's provisioning on the admin
+connection, and a dialect's own catalog read-back of a trigger in the
+shadow.
+
+**A timeout that fires** surfaces exactly as any other driver failure on
+that path: the driver's error, unwrapped, from a session call (Npgsql: an
+`NpgsqlException` whose cause is a timeout; SqlClient: a `SqlException` with
+number `-2`); `MIG-021` naming the statement from the migration runner, as
+every failing migration statement; a `VAL-001` row from SchemaGuard, as every
+statement the engine refuses to describe. The session does not roll back,
+retry, or close anything because of it. What the connection is good for
+afterwards is the driver's answer — Npgsql and SqlClient cancel the
+statement on the server and the session's next statement runs (the live
+tests check it outside a transaction; on PostgreSQL it has run, the SQL
+Server leg awaits an engine); inside a transaction, PostgreSQL has
+aborted it and only a rollback is accepted.
+
+**The connect timeout is not one of these options.** How long one open
+attempt may take stays where every driver already puts it — in the
+connection string (`Connect Timeout` for SqlClient, `Timeout` for Npgsql;
+Go's `dial timeout` / `connect_timeout`; PHP's `LoginTimeout` /
+`connect_timeout`). The retry multiplies it: the worst case of an open is
+`(OpenRetries + 1) × connect timeout + OpenRetries × OpenRetryDelay`.
+
+**The open, as an algorithm** (`Db.OpenAsync(connectionString, options, ct)`):
+
+1. Validate the options (`MaxStatementsPerMessage ≥ 1`, `OpenRetries ≥ 0`,
+   `OpenRetryDelay ≥ 0`, `CommandTimeout` unset or ≥ 0); a violation refuses
+   before any attempt, with the platform's argument error.
+2. For `attempt = 0, 1, 2, …`:
+   1. Ask the dialect for a fresh, unopened connection.
+   2. Open it, honouring the cancellation token. On success, the session
+      owns it: return.
+   3. On failure, release the connection. Then **retry only when all of**:
+      `attempt < OpenRetries`; the token is not cancelled; the failure is not
+      the platform's cancellation signal; and the dialect's `IsTransient`
+      answers true for it (dialects.md). Otherwise **rethrow the failure as
+      it was raised** — unwrapped, the same object (the last attempt's
+      failure, when retries were spent).
+   4. Wait `OpenRetryDelay`, honouring the token: a cancellation during the
+      wait ends the open with the platform's cancellation signal and no
+      further attempt.
+
+Only the **connection open** is ever retried. A statement never is — not on
+a timeout, not on a lost connection: the session cannot know whether a
+statement that failed in flight was applied, and retrying a write could apply
+it twice (§2, no hidden round trips). PostgreSQL's stale-cached-plan retry in
+Go (ADR-0040 add.1, dialects.md) is a different rule and stays exactly as it
+is. A session whose connection is lost mid-life is not reopened; the
+application opens a new session.
+
+**Nothing is logged** by either option: the statement log (above) is for
+statements, and an open attempt sends none; a timed-out statement was logged
+as it was sent, like every other.
 
 ## The rest of the session
 

@@ -34,6 +34,7 @@ spec/migrations.md "Dialects").
 | `ReportsAffectedRowsBySelect` | true → the generated UPDATE and DELETE renderings end in a one-row, one-column select of the statement's own affected-row count, and the session judges that scalar instead of the driver's count (ADR-0040 add.3, Clarification 23) | the session's generated writes — never a registry command |
 | `SupportsStatementBatching` | true → this implementation's driver for the dialect can carry several statements in one message and hand back each statement's result; false → under `Batching = Auto` the planned messages run one statement at a time (ADR-0044, "Statement batching" below) | the session's batching realization (`BatchingInEffect`) |
 | `MaxParametersPerMessage` | the most bound parameters one message may carry, or none | the batching plan (spec/session.md "Batching", rule 3) |
+| `IsTransient(failure)` | whether a failure raised by **opening a connection** is transient — another attempt may succeed (ADR-0047, "Transient open failures" below); never asked about a statement | the session's open under `OpenRetries` (spec/session.md "Resilience") |
 | `LimitOffsetClause(limit, offset)` | the paging clause from pre-bound placeholders | the renderer |
 | `PagingRequiresOrderBy` | a paged select without orderings gains `order by (select null)` | the renderer |
 | `SupportsRowValueIn` | false → composite subquery membership rewrites as a correlated EXISTS (spec/query-ast.md) | the renderer |
@@ -604,6 +605,73 @@ carry in a message on its own), never fewer, and never reorders.
   PostgreSQL pipeline's implicit transaction and SQL Server's per-RPC autocommit
   never come into play.
 
+## Transient open failures (`IsTransient`, ADR-0047)
+
+The session asks the dialect one question, and only about a failed
+**connection open** (spec/session.md "Resilience"): is this failure transient
+— a server that is restarting, failing over, overloaded, or briefly
+unreachable — so that another attempt may succeed? A failure that would
+repeat (a wrong password, a missing database, a malformed connection string,
+a refused certificate) is not. The answer is a pure function of the failure:
+no I/O, no state, the same on every target of an implementation. Each
+dialect's rule is written **once** from driver facts that every driver of
+that engine reports — the engine's error numbers or SQLSTATEs — and never
+from a driver's own "is transient" flag, whose lists differ between driver
+versions (Npgsql 4.1 and 9.x; SqlClient 5.1 and 6.x) and between languages.
+
+The rule walks the failure **and its whole cause chain** (C#
+`InnerException`; Go `errors.Unwrap`/`errors.As`, both the single and the
+joined form; PHP `getPrevious()`) and answers true at the first link that
+matches:
+
+| | SQLite | SQL Server | PostgreSQL |
+|---|---|---|---|
+| engine error | never | the error **number** is in the set below — any of the error records the failure carries, not only the first (C# `SqlException.Errors[*].Number`; Go go-mssqldb `mssql.Error.All[*].Number`; PHP the native code of the `SQLSTATE[...]` error, `errorInfo[1]`) | the **SQLSTATE** is class `08` (any `08xxx`: 08000, 08001, 08003, 08004, 08006, 08007, 08P01), `53300` too_many_connections, or `57P03` cannot_connect_now (C# `PostgresException.SqlState`; Go pgx `*pgconn.PgError.Code`; PHP `PDOException::getCode()` / `errorInfo[0]`) |
+| runtime | never | a socket, I/O, or timeout failure of the language runtime | the same |
+
+- **SQLite: never.** A SQLite open is a file open; it fails the same way the
+  second time (`SQLITE_CANTOPEN`, a locked or corrupt file, no permission).
+- **SQL Server — the number set** (26; `SqlServerDialect.TransientErrorNumbers`
+  in the reference): `-2`, `20`, `64`, `121`, `233`, `997`, `4060`, `4221`,
+  `10053`, `10054`, `10060`, `10928`, `10929`, `11001`, `17197`, `18401`,
+  `40143`, `40197`, `40501`, `40540`, `40613`, `42108`, `42109`, `49918`,
+  `49919`, `49920`. Its sources: Microsoft.Data.SqlClient's configurable-retry
+  default list (`SqlConfigurableRetryFactory`) **without** its lock numbers
+  1204, 1205, 1222 (statement failures — only an open is asked about); the
+  connection-level numbers of EF Core's `SqlServerTransientExceptionDetector`
+  (20, 64, 121, 10053, 10054, 11001, 17197, 18401); and `-2`, the driver's
+  "timeout expired", which on an open is the connect timeout elapsing (EF Core
+  leaves it out because it retries statements). The numbers above 10000 that
+  name Windows socket errors (10053, 10054, 10060, 11001) are what SqlClient
+  reports for a broken or unreachable TCP endpoint; a driver that reports the
+  socket error itself instead is covered by the runtime row. Login failed
+  (`18456`) is **not** transient.
+- **PostgreSQL — the SQLSTATEs.** Class `08` is every connection exception;
+  `53300` is a server at `max_connections`; `57P03` is a server starting up,
+  shutting down, or in recovery. Not transient: `28xxx` (authentication),
+  `3D000` (no such database), and every statement-level state (`40001`,
+  `40P01`, `57014`, …) — they cannot arise from an open, and are never asked
+  about.
+- **The runtime row** — mirror the language's own types: C#
+  `System.Net.Sockets.SocketException`, `System.IO.IOException`,
+  `TimeoutException`; Go `net.Error` (a dial failure, `*net.OpError`, a
+  timeout), `syscall.ECONNREFUSED`/`ECONNRESET`, `io.EOF` /
+  `io.ErrUnexpectedEOF` during the handshake, and `context.DeadlineExceeded`
+  **only** when it is not the caller's own context ending (a cancelled or
+  expired caller context is a cancellation — never retried, spec/session.md);
+  PHP has no exception hierarchy for sockets — `PDOException` carries the
+  driver's message and code, so a PHP port answers from the engine row
+  (SQLSTATE `08xxx` from `pdo_pgsql` covers a refused or lost socket; on SQL
+  Server the ODBC SQLSTATE `08001`/`08S01`/`HYT00` stands for the socket and
+  timeout cases, beside the native number) and documents the mapping in its
+  §10. Npgsql reports an unreachable server as an `NpgsqlException` wrapping a
+  `SocketException` or `TimeoutException`, SqlClient as a `SqlException`
+  with one of the numbers above — both match.
+- **Cancellation is never transient**, whatever the dialect answers: the
+  session checks the token and the platform's cancellation signal before it
+  asks (spec/session.md "Resilience", step 2.3).
+- **The live check** is in the Testing contract below.
+
 ## Connection strings and the CLI
 
 A dialect takes its driver's **native** connection string; the SQLite dialect also
@@ -613,6 +681,14 @@ selects the dialect by name — `--dialect sqlite|sqlserver|postgres`, default
 opens. For `shadow` on SQL Server or PostgreSQL, `--db` is the **admin**
 connection (CREATE DATABASE rights): the throwaway `simpleorm_shadow_<hex>` is
 created and dropped there; on SQLite it is ignored (ADR-0043).
+
+The **connect timeout** of one open attempt is the connection string's
+(`Connect Timeout` for SqlClient, `Timeout` for Npgsql; Go and PHP their
+drivers' equivalents) — the library adds no option for it (ADR-0047). The CLI's
+`--command-timeout <seconds>` (a whole number, at least 1) sets the session's
+`CommandTimeout` for every command that opens a database — `migrate`,
+`migrate down`, `shadow`, `validate`, and the rest — because long DDL on a
+network engine outruns the drivers' 30-second default.
 
 ## Migration tooling (ADR-0043)
 
@@ -726,7 +802,12 @@ implementation batches (ADR-0044): a batched flush whose generated keys flow
 across messages, an explicit batch carrying every operation, a stale version
 in the middle of a message (`CRUD-010`, nothing applied, every instance as it
 was), and a failing statement in the middle of a message (the provider's error,
-nothing applied).
+nothing applied). Both legs, for resilience (ADR-0047): a statement outrunning
+a one-second `CommandTimeout` (`select pg_sleep(3)`; `waitfor delay
+'00:00:03'`) surfaces the driver's own error — SQL Server number `-2` — and
+the session's next statement runs. PostgreSQL additionally: an open against an
+unreachable port is attempted `OpenRetries + 1` times and surfaces the driver's
+failure; an open of a missing database (`3D000`) is attempted once.
 
 ## Clarifications
 

@@ -49,7 +49,7 @@ tracking and the unit of work, hooks, triggers, another dialect, or the
 
 | Page | What it covers |
 |---|---|
-| [01 Getting started](01-getting-started.md) | Installing by project reference, opening a session, the first entity, query, and insert, the temp-file SQLite test pattern |
+| [01 Getting started](01-getting-started.md) | Installing by project reference, opening a session, resilience (the command timeout and open retries), the first entity, query, and insert, the temp-file SQLite test pattern |
 | [02 Mapping entities](02-mapping-entities.md) | Opt-in `[Column]` mapping, keys, versions, naming, nullability, the type table, dates, JSON columns, owned types, views and statements, the manual builder, base classes |
 | [03 Queries and commands](03-queries-and-commands.md) | `Query.Inline`/`Query.Embedded`, args records, `@name` parameters, `IN` lists, the read and execute methods, nested JSON results, strictness errors |
 | [04 CRUD and concurrency](04-crud-and-concurrency.md) | `InsertAsync`, `GetAsync`, `UpdateAsync`, `UpdateOnlyAsync`, `DeleteAsync`, the version column, every `CRUD-` code |

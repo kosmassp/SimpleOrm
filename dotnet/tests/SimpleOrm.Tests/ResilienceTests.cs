@@ -301,6 +301,10 @@ public sealed class ResilienceTests(SqliteFixture fixture) : IClassFixture<Sqlit
         Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2.9), $"elapsed {stopwatch.Elapsed}");
         Assert.IsType<TimeoutException>(thrown.InnerException);
 
+        // Npgsql cancelled the statement on the server; the session goes on.
+        Query<EmptyArgs, int> one = Query.Inline("select 1");
+        Assert.Equal([1], await db.QueryAsync(one, EmptyArgs.Value, CancellationToken.None));
+
 #if NET
         using (var batch = db.NewBatch())
         {
@@ -336,6 +340,9 @@ public sealed class ResilienceTests(SqliteFixture fixture) : IClassFixture<Sqlit
         Command<EmptyArgs> wait = Query.Inline("waitfor delay '00:00:03'");
         var thrown = await Assert.ThrowsAsync<SqlException>(() => db.ExecuteAsync(wait, EmptyArgs.Value, CancellationToken.None));
         Assert.Equal(-2, thrown.Number);
+
+        Query<EmptyArgs, int> one = Query.Inline("select 1");
+        Assert.Equal([1], await db.QueryAsync(one, EmptyArgs.Value, CancellationToken.None));
     }
 
     // --- helpers --------------------------------------------------------------------------

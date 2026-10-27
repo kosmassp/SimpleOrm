@@ -321,7 +321,9 @@ public sealed class ResilienceTests(SqliteFixture fixture) : IClassFixture<Sqlit
     {
         int[] required = [-2, 20, 64, 233, 4060, 4221, 10053, 10054, 10060, 10928, 10929, 40197, 40501, 40613, 49918, 49919, 49920, 11001];
         Assert.All(required, n => Assert.Contains(n, SqlServerDialect.TransientErrorNumbers));
-        Assert.Equal(26, SqlServerDialect.TransientErrorNumbers.Count);
+        Assert.Contains(258, SqlServerDialect.TransientErrorNumbers);     // SqlClient's unreachable endpoint (the review)
+        Assert.Contains(10061, SqlServerDialect.TransientErrorNumbers);   // connection refused (the review)
+        Assert.Equal(28, SqlServerDialect.TransientErrorNumbers.Count);
         Assert.DoesNotContain(1205, SqlServerDialect.TransientErrorNumbers);   // a deadlock is a statement failure
         Assert.DoesNotContain(18456, SqlServerDialect.TransientErrorNumbers);  // login failed: the same again
     }
@@ -330,10 +332,34 @@ public sealed class ResilienceTests(SqliteFixture fixture) : IClassFixture<Sqlit
     [InlineData(-2, true)]
     [InlineData(4060, true)]
     [InlineData(40613, true)]
+    [InlineData(258, true)]
+    [InlineData(10061, true)]
     [InlineData(18456, false)]
     [InlineData(208, false)]
     public void Sql_server_reads_the_number_of_a_real_sql_exception(int number, bool transient)
         => Assert.Equal(transient, new SqlServerDialect().IsTransient(SqlExceptionWith(number)));
+
+    // The review of ADR-0047 (ruling D): an engine error in the chain decides
+    // alone; transport failures decide only when no engine error is present.
+    [Fact]
+    public void An_engine_error_in_the_chain_decides_alone()
+    {
+        var postgres = new PostgresDialect();
+        var missing = new PostgresException("no such database", "FATAL", "FATAL", "3D000");
+        Assert.False(postgres.IsTransient(new IOException("transport", missing)));
+        Assert.False(postgres.IsTransient(new NpgsqlException(
+            "Unable to connect to a suitable host",
+            new AggregateException(new NpgsqlException("Failed to connect", new SocketException((int)SocketError.ConnectionRefused)), missing))));
+        Assert.True(postgres.IsTransient(new NpgsqlException(
+            "Unable to connect to a suitable host",
+            new AggregateException(new NpgsqlException("Failed to connect", new TimeoutException()), new NpgsqlException("Failed to connect", new TimeoutException())))));
+        Assert.True(postgres.IsTransient(new IOException("transport", new PostgresException("starting up", "FATAL", "FATAL", "57P03"))));
+
+        var sqlServer = new SqlServerDialect();
+        Assert.False(sqlServer.IsTransient(new IOException("transport", SqlExceptionWith(18456))));
+        Assert.False(sqlServer.IsTransient(new AggregateException(new SocketException((int)SocketError.ConnectionRefused), SqlExceptionWith(18456))));
+        Assert.True(sqlServer.IsTransient(new IOException("transport", SqlExceptionWith(40613))));
+    }
 
     // --- live -----------------------------------------------------------------------------
 

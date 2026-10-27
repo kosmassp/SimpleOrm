@@ -40,6 +40,9 @@ if (positional.Count == 0)
 
 try
 {
+    // --command-timeout (ADR-0047) refuses a bad value for every command, before anything opens.
+    _ = CommandTimeoutArgument();
+
     return positional[0].ToLowerInvariant() switch
     {
         "migrate" when positional.Count > 1 && positional[1] == "down" => await MigrateDownAsync(),
@@ -162,6 +165,10 @@ IDialect DialectFor() => (Option("dialect") ?? "sqlite").ToLowerInvariant() swit
 
 bool Flag(string name) => options.ContainsKey(name);
 
+// --command-timeout <seconds> (ADR-0047): absent, null; present, a whole number of seconds — a missing value refuses too.
+TimeSpan? CommandTimeoutArgument()
+    => CommandTimeoutOption.Parse(Flag("command-timeout") ? Option("command-timeout") ?? "" : null);
+
 Assembly LoadAssembly()
 {
     if (Option("assembly") is not { } path)
@@ -192,7 +199,7 @@ async Task<(Db Db, MigrationRunner Runner)> OpenAsync()
         {
             Dialect = DialectFor(),
             Log = Flag("log") ? DbLog.Console : null,   // --log: every statement to stdout (ADR-0045)
-            CommandTimeout = CommandTimeoutOption.Parse(Option("command-timeout")),   // ADR-0047
+            CommandTimeout = CommandTimeoutArgument(),   // ADR-0047
         },
         CancellationToken.None);
 
@@ -491,7 +498,7 @@ async Task<int> ShadowAsync()
 
     var result = await SchemaShadow.RebuildSnapshotsAsync(
         LoadAssembly(), Option("namespace"), outDir, DialectFor(), ShadowHostFor(), Option("db"), from, to,
-        CommandTimeoutOption.Parse(Option("command-timeout")), CancellationToken.None);
+        CommandTimeoutArgument(), CancellationToken.None);
     foreach (var note in result.Notes)
     {
         Console.WriteLine(note);

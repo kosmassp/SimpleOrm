@@ -317,21 +317,16 @@ public sealed partial class Db : IAsyncDisposable
     {
         using var command = NewCommand();
         command.Transaction = _transaction;
-        var dialect = Options.Dialect;
-        var predicates = new string[keyValues.Length];
+        var read = Generated(map).Get;
         for (var i = 0; i < keyValues.Length; i++)
         {
-            var name = "@k" + i;
-            predicates[i] = dialect.QuoteIdentifier(map.KeyProperties[i].ColumnName) + " = " + name;
             var parameter = command.CreateParameter();
-            parameter.ParameterName = name;
+            parameter.ParameterName = read.ParameterNames[i];
             parameter.Value = _converter.ToDatabase(keyValues[i], $"{typeof(TEntity).Name} key[{i}]");
             command.Parameters.Add(parameter);
         }
 
-        command.CommandText = "select " + string.Join(", ", map.Properties.Select(p => dialect.QuoteIdentifier(p.ColumnName)))
-            + " from " + dialect.QuoteIdentifier(map.RelationName!)
-            + " where " + string.Join(" and ", predicates);
+        command.CommandText = read.Sql;
 
         LogStatement(typeof(TEntity).Name + ".get", command);
         var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
@@ -524,17 +519,9 @@ public sealed partial class Db : IAsyncDisposable
                 $"is {map.Kind}-backed; select-all needs a named relation (statements execute via the statement API)");
         }
 
-        var dialect = Options.Dialect;
-        var sql = "select " + string.Join(", ", map.Properties.Select(p => dialect.QuoteIdentifier(p.ColumnName)))
-            + " from " + dialect.QuoteIdentifier(map.RelationName!);
-        if (map.KeyProperties.Count > 0)
-        {
-            sql += " order by " + string.Join(", ", map.KeyProperties.Select(k => dialect.QuoteIdentifier(k.ColumnName)));
-        }
-
         var command = NewCommand();
         command.Transaction = _transaction;
-        command.CommandText = sql;
+        command.CommandText = Generated(map).SelectAll;
         return await MaterializeAsync<TEntity>(command, typeof(TEntity).Name + " select-all", ct, typeof(TEntity).Name + ".selectAll").ConfigureAwait(false);
     }
 
@@ -642,8 +629,9 @@ public sealed partial class Db : IAsyncDisposable
         var command = NewCommand();
         try
         {
-            command.CommandText = Options.Dialect.InsertSql(map);
-            foreach (var property in map.Properties.Where(p => !p.IsGenerated))
+            var generated = Generated(map);
+            command.CommandText = InsertText(map, generated);
+            foreach (var property in generated.InsertBound)
             {
                 AddEntityParameter(command, property, entity);
             }
@@ -697,15 +685,15 @@ public sealed partial class Db : IAsyncDisposable
 
             var set = WithUpdatedAt(map, dirty);
             return PrepareUpdateStatement(
-                map, entity, "update", Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set),
+                map, entity, "update", UpdateOnlyText(map, set), BoundForUpdate(map, set),
                 () => TrackWrittenColumnsUndoably(tracked, map, set));
         }
 
         // Bind SET values, key values, and the current version for the WHERE;
         // database-generated non-key columns are never written.
+        var generated = Generated(map);
         return PrepareUpdateStatement(
-            map, entity, "update", Options.Dialect.UpdateSql(map),
-            map.Properties.Where(p => p.IsKey || p.IsVersion || !p.IsGenerated),
+            map, entity, "update", UpdateText(map, generated), generated.UpdateBound,
             () => TrackWrittenUndoably(map, entity));
     }
 
@@ -738,7 +726,7 @@ public sealed partial class Db : IAsyncDisposable
         var tracked = CheckIdentity(map, entity);
 
         return PrepareUpdateStatement(
-            map, entity, "updateOnly", Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set),
+            map, entity, "updateOnly", UpdateOnlyText(map, set), BoundForUpdate(map, set),
             () => TrackWrittenColumnsUndoably(tracked, map, set));
     }
 
@@ -903,7 +891,7 @@ public sealed partial class Db : IAsyncDisposable
         object?[] key;
         try
         {
-            command.CommandText = Options.Dialect.DeleteSql(map, checkVersion);
+            command.CommandText = DeleteText(map, checkVersion);
             if (byEntity)
             {
                 CheckIdentity(map, keyOrEntity);
@@ -966,6 +954,43 @@ public sealed partial class Db : IAsyncDisposable
             },
             Undo = () => undoForget?.Invoke(),
         };
+    }
+
+    /// <summary>The generated CRUD text of a map on this session's dialect, rendered once per (map, dialect) and reused (ADR-0048).</summary>
+    private GeneratedSql Generated(EntityMap map) => GeneratedSql.For(map, Options.Dialect);
+
+    /// <summary>
+    /// Test hook: told every generated write the session takes a rendering for —
+    /// insert, full-row update, column-list update (with its set), delete — at the
+    /// point it takes it, whether the text was rendered now or reused. Before the
+    /// cache (ADR-0048) the step-script runners observed this by wrapping the
+    /// dialect (spec/session.md "The step scripts", <b>The seam</b>); a cached
+    /// rendering is asked for once, so the session says it instead. Never public API.
+    /// </summary>
+    internal Action<GeneratedWrite, EntityMap, IReadOnlyList<PropertyMap>?>? RenderObserver { get; set; }
+
+    private string InsertText(EntityMap map, GeneratedSql generated)
+    {
+        RenderObserver?.Invoke(GeneratedWrite.Insert, map, null);
+        return generated.Insert;
+    }
+
+    private string UpdateText(EntityMap map, GeneratedSql generated)
+    {
+        RenderObserver?.Invoke(GeneratedWrite.Update, map, null);
+        return generated.Update;
+    }
+
+    private string UpdateOnlyText(EntityMap map, IReadOnlyList<PropertyMap> set)
+    {
+        RenderObserver?.Invoke(GeneratedWrite.UpdateOnly, map, set);
+        return Generated(map).UpdateOnly(set);
+    }
+
+    private string DeleteText(EntityMap map, bool checkVersion)
+    {
+        RenderObserver?.Invoke(GeneratedWrite.Delete, map, null);
+        return Generated(map).Delete(checkVersion);
     }
 
     private EntityMap RequireWritableKeyed<TEntity>()

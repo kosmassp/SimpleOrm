@@ -924,7 +924,11 @@ update, column-list update, delete — and records one `{ "op", "entity",
 "columns"? }` per rendering the session asks for, in order. `op` is
 `"insert"`, `"update"`, or `"delete"`; `entity` is the class name as the
 fixture spells it; the full-row update carries `"columns": "all"`, the
-column-list update the property list it was asked to write, in list order. A
+column-list update the property list it was asked to write, in list order. An
+implementation that caches its renderings asks the dialect once per text, so it
+gives its runner a test hook that reports every write rendering the session
+takes, cached or not, in the same shape — the reference does since ADR-0048;
+what is recorded is unchanged. A
 soft delete is the column-list update it is. Reads, statement execution, and
 failures are not recorded; the buffer is cleared before each step; a step's
 `expectWritten` is the columns of its last recorded update (`[]` when the step

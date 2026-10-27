@@ -89,7 +89,7 @@ public sealed partial class Db
             try
             {
                 return PrepareUpdateStatement(
-                    map, keyOrEntity, "delete", Options.Dialect.UpdateOnlySql(map, set), BoundForUpdate(map, set),
+                    map, keyOrEntity, "delete", UpdateOnlyText(map, set), BoundForUpdate(map, set),
                     () => Forget(map, map.GetKeyValues(keyOrEntity)),
                     restore: () => flag.SetValue(keyOrEntity, flagBefore));
             }
@@ -111,7 +111,7 @@ public sealed partial class Db
         var command = NewCommand();
         try
         {
-            command.CommandText = Options.Dialect.UpdateOnlySql(map, set);
+            command.CommandText = UpdateOnlyText(map, set);
             AddParameter(command, flag, true);
             if (map.UpdatedAtProperty is { } updated)
             {

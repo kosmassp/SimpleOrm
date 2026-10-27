@@ -72,19 +72,23 @@ final class PostgresDialect implements Dialect
      * timed out, an unknown host) is the socket failure the runtime row covers elsewhere, and transient. The server's texts
      * are English; under a localized `lc_messages` a transient `FATAL` reads as non-transient — the open fails at once,
      * never retried by mistake (CODING-STANDARD §10).
+     *
+     * The first SQLSTATE the chain carries decides alone (spec/dialects.md: an engine answer settles it) — a later link is
+     * never consulted to overrule it.
      */
     public function isTransient(Throwable $failure): bool
     {
         foreach (PdoFailure::chain($failure) as $link) {
             foreach (PdoFailure::records($link) as [$state]) {
+                if ($state === null) {
+                    continue;
+                }
+
                 if ($state === '53300' || $state === '57P03') {
                     return true;
                 }
 
-                if ($state !== null && str_starts_with($state, '08')
-                    && self::connectFailureIsTransient($state, $link->getMessage())) {
-                    return true;
-                }
+                return str_starts_with($state, '08') && self::connectFailureIsTransient($state, $link->getMessage());
             }
         }
 

@@ -28,5 +28,12 @@ Rules:
 - Error codes are the cross-language contract: messages may differ per language, codes may not.
 - Spec documents grow with every milestone, not at the end.
 - A port's unanswered questions are recorded, never resolved by reading another
-  implementation; each answer lands under the document's "Clarifications" and no
-  rule changes without an ADR in `../docs/decisions.md`.
+  implementation; each answer is written into the section it amends, with a
+  brief `(ADR-xxxx)` marker at the sentence, and no rule changes without an ADR
+  in `../docs/decisions.md` (ADR-0046).
+- Each document reads as one text. The Clarifications lists earlier milestones
+  appended were folded into their sections by ADR-0046; a document's closing
+  section "Where the Clarifications went" maps every former entry (by number
+  where it was numbered, else by title) to the section that now states it, so
+  existing citations resolve. A future gap answer adds only a row there when
+  something outside `spec/` will cite it.

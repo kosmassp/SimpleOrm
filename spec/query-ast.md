@@ -167,6 +167,11 @@ Level 2 port adds the `level2/` folder.
 **Projection.** An optional list of the root's property names; when present,
 only those columns are selected, in the listed order. Nothing else changes.
 This is the shape a SubSelect subquery takes (it selects only what it feeds).
+Projection restricts the **root only** — under joins it still restricts the
+root's columns, re-aliased `t_<column>` like the rest (ADR-0031, ADR-0033).
+Projection resolves **where the AST is built** — by the loader or the
+conformance runner — so an unknown projection property is refused there; the
+renderer receives resolved properties (ADR-0031).
 
 ```json
 { "projection": ["Id", "Name"], "orderBy": [ { "property": "Name", "order": "desc" } ] }
@@ -177,10 +182,17 @@ select id, name from users order by name desc
 
 **Joins.** An ordered list of LEFT JOINs. Each names its target entity, its
 alias, an optional `parent` alias (absent: hangs off the root), its ON pairs
-as `[parentProperty, targetProperty]` — property names, resolved through the
-parent's and the target's maps exactly like predicates (`QRY-006` when
-unknown), rendered `target.col = parent.col` and ANDed — and `project`: whether
-its columns are selected.
+as `[parentProperty, targetProperty]` — property names, both sides resolved
+through their own maps (the parent's and the target's) exactly like predicates,
+an unknown property on either side `QRY-006` (ADR-0031), rendered
+`target.col = parent.col` and ANDed — and `project`: whether its columns are
+selected. A projected join selects **every mapped column of its target** —
+joins carry a `project` flag, never a column list (ADR-0033).
+
+Join validation, all `QRY-006`: a `parent` that names an alias no earlier join
+declares (ADR-0031); an alias that repeats an earlier join's alias or the root's
+`t` — it would silently rebind a later join's parent to the wrong relation
+(unvalidated in the reference until ADR-0033; now pinned).
 
 ```json
 { "joins": [
@@ -201,16 +213,33 @@ Rendering with joins present:
   eager loader names projected joins `j0…` in include order and link joins
   `l<n>`; ports may choose their own names, so the cases spell them out.
 
+**One root alias for the whole select** (ADR-0031). Once the root is aliased —
+by any join, or by an EXISTS rewrite (below) anywhere in the predicate tree,
+composites and negations included — every root column reference in that select
+qualifies with `t.`: predicates, orderings, and every other membership's
+columns.
+
+**Refusal order inside one select** (ADR-0033): the FROM clause validates first
+(alias uniqueness, the parent alias, both ON sides, in join order), then the
+WHERE tree in render order, then ORDER BY; the first refusal wins. Every one of
+them is `QRY-006`, so the order is unobservable by code; the renderer never
+collects a report (that is SchemaGuard's job).
+
 Eager loading's own refusals (a paged collection join `REL-005`, more than one
 collection join `REL-006`, keyless ends `REL-003`) happen in the session before
 rendering, so the AST cases render unpaged, single-collection shapes only.
 
 **Subquery membership** (`in_select`). A predicate: the listed root properties,
 as a row value when more than one, `in (select …)` over a nested select that
-names its own entity and whose projection has the same arity. The subquery
-renders through the same renderer with the same bind function — its
-placeholders continue the outer numbering in render order — and keeps its
-own predicates, orderings, and paging. One dialect exception: where the paging
+names its own entity and whose projection has the same arity: the listed
+properties and the subquery's projection (or, unprojected, its mapped columns)
+must have the same count, and a mismatch is `QRY-006` before rendering, never an
+index error or a database error (ADR-0031). The subquery renders through the
+**dialect's `SelectSql`**, not the shared renderer directly, so a dialect that
+overrides top-level rendering governs its nested selects too (ADR-0033); the
+bind callback is the outer one, so its placeholders continue the outer
+numbering in render order. It keeps its own predicates, orderings, and paging.
+One dialect exception: where the paging
 clause requires ORDER BY (`PagingRequiresOrderBy`, SQL Server), ORDER BY is in
 turn illegal inside a subquery that has no paging (error 1033), so an
 **unpaged** subquery's orderings are omitted there — membership is
@@ -233,47 +262,11 @@ EXISTS: the root gains alias `t` for the correlation — **without** re-aliasing
 its columns, which only joins do — the subquery becomes derived table `s`, and
 each compared column correlates `s.<projected> = t.<property>`. Identical rows
 match; parameters keep their order. `conformance/ast/level2/subselect_composite_membership.json`
-pins both renderings side by side.
-
-**Clarifications** (the Go Level 2 port asked; ADR-0031):
-
-- **Projection resolves where the AST is built** — by the loader or the
-  conformance runner — so an unknown projection property is refused there;
-  the renderer receives resolved properties. A projection under joins still
-  restricts the root's columns, re-aliased `t_<column>` like the rest.
-- **One root alias for the whole select.** Once the root is aliased — by any
-  join, or by an EXISTS rewrite anywhere in the predicate tree, composites and
-  negations included — every root column reference in that select qualifies
-  with `t.`: predicates, orderings, and every other membership's columns.
-- **Join ON pairs resolve both sides** through their own maps; an unknown
-  property on either side is `QRY-006`. A join whose `parent` names an alias
-  no earlier join declares is `QRY-006` too.
-- **Membership arity.** The listed properties and the subquery's projection
-  (or, unprojected, its mapped columns) must have the same count; a mismatch
-  is `QRY-006` before rendering, never an index error or a database error.
-
-**Clarifications** (the PHP Level 2 port asked; ADR-0033):
-
-- **Aliases are unique.** A join alias that repeats an earlier join's alias,
-  or the root's `t`, is `QRY-006` — it would silently rebind a later join's
-  parent to the wrong relation. (Unvalidated in the reference until
-  ADR-0033; now pinned.)
-- **Refusal order inside one select**: the FROM clause validates first
-  (alias uniqueness, the parent alias, both ON sides, in join order), then
-  the WHERE tree in render order, then ORDER BY; the first refusal wins.
-  Every one of them is `QRY-006`, so the order is unobservable by code; the
-  renderer never collects a report (that is SchemaGuard's job).
-- **A subquery renders through the dialect's `SelectSql`**, not the shared
-  renderer directly, so a dialect that overrides top-level rendering governs
-  its nested selects too; the bind callback is the outer one, so parameter
-  numbering continues across the subquery.
-- **Only a composite membership takes the EXISTS rewrite.** A
-  single-property membership renders `col in (select …)` on every dialect
-  and never aliases the root; the rewrite (and the `t` alias it forces)
-  exists only because row-value IN is what some dialects lack.
-- **A projected join selects every mapped column of its target** — joins
-  carry a `project` flag, never a column list; `projection` restricts the
-  root only.
+pins both renderings side by side. **Only a composite membership takes the
+EXISTS rewrite** (ADR-0033): a single-property membership renders
+`col in (select …)` on every dialect and never aliases the root; the rewrite
+(and the `t` alias it forces) exists only because row-value IN is what some
+dialects lack.
 
 ## Deliberately absent
 
@@ -326,3 +319,20 @@ divergence). Expected parameters are the AST values in bind order — the same
 order on every dialect, even where a rendered clause places them differently
 (SQL Server's `offset @c5 … fetch next @c4`) — their database encoding is
 `spec/mapping-rules.md` territory.
+
+## Where the Clarifications went
+
+The Clarifications blocks the Level 2 ports produced were folded into the
+sections they amend (ADR-0046); every rule is stated there once.
+
+| Clarification (block) | Now in |
+|---|---|
+| Projection resolves where the AST is built (ADR-0031) | "Level 2 extensions" — **Projection** |
+| One root alias for the whole select (ADR-0031) | "Level 2 extensions" — rendering with joins, **One root alias for the whole select** |
+| Join ON pairs resolve both sides (ADR-0031) | "Level 2 extensions" — **Joins**, join validation |
+| Membership arity (ADR-0031) | "Level 2 extensions" — **Subquery membership** |
+| Aliases are unique (ADR-0033) | "Level 2 extensions" — **Joins**, join validation |
+| Refusal order inside one select (ADR-0033) | "Level 2 extensions" — **Refusal order inside one select** |
+| A subquery renders through the dialect's `SelectSql` (ADR-0033) | "Level 2 extensions" — **Subquery membership** |
+| Only a composite membership takes the EXISTS rewrite (ADR-0033) | "Level 2 extensions" — **Subquery membership**, composite membership |
+| A projected join selects every mapped column of its target (ADR-0033) | "Level 2 extensions" — **Joins** |

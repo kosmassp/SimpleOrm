@@ -117,6 +117,61 @@ internal sealed class GeneratedSql
         }
     }
 
+    /// <summary>
+    /// Whether the engine's <c>ORDER BY</c> on this map's key already is the
+    /// value order spec/loading.md requires of a loaded collection — then the
+    /// post-fetch sort of rows that arrive ordered by the key is the identity and
+    /// loading skips it (ADR-0048). The rule: every key part is an integer or
+    /// decimal CLR type (byte, short, int, long, decimal) and the dialect stores it
+    /// as a number — its <see cref="IDialect.StorageType"/> is an integer or exact
+    /// numeric type (<c>integer</c>, <c>bigint</c>, <c>int</c>, <c>smallint</c>,
+    /// <c>tinyint</c>, <c>numeric</c>, <c>decimal</c>, with or without a size), so
+    /// <c>ORDER BY</c> compares numbers exactly as the value comparison does.
+    /// SQLite stores a decimal as <c>TEXT</c> (<c>'10'</c> before <c>'2'</c>): a
+    /// decimal key keeps the sort there and skips it on PostgreSQL and SQL Server.
+    /// Strings (collations are not ordinal), GUIDs, temporals, booleans, enums, and
+    /// byte arrays always keep the sort.
+    /// </summary>
+    public bool KeyOrderIsValueOrder => _keyOrderIsValueOrder ??= ComputeKeyOrderIsValueOrder();
+
+    private bool? _keyOrderIsValueOrder;
+
+    private bool ComputeKeyOrderIsValueOrder()
+    {
+        if (_map.KeyProperties.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var key in _map.KeyProperties)
+        {
+            var type = Nullable.GetUnderlyingType(key.ClrType) ?? key.ClrType;
+            if (type != typeof(long) && type != typeof(int) && type != typeof(short) && type != typeof(byte) && type != typeof(decimal))
+            {
+                return false;
+            }
+
+            string storage;
+            try
+            {
+                storage = _dialect.StorageType(_map, key).Trim().ToLowerInvariant();
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                return false;   // a type the dialect cannot spell: keep the sort
+            }
+
+            var paren = storage.IndexOf('(');
+            var name = paren < 0 ? storage : storage.Substring(0, paren).TrimEnd();
+            if (name is not ("integer" or "bigint" or "int" or "smallint" or "tinyint" or "numeric" or "decimal"))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /// <summary>The column-list UPDATE (<see cref="IDialect.UpdateOnlySql"/>) for exactly this ordered set of properties.</summary>
     public string UpdateOnly(IReadOnlyList<PropertyMap> set)
     {

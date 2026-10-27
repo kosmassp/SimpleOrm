@@ -133,6 +133,21 @@ public sealed partial class Db
             map.KeyProperties.Count == targetForeignKeys.Length, map, relationship,
             $"declares {targetForeignKeys.Length} target foreign-key propert{(targetForeignKeys.Length == 1 ? "y" : "ies")} but this entity has a {map.KeyProperties.Count}-part key");
 
+        // Rows arrive SQL-ordered by target key. The spec's order is value-wise in
+        // every mode (ADR-0033); where the engine's key order already is the value
+        // order (GeneratedSql.KeyOrderIsValueOrder: integer keys everywhere, decimal
+        // keys where the dialect stores a number) the sort is the identity and is
+        // skipped (ADR-0048) — on SQLite a decimal key stored as TEXT still sorts.
+        var sortRows = !Generated(targetMap).KeyOrderIsValueOrder;
+        if (map.KeyProperties.Count == 1
+            && IntegerKeyType(map.KeyProperties[0]) is { } integerType
+            && IntegerKeyType(targetForeignKeys[0]!) == integerType)
+        {
+            await LoadFromIntegerForeignKeyAsync(
+                map, relationship, navigation, entities, ownerSubquery, targetMap, targetForeignKeys[0]!, sortRows, ct).ConfigureAwait(false);
+            return;
+        }
+
         var ownerKeys = entities.Select(e => map.GetKeyValues(e)).ToArray();
         var byOwner = new Dictionary<object?[], List<object>>(KeyTupleComparer.Instance);
         foreach (var filter in OwnerFilters(
@@ -178,10 +193,148 @@ public sealed partial class Db
                 // text (decimals, GUIDs — '10' before '2'); the spec's order is
                 // value-wise in every mode (ADR-0033), so the sort is the same
                 // comparison many-to-many and join mode apply.
-                rows?.Sort((left, right) => CompareKeyTuples(
-                    targetMap.GetKeyValues(left), targetMap.GetKeyValues(right)));
+                if (sortRows && rows is not null)
+                {
+                    SortByKey(rows, targetMap);
+                }
+
                 navigation.SetValue(entities[i], TypedList(relationship.TargetType, rows ?? []));
             }
+        }
+    }
+
+    /// <summary>
+    /// The typed fast path of <see cref="LoadFromTargetForeignKeyAsync{TEntity}"/>
+    /// (ADR-0048): a single-part key and its foreign key of one integer CLR type
+    /// group by <see cref="long"/> instead of boxed key tuples. Equality is the
+    /// same — the two parts share one CLR type, so <c>object.Equals</c> on the
+    /// boxed values and <see cref="long"/> equality agree — and so are the owner
+    /// set, its first-seen order, the chunks, and the SQL.
+    /// </summary>
+    private async Task LoadFromIntegerForeignKeyAsync<TEntity>(
+        EntityMap map, RelationshipMap relationship, PropertyInfo navigation,
+        IReadOnlyList<TEntity> entities, SelectAst? ownerSubquery,
+        EntityMap targetMap, PropertyMap targetForeignKey, bool sortRows, CancellationToken ct)
+        where TEntity : class
+    {
+        var ownerKey = map.KeyProperties[0];
+        var ownerValues = new object?[entities.Count];
+        var owners = new long[entities.Count];
+        var distinct = new List<object?[]>();
+        var seen = new HashSet<long>();
+        for (var i = 0; i < entities.Count; i++)
+        {
+            var value = ownerKey.GetValue(entities[i]);
+            ownerValues[i] = value;
+            if (value is null)
+            {
+                continue;   // an owner with a null key keeps an empty/null navigation
+            }
+
+            owners[i] = ToInt64(value);
+            if (seen.Add(owners[i]) && ownerSubquery is null)
+            {
+                distinct.Add([value]);
+            }
+        }
+
+        var byOwner = new Dictionary<long, List<object>>();
+        foreach (var filter in OwnerFilters(
+            [targetForeignKey], distinct, ownerSubquery, map.KeyProperties.ToArray()))
+        {
+            var rows = await RowsAsync(
+                relationship.TargetType, [filter], targetMap.KeyProperties, ct).ConfigureAwait(false);
+            foreach (var row in rows)
+            {
+                if (targetForeignKey.GetValue(row) is not { } foreignKey)
+                {
+                    continue;   // matches no owner, as a [null] tuple matched none
+                }
+
+                var owner = ToInt64(foreignKey);
+                if (!byOwner.TryGetValue(owner, out var list))
+                {
+                    byOwner[owner] = list = [];
+                }
+
+                list.Add(row);
+            }
+        }
+
+        for (var i = 0; i < entities.Count; i++)
+        {
+            List<object>? rows = null;
+            if (ownerValues[i] is not null)
+            {
+                byOwner.TryGetValue(owners[i], out rows);
+            }
+
+            if (relationship.Kind == RelationshipKind.OneToOne)
+            {
+                if (rows is { Count: > 1 })
+                {
+                    throw new SimpleOrmException(
+                        "REL-002", $"{map.EntityType.Name}.{relationship.PropertyName}",
+                        $"one-to-one matched {rows.Count} rows for key ({ownerValues[i]}); the target foreign key needs a unique index");
+                }
+
+                navigation.SetValue(entities[i], rows is { Count: 1 } ? rows[0] : null);
+            }
+            else
+            {
+                if (sortRows && rows is not null)
+                {
+                    SortByKey(rows, targetMap);
+                }
+
+                navigation.SetValue(entities[i], TypedList(relationship.TargetType, rows ?? []));
+            }
+        }
+    }
+
+    /// <summary>The integer CLR type of a key or foreign-key part (nullable unwrapped), or null when it is not one of byte, short, int, long — the typed fast path's domain.</summary>
+    private static Type? IntegerKeyType(PropertyMap part)
+    {
+        if (part.Owner is not null)
+        {
+            return null;
+        }
+
+        var type = Nullable.GetUnderlyingType(part.ClrType) ?? part.ClrType;
+        return type == typeof(long) || type == typeof(int) || type == typeof(short) || type == typeof(byte) ? type : null;
+    }
+
+    private static long ToInt64(object value) => value switch
+    {
+        long l => l,
+        int i => i,
+        short s => s,
+        byte b => b,
+        _ => Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture),
+    };
+
+    /// <summary>
+    /// Sorts loaded rows by their key, value-wise (<see cref="CompareKeyTuples"/>),
+    /// reading each row's key once instead of twice per comparison (ADR-0048). The
+    /// same comparisons over the same sequence: the same permutation as before.
+    /// </summary>
+    private static void SortByKey(List<object> rows, EntityMap targetMap)
+    {
+        if (rows.Count < 2)
+        {
+            return;
+        }
+
+        var keyed = new List<KeyValuePair<object?[], object>>(rows.Count);
+        foreach (var row in rows)
+        {
+            keyed.Add(new KeyValuePair<object?[], object>(targetMap.GetKeyValues(row), row));
+        }
+
+        keyed.Sort((left, right) => CompareKeyTuples(left.Key, right.Key));
+        for (var i = 0; i < keyed.Count; i++)
+        {
+            rows[i] = keyed[i].Value;
         }
     }
 
@@ -266,8 +419,8 @@ public sealed partial class Db
 
                 // Order by the target key, compared value-wise — never by a
                 // string rendering (ADR-0021 add.1: "10" sorts before "2").
-                matched.Sort((left, right) => CompareKeyTuples(
-                    targetMap.GetKeyValues(left), targetMap.GetKeyValues(right)));
+                // Always: the matches come in link order, not target-key order.
+                SortByKey(matched, targetMap);
             }
 
             navigation.SetValue(entities[i], TypedList(relationship.TargetType, matched));

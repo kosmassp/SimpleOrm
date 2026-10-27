@@ -6,6 +6,7 @@ namespace SimpleOrm\Cli;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use InvalidArgumentException;
 use ReflectionClass;
 use SimpleOrm\Dialect\Dialect;
 use SimpleOrm\Dialect\Dialects;
@@ -83,6 +84,11 @@ final class Application
 
             return 1;
         } catch (SimpleOrmException $exception) {
+            fwrite(STDERR, $exception->getMessage() . PHP_EOL);
+
+            return 1;
+        } catch (InvalidArgumentException $exception) {
+            // An option the open refused (ADR-0047: --command-timeout through a driver that has no statement timeout).
             fwrite(STDERR, $exception->getMessage() . PHP_EOL);
 
             return 1;
@@ -352,7 +358,8 @@ final class Application
         $set = MigrationSet::fromDirectory(self::migrationsDir($arguments), self::migrationsNamespace($arguments));
         // SQLite ignores --db (a temp file); the other dialects create and drop the throwaway database on it (the admin connection).
         $admin = $dialect->name() === Dialects::SQLITE ? '' : ($arguments->option('db') ?? '');
-        $result = SchemaShadow::for($dialect, $admin, self::statementLog($arguments))->rebuildSnapshots($set, new EntityMapLoader(), $outDir, $from, $to);
+        $result = SchemaShadow::for($dialect, $admin, self::statementLog($arguments), self::commandTimeout($arguments))
+            ->rebuildSnapshots($set, new EntityMapLoader(), $outDir, $from, $to);
 
         foreach ($result->notes as $note) {
             echo $note . PHP_EOL;
@@ -447,6 +454,8 @@ final class Application
                                        a snapshot stamped for another dialect is refused (MIG-014)
               --log                    write every statement the run sends to standard output, one line each
                                        (`migrate: <sql> [@names]`); parameter values are never written
+              --command-timeout <s>    every statement of the run may take at most <s> seconds (a whole number, at
+                                       least 1; for shadow, its throwaway database); default: the driver's own
             TXT . PHP_EOL;
 
         return 2;
@@ -539,7 +548,30 @@ final class Application
     {
         $db = $arguments->option('db') ?? throw new SimpleOrmException('CLI', 'arguments', '--db <path or connection string> is required');
 
-        return Db::open($db, new DbOptions(self::dialectFor($arguments), log: $arguments->flag('log') ? DbLog::stdout() : null));
+        return Db::open($db, new DbOptions(
+            self::dialectFor($arguments),
+            log: $arguments->flag('log') ? DbLog::stdout() : null,
+            commandTimeout: self::commandTimeout($arguments),
+        ));
+    }
+
+    /**
+     * `--command-timeout <seconds>` (ADR-0047, spec/dialects.md "Connection strings and the CLI"): a whole number, at least 1,
+     * set as the session's `commandTimeout` for every command that opens a database (`shadow`: its throwaway connection) —
+     * long DDL on a network engine outruns a driver's default. Absent, every driver keeps its own default.
+     */
+    private static function commandTimeout(Arguments $arguments): ?int
+    {
+        if (!$arguments->flag('command-timeout')) {
+            return null;
+        }
+
+        $raw = $arguments->option('command-timeout') ?? '';
+        if (!ctype_digit($raw) || (int) $raw < 1) {
+            throw new SimpleOrmException('CLI', '--command-timeout', "'{$raw}': expected a whole number of seconds, at least 1");
+        }
+
+        return (int) $raw;
     }
 
     /** `--log` (ADR-0045): every statement of the run goes to standard output through the built-in sink; without it, nothing is logged. */

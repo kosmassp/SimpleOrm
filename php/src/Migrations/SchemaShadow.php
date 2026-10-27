@@ -15,6 +15,7 @@ use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Metadata\RelationKind;
 use SimpleOrm\Parameters\PdoBinder;
 use SimpleOrm\Parameters\SqlPlaceholders;
+use SimpleOrm\Session\CommandTimeout;
 use SimpleOrm\Session\StatementLog;
 use Throwable;
 
@@ -50,14 +51,24 @@ final class SchemaShadow
         private readonly ShadowHost $host,
         private readonly string $adminConnectionString = '',
         ?StatementLog $log = null,
+        private readonly int|float|null $commandTimeout = null,
     ) {
+        CommandTimeout::validate($commandTimeout);
         $this->log = ($log ?? StatementLog::off())->named('shadow');
     }
 
-    /** The shadow of a dialect with its own host; `$adminConnectionString` is `--db` on SQL Server and PostgreSQL (ignored on SQLite). */
-    public static function for(Dialect $dialect, string $adminConnectionString = '', ?StatementLog $log = null): self
-    {
-        return new self($dialect, Dialects::shadowHost($dialect), $adminConnectionString, $log);
+    /**
+     * The shadow of a dialect with its own host; `$adminConnectionString` is `--db` on SQL Server and PostgreSQL (ignored on
+     * SQLite). `$commandTimeout` is the session option (ADR-0047) the shadow takes for the throwaway connection it opens —
+     * the replay and its introspection; the host's provisioning on the admin connection keeps the driver's default.
+     */
+    public static function for(
+        Dialect $dialect,
+        string $adminConnectionString = '',
+        ?StatementLog $log = null,
+        int|float|null $commandTimeout = null,
+    ): self {
+        return new self($dialect, Dialects::shadowHost($dialect), $adminConnectionString, $log, $commandTimeout);
     }
 
     public function rebuildSnapshots(
@@ -113,6 +124,7 @@ final class SchemaShadow
         $versions = $set->versions();
         $generatedAt = new DateTimeImmutable('now', new DateTimeZone('UTC'));
         $connection = $this->dialect->createConnection($shadowConnectionString);
+        CommandTimeout::applyTo($connection, $this->commandTimeout);
 
         if ($fromVersion > 0) {
             // Trust: rebuild the state at fromVersion from the committed snapshots, verify nothing below it.

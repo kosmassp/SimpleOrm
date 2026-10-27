@@ -17,7 +17,9 @@ use SimpleOrm\Metadata\MappingOptions;
  * the tracking mode (ADR-0034 add.1 — `Untracked` by default, the Level 0–2 session exactly), the session
  * clock the declared hooks write (Level 3 M3, spec/hooks.md "The session clock"), and the statement-batching option
  * (Level 4, ADR-0044 — `Off` by default, the Level 0–3 behaviour exactly; spec/session.md "Batching"), and the statement log
- * (Level 4 item 4, ADR-0045 — unset by default: nothing is written and nothing is formatted; spec/session.md "Statement log").
+ * (Level 4 item 4, ADR-0045 — unset by default: nothing is written and nothing is formatted; spec/session.md "Statement log"),
+ * and the resilience options (Level 4, ADR-0047 — the command timeout and the open retry, both off by default;
+ * spec/session.md "Resilience").
  */
 final readonly class DbOptions
 {
@@ -32,6 +34,13 @@ final readonly class DbOptions
      *        default) writes nothing and formats nothing. {@see DbLog::stdout()} is the built-in sink
      * @param bool $logParameterValues whether a line carries the parameter values beside their names — off by default:
      *        values may be personal data
+     * @param int|float|null $commandTimeout seconds every statement the session sends may run (ADR-0047, spec/session.md
+     *        "Resilience") — applied in whole seconds rounded up, at least 1; null (the default) leaves the driver's own
+     *        default untouched; negative refuses at open. See {@see CommandTimeout} for what each PDO driver takes
+     * @param int $openRetries how many more attempts the open may make after a failure the dialect calls transient; 0
+     *        (the default) is one attempt; negative refuses at open
+     * @param int|float $openRetryDelay the fixed wait between two attempts, in seconds — 1 by default, 0 for none; negative
+     *        refuses at open
      */
     public function __construct(
         public Dialect $dialect,
@@ -43,6 +52,9 @@ final readonly class DbOptions
         public int $maxStatementsPerMessage = 100,
         public ?Closure $log = null,
         public bool $logParameterValues = false,
+        public int|float|null $commandTimeout = null,
+        public int $openRetries = 0,
+        public int|float $openRetryDelay = 1,
     ) {
     }
 

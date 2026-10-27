@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	// The one import of the driver (CODING-STANDARD §1): pgx's connection configuration and its database/sql adapter.
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgconn/ctxwatch"
 	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
@@ -27,8 +29,20 @@ func openPool(connectionString string, cachedPlan CachedPlanPolicy) (*sql.DB, er
 	if err != nil {
 		return nil, err
 	}
+	// A statement whose context ends — the session's CommandTimeout (ADR-0047) or the caller's cancellation — is
+	// cancelled on the server (a CancelRequest), and the connection waits for the server's answer (57014) instead of
+	// severing the socket at once, pgx's default: the session owns one pinned connection, and "the session's next
+	// statement runs" (spec/session.md "Resilience"). The socket deadline stays as the fallback for a server that does
+	// not answer the cancel within cancelGrace.
+	config.BuildContextWatcherHandler = func(pgConn *pgconn.PgConn) ctxwatch.Handler {
+		return &pgconn.CancelRequestContextWatcherHandler{Conn: pgConn, DeadlineDelay: cancelGrace}
+	}
 	return sql.OpenDB(&connector{inner: stdlib.GetConnector(*config), cachedPlan: cachedPlan}), nil
 }
+
+// cancelGrace is how long a connection whose statement was cancelled waits for the server's answer before pgx severs
+// the socket.
+const cancelGrace = 5 * time.Second
 
 // connector wraps pgx's driver.Connector so every connection it makes is a [conn].
 type connector struct {
@@ -292,4 +306,24 @@ func (s *stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driv
 		return nil, err
 	}
 	return s.inner.QueryContext(ctx, arranged)
+}
+
+// IsTransient answers whether a failed open may succeed on another attempt (ADR-0047, spec/dialects.md "Transient
+// open failures"): a *pgconn.PgError anywhere in the cause chain whose SQLSTATE is class 08 (every connection
+// exception), 53300 (too_many_connections), or 57P03 (cannot_connect_now), else a socket, I/O, or timeout failure of
+// the Go runtime (core.IsTransientTransport) — pgx reports an unreachable server as a *pgconn.ConnectError wrapping
+// the dial's *net.OpError. Not transient: 28xxx (authentication), 3D000 (no such database). An engine answer settles
+// it: a PgError with another SQLSTATE is what the server will say again, whatever transport failure the chain also
+// carries (pgx joins the failures of every address it tried; CODING-STANDARD §10). A pure function of the failure;
+// never asked about a statement.
+func (*Dialect) IsTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		code := pgErr.Code
+		return strings.HasPrefix(code, "08") || code == "53300" || code == "57P03"
+	}
+	return core.IsTransientTransport(err)
 }

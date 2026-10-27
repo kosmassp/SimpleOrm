@@ -276,7 +276,7 @@ func selectRows(ctx context.Context, db *Db, ast *core.SelectAst, queryName stri
 	var results []reflect.Value
 	count := 0
 	for rows.Next() {
-		value, err := plan.Read(rows)
+		value, err := plan.Read(rows.Rows)
 		if err != nil {
 			return nil, err
 		}

@@ -60,7 +60,8 @@ func ValidateTypes(ctx context.Context, db *Db, entries []Entry, entities []refl
 
 func validateAll(ctx context.Context, db *Db, registry Registry) error {
 	var errs []*core.ValidationError
-	ctx = core.WithStatementLog(ctx, db.log) // the tooling reads (the migration history, the introspection) reach the log through the context
+	// The tooling reads (the migration history, the introspection) reach the log and the command timeout through the context.
+	ctx = db.toolingContext(ctx)
 
 	if registry.Migrations != nil {
 		if err := checkMigrations(ctx, db, registry, &errs); err != nil {
@@ -150,8 +151,11 @@ func validateStatement(
 		return nil
 	}
 
-	core.LogStatement(ctx, sqlText) // the describe call: one line, the entry's SQL (nothing is bound -- a described statement has no values)
-	columns, err := describer.DescribeStatement(ctx, db.connection, sqlText)
+	// The describe call: one line, the entry's SQL (nothing is bound -- a described statement has no values), and one
+	// command timeout around the dialect's describe (one or more catalog round trips on SQL Server).
+	describeCtx, cancel := core.SendStatement(ctx, sqlText)
+	columns, err := describer.DescribeStatement(describeCtx, db.connection, sqlText)
+	cancel()
 	if err != nil {
 		*errs = append(*errs, &core.ValidationError{Code: "VAL-001", Source: source, Message: err.Error()})
 		return nil

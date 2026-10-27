@@ -96,6 +96,13 @@ type Dialect interface {
 	// the batching plan's rule 3). Applied by every implementation so the plan stays the same.
 	MaxParametersPerMessage() int
 
+	// IsTransient: whether a failure raised by opening a connection is transient — another attempt may succeed (ADR-0047,
+	// spec/dialects.md "Transient open failures"): the engine's error numbers or SQLSTATEs, then the runtime's socket,
+	// I/O, and timeout failures, anywhere in the cause chain. A pure function of the failure; never asked about a
+	// statement, and never about the caller's own cancellation (the session checks that first). The session's open under
+	// Options.OpenRetries is its only caller.
+	IsTransient(err error) bool
+
 	// --- criteria rendering (§10.4, ADR-0020) ---
 
 	// LimitOffsetClause renders the paging clause from pre-bound placeholder names; either may be "".

@@ -141,8 +141,10 @@ func PlanSync(
 func ApplySync(ctx context.Context, conn *sql.Conn, statements []string) error {
 	ctx = core.WithDefaultStatementName(ctx, "sync")
 	for _, statement := range statements {
-		core.LogStatement(ctx, statement)
-		if _, err := conn.ExecContext(ctx, statement); err != nil {
+		statementCtx, cancel := core.SendStatement(ctx, statement)
+		_, err := conn.ExecContext(statementCtx, statement)
+		cancel()
+		if err != nil {
 			return err
 		}
 	}
@@ -173,8 +175,9 @@ func (c LiveColumn) EffectivelyNotNull() bool { return c.NotNull || c.PrimaryKey
 // lower-cased name (empty when the relation does not exist).
 func ReadLiveColumns(ctx context.Context, conn queryer, dialect core.Dialect, relation string) (map[string]LiveColumn, error) {
 	columns := map[string]LiveColumn{}
-	core.LogStatement(ctx, dialect.ColumnsInfoSQL(), sql.Named("relation", relation))
-	rows, err := conn.QueryContext(ctx, dialect.ColumnsInfoSQL(), sql.Named("relation", relation))
+	statementCtx, cancel := core.SendStatement(ctx, dialect.ColumnsInfoSQL(), sql.Named("relation", relation))
+	defer cancel()
+	rows, err := conn.QueryContext(statementCtx, dialect.ColumnsInfoSQL(), sql.Named("relation", relation))
 	if err != nil {
 		return nil, err
 	}
@@ -205,8 +208,9 @@ func ReadLiveIndexes(ctx context.Context, conn queryer, dialect core.Dialect, re
 	order := []string{}
 	byName := map[string]*accumulator{}
 
-	core.LogStatement(ctx, dialect.IndexesInfoSQL(), sql.Named("relation", relation))
-	rows, err := conn.QueryContext(ctx, dialect.IndexesInfoSQL(), sql.Named("relation", relation))
+	statementCtx, cancel := core.SendStatement(ctx, dialect.IndexesInfoSQL(), sql.Named("relation", relation))
+	defer cancel()
+	rows, err := conn.QueryContext(statementCtx, dialect.IndexesInfoSQL(), sql.Named("relation", relation))
 	if err != nil {
 		return nil, err
 	}

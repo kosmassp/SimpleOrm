@@ -575,8 +575,9 @@ func introspectTable(ctx context.Context, conn queryer, dialect core.Dialect, re
 // ReadViewDefinition is the stored definition of a view through the dialect's ViewDefinitionSQL, as stored
 // (callers normalize), or nil when it is absent.
 func ReadViewDefinition(ctx context.Context, q rowQueryer, dialect core.Dialect, view string) (*string, error) {
-	core.LogStatement(ctx, dialect.ViewDefinitionSQL(), sql.Named("relation", view))
-	row := q.QueryRowContext(ctx, dialect.ViewDefinitionSQL(), sql.Named("relation", view))
+	statementCtx, cancel := core.SendStatement(ctx, dialect.ViewDefinitionSQL(), sql.Named("relation", view))
+	defer cancel()
+	row := q.QueryRowContext(statementCtx, dialect.ViewDefinitionSQL(), sql.Named("relation", view))
 	var definition sql.NullString
 	if err := row.Scan(&definition); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -596,8 +597,9 @@ type rowQueryer interface {
 }
 
 func execStatement(ctx context.Context, conn *sql.Conn, statement string) error {
-	core.LogStatement(ctx, statement)
-	_, err := conn.ExecContext(ctx, statement)
+	statementCtx, cancel := core.SendStatement(ctx, statement)
+	defer cancel()
+	_, err := conn.ExecContext(statementCtx, statement)
 	return err
 }
 

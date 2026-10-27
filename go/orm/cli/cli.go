@@ -50,6 +50,13 @@ func Run(ctx context.Context, registry orm.Registry, args []string, stdout, stde
 		printUsage(stdout)
 		return 2
 	}
+	// --command-timeout (ADR-0047): every statement of the run carries it -- validate's session through its options,
+	// the migration tooling through the context.
+	timeout, err := commandTimeout(parsed)
+	if err != nil {
+		return fail(stderr, err.Error())
+	}
+	ctx = migrations.WithCommandTimeout(ctx, timeout)
 
 	command := strings.ToLower(parsed.positional[0])
 	switch {
@@ -445,7 +452,8 @@ func runValidate(ctx context.Context, registry orm.Registry, a arguments, stdout
 	if err != nil {
 		return fail(stderr, err.Error())
 	}
-	db, err := orm.Open(ctx, connStr, orm.Options{Dialect: dialect, Log: logSink(a, stdout)})
+	timeout, _ := commandTimeout(a) // validated by Run
+	db, err := orm.Open(ctx, connStr, orm.Options{Dialect: dialect, Log: logSink(a, stdout), CommandTimeout: timeout})
 	if err != nil {
 		return fail(stderr, err.Error())
 	}
@@ -800,6 +808,9 @@ options:
                       (default: the first migration version's own package)
   --log               write every statement the command sends to standard output,
                       one line each (name: sql [parameter names]); never values
+  --command-timeout <seconds>
+                      bound every statement the command sends (a whole number,
+                      at least 1); default: the driver's own behaviour
 `
 
 // scanTriggers is the scan rule for triggers (Level 4, ADR-0042, spec/metadata-model.md "Triggers"), run
@@ -817,6 +828,21 @@ func scanTriggers(maps *metadata.Loader, registry orm.Registry) string {
 		lines[i] = conflict.Error()
 	}
 	return strings.Join(lines, "\n")
+}
+
+// commandTimeout is --command-timeout <seconds> (ADR-0047, spec/dialects.md "Connection strings and the CLI"): a whole
+// number of seconds, at least 1, for every command that opens a database; absent, zero -- the driver's default. Any
+// other value refuses, for every command, before anything opens.
+func commandTimeout(a arguments) (time.Duration, error) {
+	if !a.flag("command-timeout") {
+		return 0, nil
+	}
+	raw, _ := a.option("command-timeout")
+	seconds, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || seconds < 1 {
+		return 0, fmt.Errorf("--command-timeout '%s': expected a whole number of seconds, at least 1", raw)
+	}
+	return time.Duration(seconds) * time.Second, nil
 }
 
 // logSink is the session's statement-log sink for a command that opens one (ADR-0045): with --log, each line goes to the

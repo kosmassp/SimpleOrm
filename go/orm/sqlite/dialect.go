@@ -317,6 +317,10 @@ func (*Dialect) SupportsStatementBatching() bool { return false }
 // MaxParametersPerMessage is 0, no cap (spec/dialects.md capability flags).
 func (*Dialect) MaxParametersPerMessage() int { return 0 }
 
+// IsTransient is always false (ADR-0047, spec/dialects.md "Transient open failures"): a SQLite open is a file open, and
+// it fails the same way the second time (SQLITE_CANTOPEN, a locked or corrupt file, no permission).
+func (*Dialect) IsTransient(error) bool { return false }
+
 func keyPredicate(m *core.EntityMap) string {
 	parts := make([]string, len(m.KeyProperties))
 	for i, key := range m.KeyProperties {

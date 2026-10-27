@@ -241,7 +241,10 @@ func (c *batchCall) send(ctx context.Context) error {
 		for i, write := range writes {
 			statements[i] = core.MessageStatement{SQL: write.sql, Args: write.args, Result: write.kind, Name: write.name}
 		}
-		results, err := c.db.batcher.SendMessage(core.WithStatementLog(ctx, c.db.log), c.db.connection, c.db.exec(), statements)
+		// One message, one command timeout (ADR-0047): the realization reads every result before it returns.
+		messageCtx, cancel := c.db.messageContext(core.WithStatementLog(ctx, c.db.log))
+		results, err := c.db.batcher.SendMessage(messageCtx, c.db.connection, c.db.rawExecutor(), statements)
+		cancel()
 		if err != nil {
 			return err
 		}

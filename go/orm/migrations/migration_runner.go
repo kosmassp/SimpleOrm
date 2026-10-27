@@ -359,7 +359,7 @@ func (r *Runner) Status(ctx context.Context) ([]MigrationEntry, error) {
 	}
 	defer conn.Close()
 
-	recorded, err := readRecorded(ctx, conn)
+	recorded, err := r.readRecordedIfPresent(ctx, conn)
 	if err != nil {
 		return nil, err
 	}
@@ -508,16 +508,36 @@ func computeChecksum(statements []MigrationStatement) string {
 
 // --- storage ---------------------------------------------------------------------
 
-func readRecorded(ctx context.Context, q queryer) (*recordedHistory, error) {
-	history := &recordedHistory{rows: map[recordedKey]recordedRow{}, versions: map[int64]bool{}}
-	core.LogStatement(ctx, "select version, object, description, checksum from schema_version")
-	rows, err := q.QueryContext(ctx, "select version, object, description, checksum from schema_version")
+func emptyHistory() *recordedHistory {
+	return &recordedHistory{rows: map[recordedKey]recordedRow{}, versions: map[int64]bool{}}
+}
+
+// readRecordedIfPresent is status's read of the history (and SchemaGuard's MIG-030 check through it): only when the
+// version table exists, asked through the dialect's ColumnsInfoSQL with @relation = schema_version -- no columns means
+// no table, and so an empty history. Every failure, of either read, is the driver's error.
+func (r *Runner) readRecordedIfPresent(ctx context.Context, q queryer) (*recordedHistory, error) {
+	columns, err := ReadLiveColumns(ctx, q, r.dialect, "schema_version")
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
-		}
-		// No schema_version table yet: nothing recorded.
-		return history, nil
+		return nil, err
+	}
+	if len(columns) == 0 {
+		return emptyHistory(), nil
+	}
+	return readRecorded(ctx, q)
+}
+
+// readRecorded reads the recorded history. It never mistakes a failure for an empty history (ADR-0047,
+// spec/migrations.md "Recording and integrity"): migrate, migrate down, and baseline create the table first inside the
+// run transaction, so a failing read -- a lost connection, a timeout, a refused permission -- fails the run with the
+// driver's error; status asks first whether the table exists (readRecordedIfPresent).
+func readRecorded(ctx context.Context, q queryer) (*recordedHistory, error) {
+	history := emptyHistory()
+	const selectHistory = "select version, object, description, checksum from schema_version"
+	statementCtx, cancel := core.SendStatement(ctx, selectHistory)
+	defer cancel()
+	rows, err := q.QueryContext(statementCtx, selectHistory)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -551,14 +571,16 @@ func (r *Runner) record(ctx context.Context, tx *sql.Tx, version int64, step Ren
 		sql.Named("applied_at", core.FormatUTC(time.Now())),
 		sql.Named("execution_ms", executionMs),
 	}
-	core.LogStatement(ctx, insert, args...)
-	_, err := tx.ExecContext(ctx, insert, args...)
+	statementCtx, cancel := core.SendStatement(ctx, insert, args...)
+	defer cancel()
+	_, err := tx.ExecContext(statementCtx, insert, args...)
 	return err
 }
 
 func (r *Runner) deleteVersionRecord(ctx context.Context, tx *sql.Tx, version int64) error {
-	core.LogStatement(ctx, "delete from schema_version where version = @version", sql.Named("version", version))
-	if _, err := tx.ExecContext(ctx, "delete from schema_version where version = @version", sql.Named("version", version)); err != nil {
+	statementCtx, cancel := core.SendStatement(ctx, "delete from schema_version where version = @version", sql.Named("version", version))
+	defer cancel()
+	if _, err := tx.ExecContext(statementCtx, "delete from schema_version where version = @version", sql.Named("version", version)); err != nil {
 		return core.Errorf("MIG-021", "migration statement", "%s -- while executing: delete from schema_version where version = %d", err.Error(), version)
 	}
 	return nil
@@ -608,8 +630,9 @@ func (r *Runner) readViewDefinition(ctx context.Context, tx *sql.Tx, view string
 }
 
 func (r *Runner) execute(ctx context.Context, tx *sql.Tx, statement string) error {
-	core.LogStatement(ctx, statement)
-	if _, err := tx.ExecContext(ctx, statement); err != nil {
+	statementCtx, cancel := core.SendStatement(ctx, statement)
+	defer cancel()
+	if _, err := tx.ExecContext(statementCtx, statement); err != nil {
 		return core.Errorf("MIG-021", "migration statement", "%s -- while executing: %s", err.Error(), statement)
 	}
 	return nil
@@ -654,8 +677,9 @@ func (r *Runner) applyTriggerGuard(
 // ReadTriggerDefinitions is the live statements of a declared trigger through the dialect's
 // TriggerDefinitionSQL, as stored (callers normalize).
 func ReadTriggerDefinitions(ctx context.Context, q queryer, dialect core.Dialect, name string) ([]string, error) {
-	core.LogStatement(ctx, dialect.TriggerDefinitionSQL(), sql.Named("relation", name))
-	rows, err := q.QueryContext(ctx, dialect.TriggerDefinitionSQL(), sql.Named("relation", name))
+	statementCtx, cancel := core.SendStatement(ctx, dialect.TriggerDefinitionSQL(), sql.Named("relation", name))
+	defer cancel()
+	rows, err := q.QueryContext(statementCtx, dialect.TriggerDefinitionSQL(), sql.Named("relation", name))
 	if err != nil {
 		return nil, err
 	}
@@ -709,16 +733,19 @@ func (r *Runner) viewMatchesExpectation(ctx context.Context, tx *sql.Tx, stateme
 		_, _ = tx.ExecContext(ctx, "release savepoint "+savepoint)
 	}
 	createProbe := r.dialect.CreateViewFromBodySQL(probe, body, false)
-	core.LogStatement(ctx, createProbe)
-	if _, err := tx.ExecContext(ctx, createProbe); err != nil {
+	createCtx, cancelCreate := core.SendStatement(ctx, createProbe)
+	_, err = tx.ExecContext(createCtx, createProbe)
+	cancelCreate()
+	if err != nil {
 		rollBack() // the body does not parse against the current schema: drift, not a failed run
 		return live, false, nil
 	}
 	expected, err := r.readViewDefinition(ctx, tx, probe)
 	if err == nil {
 		dropProbe := r.dialect.DropViewSQL(probe, false)
-		core.LogStatement(ctx, dropProbe)
-		_, err = tx.ExecContext(ctx, dropProbe)
+		dropCtx, cancelDrop := core.SendStatement(ctx, dropProbe)
+		_, err = tx.ExecContext(dropCtx, dropProbe)
+		cancelDrop()
 	}
 	if err != nil {
 		rollBack() // any failure inside the probe counts as drift (spec/migrations.md Clarifications, ADR-0043)

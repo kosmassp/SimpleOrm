@@ -23,6 +23,7 @@ use SimpleOrm\Migrations\TableSchemaIndex;
 use SimpleOrm\Migrations\TableSchemaIndexPart;
 use SimpleOrm\Query\AnsiSelectRenderer;
 use SimpleOrm\Query\SelectAst;
+use Throwable;
 
 /**
  * PostgreSQL implementation of {@see Dialect} backed by PDO's `pdo_pgsql` driver
@@ -56,6 +57,51 @@ final class PostgresDialect implements Dialect
         $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 
         return $pdo;
+    }
+
+    /**
+     * Whether an open failure is transient (ADR-0047, spec/dialects.md "Transient open failures"): at any link of the
+     * `getPrevious()` chain, a SQLSTATE of class `08`, `53300` (too many connections), or `57P03` (cannot connect now).
+     *
+     * **`pdo_pgsql` reports every failed connect as `08006`** (its fixed connection-failure state, native code 7) with
+     * libpq's message — the server's own SQLSTATE never reaches PHP. So an `08006` whose message carries a server-reported
+     * `FATAL:` line is judged by that line: transient only when it is one of the server's `53300` texts ("too many
+     * clients", "remaining connection slots are reserved") or `57P03` texts ("the database system is starting up / shutting
+     * down / in recovery mode / not … accepting connections"); any other `FATAL` — no such database (`3D000`), failed
+     * authentication (`28xxx`) — is the server refusing, and not transient. An `08006` without one (refused, unreachable,
+     * timed out, an unknown host) is the socket failure the runtime row covers elsewhere, and transient. The server's texts
+     * are English; under a localized `lc_messages` a transient `FATAL` reads as non-transient — the open fails at once,
+     * never retried by mistake (CODING-STANDARD §10).
+     */
+    public function isTransient(Throwable $failure): bool
+    {
+        foreach (PdoFailure::chain($failure) as $link) {
+            foreach (PdoFailure::records($link) as [$state]) {
+                if ($state === '53300' || $state === '57P03') {
+                    return true;
+                }
+
+                if ($state !== null && str_starts_with($state, '08')
+                    && self::connectFailureIsTransient($state, $link->getMessage())) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /** The `08006` refinement of {@see isTransient()}: a server `FATAL` decides; without one, the socket failed. */
+    private static function connectFailureIsTransient(string $state, string $message): bool
+    {
+        if ($state !== '08006' || preg_match('/\bFATAL:/', $message) !== 1) {
+            return true;
+        }
+
+        return preg_match(
+            '/FATAL:\s+(sorry, too many clients|remaining connection slots are reserved|the database system is (starting up|shutting down|in recovery mode|not yet accepting connections|not accepting connections))/',
+            $message,
+        ) === 1;
     }
 
     /** Always double-quoted, a `"` doubled (spec/dialects.md "Capability flags"). */

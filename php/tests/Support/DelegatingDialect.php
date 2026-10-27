@@ -13,6 +13,7 @@ use SimpleOrm\Metadata\TriggerDefinition;
 use SimpleOrm\Migrations\TableSchema;
 use SimpleOrm\Migrations\TableSchemaIndex;
 use SimpleOrm\Query\SelectAst;
+use Throwable;
 
 /**
  * The one test-local {@see Dialect} decorator base (CODING-STANDARD §8, §7): every member
@@ -36,6 +37,11 @@ abstract class DelegatingDialect implements Dialect
     public function createConnection(string $connectionString): PDO
     {
         return $this->inner->createConnection($connectionString);
+    }
+
+    public function isTransient(Throwable $failure): bool
+    {
+        return $this->inner->isTransient($failure);
     }
 
     public function quoteIdentifier(string $identifier): string

@@ -22,6 +22,7 @@ use SimpleOrm\Migrations\TableSchemaIndex;
 use SimpleOrm\Migrations\TableSchemaIndexPart;
 use SimpleOrm\Query\AnsiSelectRenderer;
 use SimpleOrm\Query\SelectAst;
+use Throwable;
 
 /**
  * SQLite implementation of {@see Dialect} backed by PDO's `pdo_sqlite` driver
@@ -45,6 +46,15 @@ final class SqliteDialect implements Dialect
         $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 
         return $pdo;
+    }
+
+    /**
+     * Never (ADR-0047, spec/dialects.md "Transient open failures"): a SQLite open is a file open, and it fails the same way
+     * the second time — `SQLITE_CANTOPEN`, a locked or corrupt file, no permission.
+     */
+    public function isTransient(Throwable $failure): bool
+    {
+        return false;
     }
 
     /** Accepts a bare file path, a `sqlite:<path>` PDO DSN, or C#-style `Data Source=<path>`. */

@@ -92,9 +92,8 @@ a conversion error names the query and the placeholder.
 
 **System functions are not placeholders.** `@@name` (SQL Server's
 `@@rowcount`, `@@identity`) is never a placeholder: a placeholder is an `@`
-not preceded by another `@`. (Found by both ADR-0044 ports: the second `@` of a
-generated `select @@rowcount` read as the placeholder `@rowcount`, and a
-registry command using a system function was `PRM-001` in the reference.)
+not preceded by another `@` — so a generated `select @@rowcount` binds nothing,
+and a registry command may use a system function (ADR-0044).
 
 **Collections (IN lists).** A collection-typed property (strings and byte
 arrays are values, not collections) expands its placeholder into one generated
@@ -160,7 +159,11 @@ always did, and every round trip stays a visible call in user code (§2).
 - `Batching`: `Off` (the default) or `Auto`. `Off` is the Level 0–3 behaviour
   exactly — one message per statement. `Auto` forms messages by the plan below.
 - `MaxStatementsPerMessage`: the most statements one message carries; 100 by
-  default. A value below 1 is the language's argument error at open.
+  default. A value below 1 is the language's argument error at open. Where the
+  language's zero value cannot tell "unset" from 0 (Go), 0 means the default of
+  100 and a negative value is refused; the port records it in its §10.
+- The option is validated at open, **before the connection opens**, so a refused
+  open leaves nothing behind (ADR-0044).
 - `BatchingInEffect`, a read-only question on the session: true when the option
   is `Auto` and this implementation's driver for the dialect sends a planned
   message as **one** round trip with a result per statement
@@ -171,7 +174,8 @@ always did, and every round trip stays a visible call in user code (§2).
   distinct statement text** within the call (on SQLite, where no network round
   trip exists, that reuse is the gain: ADR-0044 measures it). Nothing refuses:
   one configuration serves every database, and the question says which
-  realization is in force.
+  realization is in force. Prepared-command reuse is `Auto`'s only: under `Off`
+  every statement is prepared fresh — the Level 0–3 path exactly.
 
 **The plan** — how a call's statements become messages. The statements are the
 ones the call issues without batching, in the same order: batching never
@@ -187,11 +191,27 @@ not empty and
       client GUID — the "unset key" of unit-of-work.md "Detach and merge"); the
       new statement's key is taken as it stands before its preparation (a key
       the flush is about to flow in is not there yet), the message's as its
-      statements were prepared; a delete by key compares its key argument; or
-   b. the statement's instance has a non-null **many-to-one navigation** — or,
-      in a flush, a **cascade owner** it takes its key from (unit-of-work.md
-      "Keys flow before each insert") — pointing at an instance whose insert is
-      in the current message and **whose key the database generates**;
+      statements were prepared. Every statement that has an instance or a key
+      argument carries its key — inserts, updates, and deletes by entity and by
+      key alike. A delete by key compares its key argument after the same
+      validation and coercion the delete applies (an `int` matches an `int64`
+      key); an argument that does not validate carries no key and is refused
+      when it is prepared. A client-GUID insert's key counts once its
+      preparation has filled it, so two inserts that both arrived with an empty
+      GUID never cut each other. The same-key clause keeps a planned call equal
+      to its immediate calls where two instances share a key — a delete of A
+      followed by an insert of B with A's key succeeds as under `Off` (A is
+      forgotten before B's identity gate), and two new instances with one
+      natural key refuse the second with `UOW-002`, not the database's key
+      violation — because without it the identity gate would read a map the
+      current message has not yet updated (ADR-0044); or
+   b. the statement's instance — for an insert, an update (its `CRUD-004` check
+      reads the target's key), or a delete alike — has a non-null **many-to-one
+      navigation** — or, in a flush, a **cascade owner** it takes its key from
+      (unit-of-work.md "Keys flow before each insert": the owner a persist
+      cascade recorded through a one-to-many or one-to-one navigation, whose key
+      the child takes) — pointing at an instance whose insert is in the current
+      message and **whose key the database generates**;
 2. **it reads a result after a registry command** — the statement returns a
    result the session reads (an insert whose key the database generates; where
    the dialect reports affected rows by select, `ReportsAffectedRowsBySelect`, a
@@ -201,16 +221,19 @@ not empty and
 3. **it would overflow the message** — the message already holds
    `MaxStatementsPerMessage` statements, or the dialect caps the parameters of a
    message (`MaxParametersPerMessage`; SQL Server 2098) and the statement's bound
-   parameters would take the message over the cap. A statement alone over the
-   cap is a message of its own.
+   parameters would take the message over the cap. The count is of the values
+   bound to the prepared statement, after IN-list expansion — for a generated
+   statement the same as its placeholders. A statement alone over the cap is a
+   message of its own.
 
 A message that holds `MaxStatementsPerMessage` statements goes out **as soon as
 it is full** — before the next statement is prepared, like a rule-1 cut; rule 2
 and the parameter cap are decided after the statement is prepared. An operation
 that turns out to issue no statement (an explicit batch's clean tracked update)
 adds nothing to the message, but still ended the current one if rule 1 said so.
-Under `Off` the cap is one: every statement is prepared and run before the next
-is prepared, exactly as the immediate operations.
+Every statement of a message is prepared before the message is sent. Under
+`Off` the cap is one: every statement is prepared and run before the next is
+prepared, exactly as the immediate operations.
 
 The plan is a property of the session, not of the driver: it reads the
 statements and two facts of the dialect — whether a generated update or delete
@@ -221,7 +244,9 @@ the same statements on the same dialect, whatever its driver can do;
 no cap). A realization may use **more** round trips than the
 plan's messages — the sequential one does, and a driver that cannot carry a
 particular statement in a message (spec/dialects.md) sends that statement on its
-own — never fewer.
+own — never fewer. Whatever counts messages (the result's `Messages`, the test
+hook of "The step scripts") counts the plan's messages, not round trips: a
+realization that splits a message adds none.
 
 **Results and checks inside a message.** Each statement's result is read per
 statement, in order — the generated key of an insert, the affected-row count of
@@ -234,12 +259,21 @@ fails its check fails the call.
 
 **Failure.** A zero-row update is no error to the database, so the statements
 after a failing check in the same message **may have run** (they did wherever
-batching is in effect; the sequential realization stops at the failure). The call
+batching is in effect; the sequential realization stops at the failure). A
+refusal at preparation (`CRUD-004`, `UOW-002`, a converter's code) fails the
+call before the message holding the earlier statements runs, since a message's
+statements are all prepared first; so when two statements of one call would
+both fail — an earlier one at execution (`CRUD-010`), a later one at
+preparation in the same message — `Auto` reports the preparation's code where
+`Off` reports the execution's (ADR-0044). Either way the call fails, and it
 fails as a whole:
 
 - every in-memory effect of every statement the call prepared is undone — keys,
   versions, stamps, flags, tracking — so the instances are as they were before
-  the call;
+  the call. The undo restores what the statements did, not the foreign keys a
+  flush copied: a parent's key flowed into a child's foreign-key property
+  before its insert's preparation stays after a failed flush, as before
+  batching (ADR-0044);
 - the call's own transaction rolls back: nothing applied;
 - inside the caller's transaction, the rows of the statements that ran — before
   the failure and possibly after it in its message — are the caller's to roll
@@ -280,11 +314,14 @@ BatchResult result = await batch.SendAsync(ct);  // the visible round trip(s)
 - The result carries `Affected` — one count per queued operation, in queue
   order: an insert 1; a generated update or delete its judged count; a registry
   command the driver's count; an operation that issued no statement (a clean
-  tracked update) 0 — and `Messages`, the number of messages the plan formed.
+  tracked update) 0 — and `Messages`, the number of messages the plan formed
+  (under `Off`, the number of statements).
 - A batch that was sent, or disposed, takes nothing more: queuing on it or
   sending it again is `TX-003`. A batch disposed unsent is dropped silently —
   nothing is ever sent implicitly, as with scheduled work. An empty send returns
-  an empty result and begins no transaction.
+  an empty result and begins no transaction; a send whose operations all issue
+  no statement (clean tracked updates) still begins and commits one —
+  unobservable outside the transaction (ADR-0044).
 - Under `Off` the batch exists and behaves the same, one statement per message:
   switching the option never requires a code change.
 - **Reads are not batched.** A batch queues writes and registry commands only;
@@ -298,60 +335,6 @@ the package functions `orm.BatchInsert`, `BatchUpdate`, `BatchUpdateOnly`,
 `BatchDelete[T]`, `BatchDeleteEntity`, `BatchExecute` (generic operations cannot
 be methods in Go, as for the immediate calls), `b.Send(ctx)`, and `b.Discard()`
 as the analog of disposal.
-
-**Clarifications** (the PHP and Go port gap lists of ADR-0044, 14 + 16
-questions, consolidated; each the answer the three implementations now embody):
-
-1. **A message's statements are all prepared before it is sent.** A refusal at
-   preparation (`CRUD-004`, `UOW-002`, a converter's code) therefore fails the
-   call before the message holding the earlier statements runs. When two
-   statements of one call would both fail — an earlier one at execution
-   (`CRUD-010`), a later one at preparation in the same message — `Auto` reports
-   the preparation's code where `Off` reports the execution's. Either way the
-   call fails and nothing applies.
-2. **Prepared-command reuse is `Auto`'s.** Under `Off` every statement is
-   prepared fresh — the Level 0–3 path exactly.
-3. **Rule 3 counts bound parameters**: the values bound to the prepared
-   statement, after IN-list expansion — for a generated statement the same as
-   its placeholders.
-4. **Rule 1a and the key.** The same-key clause keeps a planned call equal to
-   its immediate calls where two instances share a key: a delete of A followed by
-   an insert of B with A's key (`Off` succeeds — A is forgotten before B's
-   identity gate), two new instances with one natural key (`Off` refuses the
-   second with `UOW-002`, not the database's key violation). Without it the
-   identity gate would read a map the current message has not yet updated.
-5. **Rule 1b for every statement.** It applies to a statement on any instance
-   with such a navigation — inserts, updates (their `CRUD-004` check reads the
-   target's key), and deletes alike. The cascade owner is the one a persist
-   cascade recorded through a one-to-many or one-to-one navigation, whose key the
-   child takes.
-6. **The message hook and `Messages`** count the plan's messages, not round
-   trips: a realization that splits a message adds none. The hook is told a
-   message's size as it is sent, before its outcome is known, so a message that
-   fails is counted; a call with nothing to send tells it nothing. Under `Off`
-   `Messages` equals the number of statements.
-7. **A send whose operations all issue no statement** (clean tracked updates)
-   still begins and commits a transaction; only an empty queue begins none. It is
-   unobservable outside the transaction.
-8. **The option is validated at open**, before the connection opens, so a refused
-   open leaves nothing behind. Where the language's zero value cannot tell
-   "unset" from 0 (Go), 0 means the default of 100 and a negative value is
-   refused; the port records it in its §10.
-9. **A key flowed into a foreign-key property stays after a failed flush** (as
-   before batching): the flush copies parents' keys into children before each
-   insert's preparation, and the undo restores what the statements did — keys,
-   versions, stamps, flags, tracking — not the copied foreign keys.
-10. **In the step scripts an unset integer key reads as 0** (`"equals": 0`),
-    whatever the language's own representation of "unset" (a PHP typed property
-    with no value, a Go zero value).
-11. **The keys rule 1a compares** (the review round). Every statement that has an
-    instance or a key argument carries its key — inserts, updates, deletes by
-    entity and by key alike. A delete by key's argument is compared after the
-    same validation and coercion the delete applies (an `int` matches an `int64`
-    key); an argument that does not validate carries no key and is refused when
-    it is prepared. A client-GUID insert's key counts once its preparation has
-    filled it, so two inserts that both arrived with an empty GUID never cut each
-    other.
 
 ## Statement log (Level 4 item 4, ADR-0045)
 
@@ -369,7 +352,9 @@ nothing.
   sink that writes each line to standard output (C# `DbLog.Console`), so a
   trial switches the log on with one assignment; forwarding to the
   application's logger is the application's own one-line adapter
-  (`line => logger.LogDebug(line)`), never a library concern.
+  (`line => logger.LogDebug(line)`), never a library concern. The built-in
+  sink writes to the process's standard output stream, not through the
+  language's output buffering (`php://stdout`, not `echo`; Go `os.Stdout`).
 - `LogParameterValues`: whether the line carries the parameter **values**
   beside their names. **Off by default**: values may be personal data, and a
   log never receives them unless the application asks (§2 "strict by
@@ -378,30 +363,41 @@ nothing.
 **The line.** `<name>: <sql>`, followed, when the statement has parameters,
 by a space and the parameter names in bind order in square brackets —
 `[@k0]`, `[@Name, @Id]` — or, with values on, `[@Name = 'Ada', @Id = 7]`.
-The SQL is the text **exactly as sent**: after IN-list expansion
-("Parameters"), the dialect's rendering (`set nocount on; …` on SQL Server,
-`returning`), and whatever the realization sent (a multi-statement text is
-one line per statement it holds, as the plan counts them). Nothing is
-reformatted or truncated. A value is written **as it was bound** — after
-the converter, so what the driver receives (a PHP bool is the `0`/`1` it
-binds; a decimal the text it binds) — in a fixed, culture-neutral form: a
-string single-quoted with `'` doubled, a null as `null`, a bool as
-`true`/`false`, bytes as `0x` + the hex of the first 16, an ellipsis `…`
+The SQL is the text **exactly as sent** — as the library hands it to the
+driver: after IN-list expansion ("Parameters"), the dialect's rendering
+(`set nocount on; …` on SQL Server, `returning`), and whatever the
+realization sent. A driver's own rewrite is invisible — PDO's `:name`,
+pgx's `$n` — so the line shows the `@name` text and the lines read the same
+across languages; a rewrite the **library** makes is visible: the SQL
+Server multi-statement realization (spec/dialects.md) logs each statement
+with its placeholders renamed apart (`@p0_name`, `@p1_name`), one line per
+statement it holds, as the plan counts them, because that is the text it
+sends (ADR-0045). Nothing is reformatted or truncated. "One line per
+statement" is by count, not by newline: multi-line SQL (a trigger body, a
+`create table`) keeps its line breaks, and a consumer that needs one
+physical line per statement replaces them itself. A value is written **as
+it was bound** — after the converter, so what the driver receives (a PHP
+bool is the `0`/`1` it binds; a decimal the text it binds) — in a fixed,
+culture-neutral form: a string single-quoted with `'` doubled, a null as
+`null` (a null inside an array parameter and a nil byte slice too), a bool
+as `true`/`false`, bytes as `0x` + the hex of the first 16, an ellipsis `…`
 when there are more, and always ` (N bytes)` — `0x0102 (2 bytes)`,
 `0xabab…abab… (20 bytes)` —, an instant as the dialect binds it (ISO-8601
-text on SQLite), an array parameter in square brackets; numbers and the rest
-in their invariant form.
+text on SQLite), an array parameter in square brackets; an integer as
+digits, a float in its shortest round-trip decimal form, never with an
+exponent; a value type without a fixed form (a GUID, a decimal) as its
+bound form; the rest in their invariant form.
 
 **The name** says what issued the statement:
 
 | statement | name |
 |---|---|
-| a registry query or command | the name the registry declares — `Queries.UserByEmail` — where the implementation knows it (C# and PHP learn it when SchemaGuard enumerates the registry, which an application does at startup, §7.18; Go's explicit registry has no variable names); otherwise the resource path of an embedded entry; otherwise the kind of entry, `query` or `command` (an inline entry's description would only repeat the SQL) |
+| a registry query or command | the name the registry declares — `Queries.UserByEmail` — where the implementation knows it (below: C# and PHP learn it when SchemaGuard enumerates the registry, which an application does at startup, §7.18; Go's explicit registry has no variable names, so a Go entry may declare it); otherwise the resource path of an embedded entry (the `embed.FS` path in Go); otherwise the kind of entry, `query` or `command` (an inline entry's description is never used: it would only repeat the SQL) |
 | a generated write | `<Entity>.insert`, `<Entity>.update` (the full-row and the tracked dirty update alike), `<Entity>.updateOnly`, `<Entity>.delete` (the key form, the entity form, and the soft delete's flag-setting update alike — the name is the operation asked for) |
-| a generated read | `<Entity>.get` (the key read, `Refresh` included), `<Entity>.criteria` (criteria queries, and the queries explicit and batch loading issue — a many-to-many load is the link entity's criteria, then the target's), `<Entity>.include` (a join-mode eager query), `<Entity>.selectAll`, `<Entity>.statement` (a statement-backed entity) |
+| a generated read | `<Entity>.get` (the key read, `Refresh` included — it is the key read), `<Entity>.criteria` (criteria queries, and the queries explicit, batch, and eager loading issue — a many-to-many load is the link entity's criteria, then the target's; `MultiQuery` logs the root as `<Root>.criteria` and each navigation's query as `<Target>.criteria`, `SubSelect` one statement per navigation the same way), `<Entity>.include` (a join-mode eager query — the only eager mode with its own name — one line), `<Entity>.selectAll`, `<Entity>.statement` (a statement-backed entity) |
 | metadata DDL | `<Entity>.createTable`, `<Entity>.createIndex`, `<Entity>.createView`, `<Entity>.createTrigger` (its drop statements too) |
 | the migration runner | `migrate` — every statement it runs: the version table, the recorded history, the steps, the guards' definition reads, the rollback |
-| SchemaGuard | `validate <source>` — the describe call of a registry entry (its name as the registry declares it, else the fallback of the first row) or of a statement-backed entity, and the column introspection it causes, under the same source; `<source>` for an entity's own check is the class name. SchemaGuard's `MIG-030` check reads the history through the runner: `migrate` |
+| SchemaGuard | `validate <source>` — the describe call of a registry entry (its name as the registry declares it, else the fallback of the first row: `validate query`) or of a statement-backed entity, and the column introspection it causes, under the same source; `<source>` for an entity's own check is the class name. SchemaGuard's `MIG-030` check reads the history through the runner: `migrate` |
 | the schema tooling | `shadow` (everything a shadow run sends: the replayed steps, its introspection, the view and trigger read-back — the runner's statements take the shadow's name there), `sync` (the force-sync introspection and the plan's statements; the `migrate --force` run before it stays `migrate`) |
 
 `<Entity>` is the class name as the fixture spells it (the step scripts'
@@ -409,18 +405,58 @@ names). Where a language spells a generated operation differently
 (`updateOnly`, `BatchUpdateOnly`), the log keeps the reference's
 spelling: the line is for reading across implementations.
 
+**Learning a registry entry's name.** The reference stamps the name onto
+the entry object when SchemaGuard enumerates the registry. Where entries
+are values built per call (PHP's registry methods return a fresh `Query`
+each time), the session may key the learned names by (kind, SQL text) —
+two entries with one SQL text keep the first name. Where nothing can be
+learned (Go's explicit registry of package variables), the entry may
+**declare** its name (`orm.Inline[...](sql).Named("Queries.UserByEmail")`),
+optional, and the declared name wins everywhere, SchemaGuard's
+`validate <name>` lines included. The spelling is `<Class>.<member>` as the
+registry writes them (`Queries.UserByEmail`, `Queries.userByEmail`), never
+normalized (ADR-0045).
+
+**Names are a precedence, outermost first.** A shadow run names the runner
+it drives (`shadow`); SchemaGuard's `MIG-030` read through the runner is
+`migrate` (it *is* the runner's status read); an implementation whose names
+travel by context lets the outer name win.
+
 **When.** The line is written **as the statement is sent**: after it is
 prepared and bound — so what the application reads is what the database
 receives — and before it executes. Exactly one line per statement sent, in
-the order sent; a message of several statements (ADR-0044) writes one line
-per statement, in statement order, before the message goes out. A statement
-refused before it is sent (`CRUD-004`, `UOW-002`, `PRM-001`, a converter's
-code, a `MAP-028` type) writes nothing: no SQL left the session. The line
-says nothing about the outcome — not the duration, not the count, not the
-error — the error reaches the caller as it always did; a second, after-the-
-fact line is a possible later addition, not part of this. The log function
-runs on the calling thread, synchronously; an exception it throws fails the
-call like any other exception — the library never swallows it.
+the order sent:
+
+- A message sent as **one round trip** (ADR-0044: `DbBatch`, pgx
+  `SendBatch`, the multi-statement text) writes its lines together, one per
+  statement, in statement order, after the message is rendered and before it
+  is sent. The one-round-trip realization owns these lines (Go's
+  `StatementBatcher`, PHP's `WriteRun`): only it knows the text it finally
+  sends, and a third-party realization must write them too (Go records this
+  in its §10).
+- The **sequential realization** writes each line right before its
+  statement runs, so after a failure the statements that never ran have no
+  line.
+- Where preparing is itself a round trip (PDO on PostgreSQL and SQL Server,
+  prepared statements generally), the line is written after the library's
+  binding and before the execute call; a statement whose prepare fails wrote
+  nothing. The one exception is SchemaGuard's describe, where the prepare
+  *is* the call: its line precedes it, so an unparseable entry (`VAL-001`)
+  still shows what was described. A registry command is described too
+  (prepared, never run) and logs the same way; the describe line lists the
+  parameter names the implementation binds for it (none where it describes
+  unbound).
+- A stream's line is written when iteration starts, not when the stream
+  object is created: that is when the statement is sent.
+
+A statement refused before it is sent (`CRUD-004`, `UOW-002`, `PRM-001`, a
+converter's code, a `MAP-028` type) writes nothing: no SQL left the session.
+The line says nothing about the outcome — not the duration, not the count,
+not the error — the error reaches the caller as it always did; a second,
+after-the-fact line is a possible later addition, not part of this. The log
+function runs on the calling thread, synchronously; an exception it throws
+fails the call like any other exception, in every language — the library
+never swallows it (a Go panic in the sink is not recovered).
 
 **What is not a statement of the application's**: the dialect's own
 housekeeping inside the seam — the migration run lock (`begin immediate`,
@@ -433,99 +469,27 @@ library issues it. They are not logged.
 
 **The CLI** takes `--log`: every statement of a `migrate`, `migrate down`,
 `shadow`, `diff --amend --db`, `validate`, or force-sync run goes to standard
-output through the built-in sink.
+output through the built-in sink — to the output the CLI was given, which is
+standard output when the CLI runs as documented.
+
+**Tooling without a session.** Where the migration runner, the shadow, or
+force-sync take a connection rather than a session (Go), the sink reaches
+them through the language's own carrier (Go: the context,
+`migrations.WithStatementLog`); the reference and PHP read it off the
+session. The lines are the same (ADR-0045).
 
 **Per language.** PHP and Go keep the option's meaning and the line's
 content; the shape of the function and the sink are theirs and recorded in
 their §10 (PHP: `new DbOptions(..., log: ?Closure, logParameterValues: bool)`
 and `DbLog::stdout()`; Go: `orm.Options{Log func(string), LogParameterValues
 bool}` and `orm.ConsoleLog`, with `Named(...)` on an entry and
-`migrations.WithStatementLog` for the tooling, Clarifications 1 and 9). The
-line's text is per language and is **not**
+`migrations.WithStatementLog` for the tooling — "Learning a registry entry's
+name", "Tooling without a session"). The line's text is per language and is **not**
 pinned by a conformance file: each implementation proves in its own tests
 that every execution path writes exactly one line with its name, that the
 flush and the batch write one per statement under `Off` and `Auto`, that
 values appear only when asked, and that the built-in sink writes to standard
 output.
-
-**Clarifications** (the PHP and Go port gap lists of ADR-0045, 17 + 22
-questions, consolidated; each the answer the three implementations now
-embody):
-
-1. **A registry entry's name, where the implementation can learn it.** The
-   reference stamps the name onto the entry object when SchemaGuard
-   enumerates the registry. Where entries are values built per call (PHP's
-   registry methods return a fresh `Query` each time), the session may key
-   the learned names by (kind, SQL text) — two entries with one SQL text
-   keep the first name. Where nothing can be learned (Go's explicit registry
-   of package variables), the entry may **declare** its name
-   (`orm.Inline[...](sql).Named("Queries.UserByEmail")`), optional, and the
-   declared name wins everywhere, SchemaGuard's `validate <name>` lines
-   included. The spelling is `<Class>.<member>` as the registry writes them
-   (`Queries.UserByEmail`, `Queries.userByEmail`), never normalized.
-2. **The fallback name is the kind.** An entry whose name the implementation
-   does not know logs as `query` or `command` — in SchemaGuard's lines too
-   (`validate query`) — or as its resource path when it is embedded (the
-   `embed.FS` path in Go). An inline entry's description is never used: it
-   repeats the SQL.
-3. **"Exactly as sent" means as the library hands it to the driver.** A
-   driver's own rewrite is invisible — PDO's `:name`, pgx's `$n` — so the
-   line shows the `@name` text and the lines read the same across languages.
-   A rewrite the **library** makes is visible: the SQL Server multi-statement
-   realization (spec/dialects.md) logs each statement with its placeholders
-   renamed apart (`@p0_name`, `@p1_name`), one line per statement, because
-   that is the text it sends.
-4. **"Before the message goes out" is for a message sent as one round trip**
-   (`DbBatch`, pgx `SendBatch`, the multi-statement text): its lines are
-   written together, in statement order, after the message is rendered and
-   before it is sent. The **sequential realization** writes each line right
-   before its statement runs, so after a failure the statements that never
-   ran have no line — "exactly one line per statement *sent*".
-5. **Where preparing is itself a round trip** (PDO on PostgreSQL and SQL
-   Server, prepared statements generally), the line is written after the
-   library's binding and before the execute call; a statement whose prepare
-   fails wrote nothing. The one exception is SchemaGuard's describe, where
-   the prepare *is* the call: its line precedes it, so an unparseable entry
-   (`VAL-001`) still shows what was described. A registry command is
-   described too (prepared, never run) and logs the same way; the describe
-   line lists the parameter names the implementation binds for it (none
-   where it describes unbound).
-6. **A stream's line is written when iteration starts**, not when the
-   stream object is created: that is when the statement is sent.
-7. **Eager loading's queries are criteria queries.** `MultiQuery` logs the
-   root as `<Root>.criteria` and each navigation's query as
-   `<Target>.criteria` (a many-to-many: the link entity's, then the
-   target's); `SubSelect` is one statement per navigation, logged the same
-   way; only join mode has its own name, `<Root>.include`, one line.
-8. **`Refresh` logs as `<Entity>.get`**: it is the key read.
-9. **Tooling without a session may carry its sink another way.** Where the
-   migration runner, the shadow, or force-sync take a connection rather than
-   a session (Go), the sink reaches them through the language's own carrier
-   (Go: the context, `migrations.WithStatementLog`); the reference and PHP
-   read it off the session. The lines are the same.
-10. **Names are a precedence, outermost first.** A shadow run names the
-    runner it drives (`shadow`); SchemaGuard's `MIG-030` read through the
-    runner is `migrate` (it *is* the runner's status read); an implementation
-    whose names travel by context lets the outer name win.
-11. **A one-round-trip realization owns its lines** (Go's `StatementBatcher`,
-    PHP's `WriteRun`): only it knows the text it finally sends. A third-party
-    realization that does not write them drops them; the contract says it
-    must (Go records this in its §10).
-12. **Numbers**: a float prints in its shortest round-trip decimal form,
-    never with an exponent; an integer as digits; a value type without a
-    fixed form (a GUID, a decimal) as its bound form.
-13. **A null inside an array parameter is `null`**; a nil byte slice is
-    `null`.
-14. **The stdout sink writes to the process's standard output stream**, not
-    through the language's output buffering (`php://stdout`, not `echo`;
-    Go `os.Stdout`); the CLI's `--log` writes to the output the CLI was given,
-    which is standard output when the CLI runs as documented.
-15. **A failing sink fails the call** in every language; a Go panic in the
-    sink is not recovered.
-16. **Multi-line SQL is logged on several lines.** The line is "one line per
-    statement" by count, not by newline: a trigger body or a `create table`
-    keeps its line breaks. A consumer that needs one physical line per
-    statement replaces them itself.
 
 ## The rest of the session
 
@@ -556,48 +520,101 @@ instance, `Update` writes the full row, and nothing below applies.
 var options = new DbOptions { Dialect = new SqliteDialect(), Tracking = TrackingMode.Tracked };
 ```
 
-A tracked session keeps, for its lifetime:
+A tracked session keeps, for its lifetime — tracking is per session: two
+sessions have two maps, and closing a session clears its map:
 
 - **One instance per (entity type, key)** — the §7.4 identity, compared
   value-wise (decimals numerically, temporals by instant, byte arrays by
   content). Every read path that materializes an entity consults the map:
   registry queries and streams whose result type is an entity, key reads,
   criteria queries, explicit and batch loading, eager loading in every fetch
-  mode (join segments included), and `QueryAll`. Plain result types (DTOs,
-  scalars), keyless entities (views without a key, statements), and rows
-  whose key has a null part are never tracked.
+  mode (join segments included), and `QueryAll`. Every keyed entity map is
+  tracked, views included (writes against a view still refuse `CRUD-003`),
+  and every materialized keyed entity row is tracked — the many-to-many link
+  rows a load reads included, even though the caller never receives them:
+  one rule for every read path, no special cases. Plain result types (DTOs,
+  scalars), types with no mapping metadata, keyless entities (views without
+  a key, statements), and rows whose key has a null part are never tracked.
+  The map is a cache of what the session materialized, not a transaction: a
+  read that fails midway leaves the rows it already resolved registered.
+  Where a language materializes values rather than references (Go `[]T`
+  beside `[]*T`), only the reference-shaped result is the tracked instance;
+  a value-shaped result for a known key is a copy of the tracked state and is
+  never registered — the port records the shape in its §10 table, and the
+  spec's "instance" means the reference-shaped one (ADR-0035).
 - **A snapshot of each tracked instance's mapped values** as read or last
-  written; owned members snapshot flat, like their columns (ADR-0030).
+  written; owned members snapshot flat, like their columns (ADR-0030). The
+  snapshot holds the **database-bound form** of each value — the type
+  converter's output — so "dirty" means "the database would receive a
+  different value": a handler-typed or JSON member compares by what would be
+  written, an in-place mutation of such a member counts as a change, byte
+  arrays compare by content, and two decimals equal in value are clean
+  whatever their text (ADR-0035). Navigations are not dirty state and are
+  never part of a snapshot.
 
 **The tracked instance wins** (the owner's ruling): a read that finds its key in the
 map returns the tracked instance and **does not apply the row's values** —
-dirty or not. Loaded navigations stay as they were. `RefreshAsync(entity)`
-is the explicit overwrite: it re-reads the row by key, applies every mapped
-value onto the instance, and resets the snapshot; a missing row is
-`CRUD-001`. `Refresh` works in both modes.
+dirty or not. The row is still mapped before it is discarded, so its
+conversion and strictness errors (`MAP-*`, `VAL-020`) still fire. Loaded
+navigations stay as they were; an explicit load or an include always
+(re)assigns the navigation it names, on the tracked instance. Loading
+correlates by the **live values** of a tracked instance's key and
+foreign-key properties — a local edit of a tracked FK changes which owner a
+later load attaches the target to; the snapshot plays no part in loading.
+`RefreshAsync(entity)` is the explicit overwrite: it re-reads the row by
+key, applies every mapped value onto the instance, and resets the snapshot;
+a missing row is `CRUD-001`. `Refresh` works in both modes; `Refresh` of an
+instance the session does not know applies the row but does not register it.
+
+**Transactions do not touch the map**: a rollback reverts the database, not
+the instances or the snapshots — `Refresh` is the way back.
 
 **Questions** — `IsTracked(entity)` (never throws); `ChangesOf(entity)`,
 the mapped property names whose value differs from the snapshot (dotted for
-owned members), and `IsDirty(entity)`; both are `UOW-001` for an instance
-the session does not track, including every instance in an untracked
-session.
+owned members), listed in metadata order — the `EntityMap` property order: a
+type's own mapped properties first, inherited ones after (mapping-rules.md),
+owned members at their navigation's position; runners may still compare as
+sets — and `IsDirty(entity)`; both are `UOW-001` for an instance the
+session does not track, including every instance in an untracked session.
 
 **Writes keep the map honest:**
 
 - `Insert` registers the instance with its generated key and a fresh
-  snapshot.
+  snapshot of every column.
 - `Update` on a **tracked** instance writes **only the dirty columns**
   through the column-list path (ADR-0028) — the version bump and check
-  apply as always — and **writes nothing at all when the instance is
-  clean** (no statement, no version bump). On an instance the session does
+  apply as always — then refreshes the snapshot, and **writes nothing at all when the instance is
+  clean** (no statement, no version bump, no snapshot change). Only key,
+  version, or generated values differing is clean: those columns are never
+  in a SET (a changed key is `UOW-002`). On an instance the session does
   not know (user-constructed, never inserted here) it writes the full row as
-  at Level 1, then tracks it. `UpdateOnly` writes the listed columns as
-  always; both refresh the snapshot afterwards.
-- `Delete` forgets the key; the deleted instance is no longer tracked.
-- A write from an instance that is **not the session's instance for its
-  key** — another tracked instance holds the key, or a tracked instance's
-  key was changed — is `UOW-002` before any SQL. A key is identity; it never
-  updates.
+  at Level 1, then tracks it with a snapshot of every column. A full-row
+  `Update` validates like a full row before anything else: every
+  navigation's consistency (`CRUD-004`) is checked first, then the identity
+  gate (`UOW-002`), then the snapshot decides what to write — so a clean
+  tracked instance carrying an inconsistent navigation is refused, not
+  silently skipped.
+- `UpdateOnly` writes the listed columns as always and moves the snapshot
+  forward for the written columns and the version only; an unwritten change
+  stays dirty (ADR-0035). A column-list update of an instance the session
+  does not know does not register it — the session saw only part of the
+  row. Its refusals come in order: the list validates first
+  (`CRUD-005`/`006`/`007`), then navigation consistency (`CRUD-004`, the
+  navigations of the listed properties only), then identity (`UOW-002`) —
+  all before any SQL.
+- `Delete` forgets the key; the deleted instance is no longer tracked. The
+  by-key form has no instance to gate and forgets whichever instance holds
+  the key.
+- **Every write and the refresh pass the identity gate**: `Insert` (a
+  caller-supplied key held by another instance — a generated key has
+  nothing to check yet), `Update`, `UpdateOnly`, the entity form of
+  `Delete`, and `Refresh` from an instance that is **not the session's
+  instance for its key** — another tracked instance holds the key, or a
+  tracked instance's key was changed — are `UOW-002` before any SQL
+  (ADR-0035). A key is identity; it never updates. A key reused after an
+  external delete is no conflict: the instance that writes the row becomes
+  the session's instance and the stale holder is forgotten (no error after
+  a committed write).
 
 Nothing here adds a round trip: tracking only decides which instance a read
 returns and which columns an update writes. The unit of work — scheduling
@@ -633,97 +650,17 @@ identity of two refs; a ref may hop one navigation, `t.User`, or index a
 loaded collection, `a.Transactions[0]`), `dirty`, `value` (`ref`,
 `property`, `equals`), `tracked` (`ref`, `is`). Any step may carry
 `expectError` with the code it must throw. Property names are spelled as
-the reference declares them; a port maps them through its own declaration
-convention in the runner, as the other runners do.
-
-**Clarifications** (the PHP and Go M1 ports asked; ADR-0035):
-
-- **The snapshot holds the database-bound form of each value** — the type
-  converter's output — so "dirty" means "the database would receive a
-  different value": a handler-typed or JSON member compares by what would
-  be written, an in-place mutation of such a member counts as a change,
-  byte arrays compare by content, and two decimals equal in value are clean
-  whatever their text. (The reference snapshotted raw values until
-  ADR-0035; a JSON list mutated in place read as clean.)
-- **`ChangesOf` lists properties in metadata order** (the `EntityMap`
-  property order); runners may still compare as sets.
-- **A column-list update moves the snapshot forward for the written
-  columns and the version only**; an unwritten change stays dirty. A
-  column-list update of an instance the session does not know does not
-  register it — the session saw only part of the row. A full-row update
-  or an insert registers with a snapshot of every column. (The reference
-  re-snapshotted the whole row after `UpdateOnly` until ADR-0035, which
-  silently cleared an unwritten change.)
-- **Every write and the refresh pass the identity gate**: `Insert` (a
-  caller-supplied key held by another instance — a generated key has
-  nothing to check yet), `Update`, `UpdateOnly`, the entity form of
-  `Delete`, and `Refresh` are `UOW-002` for an instance that is not the
-  session's instance for its key. The by-key form of `Delete` has no
-  instance to gate and forgets whichever instance holds the key.
-  `Refresh` of an instance the session does not know applies the row but
-  does not register it. (Delete and Refresh were ungated in the reference
-  until ADR-0035.)
-- **A re-read of a tracked key still maps the row** before discarding it,
-  so the row's conversion and strictness errors (`MAP-*`, `VAL-020`)
-  still fire; only the values are not applied.
-- **A key reused after an external delete**: the instance that writes the
-  row becomes the session's instance; the stale holder is forgotten (no
-  error after a committed write).
-- **Only key, version, or generated values differing** is clean: no
-  statement, no snapshot change — those columns are never in a SET; a
-  changed key is `UOW-002`.
-- **Which types are tracked**: every keyed entity map, views included
-  (writes against a view still refuse `CRUD-003`); plain result types and
-  types with no mapping metadata are never tracked.
-- **Transactions do not touch the map**: a rollback reverts the database,
-  not the instances or the snapshots — `Refresh` is the way back.
-- **Navigations are not dirty state** and are never part of a snapshot. A
-  re-read leaves a tracked instance's navigations as they were; an
-  explicit load or an include always (re)assigns the navigation it names,
-  on the tracked instance.
-- **Tracking is per session**: two sessions have two maps; closing a
-  session clears its map.
-- **Conformance spelling**: `tracking-cases` name properties as the
-  reference declares them (`Name`, `Address.City`), unlike `crud-cases`,
-  which name columns; a port's runner maps through its own declaration
-  convention. A single-part `key` is a bare scalar; `keyOf` yields the
-  key of another ref.
-- **Every materialized keyed entity row is tracked**, the many-to-many
-  link rows a load reads included, even though the caller never receives
-  them: one rule for every read path, no special cases.
-- **Loading correlates by the live values** of a tracked instance's key and
-  foreign-key properties — a local edit of a tracked FK changes which owner
-  a later load attaches the target to; the snapshot plays no part in
-  loading.
-- **Order of refusals on a column-list update**: the list validates first
-  (`CRUD-005`/`006`/`007`), then navigation consistency (`CRUD-004`), then
-  identity (`UOW-002`) — all before any SQL.
-- **A read that fails midway** leaves the rows it already resolved
-  registered; the map is a cache of what the session materialized, not a
-  transaction.
-- **Metadata order** means the `EntityMap` property order: a type's own
-  mapped properties first, inherited ones after (mapping-rules.md), owned
-  members at their navigation's position.
-- **Value-shaped results.** Where a language materializes values rather
-  than references (Go `[]T` beside `[]*T`), only the reference-shaped
-  result is the tracked instance; a value-shaped result for a known key is
-  a copy of the tracked state and is never registered. The port records
-  the shape in its §10 table; the spec's "instance" means the
-  reference-shaped one.
-- **A full-row `Update` validates like a full row** before anything else:
-  every navigation's consistency (`CRUD-004`) is checked first, then the
-  identity gate (`UOW-002`), then the snapshot decides what to write — so
-  a clean tracked instance carrying an inconsistent navigation is refused,
-  not silently skipped. The column-list update checks only the navigations
-  of the listed properties, after the list validates.
+the reference declares them (`Name`, `Address.City`) — unlike `crud-cases`,
+which name columns; a port maps them through its own declaration convention
+in the runner, as the other runners do. A single-part `key` is a bare
+scalar; `keyOf` yields the key of another ref.
 
 ### The step scripts — grammar, values, the fixture, the seam (Level 3 exit, ADR-0039)
 
 The four Level 3 folders — `tracking-cases/`, `flush-cases/`, `hook-cases/`,
 `merge-cases/` — and Level 4's `batch-cases/` (ADR-0044) share one step-script
-form. This section is normative for all of them; the examples above and in unit-of-work.md illustrate it. (The
-Level 3 exit audit — a design for a Python port written from `spec/` and
-`conformance/` alone — found the form defined only by example.)
+form. This section is normative for all of them; the examples above and in
+unit-of-work.md illustrate it (ADR-0039).
 
 **Grammar.** A case is `{ "name", "comment", "tracking": "tracked" |
 "untracked", "batching"?, "steps": [ … ] }`. `batching` opens the session
@@ -766,7 +703,9 @@ bytes as base64, keys as bare scalars). A runner decodes through the
 property's declared type when it sets and encodes the property's value the
 same way when it compares, so comparison is by value — a decimal numerically,
 an instant by its moment, a bool strictly, never a text comparison of a
-language's own formatting. Property lists (`dirty.properties`,
+language's own formatting. An unset integer key reads as 0 (`"equals": 0`),
+whatever the language's own representation of "unset" (a PHP typed property
+with no value, a Go zero value; ADR-0044). Property lists (`dirty.properties`,
 `expectWritten`, a statement's `columns`) may be compared as sets. A `value` expectation may name an owned navigation (`Address`) instead of a
 member: `equals` is then `null` (the navigation is null) or `{}` (an owned object
 exists; members are checked one by one).
@@ -808,8 +747,8 @@ TABLE`s) and `fixtures/seed.json` before each case. It carries **no
 foreign-key constraints**, and the session enables no enforcement: constraints
 are the application's schema, and the library never adds any — the write
 order the unit of work promises is what keeps a constrained database happy,
-not what the fixture checks. (A `schema/sqlite/` migrations directory named
-by an early README was never created; the metadata is the fixture's schema.)
+not what the fixture checks. The metadata is the fixture's schema; there is no
+`schema/sqlite/` migrations directory.
 
 **The seam.** `expectWritten` and `expectStatements` observe the dialect: the
 runner wraps the dialect's four **write renderings** — insert, full-row
@@ -824,8 +763,65 @@ failures are not recorded; the buffer is cleared before each step; a step's
 recorded none). **The message boundary** is the session's, not the dialect's
 (no seam member sees a message): each implementation gives its runner a way to
 observe the size of every message a flush or a batch send formed — a test hook,
-never public API — and `expectMessages` compares those sizes in order. Every
+never public API — and `expectMessages` compares those sizes in order. The hook
+counts the plan's messages, not round trips; it is told a message's size as it
+is sent, before its outcome is known, so a message that fails is counted, and a
+call with nothing to send tells it nothing (ADR-0044). Every
 runner runs every `flush-cases` file **twice**, `Off` and `Auto` (with the
 default `MaxStatementsPerMessage`): the statements, the summary, and every
 expectation must come out the same in both modes. `flush-cases` therefore carry
 neither `batching` nor `expectMessages`; the grouping is `batch-cases`'.
+
+## Where the Clarifications went
+
+The Clarifications lists this document carried until ADR-0046 are folded into
+the sections they amended. Citations by block and number resolve here.
+
+| Former Clarification | Now in |
+|---|---|
+| Batching 1 (ADR-0044) — statements prepared before sent; `Auto`'s code | "Batching": the plan ("Every statement of a message is prepared…"), **Failure** |
+| Batching 2 (ADR-0044) — prepared-command reuse is `Auto`'s | "Batching": the option, `BatchingInEffect` |
+| Batching 3 (ADR-0044) — rule 3 counts bound parameters | "Batching": the plan, rule 3 |
+| Batching 4 (ADR-0044) — rule 1a and the key | "Batching": the plan, rule 1a |
+| Batching 5 (ADR-0044) — rule 1b for every statement | "Batching": the plan, rule 1b |
+| Batching 6 (ADR-0044) — the message hook and `Messages` | "Batching" (after the rules); "The explicit batch" (`Messages`); "The step scripts", **The seam** (the hook) |
+| Batching 7 (ADR-0044) — a send of statement-less operations | "The explicit batch" (the `TX-003` bullet) |
+| Batching 8 (ADR-0044) — the option validated at open | "Batching": the option |
+| Batching 9 (ADR-0044) — a flowed foreign key stays after a failed flush | "Batching": **Failure** |
+| Batching 10 (ADR-0044) — an unset integer key reads as 0 | "The step scripts", **Values** |
+| Batching 11 (ADR-0044) — the keys rule 1a compares | "Batching": the plan, rule 1a |
+| Statement log 1 (ADR-0045) — a registry entry's name | "Statement log", **Learning a registry entry's name** |
+| Statement log 2 (ADR-0045) — the fallback name is the kind | "Statement log", **The name** (registry and SchemaGuard rows) |
+| Statement log 3 (ADR-0045) — "exactly as sent" | "Statement log", **The line** |
+| Statement log 4 (ADR-0045) — one-round-trip vs sequential lines | "Statement log", **When** |
+| Statement log 5 (ADR-0045) — preparing as a round trip; the describe | "Statement log", **When** |
+| Statement log 6 (ADR-0045) — a stream's line | "Statement log", **When** |
+| Statement log 7 (ADR-0045) — eager loading's queries | "Statement log", **The name** (generated-read row) |
+| Statement log 8 (ADR-0045) — `Refresh` logs as `get` | "Statement log", **The name** (generated-read row) |
+| Statement log 9 (ADR-0045) — tooling without a session | "Statement log", **Tooling without a session** |
+| Statement log 10 (ADR-0045) — names are a precedence | "Statement log", **Names are a precedence, outermost first** |
+| Statement log 11 (ADR-0045) — the realization owns its lines | "Statement log", **When** |
+| Statement log 12 (ADR-0045) — numbers | "Statement log", **The line** |
+| Statement log 13 (ADR-0045) — nulls in arrays and nil bytes | "Statement log", **The line** |
+| Statement log 14 (ADR-0045) — the stdout sink | "Statement log", **The option** (`Log`); **The CLI** |
+| Statement log 15 (ADR-0045) — a failing sink fails the call | "Statement log", **When** |
+| Statement log 16 (ADR-0045) — multi-line SQL | "Statement log", **The line** |
+| Tracking (ADR-0035) — the snapshot holds the database-bound form | "Tracking", the snapshot bullet |
+| Tracking (ADR-0035) — `ChangesOf` lists in metadata order | "Tracking", **Questions** |
+| Tracking (ADR-0035) — a column-list update moves the snapshot for the written columns | "Tracking", **Writes** (`UpdateOnly`) |
+| Tracking (ADR-0035) — every write and the refresh pass the identity gate | "Tracking", **Writes** (identity gate; `Delete`); **The tracked instance wins** (`Refresh`) |
+| Tracking (ADR-0035) — a re-read of a tracked key still maps the row | "Tracking", **The tracked instance wins** |
+| Tracking (ADR-0035) — a key reused after an external delete | "Tracking", **Writes** (identity gate) |
+| Tracking (ADR-0035) — only key, version, or generated values differing is clean | "Tracking", **Writes** (`Update`) |
+| Tracking (ADR-0035) — which types are tracked | "Tracking", the identity-map bullet |
+| Tracking (ADR-0035) — transactions do not touch the map | "Tracking", **Transactions do not touch the map** |
+| Tracking (ADR-0035) — navigations are not dirty state | "Tracking", the snapshot bullet; **The tracked instance wins** |
+| Tracking (ADR-0035) — tracking is per session | "Tracking", the opening of the list |
+| Tracking (ADR-0035) — conformance spelling | "Conformance: `tracking-cases/`" |
+| Tracking (ADR-0035) — every materialized keyed entity row is tracked | "Tracking", the identity-map bullet |
+| Tracking (ADR-0035) — loading correlates by the live values | "Tracking", **The tracked instance wins** |
+| Tracking (ADR-0035) — order of refusals on a column-list update | "Tracking", **Writes** (`UpdateOnly`) |
+| Tracking (ADR-0035) — a read that fails midway | "Tracking", the identity-map bullet |
+| Tracking (ADR-0035) — metadata order | "Tracking", **Questions** |
+| Tracking (ADR-0035) — value-shaped results | "Tracking", the identity-map bullet |
+| Tracking (ADR-0035) — a full-row `Update` validates like a full row | "Tracking", **Writes** (`Update`) |

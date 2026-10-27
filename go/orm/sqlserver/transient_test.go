@@ -18,7 +18,7 @@ import (
 // the chain and in any of the records an error carries, the runtime's transport failures, and nothing else.
 func TestIsTransientAnswersByTheErrorNumberSet(t *testing.T) {
 	d := sqlserver.New()
-	every := []int32{-2, 20, 64, 121, 233, 997, 4060, 4221, 10053, 10054, 10060, 10928, 10929, 11001, 17197, 18401,
+	every := []int32{-2, 20, 64, 121, 233, 258, 997, 4060, 4221, 10053, 10054, 10060, 10061, 10928, 10929, 11001, 17197, 18401,
 		40143, 40197, 40501, 40540, 40613, 42108, 42109, 49918, 49919, 49920}
 	for _, number := range every {
 		if !d.IsTransient(mssql.Error{Number: number}) {

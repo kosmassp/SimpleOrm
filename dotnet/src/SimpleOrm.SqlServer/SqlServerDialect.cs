@@ -440,6 +440,72 @@ public sealed class SqlServerDialect : IDialect
     /// <inheritdoc />
     public int? MaxParametersPerMessage => 2098;
 
+    /// <summary>
+    /// The SQL Server error numbers a connection open retries on (ADR-0047) —
+    /// written once, so <c>netstandard2.0</c> (SqlClient 5.1) and <c>net10.0</c>
+    /// (SqlClient 6.x) answer alike; the driver's own <c>IsTransient</c> flag is not
+    /// consulted, because it differs between those versions. The sources:
+    /// Microsoft.Data.SqlClient's <c>SqlConfigurableRetryFactory</c> default list
+    /// (233, 997, 4060, 4221, 10060, 10928, 10929, 40143, 40197, 40501, 40540,
+    /// 40613, 42108, 42109, 49918, 49919, 49920 — its lock numbers 1204, 1205, 1222
+    /// are left out: they are statement failures, and only an open is retried) and
+    /// the connection-level numbers of EF Core's <c>SqlServerTransientExceptionDetector</c>
+    /// (20, 64, 121, 10053, 10054, 11001, 17197, 18401), plus -2, the driver's own
+    /// "timeout expired" — on an open it is the connect timeout, and the open
+    /// applied nothing (EF Core leaves -2 out because it retries statements).
+    /// </summary>
+    public static readonly IReadOnlyCollection<int> TransientErrorNumbers = new HashSet<int>
+    {
+        -2,      // timeout expired (on an open: Connect Timeout elapsed)
+        20,      // the instance does not support encryption (seen while it starts)
+        64,      // the network name is no longer available, during login
+        121,     // the semaphore timeout period has expired
+        233,     // connection initialization failed before login (no process at the other end of the pipe)
+        997,     // login error during overlapped I/O (named pipes)
+        4060,    // cannot open the database requested by the login
+        4221,    // read-secondary login waits for row versioning
+        10053,   // connection aborted during receive
+        10054,   // connection forcibly closed by the remote host
+        10060,   // connection attempt timed out (host did not respond)
+        10928,   // resource limit reached (Azure SQL)
+        10929,   // server too busy for the requested resources (Azure SQL)
+        11001,   // host not found (DNS)
+        17197,   // login timed out under server load
+        18401,   // server in script upgrade mode or recovering; logins refused
+        40143,   // service error processing the request (Azure SQL)
+        40197,   // service error processing the request (Azure SQL, failover)
+        40501,   // service busy (Azure SQL)
+        40540,   // service error processing the request (Azure SQL)
+        40613,   // database not currently available (Azure SQL)
+        42108,   // SQL pool paused (Synapse)
+        42109,   // SQL pool warming up (Synapse)
+        49918,   // not enough resources to process the request
+        49919,   // too many create or update operations in progress
+        49920,   // too many operations in progress
+    };
+
+    /// <summary>
+    /// A <see cref="SqlException"/> any of whose errors carries one of
+    /// <see cref="TransientErrorNumbers"/>, or a socket, I/O, or timeout failure
+    /// anywhere in the cause chain (ADR-0047).
+    /// </summary>
+    public bool IsTransient(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            switch (current)
+            {
+                case SqlException sql when sql.Errors.Cast<SqlError>().Any(e => TransientErrorNumbers.Contains(e.Number))
+                                           || TransientErrorNumbers.Contains(sql.Number):
+                    return true;
+                case System.Net.Sockets.SocketException or System.IO.IOException or TimeoutException:
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
     private static string ReportingAffectedRows(string statement)
         => "set nocount on; " + statement + "; select @@rowcount; set nocount off";
 

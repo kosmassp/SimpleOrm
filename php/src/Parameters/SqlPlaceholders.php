@@ -10,6 +10,10 @@ namespace SimpleOrm\Parameters;
  * behavior). A length-preserving mask turns literal and comment characters into
  * spaces so match positions in the mask are positions in the original SQL —
  * `occurrences()` and `toPdo()` rely on that to rewrite only real placeholders.
+ *
+ * The scan is a pure function of the text, so it runs once per text (ADR-0048 item 2): the matches and the PDO form are
+ * kept by the SQL text itself — the text is the whole input, so equal texts can never need different answers — in a
+ * bounded table ({@see MAX_CACHED_TEXTS}, emptied when full; CODING-STANDARD §10).
  */
 final class SqlPlaceholders
 {
@@ -18,6 +22,23 @@ final class SqlPlaceholders
      * their second `@` is not the start of a name. Without it `select @@rowcount` became `@:rowcount` under {@see toPdo()}.
      */
     private const PATTERN = '/(?<!@)@([A-Za-z_][A-Za-z0-9_]*)/';
+
+    /** How many distinct texts the scan remembers; a caller generating texts without bound only empties the table. */
+    public const int MAX_CACHED_TEXTS = 1024;
+
+    /** @var array<string, list<array{0: string, 1: int, 2: int}>> per text: every real match as (name, offset, length) */
+    private static array $matches = [];
+
+    /** @var array<string, string> per text: its PDO form */
+    private static array $pdo = [];
+
+    private static int $scans = 0;
+
+    /** How many texts have been scanned in this process — the cache's test hook. @internal */
+    public static function scanCount(): int
+    {
+        return self::$scans;
+    }
 
     /**
      * Distinct placeholder names (without the leading `@`), in first-occurrence
@@ -28,12 +49,9 @@ final class SqlPlaceholders
      */
     public static function find(string $sql): array
     {
-        $masked = self::mask($sql);
-        preg_match_all(self::PATTERN, $masked, $matches);
-
         $seen = [];
         $names = [];
-        foreach ($matches[1] as $name) {
+        foreach (self::matches($sql) as [$name]) {
             if (!isset($seen[$name])) {
                 $seen[$name] = true;
                 $names[] = $name;
@@ -52,15 +70,10 @@ final class SqlPlaceholders
      */
     public static function occurrences(string $sql, string $name): array
     {
-        $masked = self::mask($sql);
-        preg_match_all(self::PATTERN, $masked, $matches, PREG_OFFSET_CAPTURE);
-
         $spans = [];
-        foreach ($matches[0] as $index => $match) {
-            $candidate = $matches[1][$index][0];
+        foreach (self::matches($sql) as [$candidate, $offset, $length]) {
             if (strcasecmp($candidate, $name) === 0) {
-                [$text, $offset] = $match;
-                $spans[] = [$offset, strlen($text)];
+                $spans[] = [$offset, $length];
             }
         }
 
@@ -70,17 +83,22 @@ final class SqlPlaceholders
     /** Rewrites every real `@name` to PDO's `:name`; literals and comments are untouched. */
     public static function toPdo(string $sql): string
     {
-        $masked = self::mask($sql);
-        preg_match_all(self::PATTERN, $masked, $matches, PREG_OFFSET_CAPTURE);
-
-        $result = $sql;
-        for ($i = count($matches[0]) - 1; $i >= 0; $i--) {
-            [$text, $offset] = $matches[0][$i];
-            $name = $matches[1][$i][0];
-            $result = substr_replace($result, ':' . $name, $offset, strlen($text));
+        if (isset(self::$pdo[$sql])) {
+            return self::$pdo[$sql];
         }
 
-        return $result;
+        $result = $sql;
+        $matches = self::matches($sql);
+        for ($i = count($matches) - 1; $i >= 0; $i--) {
+            [$name, $offset, $length] = $matches[$i];
+            $result = substr_replace($result, ':' . $name, $offset, $length);
+        }
+
+        if (count(self::$pdo) >= self::MAX_CACHED_TEXTS) {
+            self::$pdo = [];
+        }
+
+        return self::$pdo[$sql] = $result;
     }
 
     /**
@@ -90,16 +108,39 @@ final class SqlPlaceholders
      */
     public static function prefixed(string $sql, string $prefix): string
     {
-        $masked = self::mask($sql);
-        preg_match_all(self::PATTERN, $masked, $matches, PREG_OFFSET_CAPTURE);
-
         $result = $sql;
-        for ($i = count($matches[0]) - 1; $i >= 0; $i--) {
-            [$text, $offset] = $matches[0][$i];
-            $result = substr_replace($result, '@' . $prefix . $matches[1][$i][0], $offset, strlen($text));
+        $matches = self::matches($sql);
+        for ($i = count($matches) - 1; $i >= 0; $i--) {
+            [$name, $offset, $length] = $matches[$i];
+            $result = substr_replace($result, '@' . $prefix . $name, $offset, $length);
         }
 
         return $result;
+    }
+
+    /**
+     * Every real placeholder of the text, in order, as (name, offset, length) — scanned once per text.
+     *
+     * @return list<array{0: string, 1: int, 2: int}>
+     */
+    private static function matches(string $sql): array
+    {
+        if (isset(self::$matches[$sql])) {
+            return self::$matches[$sql];
+        }
+
+        self::$scans++;
+        preg_match_all(self::PATTERN, self::mask($sql), $found, PREG_OFFSET_CAPTURE);
+        $matches = [];
+        foreach ($found[0] as $index => [$text, $offset]) {
+            $matches[] = [$found[1][$index][0], $offset, strlen($text)];
+        }
+
+        if (count(self::$matches) >= self::MAX_CACHED_TEXTS) {
+            self::$matches = [];
+        }
+
+        return self::$matches[$sql] = $matches;
     }
 
     /**

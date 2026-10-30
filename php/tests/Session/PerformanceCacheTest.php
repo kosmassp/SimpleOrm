@@ -4,9 +4,16 @@ declare(strict_types=1);
 
 namespace SimpleOrm\Tests\Session;
 
+use DateTimeImmutable;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use SimpleOrm\Dialect\Dialect;
+use SimpleOrm\Dialect\PostgresDialect;
 use SimpleOrm\Dialect\SqliteDialect;
+use SimpleOrm\Dialect\SqlServerDialect;
+use SimpleOrm\Metadata\Attributes\Column;
+use SimpleOrm\Metadata\Attributes\Key;
+use SimpleOrm\Metadata\Attributes\Table;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\EntityMapLoader;
 use SimpleOrm\Metadata\MappingOptions;
@@ -19,6 +26,7 @@ use SimpleOrm\Tests\Support\DelegatingDialect;
 use SimpleOrm\Tests\Support\SampleDatabase;
 use SimpleOrm\Tests\Support\TempDatabase;
 use SimpleOrm\Tests\Support\WriteRenderingRecorder;
+use SimpleOrm\Types\Decimal;
 
 /**
  * The performance pass's caches (ADR-0048) compute once and change nothing observable: the generated CRUD text is
@@ -124,6 +132,31 @@ final class PerformanceCacheTest extends TestCase
         self::assertSame('User criteria @c3', $labels->criteriaParameter(3));
     }
 
+    /**
+     * The sort-skip rule (ADR-0048 item 4): only integer and decimal keys stored as an integer or exact numeric type skip
+     * the per-owner sort. SQLite stores a decimal as TEXT, so a decimal key there keeps the sort — pinned end to end by
+     * LoadingTest's and EagerJoinTest's "2 before 10" cases; this pins the rule itself per dialect.
+     */
+    #[Test]
+    public function the_per_owner_sort_is_skipped_only_where_the_key_order_is_value_order(): void
+    {
+        $loader = new EntityMapLoader(new MappingOptions());
+        $intKey = $loader->load(User::class);
+        $decimalKey = $loader->load(DecimalKeyed::class);
+        $temporalKey = $loader->load(TemporalKeyed::class);
+        $rule = static fn (EntityMap $map, Dialect $dialect): bool => GeneratedSql::for($map, $dialect)
+            ->keyOrderIsValueOrder($map, $dialect);
+
+        foreach ([new SqliteDialect(), new PostgresDialect(), new SqlServerDialect()] as $dialect) {
+            self::assertTrue($rule($intKey, $dialect), "integer key on {$dialect->name()}");
+            self::assertFalse($rule($temporalKey, $dialect), "temporal key on {$dialect->name()}");
+        }
+
+        self::assertFalse($rule($decimalKey, new SqliteDialect()), 'SQLite stores a decimal as TEXT: the sort stays');
+        self::assertTrue($rule($decimalKey, new PostgresDialect()), 'numeric on PostgreSQL');
+        self::assertTrue($rule($decimalKey, new SqlServerDialect()), 'decimal on SQL Server');
+    }
+
     #[Test]
     public function the_key_read_and_the_select_all_are_the_texts_they_were(): void
     {
@@ -188,4 +221,22 @@ final class CountingWriteDialect extends DelegatingDialect
 
         return $this->inner->deleteSql($map, $checkVersion);
     }
+}
+
+/** A `Decimal`-keyed table: TEXT on SQLite, an exact numeric elsewhere. */
+#[Table('perf_decimal_keyed')]
+final class DecimalKeyed
+{
+    #[Key]
+    #[Column]
+    public Decimal $code;
+}
+
+/** A temporal-keyed table: never value-ordered by the rule, whatever the dialect stores. */
+#[Table('perf_temporal_keyed')]
+final class TemporalKeyed
+{
+    #[Key]
+    #[Column]
+    public DateTimeImmutable $at;
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SimpleOrm\Session;
 
 use SimpleOrm\Dialect\Dialect;
+use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\PropertyMap;
 use WeakMap;
@@ -44,6 +45,11 @@ final class GeneratedSql
 
     /** @var array<string, string> column-list updates by their property names, joined with NUL in list order */
     private array $updateOnly = [];
+
+    /** The storage types {@see keyOrderIsValueOrder()} accepts: an integer or exact numeric type, sized or not. */
+    private const string EXACT_NUMERIC_STORAGE = '/^(integer|bigint|int|smallint|tinyint|numeric|decimal)(\s*\(\s*\d+\s*(,\s*\d+\s*)?\))?$/i';
+
+    private ?bool $keyOrderIsValueOrder = null;
 
     private function __construct()
     {
@@ -125,6 +131,31 @@ final class GeneratedSql
         }
 
         return $this->selectAll = $sql;
+    }
+
+    /**
+     * Whether the dialect's `ORDER BY` on the key already is spec/loading.md's value order (ADR-0048 item 4): **every key
+     * part is an integer or decimal type and the dialect stores it as an integer or exact numeric type** (`integer`,
+     * `bigint`, `int`, `smallint`, `tinyint`, `numeric`, `decimal`, sized or not). Then `ORDER BY` compares numbers as the
+     * value comparison does, and a sort after fetching cannot move anything. SQLite's `TEXT` decimal (`'10'` before `'2'`)
+     * fails the rule; strings (collations are not ordinal), GUIDs, temporals, booleans, enums, and bytes always fail it.
+     */
+    public function keyOrderIsValueOrder(EntityMap $map, Dialect $dialect): bool
+    {
+        if ($this->keyOrderIsValueOrder !== null) {
+            return $this->keyOrderIsValueOrder;
+        }
+
+        $holds = $map->keyProperties !== [];
+        foreach ($map->keyProperties as $key) {
+            $numeric = in_array($key->type, [ColumnType::Int16, ColumnType::Int32, ColumnType::Int64, ColumnType::Decimal], true);
+            if (!$numeric || preg_match(self::EXACT_NUMERIC_STORAGE, $dialect->storageType($map, $key)) !== 1) {
+                $holds = false;
+                break;
+            }
+        }
+
+        return $this->keyOrderIsValueOrder = $holds;
     }
 
     private static function selectList(EntityMap $map, Dialect $dialect): string

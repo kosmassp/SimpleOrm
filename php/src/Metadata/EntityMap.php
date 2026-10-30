@@ -184,14 +184,35 @@ final readonly class EntityMap
      * TEXT-affinity column (every `Decimal` key, §7.9) lexicographically, so
      * "10" would render before "2".
      *
+     * Each entity's key is read once, not twice per comparison (ADR-0048 item 4); a single-part key whose every value is a
+     * native int compares the ints directly — exactly what {@see KeyTuple::valueCompare()} does for two ints. The same
+     * comparisons over the same sequence in a stable sort, so the same permutation.
+     *
      * @param list<object> $entities
      * @return list<object>
      */
     public function sortByKey(array $entities): array
     {
-        usort($entities, fn (object $a, object $b): int => (new KeyTuple($this->getKeyValues($a)))
-            ->compare(new KeyTuple($this->getKeyValues($b))));
+        if (count($entities) < 2) {
+            return $entities;
+        }
 
-        return $entities;
+        $keys = [];
+        $allInts = count($this->keyProperties) === 1;
+        foreach ($entities as $i => $entity) {
+            $values = $this->getKeyValues($entity);
+            $allInts = $allInts && is_int($values[0]);
+            $keys[$i] = $values;
+        }
+
+        $order = array_keys($entities);
+        if ($allInts) {
+            usort($order, static fn (int|string $a, int|string $b): int => $keys[$a][0] <=> $keys[$b][0]);
+        } else {
+            $tuples = array_map(static fn (array $values): KeyTuple => new KeyTuple($values), $keys);
+            usort($order, static fn (int|string $a, int|string $b): int => $tuples[$a]->compare($tuples[$b]));
+        }
+
+        return array_map(static fn (int|string $i): object => $entities[$i], $order);
     }
 }

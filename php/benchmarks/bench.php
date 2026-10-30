@@ -72,6 +72,9 @@ final class Bench
 
     private Query $registryQuery;
 
+    /** @var list<Transaction>|null the owners `loadEach` loads into, read once */
+    private ?array $owners = null;
+
     public function __construct(private readonly Db $db, private readonly int $iterations)
     {
         $this->registryQuery = Query::inline(
@@ -144,6 +147,11 @@ final class Bench
             'graph 1000x3, MultiQuery' => fn () => $this->graph(FetchMode::MultiQuery),
             'graph 1000x3, SubSelect' => fn () => $this->graph(FetchMode::SubSelect),
             'graph 1000x3, Join' => fn () => $this->graph(FetchMode::Join),
+            'graph 1000x3, loadEach' => function () use ($db): void {
+                $this->owners ??= $db->from(Transaction::class)->where(Criteria::eq('userId', $this->graphUserId))->toList();
+                $db->loadEach($this->owners, 'details');
+                self::expectCount(self::CHILDREN_PER_OWNER, $this->owners[0]->details);
+            },
         ];
     }
 
@@ -163,7 +171,7 @@ final class Bench
      * time over all iterations divided by their count (getrusage — coarse per call on Windows, exact enough summed over a
      * few seconds); it excludes a database server's own work and is far steadier than the wall time on a shared machine.
      *
-     * @return array{0: float, 1: float, 2: float, 3: int} CPU µs per iteration, median wall µs, median peak KB, iterations
+     * @return array{0: float, 1: float, 2: float, 3: float, 4: int} CPU µs per iteration, median and fastest wall µs, median peak KB, iterations
      */
     public function measure(Closure $shape): array
     {
@@ -190,7 +198,7 @@ final class Bench
         sort($times);
         sort($peaks);
 
-        return [$cpu / count($times), $times[intdiv(count($times), 2)], $peaks[intdiv(count($peaks), 2)], count($times)];
+        return [$cpu / count($times), $times[intdiv(count($times), 2)], $times[0], $peaks[intdiv(count($peaks), 2)], count($times)];
     }
 
     private const MIN_SECONDS = 3.0;
@@ -225,8 +233,8 @@ function run(string $label, Closure $open, int $iterations, ?string $shapeFilter
             continue;
         }
 
-        [$cpu, $wall, $kb, $count] = $bench->measure($shape);
-        printf("  %-28s %10.1f µs CPU %10.1f µs wall (median) %8.1f KB peak  n=%d\n", $name, $cpu, $wall, $kb, $count);
+        [$cpu, $wall, $fastest, $kb, $count] = $bench->measure($shape);
+        printf("  %-28s %9.0f µs CPU %9.0f µs wall median %9.0f µs min %7.1f KB peak  n=%d\n", $name, $cpu, $wall, $fastest, $kb, $count);
     }
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -77,39 +78,30 @@ type rewritten struct {
 // literal or comment) with `$n`, numbering names by first appearance and
 // treating names case-insensitively, as the binder does.
 func rewritePlaceholders(sqlText string) rewritten {
-	distinct := core.FindPlaceholders(sqlText)
-	if len(distinct) == 0 {
+	// One scan (core.PlaceholderSpans, ADR-0048): the spans arrive in text order, and a name's ordinal is its first
+	// appearance case-insensitively — the numbering the per-name scans produced, without a scan per name.
+	spans := core.PlaceholderSpans(sqlText)
+	if len(spans) == 0 {
 		return rewritten{sql: sqlText}
 	}
 
 	var names []string
 	ordinal := map[string]int{}
-	for _, name := range distinct {
-		key := strings.ToLower(name)
-		if _, seen := ordinal[key]; !seen {
-			names = append(names, key)
-			ordinal[key] = len(names)
-		}
-	}
-
-	type occurrence struct {
-		index, length, ordinal int
-	}
-	var occurrences []occurrence
-	for _, name := range names {
-		for _, span := range core.PlaceholderOccurrences(sqlText, name) {
-			occurrences = append(occurrences, occurrence{span.Index, span.Length, ordinal[name]})
-		}
-	}
-	sort.Slice(occurrences, func(i, j int) bool { return occurrences[i].index < occurrences[j].index })
-
 	var b strings.Builder
+	b.Grow(len(sqlText))
 	last := 0
-	for _, o := range occurrences {
-		b.WriteString(sqlText[last:o.index])
+	for _, span := range spans {
+		key := strings.ToLower(span.Name)
+		n, seen := ordinal[key]
+		if !seen {
+			names = append(names, key)
+			n = len(names)
+			ordinal[key] = n
+		}
+		b.WriteString(sqlText[last:span.Index])
 		b.WriteByte('$')
-		b.WriteString(fmt.Sprint(o.ordinal))
-		last = o.index + o.length
+		b.WriteString(strconv.Itoa(n))
+		last = span.Index + span.Length
 	}
 	b.WriteString(sqlText[last:])
 	return rewritten{sql: b.String(), names: names}

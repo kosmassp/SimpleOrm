@@ -60,6 +60,25 @@ func PlaceholderOccurrences(sql string, placeholder string) []PlaceholderSpan {
 	return spans
 }
 
+// NamedPlaceholderSpan is one real occurrence of a placeholder with the name as the SQL spells it.
+type NamedPlaceholderSpan struct {
+	Name string
+	PlaceholderSpan
+}
+
+// PlaceholderSpans lists every real occurrence of every placeholder in text order, in one scan — what
+// FindPlaceholders and PlaceholderOccurrences find together (a rewriter of every placeholder would otherwise scan
+// the text once per name).
+func PlaceholderSpans(sql string) []NamedPlaceholderSpan {
+	masked := maskSQL(sql)
+	matches := placeholderMatches(masked)
+	spans := make([]NamedPlaceholderSpan, len(matches))
+	for i, match := range matches {
+		spans[i] = NamedPlaceholderSpan{Name: masked[match[2]:match[3]], PlaceholderSpan: PlaceholderSpan{Index: match[0], Length: match[1] - match[0]}}
+	}
+	return spans
+}
+
 // maskSQL is a length-preserving mask: string-literal and comment bytes become
 // spaces, so match positions in the mask are positions in the original SQL.
 func maskSQL(sql string) string {

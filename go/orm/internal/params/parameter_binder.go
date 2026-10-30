@@ -7,9 +7,11 @@ package params
 
 import (
 	"database/sql"
-	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/mapping"
@@ -41,55 +43,32 @@ func Bind(sqlText string, args any, converter *mapping.TypeConverter, dialect co
 		return BoundSQL{}, core.Errorf("PRM-001", queryName, "args must be a struct or a pointer to one, got %T", args)
 	}
 	t := v.Type()
+	plan := planFor(sqlText, queryName, t)
 
-	type field struct {
-		name  string
-		value reflect.Value
-	}
-	var fields []field
-	for i := range t.NumField() {
-		sf := t.Field(i)
-		if sf.PkgPath != "" { // unexported
-			continue
-		}
-		fields = append(fields, field{name: sf.Name, value: v.Field(i)})
-	}
-
-	placeholders := core.FindPlaceholders(sqlText)
-
-	for _, placeholder := range placeholders {
-		found := false
-		for _, f := range fields {
-			if strings.EqualFold(f.name, placeholder) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return BoundSQL{}, core.Errorf("PRM-001", queryName,
-				"SQL parameter @%s has no matching property on %s", placeholder, core.TypeName(t))
-		}
+	if plan.missing != "" {
+		return BoundSQL{}, core.Errorf("PRM-001", queryName,
+			"SQL parameter @%s has no matching property on %s", plan.missing, core.TypeName(t))
 	}
 
 	text := sqlText
 	var namedArgs []any
+	if len(plan.fields) > 0 {
+		namedArgs = make([]any, 0, len(plan.fields))
+	}
+	expanded := false // an earlier expansion moved the text: a later list rescans it, as before
 
-	for _, f := range fields {
-		placeholder := ""
-		for _, p := range placeholders {
-			if strings.EqualFold(p, f.name) {
-				placeholder = p
-				break
-			}
-		}
+	for i := range plan.fields {
+		fp := &plan.fields[i]
+		f := field{name: fp.name, value: v.Field(fp.index)}
+		placeholder := fp.placeholder
 		if placeholder == "" {
 			return BoundSQL{}, core.Errorf("PRM-002", queryName,
 				"property %s.%s is never used by the SQL", core.TypeName(t), f.name)
 		}
 
-		context := queryName + "." + placeholder
+		context := fp.context
 
-		if isCollection(f.value) {
+		if fp.collection {
 			elements := collectionElements(f.value)
 
 			if dialect.SupportsArrayParameters() {
@@ -109,10 +88,14 @@ func Bind(sqlText string, args any, converter *mapping.TypeConverter, dialect co
 				continue
 			}
 
-			occurrences := core.PlaceholderOccurrences(text, placeholder)
+			occurrences := fp.occurrences
+			if expanded {
+				occurrences = core.PlaceholderOccurrences(text, placeholder)
+			}
+			expanded = true
 			var names []string
 			for i, item := range elements {
-				name := fmt.Sprintf("%s_%d", placeholder, i)
+				name := placeholder + "_" + strconv.Itoa(i)
 				names = append(names, "@"+name)
 				cv, err := converter.ToDatabase(item, "", context)
 				if err != nil {
@@ -146,12 +129,118 @@ func Bind(sqlText string, args any, converter *mapping.TypeConverter, dialect co
 	return BoundSQL{SQL: text, Args: namedArgs}, nil
 }
 
-// isCollection reports whether v is a slice or array field that binds as an IN
-// list — strings and byte slices/arrays are values, never collections.
-func isCollection(v reflect.Value) bool {
-	switch v.Kind() {
+// field is one exported args field as one call reads it.
+type field struct {
+	name  string
+	value reflect.Value
+}
+
+// The binding plan, cached per (SQL text, query name, args type) — ADR-0048 item 2. The placeholder scan, the PRM-001
+// verdict, each exported field's placeholder (empty = PRM-002, still raised in field order while binding, so an
+// earlier field's conversion error still wins), its error context, whether it is an IN list, and that list's
+// occurrences in the original text are pure functions of the key; only the values are read per call. The key holds
+// the SQL by value (equal text is the same plan — never a collision across models) and the type by identity. The
+// cache stops growing past maxPlans entries (SQL built at run time would otherwise grow it without bound); a plan it
+// no longer stores is built per call, as before.
+type planKey struct {
+	sql       string
+	queryName string
+	args      reflect.Type
+}
+
+type bindPlan struct {
+	missing string // the first placeholder no field matches (PRM-001), "" when every one matches
+	fields  []fieldPlan
+}
+
+type fieldPlan struct {
+	index       int    // the field's index in the args struct
+	name        string // the field's name
+	placeholder string // the SQL's own spelling of the matching placeholder; "" → PRM-002
+	context     string // queryName + "." + placeholder: the conversion error's label
+	collection  bool
+	occurrences []core.PlaceholderSpan // the placeholder's spans in the original text, for an IN list
+}
+
+const maxPlans = 4096
+
+var (
+	plans     sync.Map // planKey → *bindPlan
+	planCount atomic.Int64
+)
+
+// planFor returns the cached plan for the key, building it on first use.
+func planFor(sqlText, queryName string, t reflect.Type) *bindPlan {
+	key := planKey{sql: sqlText, queryName: queryName, args: t}
+	if cached, ok := plans.Load(key); ok {
+		return cached.(*bindPlan)
+	}
+	plan := buildPlan(sqlText, queryName, t)
+	if planCount.Load() < maxPlans {
+		if actual, loaded := plans.LoadOrStore(key, plan); loaded {
+			return actual.(*bindPlan)
+		}
+		planCount.Add(1)
+	}
+	return plan
+}
+
+// buildPlan is the scan and the matching Bind did on every call before the cache.
+func buildPlan(sqlText, queryName string, t reflect.Type) *bindPlan {
+	plan := &bindPlan{}
+	var names []string
+	var indices []int
+	for i := range t.NumField() {
+		sf := t.Field(i)
+		if sf.PkgPath != "" { // unexported
+			continue
+		}
+		names = append(names, sf.Name)
+		indices = append(indices, i)
+	}
+
+	placeholders := core.FindPlaceholders(sqlText)
+	for _, placeholder := range placeholders {
+		found := false
+		for _, name := range names {
+			if strings.EqualFold(name, placeholder) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			plan.missing = placeholder
+			return plan
+		}
+	}
+
+	plan.fields = make([]fieldPlan, len(names))
+	for i, name := range names {
+		fp := fieldPlan{index: indices[i], name: name}
+		for _, p := range placeholders {
+			if strings.EqualFold(p, name) {
+				fp.placeholder = p
+				break
+			}
+		}
+		if fp.placeholder != "" {
+			fp.context = queryName + "." + fp.placeholder
+			fp.collection = isCollectionType(t.Field(indices[i]).Type)
+			if fp.collection {
+				fp.occurrences = core.PlaceholderOccurrences(sqlText, fp.placeholder)
+			}
+		}
+		plan.fields[i] = fp
+	}
+	return plan
+}
+
+// isCollectionType reports whether a field of type t is a slice or array that binds as an IN
+// list — strings and byte slices/arrays are values, never collections. (A field's kind is its type's.)
+func isCollectionType(t reflect.Type) bool {
+	switch t.Kind() {
 	case reflect.Slice, reflect.Array:
-		return v.Type().Elem().Kind() != reflect.Uint8
+		return t.Elem().Kind() != reflect.Uint8
 	}
 	return false
 }

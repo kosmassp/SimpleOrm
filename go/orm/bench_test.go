@@ -153,6 +153,44 @@ func BenchmarkRegistryQuery1000(b *testing.B) {
 	})
 }
 
+func BenchmarkQuerySingle(b *testing.B) {
+	benchLegs(b, func(b *testing.B, db *orm.Db) {
+		ctx := context.Background()
+		benchSeedUsers(b, db, 10)
+		user, err := orm.Get[sample.User](ctx, db, int64(5))
+		if err != nil {
+			b.Fatal(err)
+		}
+		for b.Loop() {
+			if _, err := orm.QuerySingle(ctx, db, sample.UsersByEmail, sample.UsersByEmailArgs{Email: user.Email}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkCommand100Transaction(b *testing.B) {
+	benchLegs(b, func(b *testing.B, db *orm.Db) {
+		ctx := context.Background()
+		benchSeedGraph(b, db, 100, 0)
+		for b.Loop() {
+			tx, err := db.Begin(ctx)
+			if err != nil {
+				b.Fatal(err)
+			}
+			for id := int64(1); id <= 100; id++ {
+				args := sample.MarkTransactionStatusArgs{ID: id, Status: sample.Completed, UpdatedAt: testsupport.ClockNow}
+				if _, err := orm.Execute(ctx, db, sample.MarkTransactionStatus, args); err != nil {
+					b.Fatal(err)
+				}
+			}
+			if err := tx.Rollback(ctx); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
 func BenchmarkGet(b *testing.B) {
 	benchLegs(b, func(b *testing.B, db *orm.Db) {
 		ctx := context.Background()

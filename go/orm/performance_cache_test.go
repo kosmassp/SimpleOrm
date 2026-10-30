@@ -5,12 +5,17 @@ package orm_test
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/kosmassp/SimpleOrm/go/orm"
+	"github.com/kosmassp/SimpleOrm/go/orm/internal/metadata"
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/testsupport"
+	"github.com/kosmassp/SimpleOrm/go/orm/postgres"
 	"github.com/kosmassp/SimpleOrm/go/orm/sample"
+	"github.com/kosmassp/SimpleOrm/go/orm/sqlite"
+	"github.com/kosmassp/SimpleOrm/go/orm/sqlserver"
 )
 
 // renderCountingDialect counts how often the session asks the dialect for each write rendering, while its embedded
@@ -38,6 +43,113 @@ func (d renderCountingDialect) UpdateOnlySQL(m *orm.EntityMap, properties []*orm
 func (d renderCountingDialect) DeleteSQL(m *orm.EntityMap, checkVersion bool) string {
 	d.asked["delete"]++
 	return d.RecordingDialect.DeleteSQL(m, checkVersion)
+}
+
+// decimalKeyParent/decimalKeyChild: a one-to-many whose target key is a decimal — TEXT on SQLite, so the database's
+// ORDER BY is text order ('10' before '2') and the post-fetch value sort must run (spec/loading.md).
+type decimalKeyParent struct {
+	ID       int64              `orm:"column,key"`
+	Children []*decimalKeyChild `orm:"one_to_many=ParentID"`
+}
+
+func (decimalKeyParent) Entity() orm.EntityDef {
+	return orm.EntityDef{Source: orm.Table("perf_decimal_parents")}
+}
+
+type decimalKeyChild struct {
+	Code     orm.Decimal `orm:"column,key"`
+	ParentID int64       `orm:"column"`
+}
+
+func (decimalKeyChild) Entity() orm.EntityDef {
+	return orm.EntityDef{Source: orm.Table("perf_decimal_children"), ForeignKeys: []orm.ForeignKeyDef{orm.ForeignKey[decimalKeyParent]("ParentID")}}
+}
+
+// The sort-skip rule (ADR-0048 item 4): integer keys everywhere and decimal keys where the dialect stores them as
+// an exact numeric type skip the post-fetch sort; SQLite's TEXT decimal, strings, GUIDs, and temporals keep it.
+func TestKeyOrderRule_SkipsTheSortOnlyWhereTheEngineOrdersByValue(t *testing.T) {
+	loader := metadata.NewLoader(nil)
+	load := func(entity any) *orm.EntityMap {
+		m, err := loader.Load(reflect.TypeOf(entity))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	user, child, profile := load(sample.User{}), load(decimalKeyChild{}), load(sample.UserRole{})
+	for _, scenario := range []struct {
+		dialect orm.Dialect
+		m       *orm.EntityMap
+		want    bool
+	}{
+		{sqlite.New(), user, true}, {postgres.New(), user, true}, {sqlserver.New(), user, true},
+		{sqlite.New(), child, false}, {postgres.New(), child, true}, {sqlserver.New(), child, true},
+		{sqlite.New(), profile, true}, // a composite of two integers
+	} {
+		if got := orm.KeyOrderIsValueOrder(scenario.dialect, scenario.m); got != scenario.want {
+			t.Errorf("%s on %s: skip = %v, want %v", scenario.m.EntityName(), scenario.dialect.Name(), got, scenario.want)
+		}
+	}
+	guidKeyed := load(guidKeyedProbe{})
+	if orm.KeyOrderIsValueOrder(postgres.New(), guidKeyed) {
+		t.Error("a GUID key must always sort")
+	}
+}
+
+type guidKeyedProbe struct {
+	ID orm.GUID `orm:"column,key"`
+}
+
+func (guidKeyedProbe) Entity() orm.EntityDef {
+	return orm.EntityDef{Source: orm.Table("perf_guid_probe")}
+}
+
+// A decimal key on SQLite still loads value-wise in every mode, explicit loading included.
+func TestDecimalKeyedCollection_LoadsInValueOrderOnSqlite(t *testing.T) {
+	ctx := context.Background()
+	db, err := orm.Open(ctx, testsupport.TempDatabase(t), orm.Options{Dialect: sqlite.New()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := orm.CreateTable[decimalKeyParent](ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if err := orm.CreateTable[decimalKeyChild](ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if err := orm.Insert(ctx, db, &decimalKeyParent{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []string{"10", "9", "2", "19.90", "100"} {
+		if err := orm.Insert(ctx, db, &decimalKeyChild{Code: orm.MustDecimal(code), ParentID: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := "2 9 10 19.90 100"
+	codes := func(parent *decimalKeyParent) string {
+		parts := make([]string, len(parent.Children))
+		for i, c := range parent.Children {
+			parts[i] = c.Code.String()
+		}
+		return strings.Join(parts, " ")
+	}
+	for _, mode := range []orm.FetchMode{orm.FetchMultiQuery, orm.FetchSubSelect, orm.FetchJoin} {
+		parents, err := orm.From[decimalKeyParent](db).Include("Children").Fetch(mode).List(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := codes(&parents[0]); got != want {
+			t.Errorf("fetch mode %v: loaded %s, want %s", mode, got, want)
+		}
+	}
+	parent := &decimalKeyParent{ID: 1}
+	if err := orm.LoadEach(ctx, db, []*decimalKeyParent{parent}, "Children"); err != nil {
+		t.Fatal(err)
+	}
+	if got := codes(parent); got != want {
+		t.Errorf("explicit loading: loaded %s, want %s", got, want)
+	}
 }
 
 // The bind labels are built once and are the strings the call sites always built (ADR-0048 item 3): a conversion

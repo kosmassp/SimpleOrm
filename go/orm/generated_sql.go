@@ -52,6 +52,7 @@ type generatedSQL struct {
 	keyLabels       []string // "<Entity> key[i]": the key read's and the by-key delete's labels
 	selectAll       string
 	columnLists     map[string]*boundText
+	keyValueOrder   *bool // keyOrderIsValueOrder for the map's key (loading_keys.go), once computed
 }
 
 // renderCache is the per-session holder.

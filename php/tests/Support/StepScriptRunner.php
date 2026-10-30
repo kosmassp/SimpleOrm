@@ -30,9 +30,10 @@ use SimpleOrm\Tests\Sample\Models\UserRole;
  * `MergeCasesTest` (CODING-STANDARD §8; spec/session.md "Conformance: tracking-cases/", spec/unit-of-work.md
  * "Conformance: flush-cases/" and "Detach and merge", spec/hooks.md "Conformance: hook-cases/"); the session clock
  * is fixed at {@see ConformanceClock::INSTANT}: a case file runs against the seeded fixture database in the
- * declared tracking mode, through a {@see RecordingUpdateDialect} so what the session asked the
- * dialect to render — an update's columns (`expectWritten`), a flush's ordered statements
- * (`expectStatements`) — is observable at the one seam every implementation renders SQL through.
+ * declared tracking mode, with a {@see WriteRenderingRecorder} on the session's render hook so every write rendering
+ * the session takes — an update's columns (`expectWritten`), a flush's ordered statements (`expectStatements`) — is
+ * observable at the seam (spec/session.md "The seam"; the session caches its renderings, ADR-0048, so the hook and not
+ * a wrapping dialect reports them).
  *
  * Property names and navigations are spelled as the reference declares them (`Name`,
  * `Address.City`, `User`, `Details`); the engine maps them to the PHP declaration with `lcfirst`
@@ -72,7 +73,7 @@ final class StepScriptRunner
 
     private function __construct(
         private readonly Db $db,
-        private readonly RecordingUpdateDialect $recorder,
+        private readonly WriteRenderingRecorder $recorder,
         private readonly TempDatabase $fixture,
     ) {
     }
@@ -90,7 +91,6 @@ final class StepScriptRunner
             flags: JSON_THROW_ON_ERROR,
         );
 
-        $recorder = new RecordingUpdateDialect(new SqliteDialect());
         $mode = match ($spec['tracking']) {
             'tracked' => TrackingMode::Tracked,
             'untracked' => TrackingMode::Untracked,
@@ -100,14 +100,14 @@ final class StepScriptRunner
         $header = $spec['batching'] ?? [];
         $fixture = TempDatabase::create();
         $db = SampleDatabase::open($fixture, new DbOptions(
-            $recorder,
+            new SqliteDialect(),
             tracking: $mode,
             clock: ConformanceClock::fixed(),
             batching: $batching ?? BatchingMode::from($header['mode'] ?? 'off'),
             maxStatementsPerMessage: $header['maxStatementsPerMessage'] ?? 100,
         ));
         ConformanceSeed::insert($fixture);
-        $runner = new self($db, $recorder, $fixture);
+        $runner = new self($db, WriteRenderingRecorder::attach($db), $fixture);
         $db->observeMessages(static function (int $size) use ($runner): void {
             $runner->messages[] = $size;
         });

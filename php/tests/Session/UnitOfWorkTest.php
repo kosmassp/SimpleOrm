@@ -36,7 +36,7 @@ use SimpleOrm\Tests\Sample\Models\User;
 use SimpleOrm\Tests\Sample\Models\UserRole;
 use SimpleOrm\Tests\Sample\Models\UserTransactionTotal;
 use SimpleOrm\Tests\Support\ConformanceSeed;
-use SimpleOrm\Tests\Support\RecordingUpdateDialect;
+use SimpleOrm\Tests\Support\WriteRenderingRecorder;
 use SimpleOrm\Tests\Support\SampleDatabase;
 use SimpleOrm\Tests\Support\TempDatabase;
 use SimpleOrm\Types\Decimal;
@@ -53,7 +53,7 @@ final class UnitOfWorkTest extends TestCase
 {
     private TempDatabase $fixture;
 
-    private RecordingUpdateDialect $recorder;
+    private WriteRenderingRecorder $recorder;
 
     private Db $db;
 
@@ -62,8 +62,8 @@ final class UnitOfWorkTest extends TestCase
     protected function setUp(): void
     {
         $this->fixture = TempDatabase::create();
-        $this->recorder = new RecordingUpdateDialect(new SqliteDialect());
-        $this->db = SampleDatabase::open($this->fixture, new DbOptions($this->recorder, tracking: TrackingMode::Tracked));
+        $this->db = SampleDatabase::open($this->fixture, new DbOptions(new SqliteDialect(), tracking: TrackingMode::Tracked));
+        $this->recorder = WriteRenderingRecorder::attach($this->db);
         $this->db->createTable(Node::class);
         $this->db->createTable(Account::class);
         $this->db->createTable(AccountSettings::class);

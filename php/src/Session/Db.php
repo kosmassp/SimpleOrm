@@ -67,6 +67,9 @@ final class Db
     /** The test hook of {@see observeMessages()}; null in every real session. */
     private ?Closure $messageObserver = null;
 
+    /** The test hook of {@see observeRenderings()}; null in every real session. */
+    private ?Closure $renderObserver = null;
+
     /** The statement log's one funnel (ADR-0045): every statement this session sends is written through it. */
     private readonly StatementLog $log;
 
@@ -490,20 +493,13 @@ final class Db
         $this->requireNamedRelation($map, 'key reads need a named relation');
 
         $keyValues = self::validateKey($map, $key);
-        $dialect = $this->options->dialect;
 
-        $predicates = [];
         $parameters = [];
         foreach ($keyValues as $i => $value) {
-            $predicates[] = $dialect->quoteIdentifier($map->keyProperties[$i]->columnName) . " = @k{$i}";
             $parameters["k{$i}"] = $this->converter->toParameter($value, "{$map->entityName()} key[{$i}]", type: $map->keyProperties[$i]->type);
         }
 
-        $sql = 'select ' . implode(', ', array_map(
-            static fn (PropertyMap $p): string => $dialect->quoteIdentifier($p->columnName),
-            $map->properties,
-        )) . ' from ' . $dialect->quoteIdentifier((string) $map->relationName)
-            . ' where ' . implode(' and ', $predicates);
+        $sql = $this->generated($map)->selectByKey($map, $this->options->dialect);
 
         $statement = $this->connection()->prepare(SqlPlaceholders::toPdo($sql));
         $this->log->write("{$map->entityName()}.get", $sql, $parameters);
@@ -900,17 +896,7 @@ final class Db
         $map = $this->maps->load($entityType);
         $this->requireNamedRelation($map, 'select-all needs a named relation (statements execute via the statement API)');
 
-        $dialect = $this->options->dialect;
-        $sql = 'select ' . implode(', ', array_map(
-            static fn (PropertyMap $p): string => $dialect->quoteIdentifier($p->columnName),
-            $map->properties,
-        )) . ' from ' . $dialect->quoteIdentifier((string) $map->relationName);
-        if ($map->keyProperties !== []) {
-            $sql .= ' order by ' . implode(', ', array_map(
-                static fn (PropertyMap $k): string => $dialect->quoteIdentifier($k->columnName),
-                $map->keyProperties,
-            ));
-        }
+        $sql = $this->generated($map)->selectAll($map, $this->options->dialect);
 
         $statement = $this->connection()->prepare($sql);
         $this->log->write("{$map->entityName()}.selectAll", $sql);
@@ -981,7 +967,8 @@ final class Db
             $this->tracking?->identityFor($map, $entity);
         }
 
-        $sql = $this->options->dialect->insertSql($map);
+        $this->observeRendering('insert', $map);
+        $sql = $this->generated($map)->insert($map, $this->options->dialect);
 
         // The hooks run after the gates (spec/hooks.md Clarifications); a failed statement puts created-at back to unset.
         $restoreCreatedAt = $this->fillCreatedAt($map, $entity);
@@ -1087,11 +1074,13 @@ final class Db
 
         // Bind SET values, key values, and the current version for the WHERE;
         // database-generated non-key columns are never written.
+        $this->observeRendering('update', $map, 'all');
+
         return $this->updateWrite(
             $map,
             $entity,
             $entity,
-            $this->options->dialect->updateSql($map),
+            $this->generated($map)->update($map, $this->options->dialect),
             array_values(array_filter(
                 $map->properties,
                 static fn (PropertyMap $p): bool => $p->key || $p->version || !$p->generated,
@@ -1127,11 +1116,13 @@ final class Db
             $bound[] = $map->versionProperty;
         }
 
+        $this->observeRendering('update', $map, $set);
+
         return $this->updateWrite(
             $map,
             $entity,
             $entity,
-            $this->options->dialect->updateOnlySql($map, $set),
+            $this->generated($map)->updateOnly($map, $this->options->dialect, $set),
             $bound,
             function () use ($entry, $set): void {
                 $this->tracking?->resnapshotWritten($entry, $set);
@@ -1179,11 +1170,13 @@ final class Db
             $bound[] = $map->versionProperty;
         }
 
+        $this->observeRendering('update', $map, $set);
+
         return $this->updateWrite(
             $map,
             $entity,
             $entity,
-            $this->options->dialect->updateOnlySql($map, $set),
+            $this->generated($map)->updateOnly($map, $this->options->dialect, $set),
             $bound,
             function () use ($entry, $set): void {
                 if ($entry !== null) {
@@ -1398,7 +1391,8 @@ final class Db
             return $this->prepareSoftDelete($map, $flag, $keyOrEntity, $byEntity);
         }
 
-        $sql = $this->options->dialect->deleteSql($map, $checkVersion);
+        $this->observeRendering('delete', $map);
+        $sql = $this->generated($map)->delete($map, $this->options->dialect, $checkVersion);
 
         $parameters = [];
         $identity = null;
@@ -1490,11 +1484,13 @@ final class Db
         }
 
         try {
+            $this->observeRendering('update', $map, $set);
+
             return $this->updateWrite(
                 $map,
                 $instance,
                 $byEntity ? $instance : null,
-                $this->options->dialect->updateOnlySql($map, $set),
+                $this->generated($map)->updateOnly($map, $this->options->dialect, $set),
                 $bound,
                 function () use ($map, $instance, $byEntity): void {
                     $this->tracking?->forget($map, $map->getKeyValues($instance), $byEntity ? $instance : null);
@@ -1690,6 +1686,41 @@ final class Db
     public function observeMessages(?Closure $observer): void
     {
         $this->messageObserver = $observer;
+    }
+
+    /**
+     * The test hook of the step-script runners (spec/session.md "The seam"): `$observer` is told every write rendering the
+     * session takes — `insert`, the full-row `update` (`$columns` = `'all'`), the column-list `update` (`$columns` = the
+     * property maps it writes, in list order), `delete` (`$columns` = null) — at the moment it takes it, whether the text
+     * was rendered now or came from the cache ({@see GeneratedSql}, ADR-0048). The dialect is asked once per text, so a
+     * wrapping dialect no longer sees every rendering; this hook does, in the same order a wrapping dialect saw them
+     * before the cache. **Not part of the public API.** Pass null to remove it.
+     *
+     * @param (Closure(string, EntityMap, 'all'|list<PropertyMap>|null): void)|null $observer
+     * @internal
+     */
+    public function observeRenderings(?Closure $observer): void
+    {
+        $this->renderObserver = $observer;
+    }
+
+    /** The cached generated CRUD text of `$map` on this session's dialect (ADR-0048 item 1). */
+    private function generated(EntityMap $map): GeneratedSql
+    {
+        return GeneratedSql::for($map, $this->options->dialect);
+    }
+
+    /**
+     * Tells the render observer (if any) that the session is taking one write rendering — called just before the text is
+     * taken, where the dialect used to be asked.
+     *
+     * @param 'all'|list<PropertyMap>|null $columns
+     */
+    private function observeRendering(string $op, EntityMap $map, string|array|null $columns = null): void
+    {
+        if ($this->renderObserver !== null) {
+            ($this->renderObserver)($op, $map, $columns);
+        }
     }
 
     /**

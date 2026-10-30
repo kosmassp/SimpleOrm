@@ -240,6 +240,15 @@ rows of the statements that ran — under batching, possibly some after the fail
 roll back. SQLite has no round trip to save: its messages run one statement at a time, reusing one prepared command
 per distinct statement text within the call.
 
+### Performance (Level 4, ADR-0048)
+
+Nothing to configure. A session renders each entity's generated CRUD text once (per column set for column-list
+updates); binding plans are cached per SQL text and args type, mapping plans per result type and column list;
+loading correlates single integer keys by `int64` and skips the post-fetch sort only where the dialect stores the key
+as an integer or exact numeric type (a SQLite `TEXT` decimal, strings, GUIDs, and temporals still sort, so every
+collection stays in value order). The SQL sent is unchanged. Benchmarks:
+`go test -C go -run '^$' -bench . -benchmem ./orm/` (PostgreSQL legs skip without a server).
+
 Errors are values with a stable code: `errors.As(err, &e)` on an `*orm.Error`,
 or `orm.CodeOf(err)`. Every I/O function takes a `context.Context`.
 

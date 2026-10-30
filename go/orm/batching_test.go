@@ -349,9 +349,11 @@ type orderedDialect struct {
 	events *[]string
 }
 
-func (d orderedDialect) InsertSQL(m *orm.EntityMap) string {
-	*d.events = append(*d.events, "prepare")
-	return d.RecordingDialect.InsertSQL(m)
+func (d orderedDialect) ObserveWriteRendering(op string, m *orm.EntityMap, all bool, properties []*orm.PropertyMap) {
+	if op == "insert" {
+		*d.events = append(*d.events, "prepare")
+	}
+	d.RecordingDialect.ObserveWriteRendering(op, m, all, properties)
 }
 
 func (d orderedDialect) ObserveMessage(statements int) {

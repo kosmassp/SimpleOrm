@@ -4,9 +4,11 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
@@ -25,7 +27,7 @@ import (
 type ResultMapper struct {
 	loader    *metadata.Loader
 	converter *TypeConverter
-	plans     sync.Map // string -> *Plan
+	plans     sync.Map // reflect.Type -> *planSet
 	// markers judges a column's driver-reported type for the VAL-020 read rule on databases whose
 	// native temporals carry no marker (spec/dialects.md "Temporals"); nil on SQLite, whose TEXT
 	// temporals carry their own marker.
@@ -70,18 +72,68 @@ type Plan struct {
 // Plan returns the plan for resultType against columns, building and caching
 // it on first use (so MAP-001/002 fire even for an empty result set, since the
 // caller builds the plan from the schema before reading any row).
+//
+// The cache key is structural (ADR-0048 item 6): the result type by identity, then the column names compared one by
+// one against the reader's — a hit builds no string. (It is stricter than the joined-string key it replaces only in
+// that two distinct types printing alike, or column lists that join alike, no longer share a plan.)
 func (m *ResultMapper) Plan(resultType reflect.Type, columns []string, queryName string) (*Plan, error) {
-	key := resultType.String() + "|" + strings.Join(columns, ",")
-	if cached, ok := m.plans.Load(key); ok {
-		return cached.(*Plan), nil
+	set := m.planSet(resultType)
+	if plan := set.find(columns); plan != nil {
+		return plan, nil
 	}
 
 	plan, err := m.buildPlan(resultType, columns, queryName)
 	if err != nil {
 		return nil, err
 	}
-	actual, _ := m.plans.LoadOrStore(key, plan)
-	return actual.(*Plan), nil
+	return set.store(columns, plan), nil
+}
+
+// planSet is one result type's plans by column list: an immutable slice replaced on write (copy-on-write), so a
+// lookup takes no lock.
+type planSet struct {
+	mu      sync.Mutex
+	entries atomic.Pointer[[]planEntry]
+}
+
+type planEntry struct {
+	columns []string
+	plan    *Plan
+}
+
+func (m *ResultMapper) planSet(resultType reflect.Type) *planSet {
+	if set, ok := m.plans.Load(resultType); ok {
+		return set.(*planSet)
+	}
+	set, _ := m.plans.LoadOrStore(resultType, &planSet{})
+	return set.(*planSet)
+}
+
+func (s *planSet) find(columns []string) *Plan {
+	if entries := s.entries.Load(); entries != nil {
+		for _, e := range *entries {
+			if slices.Equal(e.columns, columns) {
+				return e.plan
+			}
+		}
+	}
+	return nil
+}
+
+// store keeps plan for columns unless another caller stored one first, and returns the one kept.
+func (s *planSet) store(columns []string, plan *Plan) *Plan {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing := s.find(columns); existing != nil {
+		return existing
+	}
+	var next []planEntry
+	if entries := s.entries.Load(); entries != nil {
+		next = append(next, *entries...)
+	}
+	next = append(next, planEntry{columns: slices.Clone(columns), plan: plan})
+	s.entries.Store(&next)
+	return plan
 }
 
 func (m *ResultMapper) buildPlan(resultType reflect.Type, columns []string, queryName string) (*Plan, error) {

@@ -82,3 +82,13 @@ type StatementBatcher interface {
 type MessageObserver interface {
 	ObserveMessage(statements int)
 }
+
+// RenderObserver is the test hook through which a step-script runner observes every write rendering the session takes
+// (spec/session.md "The seam"): the session caches its generated CRUD text per entity map (ADR-0048), so it asks the
+// dialect once per text, and a decorator overriding InsertSQL/UpdateSQL/UpdateOnlySQL/DeleteSQL would see only the
+// first. A dialect decorator that implements this is told, in order, at the moment the session would have asked the
+// dialect — cached or not: op is "insert", "update", or "delete"; all is true for the full-row update; properties is
+// the column-list update's SET, in list order (nil otherwise). Never public API; the session type-asserts its dialect.
+type RenderObserver interface {
+	ObserveWriteRendering(op string, m *EntityMap, all bool, properties []*PropertyMap)
+}

@@ -9,8 +9,8 @@ import (
 	"github.com/kosmassp/SimpleOrm/go/orm/sqlite"
 )
 
-// RecordingDialect decorates the SQLite dialect and records what the four write
-// statements were asked to render, in order, so a tracking case's expectWritten,
+// RecordingDialect decorates the SQLite dialect and records every write rendering
+// the session takes, in order (core.RenderObserver), so a tracking case's expectWritten,
 // a flush's expectStatements, and the unit-of-work tests are observable through
 // the dialect seam: where every implementation renders SQL (spec/session.md,
 // spec/unit-of-work.md). Everything else delegates. The one recording dialect of
@@ -73,28 +73,18 @@ func (d *RecordingDialect) Ops() []string {
 	return ops
 }
 
-func (d *RecordingDialect) InsertSQL(m *orm.EntityMap) string {
-	d.Statements = append(d.Statements, RenderedStatement{Op: "insert", Entity: m.EntityName()})
-	return d.Dialect.InsertSQL(m)
-}
-
-func (d *RecordingDialect) UpdateSQL(m *orm.EntityMap) string {
-	d.Statements = append(d.Statements, RenderedStatement{Op: "update", Entity: m.EntityName(), All: true})
-	return d.Dialect.UpdateSQL(m)
-}
-
-func (d *RecordingDialect) UpdateOnlySQL(m *orm.EntityMap, properties []*orm.PropertyMap) string {
-	names := make([]string, len(properties))
-	for i, p := range properties {
-		names[i] = p.PropertyName
+// ObserveWriteRendering records one write rendering the session took (core.RenderObserver, ADR-0048): the session
+// caches its generated CRUD text and asks the dialect once per text, so the recorder is told about every rendering —
+// cached or not — instead of overriding the four renderings, which would see only the first.
+func (d *RecordingDialect) ObserveWriteRendering(op string, m *orm.EntityMap, all bool, properties []*orm.PropertyMap) {
+	statement := RenderedStatement{Op: op, Entity: m.EntityName(), All: all}
+	if op == "update" && !all {
+		statement.Properties = make([]string, len(properties))
+		for i, p := range properties {
+			statement.Properties[i] = p.PropertyName
+		}
 	}
-	d.Statements = append(d.Statements, RenderedStatement{Op: "update", Entity: m.EntityName(), Properties: names})
-	return d.Dialect.UpdateOnlySQL(m, properties)
-}
-
-func (d *RecordingDialect) DeleteSQL(m *orm.EntityMap, checkVersion bool) string {
-	d.Statements = append(d.Statements, RenderedStatement{Op: "delete", Entity: m.EntityName()})
-	return d.Dialect.DeleteSQL(m, checkVersion)
+	d.Statements = append(d.Statements, statement)
 }
 
 // Updates is the update statements among the recorded ones (what expectWritten judges).

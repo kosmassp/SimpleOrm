@@ -3,7 +3,7 @@ package orm
 import (
 	"context"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/kosmassp/SimpleOrm/go/orm/internal/core"
@@ -197,7 +197,9 @@ func distinctTuples(tuples []core.KeyTuple) []core.KeyTuple {
 // contains a null part is excluded from querying; its navigations stay
 // empty/null"). owners[i] is nil for an excluded entity; distinct is the
 // de-duplicated, non-null set the query filters on.
-func correlate(entities []any, properties []*core.PropertyMap) (owners []core.KeyTuple, distinct []core.KeyTuple) {
+//
+// needDistinct is false in SubSelect mode, where the subquery replaces the key list (distinct is then nil).
+func correlate(entities []any, properties []*core.PropertyMap, needDistinct bool) (owners []core.KeyTuple, distinct []core.KeyTuple) {
 	owners = make([]core.KeyTuple, len(entities))
 	var nonNull []core.KeyTuple
 	for i, e := range entities {
@@ -208,7 +210,9 @@ func correlate(entities []any, properties []*core.PropertyMap) (owners []core.Ke
 		owners[i] = t
 		nonNull = append(nonNull, t)
 	}
-	distinct = distinctTuples(nonNull)
+	if needDistinct {
+		distinct = distinctTuples(nonNull)
+	}
 	return owners, distinct
 }
 
@@ -324,7 +328,11 @@ func queryMembership(
 		sub := *ownerSubquery // shallow copy: never mutate the shared root AST (CODING-STANDARD §3)
 		sub.Projection = subqueryProjection
 		ast := &core.SelectAst{Map: m, Where: []core.Criteria{core.InSelect(matchProperties, &sub)}, Orderings: orderings}
-		return selectRows(ctx, db, ast, queryName)
+		rows, err := selectRows(ctx, db, ast, queryName)
+		if err == nil && len(orderProperties) > 0 && !db.valueOrdered(m, orderProperties) {
+			sortByProperties(rows, orderProperties)
+		}
+		return rows, err
 	}
 
 	if len(tuples) == 0 {
@@ -341,23 +349,19 @@ func queryMembership(
 		}
 		all = append(all, rows...)
 	}
-	if len(chunks) > 1 && len(orderProperties) > 0 {
+	if len(orderProperties) > 0 && (len(chunks) > 1 || !db.valueOrdered(m, orderProperties)) {
 		sortByProperties(all, orderProperties)
 	}
 	return all, nil
 }
 
-// sortByProperties re-establishes a single global order across merged chunks
-// by comparing the ordering properties' actual values (core.KeyTuple.Compare —
-// never a stringified rendering, spec/loading.md, ADR-0021 add.1: "10 comes
-// after 2"). Shared with the join engine's collection ordering
-// (db_eager_join.go), which sorts core.KeyTuple values directly.
-func sortByProperties(values []reflect.Value, properties []*core.PropertyMap) {
-	sort.SliceStable(values, func(i, j int) bool {
-		left := extractTuple(properties, values[i].Interface())
-		right := extractTuple(properties, values[j].Interface())
-		return left.Compare(right) < 0
-	})
+// valueOrdered is whether rows arriving ORDER BY orderProperties are already in value order (loading_keys.go): the
+// post-fetch sort spec/loading.md requires of every loaded collection is skipped only then. Merged chunks always sort.
+func (db *Db) valueOrdered(m *core.EntityMap, orderProperties []*core.PropertyMap) bool {
+	if slices.Equal(orderProperties, m.KeyProperties) {
+		return db.keyOrderIsValueOrder(m)
+	}
+	return keyOrderIsValueOrder(db.options.Dialect, m, orderProperties)
 }
 
 // findByTuple returns the first value whose properties equal tuple, or an
@@ -418,14 +422,40 @@ func loadManyToOne(
 	}
 
 	field := navigationField(ownerMap.Type, rel.PropertyName)
-	owners, distinct := correlate(entities, ownerFKProps)
 
 	var subqueryProjection []*core.PropertyMap
 	if ownerSubquery != nil {
 		subqueryProjection = ownerFKProps
 	}
-
 	queryName := navigationTarget + " (many-to-one)"
+
+	if sameIntegerKey(ownerFKProps, targetMap.KeyProperties) {
+		// The integer-key path (loading_keys.go): the same tuples queried, the same first match per owner.
+		keys, has, distinct := integerOwners(entities, ownerFKProps[0], ownerSubquery == nil)
+		targets, err := queryMembership(ctx, db, targetMap, propertyNames(targetMap.KeyProperties), distinct,
+			ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName)
+		if err != nil {
+			return err
+		}
+		byKey := make(map[int64]reflect.Value, len(targets))
+		for _, v := range targets {
+			if key, ok := readIntegerKey(targetMap.KeyProperties[0], v); ok {
+				if _, first := byKey[key]; !first {
+					byKey[key] = v
+				}
+			}
+		}
+		for i, e := range entities {
+			if !has[i] {
+				setPointerField(e, field, reflect.Value{})
+				continue
+			}
+			setPointerField(e, field, byKey[keys[i]]) // a missing key is the zero Value: a dead link loads as nil
+		}
+		return nil
+	}
+
+	owners, distinct := correlate(entities, ownerFKProps, ownerSubquery == nil)
 	targets, err := queryMembership(ctx, db, targetMap, propertyNames(targetMap.KeyProperties), distinct,
 		ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName)
 	if err != nil {
@@ -468,14 +498,49 @@ func loadOneToOne(
 	}
 
 	field := navigationField(ownerMap.Type, rel.PropertyName)
-	owners, distinct := correlate(entities, ownerMap.KeyProperties)
 
 	var subqueryProjection []*core.PropertyMap
 	if ownerSubquery != nil {
 		subqueryProjection = ownerMap.KeyProperties
 	}
-
 	queryName := navigationTarget + " (one-to-one)"
+
+	if sameIntegerKey(ownerMap.KeyProperties, targetFKProps) {
+		// The integer-key path (loading_keys.go): the same REL-002 on the first repeated foreign key, the same
+		// first match per owner.
+		keys, has, distinct := integerOwners(entities, ownerMap.KeyProperties[0], ownerSubquery == nil)
+		targets, err := queryMembership(ctx, db, targetMap, propertyNames(targetFKProps), distinct,
+			ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName)
+		if err != nil {
+			return err
+		}
+		byKey := make(map[int64]reflect.Value, len(targets))
+		nullSeen := false
+		for _, v := range targets {
+			key, ok := readIntegerKey(targetFKProps[0], v)
+			_, repeated := byKey[key]
+			if !ok {
+				repeated, nullSeen = nullSeen, true
+			}
+			if repeated {
+				return core.Errorf("REL-002", navigationTarget,
+					"more than one row matched foreign key %v; the target needs a unique index", []any(extractTuple(targetFKProps, v.Interface())))
+			}
+			if ok {
+				byKey[key] = v
+			}
+		}
+		for i, e := range entities {
+			if !has[i] {
+				setPointerField(e, field, reflect.Value{})
+				continue
+			}
+			setPointerField(e, field, byKey[keys[i]])
+		}
+		return nil
+	}
+
+	owners, distinct := correlate(entities, ownerMap.KeyProperties, ownerSubquery == nil)
 	targets, err := queryMembership(ctx, db, targetMap, propertyNames(targetFKProps), distinct,
 		ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName)
 	if err != nil {
@@ -532,27 +597,61 @@ func loadOneToMany(
 	}
 
 	field := navigationField(ownerMap.Type, rel.PropertyName)
-	owners, distinct := correlate(entities, ownerMap.KeyProperties)
 
 	var subqueryProjection []*core.PropertyMap
 	if ownerSubquery != nil {
 		subqueryProjection = ownerMap.KeyProperties
 	}
-
 	queryName := navigationTarget + " (one-to-many)"
+	pointerElem := field.Type.Elem().Kind() == reflect.Pointer
+
+	if sameIntegerKey(ownerMap.KeyProperties, targetFKProps) {
+		// The integer-key path (loading_keys.go): targets grouped by foreign key in their (value-ordered) sequence —
+		// each owner's collection is the same filtered run of the same list.
+		keys, has, distinct := integerOwners(entities, ownerMap.KeyProperties[0], ownerSubquery == nil)
+		targets, err := queryMembership(ctx, db, targetMap, propertyNames(targetFKProps), distinct,
+			ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName)
+		if err != nil {
+			return err
+		}
+		groups := make(map[int64][]reflect.Value, len(entities))
+		for _, v := range targets {
+			if key, ok := readIntegerKey(targetFKProps[0], v); ok {
+				groups[key] = append(groups[key], v)
+			}
+		}
+		for i, e := range entities {
+			var group []reflect.Value
+			if has[i] {
+				group = groups[keys[i]]
+			}
+			slice := reflect.MakeSlice(field.Type, 0, len(group))
+			for _, v := range group {
+				slice = appendTarget(slice, v, pointerElem)
+			}
+			setSliceField(e, field, slice)
+		}
+		return nil
+	}
+
+	owners, distinct := correlate(entities, ownerMap.KeyProperties, ownerSubquery == nil)
 	targets, err := queryMembership(ctx, db, targetMap, propertyNames(targetFKProps), distinct,
 		ownerSubquery, subqueryProjection, targetMap.KeyProperties, queryName)
 	if err != nil {
 		return err
 	}
 
-	pointerElem := field.Type.Elem().Kind() == reflect.Pointer
+	// Each target's foreign key, read once (not once per owner).
+	targetKeys := make([]core.KeyTuple, len(targets))
+	for j, v := range targets {
+		targetKeys[j] = extractTuple(targetFKProps, v.Interface())
+	}
 
 	for i, e := range entities {
 		slice := reflect.MakeSlice(field.Type, 0, 0)
 		if owners[i] != nil {
-			for _, v := range targets { // already ordered by target key
-				if extractTuple(targetFKProps, v.Interface()).Equal(owners[i]) {
+			for j, v := range targets { // already ordered by target key
+				if targetKeys[j].Equal(owners[i]) {
 					slice = appendTarget(slice, v, pointerElem)
 				}
 			}
@@ -592,7 +691,7 @@ func loadManyToMany(
 	}
 
 	field := navigationField(ownerMap.Type, rel.PropertyName)
-	owners, distinctOwners := correlate(entities, ownerMap.KeyProperties)
+	owners, distinctOwners := correlate(entities, ownerMap.KeyProperties, ownerSubquery == nil)
 
 	var subqueryProjection []*core.PropertyMap
 	if ownerSubquery != nil {
@@ -624,14 +723,18 @@ func loadManyToMany(
 	}
 
 	pointerElem := field.Type.Elem().Kind() == reflect.Pointer
+	// Each target's key, read once (not once per owner).
+	targetTuples := make([]core.KeyTuple, len(targets))
+	for j, v := range targets {
+		targetTuples[j] = extractTuple(targetMap.KeyProperties, v.Interface())
+	}
 
 	for i, e := range entities {
 		slice := reflect.MakeSlice(field.Type, 0, 0)
 		if owners[i] != nil {
 			if group := findLinkGroup(groups, owners[i]); group != nil {
-				for _, v := range targets { // already ordered by target key
-					tuple := extractTuple(targetMap.KeyProperties, v.Interface())
-					if group.hasTarget(tuple) {
+				for j, v := range targets { // already ordered by target key
+					if group.hasTarget(targetTuples[j]) {
 						slice = appendTarget(slice, v, pointerElem)
 					}
 				}

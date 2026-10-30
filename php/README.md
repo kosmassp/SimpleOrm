@@ -311,6 +311,34 @@ statement; a wrong password or a missing database fails at once; after the last 
 thrown as raised. How long one attempt may take is the DSN's (`connect_timeout` for `pgsql:`, `LoginTimeout` for
 `sqlsrv:`). The CLI takes `--command-timeout <seconds>` for every command that opens a database.
 
+## Performance (ADR-0048)
+
+The reference's performance pass, ported where the same hot paths exist: the generated CRUD text is rendered once per
+(entity map, dialect); the placeholder scan and the binding plan once per SQL text; bind labels and entity names once
+per map; relationship loading groups single-column integer keys by the int itself and skips the per-owner sort where
+the dialect orders the key by value (integer keys everywhere, decimal keys on PostgreSQL and SQL Server — SQLite's TEXT
+decimals still sort); join mode reads keys from the row; the mapping-plan cache keys structurally. No SQL text, log
+line, or error changed.
+
+`php -d extension=pdo_sqlite benchmarks/bench.php` measures the reference's shapes on SQLite (a temp file) and on
+PostgreSQL when it answers; `--src=<dir>` runs another copy of `src/` (an older commit's, from `git archive`) so a before
+and an after run back to back. Fastest wall time per iteration, before → after the pass, mean of two alternating runs
+on PHP 8.4 (no opcache), PostgreSQL 16.4 on loopback:
+
+| Shape | SQLite | PostgreSQL |
+|---|---|---|
+| 100 inserts, one transaction | 18.6 → 15.2 ms | 37.6 → 35.2 ms |
+| get by key | 152 → 132 µs | 1.68 → 1.56 ms |
+| registry query, 1000 rows | 22.9 → 23.3 ms | 16.8 → 16.9 ms |
+| criteria page, 100 rows | 2.40 → 2.36 ms | 3.45 → 3.43 ms |
+| 1000 owners × 3, `MultiQuery` | 115 → 99 ms | 80 → 70 ms |
+| 1000 owners × 3, `SubSelect` | 109 → 95 ms | 73 → 64 ms |
+| 1000 owners × 3, `Join` | 131 → 117 ms | 93 → 83 ms |
+| `loadEach`, 1000 owners × 3 | 84 → 74 ms | 63 → 52 ms |
+
+Peak memory of a graph load fell 7–17% (`SubSelect` 3.45 → 2.85 MB). What remains is row mapping (a 1000-row read is
+~23 µs a row) and, on PostgreSQL, the round trips.
+
 ## The CLI
 
 `bin/simpleorm` has no assembly to load, so it takes a PSR-4 root instead:

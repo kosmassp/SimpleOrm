@@ -93,10 +93,10 @@ func getByKey(ctx context.Context, db *Db, requested reflect.Type, shape resultS
 // fresh *E (never through the identity map), or an invalid Value when no row
 // matches; a key matching several rows is QRY-002.
 func readRowByKey(ctx context.Context, db *Db, m *core.EntityMap, entityType reflect.Type, keyValues []any) (reflect.Value, error) {
-	sqlText, names, _ := db.keyReadText(m)
+	sqlText, names, labels := db.keyReadText(m)
 	args := make([]any, len(keyValues))
 	for i, value := range keyValues {
-		converted, err := db.converter.ToParameter(value, "", fmt.Sprintf("%s key[%d]", entityType.Name(), i))
+		converted, err := db.converter.ToParameter(value, "", keyLabel(labels, i, entityType, m))
 		if err != nil {
 			return reflect.Value{}, err
 		}
@@ -395,7 +395,7 @@ func (db *Db) insertStatement(entityType reflect.Type, m *core.EntityMap, entity
 	text, noRow := db.insertText(m)
 	args := make([]any, len(text.bound))
 	for i, p := range text.bound {
-		converted, err := db.converter.ToParameter(p.Get(entity), p.ColumnType, entityType.Name()+"."+p.PropertyName)
+		converted, err := db.converter.ToParameter(p.Get(entity), p.ColumnType, text.label(i, entityType, m))
 		if err != nil {
 			return nil, err
 		}
@@ -420,8 +420,11 @@ func (db *Db) insertStatement(entityType reflect.Type, m *core.EntityMap, entity
 	write.finish = func(result writeResult, journal *undoJournal) error {
 		if generated {
 			keyProperty := m.KeyProperties[0]
-			value, err := db.converter.FromDatabase(result.key, keyProperty.Type, keyProperty.ColumnType,
-				entityType.Name()+"."+keyProperty.PropertyName)
+			label := text.keyLabel
+			if entityType != m.Type {
+				label = entityType.Name() + "." + keyProperty.PropertyName
+			}
+			value, err := db.converter.FromDatabase(result.key, keyProperty.Type, keyProperty.ColumnType, label)
 			if err != nil {
 				return err
 			}
@@ -706,7 +709,7 @@ func ownedNavigation(m *core.EntityMap, name string) *core.OwnedMap {
 func (db *Db) countedWrite(entityType reflect.Type, m *core.EntityMap, entity any, operation string, text *boundText) (*preparedWrite, error) {
 	args := make([]any, len(text.bound))
 	for i, p := range text.bound {
-		converted, err := db.converter.ToParameter(p.Get(entity), p.ColumnType, entityType.Name()+"."+p.PropertyName)
+		converted, err := db.converter.ToParameter(p.Get(entity), p.ColumnType, text.label(i, entityType, m))
 		if err != nil {
 			return nil, err
 		}
@@ -796,15 +799,15 @@ func (db *Db) prepareDeleteByKey(entityType reflect.Type, key any) (*preparedWri
 		return write, nil
 	}
 
+	sqlText, labels := db.deleteByKeyText(m)
 	args := make([]any, len(keyValues))
 	for i, value := range keyValues {
-		converted, err := db.converter.ToParameter(value, "", fmt.Sprintf("%s key[%d]", entityType.Name(), i))
+		converted, err := db.converter.ToParameter(value, "", keyLabel(labels, i, entityType, m))
 		if err != nil {
 			return nil, err
 		}
 		args[i] = sql.Named(m.KeyProperties[i].ColumnName, converted)
 	}
-	sqlText, _ := db.deleteByKeyText(m)
 	db.observeWrite("delete", m, false, nil)
 	return &preparedWrite{
 		sql:  sqlText,

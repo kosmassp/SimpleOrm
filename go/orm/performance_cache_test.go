@@ -5,6 +5,7 @@ package orm_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/kosmassp/SimpleOrm/go/orm"
@@ -37,6 +38,23 @@ func (d renderCountingDialect) UpdateOnlySQL(m *orm.EntityMap, properties []*orm
 func (d renderCountingDialect) DeleteSQL(m *orm.EntityMap, checkVersion bool) string {
 	d.asked["delete"]++
 	return d.RecordingDialect.DeleteSQL(m, checkVersion)
+}
+
+// The bind labels are built once and are the strings the call sites always built (ADR-0048 item 3): a conversion
+// error names the same parameter on the first call and on the cached ones.
+func TestBindLabels_AreTheSameStringsCachedOrNot(t *testing.T) {
+	ctx := context.Background()
+	db := testsupport.OpenSampleWith(t, orm.Options{})
+	for range 2 {
+		_, err := orm.From[sample.Transaction](db).Where(orm.Eq("ID", int64(1)), orm.Eq("Status", sample.TransactionStatus("Bogus"))).List(ctx)
+		if orm.CodeOf(err) != "MAP-031" || !strings.Contains(err.Error(), "Transaction criteria @c1") {
+			t.Fatalf("expected MAP-031 naming Transaction criteria @c1, got %v", err)
+		}
+		err = orm.Insert(ctx, db, &sample.Transaction{UserID: 1, Status: "Bogus", Amount: orm.MustDecimal("1")})
+		if orm.CodeOf(err) != "MAP-031" || !strings.Contains(err.Error(), "Transaction.Status") {
+			t.Fatalf("expected MAP-031 naming Transaction.Status, got %v", err)
+		}
+	}
 }
 
 func TestGeneratedCrudText_IsRenderedOncePerMapAndEveryRenderingIsObserved(t *testing.T) {

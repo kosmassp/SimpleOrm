@@ -229,21 +229,30 @@ func bindAndQuery(ctx context.Context, db *Db, sqlText string, args any, queryNa
 // SQL.
 func renderAndRunSelect(ctx context.Context, db *Db, ast *core.SelectAst, queryName string) (*resultRows, error) {
 	var bound []any
+	labels := db.renders.criteriaLabels(queryName)
+	known := len(labels)
 	bind := func(value any, property *core.PropertyMap) (string, error) {
-		name := fmt.Sprintf("c%d", len(bound))
+		at := len(bound)
+		name := criteriaName(at)
 		var columnType core.ColumnType
 		if property != nil {
 			columnType = property.ColumnType
 		}
-		converted, err := db.converter.ToParameter(value, columnType, fmt.Sprintf("%s @%s", queryName, name))
+		if at == len(labels) {
+			labels = append(labels, queryName+" @"+name)
+		}
+		converted, err := db.converter.ToParameter(value, columnType, labels[at])
 		if err != nil {
 			return "", err
 		}
 		bound = append(bound, sql.Named(name, converted))
-		return "@" + name, nil
+		return criteriaPlaceholder(at), nil
 	}
 
 	sqlText, err := db.options.Dialect.SelectSQL(ast, bind)
+	if len(labels) > known {
+		db.renders.keepCriteriaLabels(queryName, labels)
+	}
 	if err != nil {
 		return nil, err
 	}

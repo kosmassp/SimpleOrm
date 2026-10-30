@@ -3,6 +3,7 @@ package orm
 import (
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -30,6 +31,8 @@ type boundText struct {
 	sql    string
 	bound  []*core.PropertyMap
 	labels []string
+	// keyLabel is the INSERT's label for reading a generated key back ("<Entity>.<KeyProperty>"); "" otherwise.
+	keyLabel string
 }
 
 // generatedSQL is one entity map's cached text.
@@ -55,6 +58,64 @@ type generatedSQL struct {
 type renderCache struct {
 	mu      sync.Mutex
 	entries map[*core.EntityMap]*generatedSQL
+	// labels is, per criteria query name ("<Entity> criteria", a loader's "<Owner>.<Nav> (one-to-many)", …), the
+	// bind labels "<queryName> @c<i>" its renderings have needed so far (ADR-0048 item 3). The names are bounded
+	// by the model; the map stops growing past maxLabelSets anyway.
+	labels map[string][]string
+}
+
+const maxLabelSets = 1024
+
+// criteriaLabels is queryName's labels so far, capacity-clipped so the caller's appends never touch the cache.
+func (c *renderCache) criteriaLabels(queryName string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	labels := c.labels[queryName]
+	return labels[:len(labels):len(labels)]
+}
+
+// keepCriteriaLabels stores a longer label list for queryName.
+func (c *renderCache) keepCriteriaLabels(queryName string, labels []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(labels) <= len(c.labels[queryName]) {
+		return
+	}
+	if _, known := c.labels[queryName]; !known && len(c.labels) >= maxLabelSets {
+		return
+	}
+	if c.labels == nil {
+		c.labels = map[string][]string{}
+	}
+	c.labels[queryName] = labels
+}
+
+// The criteria parameter names "c<i>" and placeholders "@c<i>" (the renderer's bind order), built once up to SQL
+// Server's per-message parameter cap; beyond it, built per call as before.
+const criteriaNameTable = 2100
+
+var criteriaNames = sync.OnceValue(func() [2][]string {
+	var names, placeholders []string
+	for i := range criteriaNameTable {
+		name := "c" + strconv.Itoa(i)
+		names = append(names, name)
+		placeholders = append(placeholders, "@"+name)
+	}
+	return [2][]string{names, placeholders}
+})
+
+func criteriaName(i int) string {
+	if i < criteriaNameTable {
+		return criteriaNames()[0][i]
+	}
+	return fmt.Sprintf("c%d", i)
+}
+
+func criteriaPlaceholder(i int) string {
+	if i < criteriaNameTable {
+		return criteriaNames()[1][i]
+	}
+	return "@" + fmt.Sprintf("c%d", i)
 }
 
 // generatedFor returns m's entry, creating it; the caller holds mu.
@@ -103,6 +164,14 @@ func (t *boundText) label(i int, entityType reflect.Type, m *core.EntityMap) str
 	return entityType.Name() + "." + t.bound[i].PropertyName
 }
 
+// keyLabel is key part i's label ("<Entity> key[i]"): the cached one for the map's own type, else built as before.
+func keyLabel(labels []string, i int, entityType reflect.Type, m *core.EntityMap) string {
+	if entityType == m.Type {
+		return labels[i]
+	}
+	return fmt.Sprintf("%s key[%d]", entityType.Name(), i)
+}
+
 // observeWrite tells the session's render observer, if its dialect is one, about a write rendering the session takes.
 func (db *Db) observeWrite(op string, m *core.EntityMap, all bool, properties []*core.PropertyMap) {
 	if db.renderObserver != nil {
@@ -128,6 +197,9 @@ func (db *Db) insertText(m *core.EntityMap) (*boundText, string) {
 			}
 		}
 		g.insert = g.bind(db.options.Dialect.InsertSQL(m), bound)
+		if len(m.KeyProperties) > 0 {
+			g.insert.keyLabel = m.Type.Name() + "." + m.KeyProperties[0].PropertyName
+		}
 		g.insertNoRow = fmt.Sprintf("insert into %s: RETURNING produced no row", m.RelationName)
 	}
 	return g.insert, g.insertNoRow

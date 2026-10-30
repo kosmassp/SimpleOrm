@@ -13,6 +13,7 @@ use SimpleOrm\Metadata\MappingOptions;
 use SimpleOrm\Session\Db;
 use SimpleOrm\Session\DbOptions;
 use SimpleOrm\Session\GeneratedSql;
+use SimpleOrm\Session\MapLabels;
 use SimpleOrm\Tests\Sample\Models\User;
 use SimpleOrm\Tests\Support\DelegatingDialect;
 use SimpleOrm\Tests\Support\SampleDatabase;
@@ -104,6 +105,23 @@ final class PerformanceCacheTest extends TestCase
         self::assertSame(2, $first->calls['insert']);
         self::assertNotSame(GeneratedSql::for($map, $first), GeneratedSql::for($other, $first));
         self::assertInstanceOf(EntityMap::class, $other);
+    }
+
+    #[Test]
+    public function the_labels_are_built_once_per_map_and_read_as_the_call_sites_built_them(): void
+    {
+        $map = (new EntityMapLoader(new MappingOptions()))->load(User::class);
+        $labels = MapLabels::for($map);
+
+        self::assertSame($labels, MapLabels::for($map));
+        self::assertSame('User', $map->entityName());
+        self::assertSame('User.email', $labels->property($map->property('email')));
+        self::assertSame('User key[0]', $labels->key(0));
+        self::assertSame('User.insert', $labels->name('insert'));
+        self::assertSame('User get', $labels->plan('get'));
+        self::assertSame('User criteria', $labels->criteria);
+        self::assertSame('User criteria', Db::criteriaQueryName($map));
+        self::assertSame('User criteria @c3', $labels->criteriaParameter(3));
     }
 
     #[Test]

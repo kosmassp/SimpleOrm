@@ -362,17 +362,22 @@ final class Db
     public function executeAstStatement(SelectAst $ast, string $queryName, string $logKind = 'criteria'): PDOStatement
     {
         $converter = $this->converter;
+        $labels = MapLabels::for($ast->map);
+        // The labels are built once per map for the criteria name every caller passes; any other name is interpolated.
+        $cached = $queryName === $labels->criteria ? $labels : null;
         $parameters = [];
-        $bindParameter = static function (mixed $value, ?PropertyMap $property) use (&$parameters, $converter, $queryName): string {
-            $name = 'c' . count($parameters);
-            $parameters[$name] = $converter->toParameter($value, "{$queryName} @{$name}", $property?->enumAsInt() ?? false, $property?->type);
+        $bindParameter = static function (mixed $value, ?PropertyMap $property) use (&$parameters, $converter, $queryName, $cached): string {
+            $index = count($parameters);
+            $name = 'c' . $index;
+            $label = $cached?->criteriaParameter($index) ?? "{$queryName} @{$name}";
+            $parameters[$name] = $converter->toParameter($value, $label, $property?->enumAsInt() ?? false, $property?->type);
 
             return '@' . $name;
         };
 
         $sql = $this->options->dialect->selectSql($ast, $bindParameter);
         $statement = $this->connection()->prepare(SqlPlaceholders::toPdo($sql));
-        $this->log->write("{$ast->map->entityName()}.{$logKind}", $sql, $parameters);
+        $this->log->write($labels->name($logKind), $sql, $parameters);
         // PdoBinder::bindAndExecute, not a bare execute($parameters): the latter binds
         // everything as PDO::PARAM_STR, which a column SQLite gives no
         // declared affinity (a view's aggregate expression) never coerces back.
@@ -480,7 +485,7 @@ final class Db
         $map = $this->maps->load($entityType);
         $statement = $this->selectByKey($map, $key);
 
-        return $this->singleRow($map, $statement, $this->planFor($statement, $entityType, $map->entityName() . ' get'));
+        return $this->singleRow($map, $statement, $this->planFor($statement, $entityType, MapLabels::for($map)->plan('get')));
     }
 
     /**
@@ -494,15 +499,16 @@ final class Db
 
         $keyValues = self::validateKey($map, $key);
 
+        $labels = MapLabels::for($map);
         $parameters = [];
         foreach ($keyValues as $i => $value) {
-            $parameters["k{$i}"] = $this->converter->toParameter($value, "{$map->entityName()} key[{$i}]", type: $map->keyProperties[$i]->type);
+            $parameters["k{$i}"] = $this->converter->toParameter($value, $labels->key($i), type: $map->keyProperties[$i]->type);
         }
 
         $sql = $this->generated($map)->selectByKey($map, $this->options->dialect);
 
         $statement = $this->connection()->prepare(SqlPlaceholders::toPdo($sql));
-        $this->log->write("{$map->entityName()}.get", $sql, $parameters);
+        $this->log->write($labels->name('get'), $sql, $parameters);
         PdoBinder::bindAndExecute($statement, $parameters);
 
         return $statement;
@@ -899,10 +905,10 @@ final class Db
         $sql = $this->generated($map)->selectAll($map, $this->options->dialect);
 
         $statement = $this->connection()->prepare($sql);
-        $this->log->write("{$map->entityName()}.selectAll", $sql);
+        $this->log->write(MapLabels::for($map)->name('selectAll'), $sql);
         $statement->execute();
 
-        return $this->materializeAll($statement, $entityType, $map->entityName() . ' select-all');
+        return $this->materializeAll($statement, $entityType, MapLabels::for($map)->plan('select-all'));
     }
 
     /**
@@ -996,7 +1002,7 @@ final class Db
                         $key,
                         $generatedKey->type,
                         $generatedKey->phpType,
-                        "{$map->entityName()}.{$generatedKey->propertyName()}",
+                        MapLabels::for($map)->property($generatedKey),
                     ));
                 }
 
@@ -1014,13 +1020,14 @@ final class Db
             instance: $entity,
             insertsGeneratedKey: $generatedKey !== null,
             identity: $this->entityIdentity($map, $entity),
-            name: "{$map->entityName()}.insert",
+            name: MapLabels::for($map)->name('insert'),
         );
     }
 
     /** The row an insert binds: every non-generated column, converted by its property's rules. @return array<string, mixed> */
     private function insertParameters(EntityMap $map, object $entity): array
     {
+        $labels = MapLabels::for($map);
         $parameters = [];
         foreach ($map->properties as $property) {
             if ($property->generated) {
@@ -1029,7 +1036,7 @@ final class Db
 
             $parameters[$property->columnName] = $this->converter->toParameter(
                 $property->getValue($entity),
-                "{$map->entityName()}.{$property->propertyName()}",
+                $labels->property($property),
                 $property->enumAsInt(),
                 $property->type,
             );
@@ -1307,7 +1314,7 @@ final class Db
             },
             instance: $planned,
             identity: $this->entityIdentity($map, $entity),
-            name: "{$map->entityName()}.{$operation}",
+            name: MapLabels::for($map)->name($operation),
         );
     }
 
@@ -1317,11 +1324,12 @@ final class Db
      */
     private function updateParameters(EntityMap $map, object $entity, array $bound): array
     {
+        $labels = MapLabels::for($map);
         $parameters = [];
         foreach ($bound as $property) {
             $parameters[$property->columnName] = $this->converter->toParameter(
                 $property->getValue($entity),
-                "{$map->entityName()}.{$property->propertyName()}",
+                $labels->property($property),
                 $property->enumAsInt(),
                 $property->type,
             );
@@ -1394,6 +1402,7 @@ final class Db
         $this->observeRendering('delete', $map);
         $sql = $this->generated($map)->delete($map, $this->options->dialect, $checkVersion);
 
+        $labels = MapLabels::for($map);
         $parameters = [];
         $identity = null;
         if ($byEntity) {
@@ -1401,7 +1410,7 @@ final class Db
             foreach ($map->keyProperties as $key) {
                 $parameters[$key->columnName] = $this->converter->toParameter(
                     $key->getValue($keyOrEntity),
-                    "{$map->entityName()}.{$key->propertyName()}",
+                    $labels->property($key),
                     type: $key->type,
                 );
             }
@@ -1410,7 +1419,7 @@ final class Db
                 $version = $map->versionProperty;
                 $parameters[$version->columnName] = $this->converter->toParameter(
                     $version->getValue($keyOrEntity),
-                    "{$map->entityName()}.{$version->propertyName()}",
+                    $labels->property($version),
                     type: $version->type,
                 );
             }
@@ -1420,7 +1429,7 @@ final class Db
             foreach ($keyValues as $i => $value) {
                 $parameters[$map->keyProperties[$i]->columnName] = $this->converter->toParameter(
                     $value,
-                    "{$map->entityName()} key[{$i}]",
+                    $labels->key($i),
                     type: $map->keyProperties[$i]->type,
                 );
             }
@@ -1460,7 +1469,7 @@ final class Db
             },
             instance: $byEntity ? $keyOrEntity : null,
             identity: $identity,
-            name: "{$map->entityName()}.delete",
+            name: $labels->name('delete'),
         );
     }
 
@@ -2171,7 +2180,7 @@ final class Db
      */
     public static function criteriaQueryName(EntityMap $map): string
     {
-        return $map->entityName() . ' criteria';
+        return MapLabels::for($map)->criteria;
     }
 
     /** Rolls back an active transaction and releases the connection (PHP has no explicit PDO close; dropping the reference does). */

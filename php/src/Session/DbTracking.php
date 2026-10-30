@@ -414,7 +414,7 @@ final class DbTracking
         $value = $property->getValue($entity);
         $bound = $this->converter->toDatabase(
             $value,
-            "{$map->entityName()}.{$property->propertyName()}",
+            MapLabels::for($map)->property($property),
             $property->enumAsInt(),
             $property->type,
         );

@@ -27,6 +27,9 @@ final readonly class EntityMap
     /** @var list<OwnedMap> the owned value types flattened into this entity (ADR-0030), in declaration order */
     public array $ownedTypes;
 
+    /** The unqualified class name, derived once (ADR-0048 item 3): every log line, label, and error names the entity by it. */
+    private string $shortName;
+
     /**
      * @param class-string $entityType
      * @param string|null $relationName table/view/procedure name; null for statement-backed entities
@@ -69,6 +72,9 @@ final readonly class EntityMap
         }
 
         $this->ownedTypes = $owned;
+
+        $slash = strrpos($entityType, '\\');
+        $this->shortName = $slash === false ? $entityType : substr($entityType, $slash + 1);
     }
 
     /** The `#[CreatedAt]` column (filled on insert when unset), or null (Level 3 M3, spec/hooks.md). */
@@ -104,9 +110,7 @@ final readonly class EntityMap
     /** The unqualified class name: the export's `entity` and the target of error messages. */
     public function entityName(): string
     {
-        $slash = strrpos($this->entityType, '\\');
-
-        return $slash === false ? $this->entityType : substr($this->entityType, $slash + 1);
+        return $this->shortName;
     }
 
     /** The mapped property with the given name, or null (exact match; callers resolve case rules). */

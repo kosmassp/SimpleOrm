@@ -27,6 +27,9 @@ final readonly class EntityMap
     /** @var list<OwnedMap> the owned value types flattened into this entity (ADR-0030), in declaration order */
     public array $ownedTypes;
 
+    /** The unqualified class name, derived once (ADR-0048 item 3): every log line, label, and error names the entity by it. */
+    private string $shortName;
+
     /**
      * @param class-string $entityType
      * @param string|null $relationName table/view/procedure name; null for statement-backed entities
@@ -69,6 +72,9 @@ final readonly class EntityMap
         }
 
         $this->ownedTypes = $owned;
+
+        $slash = strrpos($entityType, '\\');
+        $this->shortName = $slash === false ? $entityType : substr($entityType, $slash + 1);
     }
 
     /** The `#[CreatedAt]` column (filled on insert when unset), or null (Level 3 M3, spec/hooks.md). */
@@ -104,9 +110,7 @@ final readonly class EntityMap
     /** The unqualified class name: the export's `entity` and the target of error messages. */
     public function entityName(): string
     {
-        $slash = strrpos($this->entityType, '\\');
-
-        return $slash === false ? $this->entityType : substr($this->entityType, $slash + 1);
+        return $this->shortName;
     }
 
     /** The mapped property with the given name, or null (exact match; callers resolve case rules). */
@@ -180,14 +184,35 @@ final readonly class EntityMap
      * TEXT-affinity column (every `Decimal` key, §7.9) lexicographically, so
      * "10" would render before "2".
      *
+     * Each entity's key is read once, not twice per comparison (ADR-0048 item 4); a single-part key whose every value is a
+     * native int compares the ints directly — exactly what {@see KeyTuple::valueCompare()} does for two ints. The same
+     * comparisons over the same sequence in a stable sort, so the same permutation.
+     *
      * @param list<object> $entities
      * @return list<object>
      */
     public function sortByKey(array $entities): array
     {
-        usort($entities, fn (object $a, object $b): int => (new KeyTuple($this->getKeyValues($a)))
-            ->compare(new KeyTuple($this->getKeyValues($b))));
+        if (count($entities) < 2) {
+            return $entities;
+        }
 
-        return $entities;
+        $keys = [];
+        $allInts = count($this->keyProperties) === 1;
+        foreach ($entities as $i => $entity) {
+            $values = $this->getKeyValues($entity);
+            $allInts = $allInts && is_int($values[0]);
+            $keys[$i] = $values;
+        }
+
+        $order = array_keys($entities);
+        if ($allInts) {
+            usort($order, static fn (int|string $a, int|string $b): int => $keys[$a][0] <=> $keys[$b][0]);
+        } else {
+            $tuples = array_map(static fn (array $values): KeyTuple => new KeyTuple($values), $keys);
+            usort($order, static fn (int|string $a, int|string $b): int => $tuples[$a]->compare($tuples[$b]));
+        }
+
+        return array_map(static fn (int|string $i): object => $entities[$i], $order);
     }
 }

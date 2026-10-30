@@ -34,7 +34,7 @@ use SimpleOrm\Tests\Sample\Models\Transaction;
 use SimpleOrm\Tests\Sample\Models\User;
 use SimpleOrm\Tests\Support\ConformanceClock;
 use SimpleOrm\Tests\Support\ConformanceSeed;
-use SimpleOrm\Tests\Support\RecordingUpdateDialect;
+use SimpleOrm\Tests\Support\WriteRenderingRecorder;
 use SimpleOrm\Tests\Support\SampleDatabase;
 use SimpleOrm\Tests\Support\TempDatabase;
 
@@ -48,7 +48,7 @@ final class HooksTest extends TestCase
 {
     private TempDatabase $fixture;
 
-    private RecordingUpdateDialect $recorder;
+    private WriteRenderingRecorder $recorder;
 
     private Db $db;
 
@@ -57,11 +57,11 @@ final class HooksTest extends TestCase
     protected function setUp(): void
     {
         $this->fixture = TempDatabase::create();
-        $this->recorder = new RecordingUpdateDialect(new SqliteDialect());
         $this->db = SampleDatabase::open(
             $this->fixture,
-            new DbOptions($this->recorder, tracking: TrackingMode::Tracked, clock: ConformanceClock::fixed()),
+            new DbOptions(new SqliteDialect(), tracking: TrackingMode::Tracked, clock: ConformanceClock::fixed()),
         );
+        $this->recorder = WriteRenderingRecorder::attach($this->db);
         $this->db->createTable(HookDocument::class);
         ConformanceSeed::insert($this->fixture);
         $this->observer = Db::open($this->fixture->connectionString(), new DbOptions(new SqliteDialect()));

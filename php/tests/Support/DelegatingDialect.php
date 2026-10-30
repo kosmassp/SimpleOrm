@@ -19,8 +19,7 @@ use Throwable;
  * The one test-local {@see Dialect} decorator base (CODING-STANDARD §8, §7): every member
  * delegates to a real dialect, a subclass overrides only the member it observes or forces
  * (`CountingSelectDialect` counts `selectSql`, `RowValueInDisabledDialect` forces
- * `supportsRowValueIn`, `RecordingUpdateDialect` records what an update was asked to
- * render). It decorates the dialect seam — a real object — never the database itself, so
+ * `supportsRowValueIn`). It decorates the dialect seam — a real object — never the database itself, so
  * the "no mocks" rule of §7 stands. Not `final` by design: extending it is its purpose.
  */
 abstract class DelegatingDialect implements Dialect

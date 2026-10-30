@@ -27,7 +27,7 @@ use SimpleOrm\Tests\Sample\Models\UserRole;
 use SimpleOrm\Tests\Session\Fixtures\Document;
 use SimpleOrm\Tests\Session\Fixtures\Settings;
 use SimpleOrm\Tests\Support\ConformanceSeed;
-use SimpleOrm\Tests\Support\RecordingUpdateDialect;
+use SimpleOrm\Tests\Support\WriteRenderingRecorder;
 use SimpleOrm\Tests\Support\SampleDatabase;
 use SimpleOrm\Tests\Support\TempDatabase;
 use SimpleOrm\Types\Decimal;
@@ -35,7 +35,7 @@ use SimpleOrm\Types\Decimal;
 /**
  * Identity map and snapshot change tracking (Level 3 M1, ADR-0034 add.1, spec/session.md
  * "Tracking") on a real temp-file SQLite database seeded from `conformance/fixtures/seed.json`.
- * The tracked session writes through a {@see RecordingUpdateDialect} so what an update was asked
+ * The tracked session carries a {@see WriteRenderingRecorder} on its render hook so what an update was asked
  * to render is observable; a second, untracked session on the same file verifies what reached the
  * database. The shared behaviors are also pinned data-driven by `Conformance\TrackingCasesTest`.
  */
@@ -43,7 +43,7 @@ final class TrackingTest extends TestCase
 {
     private TempDatabase $fixture;
 
-    private RecordingUpdateDialect $recorder;
+    private WriteRenderingRecorder $recorder;
 
     private Db $db;
 
@@ -53,8 +53,8 @@ final class TrackingTest extends TestCase
     protected function setUp(): void
     {
         $this->fixture = TempDatabase::create();
-        $this->recorder = new RecordingUpdateDialect(new SqliteDialect());
-        $this->db = SampleDatabase::open($this->fixture, new DbOptions($this->recorder, tracking: TrackingMode::Tracked));
+        $this->db = SampleDatabase::open($this->fixture, new DbOptions(new SqliteDialect(), tracking: TrackingMode::Tracked));
+        $this->recorder = WriteRenderingRecorder::attach($this->db);
         ConformanceSeed::insert($this->fixture);
     }
 

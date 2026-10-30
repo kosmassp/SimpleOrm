@@ -9,6 +9,7 @@ use PDOStatement;
 use ReflectionProperty;
 use SimpleOrm\Errors\SimpleOrmException;
 use SimpleOrm\Mapping\RowSegment;
+use SimpleOrm\Metadata\ColumnType;
 use SimpleOrm\Metadata\EntityMap;
 use SimpleOrm\Metadata\KeyTuple;
 use SimpleOrm\Metadata\PropertyMap;
@@ -20,7 +21,6 @@ use SimpleOrm\Query\SelectJoin;
 
 use function array_key_exists;
 use function array_map;
-use function in_array;
 
 /**
  * Join-mode eager loading (ADR-0022 add.1) — the PHP counterpart of the C# `Db`
@@ -197,7 +197,6 @@ final class DbEagerJoin
         PDOStatement $statement,
     ): array {
         $rootColumnNames = self::columnNames($map->properties);
-        $rootKeyColumnNames = self::columnNames($map->keyProperties);
         $rootPlan = $this->db->adoptingPlan($entityType, $rootColumnNames, $queryName);
 
         /** @var array<string, ReflectionProperty> $navigationProperties */
@@ -219,19 +218,19 @@ final class DbEagerJoin
             );
         }
 
-        /** @var array<string, object> $rootsByKey */
+        /** @var array<int|string, object> $rootsByKey */
         $rootsByKey = [];
-        /** @var list<string> $rootOrder */
+        /** @var list<int|string> $rootOrder */
         $rootOrder = [];
-        /** @var array<string, array<string, string>> $singularChildToken alias => rootToken => childToken */
+        /** @var array<string, array<int|string, int|string>> $singularChildToken alias => root key => child key */
         $singularChildToken = [];
-        /** @var array<string, array<string, list<string>>> $collectionSeenTokens alias => rootToken => list<childToken> */
+        /** @var array<string, array<int|string, array<int|string, true>>> $collectionSeenTokens alias => root key => set of child keys */
         $collectionSeenTokens = [];
-        /** @var array<string, array<string, object>> $sharedChildren alias => childToken => entity, shared across every owner (spec: "owners sharing a target ... share the same instance") */
+        /** @var array<string, array<int|string, object>> $sharedChildren alias => child key => entity, shared across every owner (spec: "owners sharing a target ... share the same instance") */
         $sharedChildren = [];
 
         while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
-            $rootToken = $this->keyTupleFromSegment(RowSegment::extract($row, 't_', $rootKeyColumnNames), $map->keyProperties, $queryName)->token();
+            $rootToken = $this->rowKey($row, 't_', $map->keyProperties, $queryName);
 
             if (!array_key_exists($rootToken, $rootsByKey)) {
                 $entity = $rootPlan(RowSegment::extract($row, 't_', $rootColumnNames));
@@ -254,20 +253,22 @@ final class DbEagerJoin
             $entity = $rootsByKey[$rootToken];
 
             foreach ($navigationsByAlias as $alias => $meta) {
-                $childSegment = RowSegment::extract($row, $alias . '_', $targetColumnNamesByAlias[$alias]);
-                if (RowSegment::isAbsent($childSegment, $targetKeyColumnNamesByAlias[$alias])) {
+                // The child's key is read from the row itself; its whole segment is cut only when it is materialized
+                // (ADR-0048 item 5) — a child repeated across rows is recognized by its key first.
+                if (self::isAbsent($row, $alias . '_', $targetKeyColumnNamesByAlias[$alias])) {
                     continue;   // a null FK owner or a dead link: no child this row (spec/loading.md "Join mode aliases")
                 }
 
-                $childToken = $this->keyTupleFromSegment($childSegment, $meta['map']->keyProperties, $queryName)->token();
+                $childToken = $this->rowKey($row, $alias . '_', $meta['map']->keyProperties, $queryName);
 
                 if ($meta['collection']) {
-                    if (in_array($childToken, $collectionSeenTokens[$alias][$rootToken], true)) {
+                    if (isset($collectionSeenTokens[$alias][$rootToken][$childToken])) {
                         continue;   // the same target row, repeated by another navigation's fan-out or the many-to-many link hop
                     }
 
-                    $collectionSeenTokens[$alias][$rootToken][] = $childToken;
-                    $child = $sharedChildren[$alias][$childToken] ??= $targetPlanByAlias[$alias]($childSegment);
+                    $collectionSeenTokens[$alias][$rootToken][$childToken] = true;
+                    $child = $sharedChildren[$alias][$childToken]
+                        ??= $targetPlanByAlias[$alias](RowSegment::extract($row, $alias . '_', $targetColumnNamesByAlias[$alias]));
                     $current = $navigationProperties[$alias]->getValue($entity);
                     $current[] = $child;
                     $navigationProperties[$alias]->setValue($entity, $current);
@@ -291,7 +292,8 @@ final class DbEagerJoin
                     continue;
                 }
 
-                $child = $sharedChildren[$alias][$childToken] ??= $targetPlanByAlias[$alias]($childSegment);
+                $child = $sharedChildren[$alias][$childToken]
+                    ??= $targetPlanByAlias[$alias](RowSegment::extract($row, $alias . '_', $targetColumnNamesByAlias[$alias]));
                 $singularChildToken[$alias][$rootToken] = $childToken;
                 $navigationProperties[$alias]->setValue($entity, $child);
             }
@@ -361,6 +363,47 @@ final class DbEagerJoin
         }
 
         return $pairs;
+    }
+
+    /**
+     * The identity bucket of one alias's row slice, read from the row directly (ADR-0048 item 5): a single key part of an
+     * integer type converts its one cell through the ordinary pipeline and, being a native int, is the bucket itself — no
+     * segment array, no tuple, no token; any other key is its tuple's {@see KeyTuple::token()} as before. A token is a
+     * type-tagged string, never a numeric string, so the two kinds of bucket never meet (the same rule as
+     * {@see DbLoading}'s grouping).
+     *
+     * @param array<string, mixed> $row
+     * @param list<PropertyMap> $keyProperties
+     */
+    private function rowKey(array $row, string $prefix, array $keyProperties, string $context): int|string
+    {
+        if (count($keyProperties) === 1) {
+            $key = $keyProperties[0];
+            if ($key->type === ColumnType::Int64 || $key->type === ColumnType::Int32 || $key->type === ColumnType::Int16) {
+                $value = $this->db->converter()->fromDatabase($row[$prefix . $key->columnName] ?? null, $key->type, $key->phpType, $context);
+                if (is_int($value)) {
+                    return $value;
+                }
+
+                return (new KeyTuple([$value]))->token();
+            }
+        }
+
+        $segment = RowSegment::extract($row, $prefix, array_map(static fn (PropertyMap $p): string => $p->columnName, $keyProperties));
+
+        return $this->keyTupleFromSegment($segment, $keyProperties, $context)->token();
+    }
+
+    /** {@see RowSegment::isAbsent()} on the row itself: every key column of the slice is NULL (or missing). @param list<string> $keyColumnNames */
+    private static function isAbsent(array $row, string $prefix, array $keyColumnNames): bool
+    {
+        foreach ($keyColumnNames as $columnName) {
+            if (($row[$prefix . $columnName] ?? null) !== null) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

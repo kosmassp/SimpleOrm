@@ -26,6 +26,20 @@ use Traversable;
  */
 final class ParameterBinder
 {
+    /** How many distinct SQL texts keep a binding plan; the table is emptied when full. */
+    public const int MAX_CACHED_TEXTS = 1024;
+
+    /** @var array<string, array<class-string, array{properties: list<array{0: string, 1: ReflectionProperty, 2: ?string, 3: ?ColumnType}>, unmatched: ?string}>> */
+    private static array $plans = [];
+
+    private static int $planned = 0;
+
+    /** How many binding plans have been built in this process — the cache's test hook. @internal */
+    public static function planCount(): int
+    {
+        return self::$planned;
+    }
+
     public static function bind(
         string $sql,
         object $args,
@@ -50,25 +64,26 @@ final class ParameterBinder
         TypeConverter $converter,
         bool $arrayParameters = false,
     ): BoundSql {
-        $properties = self::publicProperties($args);
-        $tokens = self::declaredTokens($args);
-        $placeholders = SqlPlaceholders::find($sql);
         $argsType = $args::class;
+        $plan = self::plan($sql, $argsType);
+        // Every value is read before anything is judged, as the uncached binder did (a property hook runs first either way).
+        $values = [];
+        foreach ($plan['properties'] as $i => [, $property]) {
+            $values[$i] = $property->isInitialized($args) ? $property->getValue($args) : null;
+        }
 
-        foreach ($placeholders as $placeholder) {
-            if (!self::hasProperty($properties, $placeholder)) {
-                throw new SimpleOrmException(
-                    'PRM-001',
-                    $queryName,
-                    "SQL parameter @{$placeholder} has no matching property on {$argsType}",
-                );
-            }
+        if ($plan['unmatched'] !== null) {
+            throw new SimpleOrmException(
+                'PRM-001',
+                $queryName,
+                "SQL parameter @{$plan['unmatched']} has no matching property on {$argsType}",
+            );
         }
 
         $text = $sql;
         $parameters = [];
-        foreach ($properties as $name => $value) {
-            $placeholder = self::matchingPlaceholder($placeholders, $name);
+        foreach ($plan['properties'] as $i => [$name, , $placeholder, $token]) {
+            $value = $values[$i];
             if ($placeholder === null) {
                 throw new SimpleOrmException(
                     'PRM-002',
@@ -78,7 +93,6 @@ final class ParameterBinder
             }
 
             $context = "{$queryName} @{$placeholder}";
-            $token = $tokens[$name] ?? null;
             if (self::isCollection($value)) {
                 $items = is_array($value) ? array_values($value) : iterator_to_array($value, preserve_keys: false);
                 if ($arrayParameters) {
@@ -133,20 +147,50 @@ final class ParameterBinder
         return $result;
     }
 
-    /** @return array<string, mixed> declared public instance properties, in declaration order */
-    private static function publicProperties(object $args): array
+    /**
+     * The binding plan of one SQL text for one args class, computed once (ADR-0048 item 2): the declared public instance
+     * properties in declaration order, each with its declared token and its placeholder (null = `PRM-002`, still thrown
+     * in property order while binding, so an earlier property's conversion error still wins), and the first placeholder
+     * no property matches (`PRM-001`). Keyed by the text and the class name — the text is the whole input of the scan,
+     * and a class name is one class in a PHP process (CODING-STANDARD §10) — in a bounded table.
+     *
+     * @param class-string $argsType
+     * @return array{properties: list<array{0: string, 1: ReflectionProperty, 2: ?string, 3: ?ColumnType}>, unmatched: ?string}
+     */
+    private static function plan(string $sql, string $argsType): array
     {
-        $result = [];
-        $reflection = new ReflectionClass($args);
+        if (isset(self::$plans[$sql][$argsType])) {
+            return self::$plans[$sql][$argsType];
+        }
+
+        self::$planned++;
+        $reflection = new ReflectionClass($argsType);
+        $tokens = self::declaredTokens($reflection);
+        $placeholders = SqlPlaceholders::find($sql);
+
+        $properties = [];
         foreach ($reflection->getProperties(ReflectionProperty::IS_PUBLIC) as $property) {
             if ($property->isStatic()) {
                 continue;
             }
 
-            $result[$property->getName()] = $property->isInitialized($args) ? $property->getValue($args) : null;
+            $name = $property->getName();
+            $properties[] = [$name, $property, self::matchingPlaceholder($placeholders, $name), $tokens[$name] ?? null];
         }
 
-        return $result;
+        $unmatched = null;
+        foreach ($placeholders as $placeholder) {
+            if (self::matchingPlaceholder(array_column($properties, 0), $placeholder) === null) {
+                $unmatched = $placeholder;
+                break;
+            }
+        }
+
+        if (count(self::$plans) >= self::MAX_CACHED_TEXTS) {
+            self::$plans = [];
+        }
+
+        return self::$plans[$sql][$argsType] = ['properties' => $properties, 'unmatched' => $unmatched];
     }
 
     /**
@@ -158,10 +202,9 @@ final class ParameterBinder
      *
      * @return array<string, ColumnType>
      */
-    private static function declaredTokens(object $args): array
+    private static function declaredTokens(ReflectionClass $reflection): array
     {
         $result = [];
-        $reflection = new ReflectionClass($args);
         foreach ($reflection->getProperties(ReflectionProperty::IS_PUBLIC) as $property) {
             foreach ($property->getAttributes(Column::class) as $attribute) {
                 $type = $attribute->newInstance()->type;
@@ -174,24 +217,16 @@ final class ParameterBinder
         return $result;
     }
 
-    /** @param array<string, mixed> $properties */
-    private static function hasProperty(array $properties, string $placeholder): bool
+    /**
+     * The first of `$candidates` equal to `$name` ignoring case — a property's placeholder, or a placeholder's property.
+     *
+     * @param list<string> $candidates
+     */
+    private static function matchingPlaceholder(array $candidates, string $name): ?string
     {
-        foreach (array_keys($properties) as $name) {
-            if (strcasecmp($name, $placeholder) === 0) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /** @param list<string> $placeholders */
-    private static function matchingPlaceholder(array $placeholders, string $propertyName): ?string
-    {
-        foreach ($placeholders as $placeholder) {
-            if (strcasecmp($placeholder, $propertyName) === 0) {
-                return $placeholder;
+        foreach ($candidates as $candidate) {
+            if (strcasecmp($candidate, $name) === 0) {
+                return $candidate;
             }
         }
 

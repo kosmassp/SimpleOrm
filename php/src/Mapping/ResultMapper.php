@@ -36,7 +36,7 @@ use SimpleOrm\Types\Decimal;
  */
 final class ResultMapper
 {
-    /** @var array<string, callable> */
+    /** @var array<string, list<array{0: list<string>, 1: callable}>> plans by result type, each with the column names it was built for */
     private array $plans = [];
 
     private readonly UnloadedNavigations $unloaded;
@@ -54,9 +54,18 @@ final class ResultMapper
      */
     public function createPlan(string $resultType, array $columnNames, string $queryName): callable
     {
-        $cacheKey = $resultType . '|' . implode("\0", $columnNames);
+        // A structural key (ADR-0048 item 6): by result type, then the column-name list each plan was built for, compared
+        // as an array — a hit builds no string. Usually one or two shapes per type.
+        foreach ($this->plans[$resultType] ?? [] as [$columns, $plan]) {
+            if ($columns === $columnNames) {
+                return $plan;
+            }
+        }
 
-        return $this->plans[$cacheKey] ??= $this->buildPlan($resultType, $columnNames, $queryName);
+        $plan = $this->buildPlan($resultType, $columnNames, $queryName);
+        $this->plans[$resultType][] = [$columnNames, $plan];
+
+        return $plan;
     }
 
     /** @param list<string> $columnNames */

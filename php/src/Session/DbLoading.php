@@ -34,7 +34,10 @@ use SimpleOrm\Query\SelectAst;
  * — lexicographically, so "10" sorts before "2"), so every collection gets a
  * final client-side {@see KeyTuple::compare()} sort after fetching, the same
  * approach {@see DbEagerJoin} uses for its own joined collections (§8: one
- * ordering implementation). With an owner subquery (ADR-0022 add.1, SubSelect
+ * ordering implementation) — except where the dialect's order on the key is
+ * value order ({@see GeneratedSql::keyOrderIsValueOrder()}, ADR-0048 item 4),
+ * where that sort could not move anything and is skipped. A single-part key
+ * holding a native int groups by the int itself, without a tuple or a token. With an owner subquery (ADR-0022 add.1, SubSelect
  * mode) the owner set is `in (select …)` over the root query instead of a
  * client-side key list — one query per navigation, no chunking.
  */
@@ -77,7 +80,7 @@ final class DbLoading
     private function loadManyToOne(EntityMap $map, RelationshipMap $relationship, NavigationShape $shape, array $entities, ?SelectAst $ownerSubquery): void
     {
         $navigationProperty = $map->navigationProperty($relationship);
-        [$ownerTokens, $tuplesByToken] = self::groupOwnersByCorrelate($entities, $shape->ownerProperties);
+        [$ownerTokens, $tuplesByToken] = self::groupOwnersByCorrelate($entities, $shape->ownerProperties, $ownerSubquery === null);
 
         $targetsByToken = [];
         $rows = $this->queryCorrelated(
@@ -90,7 +93,7 @@ final class DbLoading
             $ownerSubquery !== null ? $shape->ownerProperties : null,
         );
         foreach ($rows as $row) {
-            $token = self::rowTuple($shape->targetProperties, $row)->token();
+            $token = self::groupKey($shape->targetProperties, $row);
             $targetsByToken[$token] = $row;
         }
 
@@ -109,7 +112,7 @@ final class DbLoading
     {
         $navTarget = $map->navigationTarget($relationship);
         $navigationProperty = $map->navigationProperty($relationship);
-        [$ownerTokens, $tuplesByToken] = self::groupOwnersByCorrelate($entities, $shape->ownerProperties);
+        [$ownerTokens, $tuplesByToken] = self::groupOwnersByCorrelate($entities, $shape->ownerProperties, $ownerSubquery === null);
 
         $rows = $this->queryCorrelated(
             $relationship->targetType,
@@ -123,7 +126,7 @@ final class DbLoading
 
         $byToken = [];
         foreach ($rows as $row) {
-            $token = self::rowTuple($shape->targetProperties, $row)->token();
+            $token = self::groupKey($shape->targetProperties, $row);
             if (isset($byToken[$token])) {
                 throw new SimpleOrmException(
                     'REL-002',
@@ -150,7 +153,7 @@ final class DbLoading
     private function loadOneToMany(EntityMap $map, RelationshipMap $relationship, NavigationShape $shape, array $entities, ?SelectAst $ownerSubquery): void
     {
         $navigationProperty = $map->navigationProperty($relationship);
-        [$ownerTokens, $tuplesByToken] = self::groupOwnersByCorrelate($entities, $shape->ownerProperties);
+        [$ownerTokens, $tuplesByToken] = self::groupOwnersByCorrelate($entities, $shape->ownerProperties, $ownerSubquery === null);
 
         $rows = $this->queryCorrelated(
             $relationship->targetType,
@@ -164,14 +167,19 @@ final class DbLoading
 
         $byToken = [];
         foreach ($rows as $row) {
-            $token = self::rowTuple($shape->targetProperties, $row)->token();
+            $token = self::groupKey($shape->targetProperties, $row);
             $byToken[$token][] = $row;
         }
 
+        // The rows arrive `ORDER BY` target key and grouping keeps their order (an owner's rows all come from the one chunk
+        // holding its key). Where the dialect's order on the key is value order, each group is already sorted and the
+        // sort is skipped (ADR-0048 item 4); otherwise — SQLite's TEXT decimals, strings, … — every group is sorted.
+        $sorted = GeneratedSql::for($shape->targetMap, $this->db->options()->dialect)
+            ->keyOrderIsValueOrder($shape->targetMap, $this->db->options()->dialect);
         foreach ($entities as $owner) {
             $token = $ownerTokens[spl_object_id($owner)] ?? null;
             $collection = $token === null ? [] : ($byToken[$token] ?? []);
-            $navigationProperty->setValue($owner, $shape->targetMap->sortByKey($collection));
+            $navigationProperty->setValue($owner, $sorted ? $collection : $shape->targetMap->sortByKey($collection));
         }
     }
 
@@ -183,7 +191,7 @@ final class DbLoading
     private function loadManyToMany(EntityMap $map, RelationshipMap $relationship, NavigationShape $shape, array $entities, ?SelectAst $ownerSubquery): void
     {
         $navigationProperty = $map->navigationProperty($relationship);
-        [$ownerTokens, $tuplesByToken] = self::groupOwnersByCorrelate($entities, $shape->ownerProperties);
+        [$ownerTokens, $tuplesByToken] = self::groupOwnersByCorrelate($entities, $shape->ownerProperties, $ownerSubquery === null);
 
         // Hop 1 (visible query 1 of 2): link rows for the owners in this batch —
         // an owner subquery replaces the key list in SubSelect mode.
@@ -202,14 +210,13 @@ final class DbLoading
         /** @var array<string, KeyTuple> $targetTuplesByToken distinct target tuples to fetch in hop 2 */
         $targetTuplesByToken = [];
         foreach ($linkRows as $linkRow) {
-            $ownerToken = self::rowTuple($shape->linkToOwner, $linkRow)->token();
-            $targetTuple = self::rowTuple($shape->linkToTarget, $linkRow);
-            if ($targetTuple->hasNullPart()) {
+            $ownerToken = self::groupKey($shape->linkToOwner, $linkRow);
+            $targetToken = self::groupKey($shape->linkToTarget, $linkRow);
+            if ($targetToken === null) {
                 continue;   // a link row with no real target FK correlates to nothing
             }
 
-            $targetToken = $targetTuple->token();
-            $targetTuplesByToken[$targetToken] ??= $targetTuple;
+            $targetTuplesByToken[$targetToken] ??= self::rowTuple($shape->linkToTarget, $linkRow);
             $ownerToTargetTokens[$ownerToken][$targetToken] = true;
         }
 
@@ -229,7 +236,7 @@ final class DbLoading
         $orderedTargetTokens = [];
         $targetsByToken = [];
         foreach ($targetRows as $row) {
-            $token = self::rowTuple($shape->targetMap->keyProperties, $row)->token();
+            $token = self::groupKey($shape->targetMap->keyProperties, $row);
             $orderedTargetTokens[] = $token;
             $targetsByToken[$token] = $row;
         }
@@ -338,28 +345,56 @@ final class DbLoading
     /**
      * Groups owners by their correlate tuple (owner key or FK, per caller) —
      * an owner with a null part is excluded from querying (the null-FK / null-key
-     * symmetric rule, spec/loading.md) and left out of both maps.
+     * symmetric rule, spec/loading.md) and left out of both maps. In SubSelect
+     * mode (`$collectTuples` false) the distinct tuples are not built: the
+     * subquery replaces the key list.
      *
      * @param list<object> $entities
      * @param list<PropertyMap> $correlateProperties
-     * @return array{0: array<int, string>, 1: array<string, KeyTuple>} owner (spl_object_id) -> token; distinct tuples by token
+     * @return array{0: array<int, int|string>, 1: array<int|string, KeyTuple>} owner (spl_object_id) -> key; distinct tuples by key
      */
-    private static function groupOwnersByCorrelate(array $entities, array $correlateProperties): array
+    private static function groupOwnersByCorrelate(array $entities, array $correlateProperties, bool $collectTuples = true): array
     {
-        $ownerTokens = [];
-        $tuplesByToken = [];
+        $ownerKeys = [];
+        $tuplesByKey = [];
         foreach ($entities as $owner) {
-            $tuple = self::rowTuple($correlateProperties, $owner);
-            if ($tuple->hasNullPart()) {
+            $key = self::groupKey($correlateProperties, $owner);
+            if ($key === null) {
                 continue;
             }
 
-            $token = $tuple->token();
-            $ownerTokens[spl_object_id($owner)] = $token;
-            $tuplesByToken[$token] ??= $tuple;
+            $ownerKeys[spl_object_id($owner)] = $key;
+            if ($collectTuples && !isset($tuplesByKey[$key])) {
+                $tuplesByKey[$key] = self::rowTuple($correlateProperties, $owner);
+            }
         }
 
-        return [$ownerTokens, $tuplesByToken];
+        return [$ownerKeys, $tuplesByKey];
+    }
+
+    /**
+     * The bucket an entity's correlate tuple groups under, or null when a part is null (ADR-0048 item 4): a single-part
+     * tuple holding a native `int` is that int itself — no tuple object, no token string — and anything else is the
+     * tuple's {@see KeyTuple::token()}. The two never meet: a token is a type-tagged string (`int:5`, `dec:1.5`, …), never
+     * a numeric string PHP would turn into an int key, and a single int part's token is exactly `int:<that int>`, so the
+     * buckets are the ones the tokens made.
+     *
+     * @param list<PropertyMap> $properties
+     */
+    private static function groupKey(array $properties, object $entity): int|string|null
+    {
+        if (count($properties) === 1) {
+            $value = $properties[0]->getValue($entity);
+            if (is_int($value)) {
+                return $value;
+            }
+
+            return $value === null ? null : (new KeyTuple([$value]))->token();
+        }
+
+        $tuple = self::rowTuple($properties, $entity);
+
+        return $tuple->hasNullPart() ? null : $tuple->token();
     }
 
     /** @param list<PropertyMap> $properties */

@@ -259,37 +259,163 @@ type navReadState struct {
 	plan    *mapping.Plan
 	// types are the driver-reported column types of this segment, in plan order (VAL-020 by database type).
 	types []*sql.ColumnType
+	// keys reads the target's key from a row (ADR-0048 item 5).
+	keys rowKeyReader
+}
+
+// rowKeyReader reads an entity's key for one segment of a joined row (ADR-0048 item 5). For a single builtin integer
+// key (loading_keys.go) the key is an int64 read from the row itself — the segment column named as the key column,
+// when the driver hands back an int64 — so a root repeated once per child row, or a child repeated across rows, is
+// recognized before it is materialized again; any other key is the boxed tuple under the same structural comparison.
+type rowKeyReader struct {
+	integer  bool
+	property *core.PropertyMap // the integer key property
+	column   int               // the key column's position in the row, or -1 when the segment lacks it
+}
+
+func newRowKeyReader(m *core.EntityMap, indices []int, stripped []string) rowKeyReader {
+	// A nullable key field keeps the tuple path, where a null part compares as it always did.
+	if !integerKey(m.KeyProperties) || m.KeyProperties[0].Type.Kind() == reflect.Pointer {
+		return rowKeyReader{}
+	}
+	reader := rowKeyReader{integer: true, property: m.KeyProperties[0], column: -1}
+	for i, name := range stripped {
+		if strings.EqualFold(name, reader.property.ColumnName) {
+			reader.column = indices[i]
+			break
+		}
+	}
+	return reader
+}
+
+// fromRow is the key straight from the row, when the driver returned the key column as an int64.
+func (r rowKeyReader) fromRow(raw []any) (int64, bool) {
+	if !r.integer || r.column < 0 {
+		return 0, false
+	}
+	key, ok := raw[r.column].(int64)
+	return key, ok
+}
+
+// rowKey is one materialized instance's key: the int64 on the integer path, the tuple otherwise.
+type rowKey struct {
+	integer int64
+	tuple   core.KeyTuple
+}
+
+func (r rowKeyReader) of(m *core.EntityMap, instance any) (rowKey, error) {
+	if r.integer {
+		key, ok := readIntegerKey(r.property, reflect.ValueOf(instance))
+		if !ok {
+			return rowKey{}, core.NewError("REL-003", m.EntityName(), "a joined row's key is null")
+		}
+		return rowKey{integer: key}, nil
+	}
+	values, err := m.KeyValues(instance)
+	if err != nil {
+		return rowKey{}, err
+	}
+	return rowKey{tuple: core.KeyTuple(values)}, nil
+}
+
+func (r rowKeyReader) equal(a, b rowKey) bool {
+	if r.integer {
+		return a.integer == b.integer
+	}
+	return a.tuple.Equal(b.tuple)
+}
+
+func (r rowKeyReader) compare(a, b rowKey) int {
+	if r.integer {
+		switch {
+		case a.integer < b.integer:
+			return -1
+		case a.integer > b.integer:
+			return 1
+		}
+		return 0
+	}
+	return a.tuple.Compare(b.tuple)
 }
 
 // ownerRecord is one deduplicated root instance (§7.4): the heap-allocated
-// *T every row for this key writes into, its key (a core.KeyTuple — kept as
-// values, not a stringified token, spec/loading.md), and the per-navigation
-// state used while folding rows (a collection's accumulated entries, a
-// singular navigation's already-assigned target key, for REL-002 detection).
+// *T every row for this key writes into, its key (kept as values, never a
+// stringified token, spec/loading.md), and the per-navigation state used while
+// folding rows (a collection's accumulated entries, a singular navigation's
+// already-assigned target key, for REL-002 detection), indexed by navigation.
 type ownerRecord struct {
-	ptr          reflect.Value // *T
-	key          core.KeyTuple
-	collections  map[int][]collectionEntry
-	singularKeys map[int]core.KeyTuple
+	ptr         reflect.Value // *T
+	key         rowKey
+	collections [][]collectionEntry
+	singular    []singularState
+}
+
+type singularState struct {
+	assigned bool
+	key      rowKey
 }
 
 type collectionEntry struct {
-	key   core.KeyTuple
+	key   rowKey
 	value reflect.Value
 }
 
 // targetInstance is one navigation's shared-by-key target (§7.4: "owners
 // sharing a target … share the same instance").
 type targetInstance struct {
-	key   core.KeyTuple
+	key   rowKey
 	value reflect.Value
+}
+
+// instanceIndex finds a navigation's (or the roots') instances by key: a map on the integer path, the linear
+// structural scan otherwise.
+type instanceIndex[V any] struct {
+	reader  rowKeyReader
+	byInt   map[int64]V
+	entries []indexedEntry[V]
+}
+
+type indexedEntry[V any] struct {
+	key   rowKey
+	value V
+}
+
+func newInstanceIndex[V any](reader rowKeyReader) *instanceIndex[V] {
+	index := &instanceIndex[V]{reader: reader}
+	if reader.integer {
+		index.byInt = map[int64]V{}
+	}
+	return index
+}
+
+func (x *instanceIndex[V]) find(key rowKey) (V, bool) {
+	if x.byInt != nil {
+		v, ok := x.byInt[key.integer]
+		return v, ok
+	}
+	for _, e := range x.entries {
+		if e.key.tuple.Equal(key.tuple) {
+			return e.value, true
+		}
+	}
+	var zero V
+	return zero, false
+}
+
+func (x *instanceIndex[V]) add(key rowKey, value V) {
+	if x.byInt != nil {
+		x.byInt[key.integer] = value
+		return
+	}
+	x.entries = append(x.entries, indexedEntry[V]{key, value})
 }
 
 // readJoinedRows runs the one SELECT and reshapes its rows into []T: each row
 // is scanned once, split into the root segment and one segment per navigation
 // by column-name prefix, mapped through mapping.Plan.ReadValues, and folded
 // by structural key equality (never a stringified token, per spec/loading.md)
-// into deduplicated roots with shared, ordered navigation values.
+// into deduplicated roots with shared, ordered navigation values. A root or a
+// target whose key the row already shows as known is not materialized again.
 func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs []*joinNavigation, rows *resultRows, queryName string) ([]T, error) {
 	defer rows.Close()
 
@@ -317,6 +443,7 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 	if err != nil {
 		return nil, err
 	}
+	rootKeys := newRowKeyReader(m, rootIndices, rootColumns)
 
 	states := make([]*navReadState, len(navs))
 	for i, nav := range navs {
@@ -343,11 +470,16 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 		if err != nil {
 			return nil, err
 		}
-		states[i] = &navReadState{nav: nav, field: field, indices: indices, plan: plan, types: pickTypes(columnTypes, indices)}
+		states[i] = &navReadState{nav: nav, field: field, indices: indices, plan: plan, types: pickTypes(columnTypes, indices),
+			keys: newRowKeyReader(nav.targetMap, indices, strippedColumns)}
 	}
 
 	var order []*ownerRecord
-	targetInstances := make([][]*targetInstance, len(navs))
+	owners := newInstanceIndex[*ownerRecord](rootKeys)
+	targetInstances := make([]*instanceIndex[*targetInstance], len(navs))
+	for i := range navs {
+		targetInstances[i] = newInstanceIndex[*targetInstance](states[i].keys)
+	}
 
 	raw := make([]any, len(columns))
 	scanArgs := make([]any, len(columns))
@@ -367,97 +499,106 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 			}
 		}
 
-		rootValue, err := rootPlan.ReadValuesTyped(pick(raw, rootIndices), rootTypes)
-		if err != nil {
-			return nil, err
+		var owner *ownerRecord
+		if key, ok := rootKeys.fromRow(raw); ok {
+			owner, _ = owners.find(rowKey{integer: key})
 		}
-		rootKeyValues, err := m.KeyValues(rootValue)
-		if err != nil {
-			return nil, err
-		}
-		rootKey := core.KeyTuple(rootKeyValues)
-
-		owner := findOwner(order, rootKey)
 		if owner == nil {
-			// An include reassigns the navigations it names on a tracked root and applies none of the
-			// row's column values; other navigations stay as they were (spec/session.md
-			// Clarifications, ADR-0035).
-			var ptr reflect.Value
-			if rootIsPointer {
-				resolved, err := db.resolveAny(trackedRoot, rootValue)
-				if err != nil {
-					return nil, err
-				}
-				ptr = reflect.ValueOf(resolved)
-			} else {
-				resolved, err := db.resolveAny(trackedRoot, reflect.ValueOf(rootValue).Elem().Interface())
-				if err != nil {
-					return nil, err
-				}
-				ptr = reflect.New(rootType)
-				ptr.Elem().Set(reflect.ValueOf(resolved))
+			rootValue, err := rootPlan.ReadValuesTyped(pick(raw, rootIndices), rootTypes)
+			if err != nil {
+				return nil, err
 			}
-			owner = &ownerRecord{
-				ptr: ptr, key: rootKey,
-				collections:  map[int][]collectionEntry{},
-				singularKeys: map[int]core.KeyTuple{},
+			rootKey, err := rootKeys.of(m, rootValue)
+			if err != nil {
+				return nil, err
 			}
-			for i, nav := range navs {
-				if nav.isCollection {
-					// An included collection with no matching rows is still an
-					// empty, non-nil slice — never left nil (spec/loading.md).
-					field := owner.ptr.Elem().FieldByIndex(states[i].field.Index)
-					field.Set(reflect.MakeSlice(field.Type(), 0, 0))
+			owner, _ = owners.find(rootKey)
+			if owner == nil {
+				// An include reassigns the navigations it names on a tracked root and applies none of the
+				// row's column values; other navigations stay as they were (spec/session.md "Tracking").
+				var ptr reflect.Value
+				if rootIsPointer {
+					resolved, err := db.resolveAny(trackedRoot, rootValue)
+					if err != nil {
+						return nil, err
+					}
+					ptr = reflect.ValueOf(resolved)
+				} else {
+					resolved, err := db.resolveAny(trackedRoot, reflect.ValueOf(rootValue).Elem().Interface())
+					if err != nil {
+						return nil, err
+					}
+					ptr = reflect.New(rootType)
+					ptr.Elem().Set(reflect.ValueOf(resolved))
 				}
+				owner = &ownerRecord{
+					ptr: ptr, key: rootKey,
+					collections: make([][]collectionEntry, len(navs)),
+					singular:    make([]singularState, len(navs)),
+				}
+				for i, nav := range navs {
+					if nav.isCollection {
+						// An included collection with no matching rows is still an
+						// empty, non-nil slice — never left nil (spec/loading.md).
+						field := owner.ptr.Elem().FieldByIndex(states[i].field.Index)
+						field.Set(reflect.MakeSlice(field.Type(), 0, 0))
+					}
+				}
+				owners.add(rootKey, owner)
+				order = append(order, owner)
 			}
-			order = append(order, owner)
 		}
 
 		for i, nav := range navs {
 			state := states[i]
-			segment := pick(raw, state.indices)
-			if allNil(segment) {
+			if allNilAt(raw, state.indices) {
 				// A many-to-one/one-to-one with no match, or a many-to-many
 				// link row whose target no longer exists, joins to an all-NULL
 				// segment: a dead link loads as null/absent, never an error.
 				continue
 			}
-			targetValue, err := state.plan.ReadValuesTyped(segment, state.types)
-			if err != nil {
-				return nil, err
+			var instance *targetInstance
+			var targetKey rowKey
+			if key, ok := state.keys.fromRow(raw); ok {
+				targetKey = rowKey{integer: key}
+				instance, _ = targetInstances[i].find(targetKey)
 			}
-			targetKeyValues, err := nav.targetMap.KeyValues(targetValue)
-			if err != nil {
-				return nil, err
-			}
-			targetKey := core.KeyTuple(targetKeyValues)
-
-			instance := findTargetInstance(targetInstances[i], targetKey)
 			if instance == nil {
-				resolved, err := db.resolveAny(trackedTargets[i], targetValue)
+				targetValue, err := state.plan.ReadValuesTyped(pick(raw, state.indices), state.types)
 				if err != nil {
 					return nil, err
 				}
-				instance = &targetInstance{key: targetKey, value: reflect.ValueOf(resolved)}
-				targetInstances[i] = append(targetInstances[i], instance)
+				targetKey, err = state.keys.of(nav.targetMap, targetValue)
+				if err != nil {
+					return nil, err
+				}
+				instance, _ = targetInstances[i].find(targetKey)
+				if instance == nil {
+					resolved, err := db.resolveAny(trackedTargets[i], targetValue)
+					if err != nil {
+						return nil, err
+					}
+					instance = &targetInstance{key: targetKey, value: reflect.ValueOf(resolved)}
+					targetInstances[i].add(targetKey, instance)
+				}
 			}
 
 			if nav.isCollection {
-				if findCollectionEntry(owner.collections[i], targetKey) == nil {
+				if !hasCollectionEntry(state.keys, owner.collections[i], targetKey) {
 					owner.collections[i] = append(owner.collections[i], collectionEntry{key: targetKey, value: instance.value})
 				}
 				continue
 			}
 
-			if existing, assigned := owner.singularKeys[i]; assigned {
-				if !existing.Equal(targetKey) {
+			if singular := &owner.singular[i]; singular.assigned {
+				if !state.keys.equal(singular.key, targetKey) {
 					return nil, core.Errorf("REL-002", queryName,
 						"navigation %q matched more than one row for one %s — its target foreign key needs a unique index",
 						nav.relationship.PropertyName, m.EntityName())
 				}
 				continue
 			}
-			owner.singularKeys[i] = targetKey
+			owner.singular[i] = singularState{assigned: true, key: targetKey}
 			owner.ptr.Elem().FieldByIndex(state.field.Index).Set(instance.value)
 		}
 	}
@@ -472,10 +613,12 @@ func readJoinedRows[T any](ctx context.Context, db *Db, m *core.EntityMap, navs 
 				continue
 			}
 			entries := owner.collections[navIndex]
+			keys := states[navIndex].keys
 			// Collections order by target key value-wise, never by a string
-			// rendering (spec/loading.md) — core.KeyTuple.Compare, the same
-			// comparator db_eager.go's sortByProperties uses for merged chunks.
-			sort.Slice(entries, func(a, b int) bool { return entries[a].key.Compare(entries[b].key) < 0 })
+			// rendering (spec/loading.md) — core.KeyTuple.Compare, the
+			// comparator every loading sort uses (an integer key compares as the
+			// int64 it is). Keys are distinct within a collection.
+			sort.Slice(entries, func(a, b int) bool { return keys.compare(entries[a].key, entries[b].key) < 0 })
 			field := owner.ptr.Elem().FieldByIndex(states[navIndex].field.Index)
 			slice := reflect.MakeSlice(field.Type(), len(entries), len(entries))
 			for j, e := range entries {
@@ -526,47 +669,27 @@ func pickTypes(types []*sql.ColumnType, indices []int) []*sql.ColumnType {
 	return out
 }
 
-// allNil reports whether every value in a segment is NULL — a LEFT JOIN's
-// no-match row, read back as a dead link / no navigation value, never an
-// error.
-func allNil(values []any) bool {
-	for _, v := range values {
-		if v != nil {
+// allNilAt reports whether every value of a row's segment is NULL — a LEFT
+// JOIN's no-match row, read back as a dead link / no navigation value, never
+// an error.
+func allNilAt(values []any, indices []int) bool {
+	for _, i := range indices {
+		if values[i] != nil {
 			return false
 		}
 	}
 	return true
 }
 
-// findOwner, findTargetInstance, and findCollectionEntry all scan a small,
-// per-query list for a core.KeyTuple match by §7.4 structural equality
-// (core.KeyTuple.Equal — never a stringified token, which loses information
-// for date and blob keys, spec/loading.md). A linear scan is the price: fine
-// at fixture and page scale, the same scale every eager-loading round trip
-// already targets.
-func findOwner(order []*ownerRecord, key core.KeyTuple) *ownerRecord {
-	for _, o := range order {
-		if o.key.Equal(key) {
-			return o
-		}
-	}
-	return nil
-}
-
-func findTargetInstance(list []*targetInstance, key core.KeyTuple) *targetInstance {
-	for _, t := range list {
-		if t.key.Equal(key) {
-			return t
-		}
-	}
-	return nil
-}
-
-func findCollectionEntry(entries []collectionEntry, key core.KeyTuple) *collectionEntry {
+// hasCollectionEntry scans one owner's collection for a key by §7.4
+// structural equality (never a stringified token, which loses information for
+// date and blob keys, spec/loading.md) — an int64 comparison on the integer
+// path. A collection is per owner, so the scan stays small.
+func hasCollectionEntry(keys rowKeyReader, entries []collectionEntry, key rowKey) bool {
 	for i := range entries {
-		if entries[i].key.Equal(key) {
-			return &entries[i]
+		if keys.equal(entries[i].key, key) {
+			return true
 		}
 	}
-	return nil
+	return false
 }

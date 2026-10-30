@@ -4764,4 +4764,60 @@ dotnet run -c Release -- --filter "QueryBenchmarks.*"` (and `LoadingBenchmarks.*
 `TrackingBenchmarks.*`, `BatchBenchmarks.*`, `PostgresQueryBenchmarks.*`), one
 class at a time, nothing else building. C# only; PHP and Go unchanged.
 
-**Status.** Accepted.
+**The ports (2026-10-30).** Both ports took all six items by the port method
+(each agent read this entry and the spec, never `dotnet/` or the other port),
+with its own measurement harness — PHP `php/benchmarks/bench.php` (hrtime,
+CPU, peak memory; `--src=<dir>` runs an older `git archive` of `src/` back to
+back with the current one, because the machine was shared and times moved
+±15–30 % between runs), Go `go/orm/bench_test.go` (`testing.B`, SQLite and a
+skip-gated PostgreSQL). Allocation was the reliable signal in both; the
+type-rank cache was not attempted. No SQL text, statement-log line, error
+code, or conformance case changed; the step-script runners record the write
+renderings through each port's hook as "The seam" allows (PHP
+`Db::observeRenderings()`, Go the optional `core.RenderObserver`).
+
+- *PHP, whole pass* (fastest iteration, mean of alternating runs): SQLite
+  insert100 18.6 → 15.2 ms, get 152 → 132 µs, MultiQuery graph 115 → 99 ms,
+  SubSelect 109 → 95, Join 131 → 117, `loadEach` 84 → 74; PostgreSQL insert100
+  37.6 → 35.2 ms, MultiQuery 80 → 70, SubSelect 73 → 64, Join 93 → 83,
+  `loadEach` 63 → 52. The 1000-row registry read and the criteria page did not
+  move (row mapping and round trips dominate). Choices: the CRUD-text cache is
+  a static `WeakMap` on the map then on the dialect, column-list updates keyed
+  by the property names, capped at 256 per map; PHP strings have no identity,
+  so the scan, the PDO form, and the binding plan are keyed by the SQL text
+  plus the args class, bounded at 1024 texts; labels in a `WeakMap` per map;
+  SubSelect mode builds no owner tuples for any cardinality; many-to-many still
+  sorts.
+- *Go, whole pass*: Insert100 SQLite 292 → 188 KB and 7266 → 5165 allocs
+  (PostgreSQL 1136 → 406 KB, 15822 → 6315); QuerySingle 2991 → 2196 B;
+  Command100 199 → 61 KB; the 1000 × 3 graph **MultiQuery 424 → 20 ms,
+  75.8 MB → 3.8 MB** on SQLite (PostgreSQL 656 → 26 ms), SubSelect 546 → 16 ms,
+  Join 375 → 18.5 ms — the old Go loaders were quadratic in owners × targets.
+  Two findings beyond the list: **Go did not follow the spec's sort rule** —
+  it sorted only when results spanned several chunks, so a single-chunk
+  collection keyed by a SQLite TEXT decimal (or a string, GUID, or temporal)
+  loaded in the database's text order, the deviation ADR-0033 had fixed in
+  C#; fixed, with a decimal-key value-order test in every fetch mode plus
+  `LoadEach`. And **item 2b, Go only**: the PostgreSQL connector's `@name` →
+  `$n` rewrite scanned the whole statement once per distinct name (80 % of the
+  PostgreSQL graph's allocation); one scan now, identical text, through the
+  new `core.PlaceholderSpans`; the same per-name pattern in `sqlserver/batch.go`
+  is untouched, unmeasurable without an engine. Choices: the render cache on
+  the session keyed by the `*EntityMap` pointer behind a mutex; the binding
+  plan package-level, keyed by `{sql, queryName, args type}`, capped at 4096;
+  the integer fast path covers the builtin `int`/`uint` widths with both sides
+  the same Go type (named integer types stay on the tuple path, as
+  `CompareValues` compares them as text); the sort-skip rule = a builtin
+  integer or `Decimal` key whose storage type is in {integer, bigint, int,
+  smallint, tinyint, numeric, decimal} — the same rule as the reference's.
+- The spec read as C#-shaped in two places, left as they are since each port
+  found its form: "wrapping the dialect" (Go's decorator can only override, so
+  it added an observer interface) and the cache-key wording (`ConditionalWeakTable`,
+  "the SQL string instance" — PHP has no string identity; a content key is
+  exact there because the text is the scan's whole input).
+- No separate review round was run for this port (the owner's budget); the
+  suites and the unchanged conformance runners are the check. Counts, with
+  PostgreSQL live: C# 586 passed / 22 skipped; PHP 1183 tests / 35 skipped
+  (was 1174 / 35); Go every package ok, `gofmt` and `go vet` clean.
+
+**Status.** Accepted; done in C#, PHP, and Go.

@@ -11,6 +11,9 @@ use SimpleOrm\Dialect\Dialect;
 use SimpleOrm\Dialect\PostgresDialect;
 use SimpleOrm\Dialect\SqliteDialect;
 use SimpleOrm\Dialect\SqlServerDialect;
+use SimpleOrm\Mapping\ResultMapper;
+use SimpleOrm\Mapping\TypeConverter;
+use SimpleOrm\Mapping\TypeHandlerRegistry;
 use SimpleOrm\Metadata\Attributes\Column;
 use SimpleOrm\Metadata\Attributes\Key;
 use SimpleOrm\Metadata\Attributes\Table;
@@ -155,6 +158,22 @@ final class PerformanceCacheTest extends TestCase
         self::assertFalse($rule($decimalKey, new SqliteDialect()), 'SQLite stores a decimal as TEXT: the sort stays');
         self::assertTrue($rule($decimalKey, new PostgresDialect()), 'numeric on PostgreSQL');
         self::assertTrue($rule($decimalKey, new SqlServerDialect()), 'decimal on SQL Server');
+    }
+
+    /** The plan cache's structural key (ADR-0048 item 6): one plan per (result type, column-name list), order included. */
+    #[Test]
+    public function a_mapping_plan_is_built_once_per_result_type_and_column_list(): void
+    {
+        $mapper = new ResultMapper(new EntityMapLoader(new MappingOptions()), new TypeConverter(new TypeHandlerRegistry()));
+        $columns = ['id', 'name', 'email', 'display_name', 'created_at', 'updated_at'];
+
+        $plan = $mapper->createPlan(User::class, $columns, 'q');
+        self::assertSame($plan, $mapper->createPlan(User::class, $columns, 'q'));
+        self::assertNotSame($plan, $mapper->createPlan(User::class, array_reverse($columns), 'q'));
+        self::assertSame(
+            $mapper->createPlan(User::class, array_reverse($columns), 'q'),
+            $mapper->createPlan(User::class, array_reverse($columns), 'q'),
+        );
     }
 
     #[Test]

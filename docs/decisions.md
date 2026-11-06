@@ -4821,3 +4821,102 @@ renderings through each port's hook as "The seam" allows (PHP
   (was 1174 / 35); Go every package ok, `gofmt` and `go vet` clean.
 
 **Status.** Accepted; done in C#, PHP, and Go.
+
+## ADR-0049 — The C# CLI loads `--assembly` in a load context of its own (2026-11-06)
+
+**Context.** The CLI loaded the application assembly with `Assembly.LoadFrom`,
+into the CLI's own default load context. The CLI carries
+Microsoft.Extensions.Options / Logging.Abstractions / DependencyInjection.Abstractions
+9.0.x transitively (Microsoft.Data.SqlClient 6.1.1 → Caching.Memory; Npgsql
+9.0.3 → Logging.Abstractions). An application built against 10.x of those
+packages (Licosign.Data: Options 10.0.14 and friends) could not be scanned:
+the default context binds the CLI's 9.0.0.0, the application asks for
+10.0.0.0, and the first type that needs the package (one implementing
+`IConfigureOptions<T>`, say) fails with a `FileLoadException` /
+`FileNotFoundException` — unhandled, so `diff` and `shadow` died with a stack
+trace. Licosign worked around it with a scratch program calling `SchemaShadow`
+itself, and its README dropped the `diff`/`shadow` steps. The same gap reopens
+with every major version of any package the CLI and an application both
+carry. The owner chose to fix it in SimpleOrm, with an isolated
+`AssemblyLoadContext`.
+
+**Decision.**
+
+1. **Every command that takes `--assembly` loads it through
+   `TargetLoadContext`** (`dotnet/src/SimpleOrm.Cli`), once per run (the CLI
+   used to load it once per call site; `LoadFrom` deduplicated that, a context
+   per call would not, so the CLI keeps the one `Assembly`).
+2. **Each dependency the application asks for is decided in this order:**
+   - **SimpleOrm's assemblies are always the CLI's** — `SimpleOrm`,
+     `SimpleOrm.Sqlite`, `SimpleOrm.SqlServer`, `SimpleOrm.Postgres`, named by
+     the CLI's own types rather than by a `SimpleOrm*` prefix (an application
+     called `SimpleOrm.Something` is still the application's). Attributes,
+     `EntityMap`, `MigrationVersion`, the dialects are one type on both sides,
+     so entity scanning, `EntityMapLoader`, the runner, and SchemaGuard work
+     as before. The copy of `SimpleOrm.dll` in the application's folder is
+     never loaded.
+   - **An assembly the CLI already carries (its trusted platform assemblies:
+     the framework and the CLI's packages) is the CLI's when its version is at
+     least the one the application asks for** — so framework types and driver
+     types (an application's migration that casts the connection to
+     `NpgsqlConnection`) stay shared, exactly as under `LoadFrom`, whenever
+     sharing can work.
+   - **Anything else is the application's own copy**: first through
+     `AssemblyDependencyResolver(targetPath)` (the application's `*.deps.json`
+     and output folder, managed and native), then — because a class library's
+     build output holds its project references but not its packages, and the
+     resolver only probes the output folder — the runtime assets of the
+     `deps.json`'s package libraries under the NuGet package root
+     (`NUGET_PACKAGES`, else `~/.nuget/packages`), where restore put them. A
+     copy next to the application wins over the package folder.
+   - Nothing found: the default context is asked, as before.
+3. **The load is eager**: `LoadTarget` calls `GetTypes()` once, so a dependency
+   nothing can supply refuses at load, coded, instead of as a stack trace from
+   whichever command first scans:
+   `CLI --assembly: <path>: a dependency does not load: Could not load file or
+   assembly 'Microsoft.Extensions.Options, Version=10.0.0.0, …'` (exit 1); a
+   missing file is `CLI --assembly: <path>: no such file`, a non-.NET file
+   `… not a .NET assembly`. These keep the `CLI` marker the CLI already uses for
+   its own refusals (`CLI arguments: …`, the shadow hosts' `CLI shadow: …`)
+   rather than taking a registry code: the refusal is the C# CLI's alone — the
+   PHP and Go CLIs load code differently (PHP includes the application's source
+   from `--src` into its own process with Composer's autoloader; Go's CLI is a
+   library the application's own `main` embeds, so there is nothing to load)
+   and are unaffected; `spec/errors.md` is the cross-language registry.
+4. **No new dependency in the CLI** (`System.Runtime.Loader` and
+   `System.Text.Json` are the framework's). The test fixture
+   `dotnet/tests/NewerDependencyApp` references Microsoft.Extensions.Options
+   **10.0.14** (`PrivateAssets="all"`, so it does not flow into
+   `SimpleOrm.Tests`, whose default context must keep 9.x for the tests to mean
+   anything); `SimpleOrm.Tests` references it with
+   `ReferenceOutputAssembly="false"` only to build it first.
+
+**Limits, stated.** The isolation covers package versions, not the framework:
+the CLI runs on its own runtime (net10.0), so an application targeting a newer
+framework than the CLI (net11.0) needs the CLI built for — or rolled forward to
+(`DOTNET_ROLL_FORWARD=Major`) — that runtime. An application type that crosses
+into SimpleOrm through a type SimpleOrm takes from a package (none today:
+SimpleOrm's core depends only on the framework) would be shared only while the
+CLI's version is new enough. A package's RID-specific runtime assets
+(`runtimeTargets`) and satellite assemblies are found only through the resolver,
+i.e. when they are in the application's output folder; the package-folder probe
+reads the plain `runtime` assets.
+
+**Tests.** `CliLoadContextTests` (7): the premise (the test process, like the
+CLI, binds Options 9); the fixture loads in its own context with Options
+10.0.0.0 from the package folder; SimpleOrm types are the CLI's (the one entity
+scans, its `EntityMap` loads, `V0001`'s base type is the CLI's
+`MigrationVersion`); a copy beside the application wins over the package
+folder; a missing file refuses coded; and two through the built CLI as a
+process — `migrate`, `status`, `validate`, `snapshot`, `diff` ("no schema
+changes"), `shadow` (byte-identical to `snapshot` modulo `generatedAt`),
+`export-metadata` all exit 0 against the fixture; and with the fixture's
+`deps.json` removed the CLI refuses with the coded line naming
+`Microsoft.Extensions.Options, Version=10.0.0.0`, exit 1, no stack trace. (The
+failing side runs out of process on purpose: xunit's host registers its own
+assembly resolver, which finds Options 10 in the package folder and hides the
+collision in-process.) The pre-ADR CLI against the same fixture: `diff` dies
+with an unhandled `FileNotFoundException` for Options 10.0.0.0.
+
+**Status.** Built on branch `cli-isolated-load-context`; awaiting the owner's
+approval. C#-only; the PHP and Go CLIs are unaffected.

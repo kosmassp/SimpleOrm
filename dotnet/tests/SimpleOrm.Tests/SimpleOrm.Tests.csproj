@@ -13,6 +13,9 @@
     <ProjectReference Include="..\..\src\SimpleOrm.Postgres\SimpleOrm.Postgres.csproj" />
     <ProjectReference Include="..\..\src\SimpleOrm.Cli\SimpleOrm.Cli.csproj" />
     <ProjectReference Include="..\..\samples\SimpleOrm.Sample\SimpleOrm.Sample.csproj" />
+    <!-- Built first, never referenced: the CLI's isolated load context (ADR-0049) loads it from its own
+         output folder, against this project's default context, which keeps the CLI's older packages. -->
+    <ProjectReference Include="..\NewerDependencyApp\NewerDependencyApp.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>

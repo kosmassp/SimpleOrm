@@ -11,6 +11,7 @@ using SimpleOrm.SqlServer;
 
 var boolFlags = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "force", "allow-delete", "allow-remove", "amend" };
 var positional = new List<string>();
+Assembly? loadedAssembly = null;
 var options = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 for (var i = 0; i < args.Length; i++)
 {
@@ -169,6 +170,9 @@ bool Flag(string name) => options.ContainsKey(name);
 TimeSpan? CommandTimeoutArgument()
     => CommandTimeoutOption.Parse(Flag("command-timeout") ? Option("command-timeout") ?? "" : null);
 
+// The application assembly loads once per run, in its own load context (ADR-0049): its
+// dependencies resolve from its own deps.json, so a newer package than the CLI carries
+// does not collide with the CLI's copy; SimpleOrm's assemblies stay the CLI's.
 Assembly LoadAssembly()
 {
     if (Option("assembly") is not { } path)
@@ -176,7 +180,7 @@ Assembly LoadAssembly()
         throw new SimpleOrmException("CLI", "arguments", "--assembly <path> is required");
     }
 
-    return Assembly.LoadFrom(Path.GetFullPath(path));
+    return loadedAssembly ??= TargetLoadContext.LoadTarget(path);
 }
 
 // ADR-0041: a concrete sourceless class another type extends is a base class

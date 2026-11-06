@@ -288,6 +288,18 @@ Every command takes `--assembly <dll>`; the database commands also `--db`
 the migrations namespace (one per database in multi-database apps);
 `--dialect sqlite|sqlserver|postgres` (default `sqlite`).
 
+The assembly loads in a load context of its own (ADR-0049), so it may be built
+against newer packages than the CLI carries — Microsoft.Extensions.Options 10
+against the CLI's 9, say. Point `--assembly` at the application's build output
+(`bin/<Configuration>/<tfm>/App.dll`, with its `App.deps.json` beside it): its
+dependencies resolve from that folder and, for the packages a class library's
+build does not copy, from the NuGet package folder its `deps.json` names
+(`NUGET_PACKAGES`, else `~/.nuget/packages`). SimpleOrm's own assemblies are
+always the CLI's, and so is any assembly the CLI carries at the same or a newer
+version. A dependency nothing can supply refuses up front:
+`CLI --assembly: <path>: a dependency does not load: …` (exit 1). The
+application's target framework must not be newer than the CLI's runtime.
+
 | Command | Flags | Does |
 |---|---|---|
 | `migrate` | `[--force [--allow-delete]]` | apply pending versions; `--force` overrides the `MIG-012` guard and syncs the live schema |

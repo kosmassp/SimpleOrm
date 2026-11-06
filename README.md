@@ -299,6 +299,11 @@ Checksums (SHA-256 of rendered SQL) catch drift (`MIG-010`); on SQLite the whole
 run is one `BEGIN IMMEDIATE` transaction — a failed run applies nothing. The app
 never migrates at startup; `status`, `migrate down --to`, `baseline`, `validate`,
 and `export-metadata` round out the CLI.
+The CLI loads `--assembly` in a load context of its own (ADR-0049): an
+application built against newer packages than the CLI carries (say
+Microsoft.Extensions.Options 10) loads with its own copies, resolved from its
+`*.deps.json`, its output folder, and the NuGet package folder; SimpleOrm's
+types stay the CLI's.
 
 **Nobody writes `Down()`** (ADR-0018): `migrate down` derives each rollback from
 the versioned snapshots — typed renames invert data-preservingly, removed columns

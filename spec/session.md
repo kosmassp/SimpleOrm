@@ -132,6 +132,14 @@ await tx.CommitAsync(ct);
   disposing an uncommitted scope, or disposing the session while its
   transaction is active. An uncommitted transaction is never silently
   committed.
+- A commit or rollback ends the transaction whatever its outcome. When the
+  database refuses a COMMIT (a deferred constraint, a lost connection), the
+  driver's error surfaces unchanged, the scope is completed and the session
+  has no transaction: disposing the scope afterwards does nothing, and the
+  session may begin another. Whatever the engine kept open is rolled back
+  (PostgreSQL has already ended the transaction; SQLite keeps a refused
+  COMMIT's transaction until it is rolled back). Disposing the session always
+  closes its connection, even when the rollback it attempts fails (ADR-0050).
 
 ## Async and cancellation
 

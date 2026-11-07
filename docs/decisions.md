@@ -4920,3 +4920,55 @@ with an unhandled `FileNotFoundException` for Options 10.0.0.0.
 
 **Status.** Built on branch `cli-isolated-load-context`; awaiting the owner's
 approval. C#-only; the PHP and Go CLIs are unaffected.
+
+## ADR-0050 — A refused COMMIT ends the transaction (C#) (2026-11-07)
+
+**Context.** Reported by licomail, a consumer on PostgreSQL. When the database
+refuses a `COMMIT` (a deferred constraint, a lost connection), C#'s
+`DbTransactionScope.CommitAsync` threw the driver's error without completing
+the scope, and `Db` kept its finished `DbTransaction`. On PostgreSQL the
+transaction is already over and Npgsql's transaction object is completed, so
+the scope's dispose called `Rollback()` and got `InvalidOperationException:
+This NpgsqlTransaction has completed`, as did `Db.DisposeAsync`, which threw
+before `_connection.Dispose()`. With `await using`, the dispose exception
+replaced the database error (licomail answered 500 instead of 503), and the
+pooled connection was never returned. The spec said nothing about a refused
+commit.
+
+The ports already behave: Go's `Tx.Commit` marks the scope done and clears the
+session transaction before returning the driver's error, and its `Close`
+ignores the rollback error and closes the connection; PHP's rollback runs only
+while PDO reports a transaction (`inTransaction()`), which a refused commit has
+ended. C# is brought in line; no port changes.
+
+**Decision.** `spec/session.md` (Transactions) states the rule: a commit or
+rollback ends the transaction whatever its outcome; a refused commit surfaces
+the driver's error unchanged, the scope is completed, the session has no
+transaction (disposing the scope does nothing; a new one may begin); whatever
+the engine kept open is rolled back; disposing the session always closes its
+connection. In C#:
+
+1. `Db.CommitTransaction` and `RollbackTransaction` clear the transaction in a
+   `finally`. Clearing disposes the driver's transaction, which rolls back what
+   an engine kept open — SQLite keeps a refused COMMIT's transaction active, and
+   Microsoft.Data.Sqlite's dispose rolls it back.
+2. `DbTransactionScope.CommitAsync`/`RollbackAsync` mark the scope completed
+   before the call, as Go's `Tx` does.
+3. `Db.DisposeAsync` disposes the connection in a `finally` around the rollback.
+
+No new error code, no public API change.
+
+**Tests.** `PostgresIntegrationTests.Refused_commit_surfaces_the_driver_error_and_leaves_the_session_usable`
+(a deferred constraint trigger refuses the commit: `PostgresException` from
+`CommitAsync`, the scope disposes quietly, nothing was written, the session
+begins and commits again) and
+`Session_disposed_after_a_refused_commit_closes_without_error`; both failed
+before the change with Npgsql's `InvalidOperationException`.
+`DbTransactionTests.Refused_commit_ends_the_transaction_and_surfaces_the_driver_error`
+(SQLite, a deferred foreign key) pins that the transaction SQLite keeps open is
+rolled back and the session can begin again; it passed before too (the old
+dispose rolled back successfully on SQLite) and guards against a fix that only
+forgets the transaction.
+
+**Status.** Built on branch `failed-commit-ends-transaction`; awaiting the
+owner's approval. C#-only.

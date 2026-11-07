@@ -1231,22 +1231,38 @@ public sealed partial class Db : IAsyncDisposable
         return Task.FromResult(new DbTransactionScope(this));
     }
 
+    // A commit or rollback ends the session's transaction whatever its outcome (ADR-0050): PostgreSQL ends a
+    // transaction whose COMMIT it refuses, and the driver's transaction object is then finished. Disposing the
+    // driver's transaction rolls back whatever an engine kept open (SQLite keeps a refused COMMIT's transaction).
     internal void CommitTransaction()
     {
-        _transaction?.Commit();
-        ClearTransaction();
+        try
+        {
+            _transaction?.Commit();
+        }
+        finally
+        {
+            ClearTransaction();
+        }
     }
 
     internal void RollbackTransaction()
     {
-        _transaction?.Rollback();
-        ClearTransaction();
+        try
+        {
+            _transaction?.Rollback();
+        }
+        finally
+        {
+            ClearTransaction();
+        }
     }
 
     private void ClearTransaction()
     {
-        _transaction?.Dispose();
+        var transaction = _transaction;
         _transaction = null;
+        transaction?.Dispose();
     }
 
     private DbCommand CreateCommand(SqlSource source, object args)
@@ -1261,12 +1277,19 @@ public sealed partial class Db : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
-        if (_transaction is not null)
+        try
         {
-            RollbackTransaction();
+            if (_transaction is not null)
+            {
+                RollbackTransaction();
+            }
+        }
+        finally
+        {
+            // The connection goes back to the pool even when the rollback fails (a broken connection).
+            _connection.Dispose();
         }
 
-        _connection.Dispose();
         return default;
     }
 }
@@ -1282,18 +1305,22 @@ public sealed class DbTransactionScope : IAsyncDisposable
 
     internal DbTransactionScope(Db db) => _db = db;
 
+    /// <summary>
+    /// Commits. The scope is completed whatever the outcome: a commit the database refuses surfaces the driver's
+    /// error, and the transaction is over (ADR-0050).
+    /// </summary>
     public Task CommitAsync(CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        _db.CommitTransaction();
         _completed = true;
+        _db.CommitTransaction();
         return Task.CompletedTask;
     }
 
     public Task RollbackAsync(CancellationToken ct)
     {
-        _db.RollbackTransaction();
         _completed = true;
+        _db.RollbackTransaction();
         return Task.CompletedTask;
     }
 

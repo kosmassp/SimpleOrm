@@ -1,3 +1,4 @@
+using Npgsql;
 using SimpleOrm.Postgres;
 using SimpleOrm.Sample.Models;
 using Xunit;
@@ -215,6 +216,67 @@ public sealed class PostgresIntegrationTests(PostgresFixture fixture)
         }
 
         Assert.Equal(1, await db.QuerySingleAsync(CountUsers, EmptyArgs.Value, CancellationToken.None));
+    }
+
+    private static readonly Command<EmptyArgs> CreateCommitRefusal = Query.Inline(
+        """
+        create or replace function refuse_commit() returns trigger language plpgsql as $fn$
+        begin if new.name = 'Refused' then raise exception 'refused at commit'; end if; return new; end $fn$;
+        drop trigger if exists refuse_commit on users;
+        create constraint trigger refuse_commit after insert on users deferrable initially deferred
+            for each row execute function refuse_commit();
+        """);
+
+    private static readonly Command<EmptyArgs> DropCommitRefusal = Query.Inline("drop trigger if exists refuse_commit on users");
+
+    // PostgreSQL ends a transaction whose COMMIT it refuses; the driver's transaction object is then finished, so the
+    // scope and the session must not try to roll it back (which Npgsql refuses with InvalidOperationException).
+    [PostgresFact]
+    public async Task Refused_commit_surfaces_the_driver_error_and_leaves_the_session_usable()
+    {
+        await using var db = await OpenAsync();
+        await db.ExecuteAsync(CreateCommitRefusal, EmptyArgs.Value, CancellationToken.None);
+        try
+        {
+            var scope = await db.BeginAsync(CancellationToken.None);
+            await InsertUserAsync(db, "Refused");
+            await Assert.ThrowsAsync<PostgresException>(() => scope.CommitAsync(CancellationToken.None));
+            await scope.DisposeAsync();
+
+            Assert.Equal(0, await db.QuerySingleAsync(CountUsers, EmptyArgs.Value, CancellationToken.None));
+            await using (var next = await db.BeginAsync(CancellationToken.None))
+            {
+                await InsertUserAsync(db, "Next");
+                await next.CommitAsync(CancellationToken.None);
+            }
+
+            Assert.Equal(1, await db.QuerySingleAsync(CountUsers, EmptyArgs.Value, CancellationToken.None));
+        }
+        finally
+        {
+            await db.ExecuteAsync(DropCommitRefusal, EmptyArgs.Value, CancellationToken.None);
+        }
+    }
+
+    // Disposing the session after a refused commit closes its connection instead of failing on the finished transaction.
+    [PostgresFact]
+    public async Task Session_disposed_after_a_refused_commit_closes_without_error()
+    {
+        var db = await OpenAsync();
+        await db.ExecuteAsync(CreateCommitRefusal, EmptyArgs.Value, CancellationToken.None);
+        try
+        {
+            var scope = await db.BeginAsync(CancellationToken.None);
+            await InsertUserAsync(db, "Refused");
+            await Assert.ThrowsAsync<PostgresException>(() => scope.CommitAsync(CancellationToken.None));
+        }
+        finally
+        {
+            await using var cleanup = await Db.OpenAsync(fixture.ConnectionString, Options, CancellationToken.None);
+            await cleanup.ExecuteAsync(DropCommitRefusal, EmptyArgs.Value, CancellationToken.None);
+        }
+
+        await db.DisposeAsync();
     }
 
     [PostgresFact]
